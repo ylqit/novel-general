@@ -1,0 +1,1821 @@
+"""Deterministic quality gates for draft chapters."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+import json
+import re
+
+from longform_engine.agent_tasks import build_manifest, mark_tasks_for_output, write_manifest
+from longform_engine.config import ConfigDocument
+from longform_engine.creative import creative_repair_guidance, detect_humanizer_v2_issues, reader_experience_review
+from longform_engine.db import sync_database
+from longform_engine.graph import check_graph
+from longform_engine.memory import semantic_gate_findings
+from longform_engine.planning import evaluate_event_matrix, infer_event_types_from_text
+from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
+
+
+class GateError(ValueError):
+    """Raised when a gate command cannot run."""
+
+
+@dataclass(frozen=True)
+class GateCheckResult:
+    """Public result for gate-check."""
+
+    chapter_number: int
+    passed: bool
+    severity: str
+    gate_result: str
+    repair_plan: str
+    failures: tuple[dict[str, Any], ...]
+    allowed_actions: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PacingReviewResult:
+    """Public result for pacing-review."""
+
+    chapter_number: int
+    report_file: str
+    tier: str
+    issues: tuple[str, ...]
+    warnings: tuple[str, ...]
+    reader_experience_report: str = ""
+
+
+@dataclass(frozen=True)
+class SemanticPacingTaskResult:
+    chapter_number: int
+    task_json: str
+    task_markdown: str
+    manifest_file: str
+    output_file: str
+    source_file: str
+    next_command: str
+
+
+@dataclass(frozen=True)
+class SemanticPacingValidateResult:
+    chapter_number: int
+    ok: bool
+    file: str
+    report_file: str
+    errors: tuple[str, ...]
+    warnings: tuple[str, ...]
+    next_command: str
+
+
+@dataclass(frozen=True)
+class SemanticPacingApplyResult:
+    chapter_number: int
+    applied: bool
+    result_file: str
+    validation_file: str
+    gate_result: str
+    pacing_review: str
+    escalated_failures: int
+    next_command: str
+
+
+@dataclass(frozen=True)
+class RepairPlanResult:
+    """Public result for repair-chapter --plan-only."""
+
+    chapter_number: int
+    repair_plan: str
+    gate_result: str
+    next_command: str
+
+
+@dataclass(frozen=True)
+class GateWaiverResult:
+    """Result for a recorded gate waiver."""
+
+    chapter_number: int
+    waiver_file: str
+    gate_result: str
+    allowed: bool
+    severity: str
+    next_command: str
+
+
+def gate_check(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    source: str = "draft",
+    semantic: bool = False,
+) -> GateCheckResult:
+    """Run deterministic gates and write the artifact contract."""
+
+    root = resolve_project_root(config)
+    draft_path = chapter_text_path(root, chapter_number, source=source)
+    if draft_path is None:
+        raise GateError(f"Chapter text not found for ch{chapter_number:03d} ({source}).")
+    text = safe_read_text(draft_path)
+    artifact_dir = gate_artifact_dir(root, chapter_number)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    failures: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    failures.extend(check_meta_pollution(config, text))
+    failures.extend(check_word_count(config, text))
+    failures.extend(check_chapter_card(root, chapter_number, text))
+    consistency_issues, consistency_warnings = run_consistency_check(config)
+    failures.extend(consistency_issues)
+    warnings.extend(consistency_warnings)
+    pacing = pacing_review(config, chapter_number=chapter_number, source=source, semantic_reader=semantic)
+    failures.extend({"code": "pacing", "severity": "P1", "message": issue} for issue in pacing.issues)
+    warnings.extend(pacing.warnings)
+    reverse_failures, reverse_warnings, reverse_brake = check_reverse_brake(config, root, chapter_number, text)
+    failures.extend(reverse_failures)
+    warnings.extend(reverse_warnings)
+    style_failures, style_warnings = check_style_and_humanizer(config, text)
+    failures.extend(style_failures)
+    warnings.extend(style_warnings)
+    semantic_report = None
+    if semantic:
+        semantic_failures, semantic_warnings, semantic_report = semantic_gate_findings(
+            config,
+            chapter_number=chapter_number,
+            text=text,
+        )
+        failures.extend(semantic_failures)
+        warnings.extend(semantic_warnings)
+
+    severity = max_severity(failures)
+    passed = severity not in {"P0", "P1"}
+    allowed_actions = ("continue_write",) if passed else ("repair_chapter", "rollback_chapter")
+    next_command = "continue-write" if passed else f"repair-chapter --chapter {chapter_number}"
+
+    write_artifact_reports(
+        artifact_dir,
+        chapter_number=chapter_number,
+        draft_path=draft_path,
+        failures=failures,
+        warnings=warnings,
+        pacing=pacing,
+        reverse_brake=reverse_brake,
+    )
+    gate_payload = {
+        "chapter_number": chapter_number,
+        "passed": passed,
+        "severity": "PASS" if passed else severity,
+        "failures": failures,
+        "warnings": warnings,
+        "allowed_actions": list(allowed_actions),
+        "next_command": next_command,
+        "artifact_dir": str(artifact_dir),
+        "source_path": relative_path(root, draft_path),
+        "semantic_enabled": semantic,
+        "semantic_report": str(semantic_report) if semantic_report else "",
+        "reverse_brake_report": str(artifact_dir / "reverse_brake_report.md"),
+        "reverse_brake": reverse_brake,
+        "updated_at": utc_now(),
+    }
+    gate_path = artifact_dir / "gate_result.json"
+    write_json(gate_path, gate_payload)
+    repair_path = write_repair_plan(artifact_dir, chapter_number, failures, warnings)
+    sync_database(config)
+    return GateCheckResult(
+        chapter_number=chapter_number,
+        passed=passed,
+        severity=gate_payload["severity"],
+        gate_result=str(gate_path),
+        repair_plan=str(repair_path),
+        failures=tuple(failures),
+        allowed_actions=allowed_actions,
+    )
+
+
+def pacing_review(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    source: str = "draft",
+    semantic_reader: bool = False,
+) -> PacingReviewResult:
+    """Write a deterministic pacing review artifact."""
+
+    root = resolve_project_root(config)
+    chapter_path = chapter_text_path(root, chapter_number, source=source)
+    if chapter_path is None:
+        raise GateError(f"Chapter text not found for ch{chapter_number:03d} ({source}).")
+    text = safe_read_text(chapter_path)
+    artifact_dir = gate_artifact_dir(root, chapter_number)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    tier = infer_pacing_tier(text)
+    issues: list[str] = []
+    warnings: list[str] = []
+    pacing_config = config.data.get("pacing", {})
+    history = load_json(root / "30_state" / "pacing_history.json", default=[])
+    if not isinstance(history, list):
+        history = []
+    fast_cooldown = int(pacing_config.get("fast_chapter_cooldown") or 1)
+    recent_fast = [
+        item for item in history
+        if isinstance(item, dict)
+        and item.get("tier") == "fast"
+        and chapter_number - int(item.get("chapter_number") or item.get("chapter") or 0) <= fast_cooldown
+    ]
+    if tier == "fast" and recent_fast:
+        issues.append("fast chapter cooldown violated")
+
+    quota = detect_quota_usage(text)
+    if sum(1 for value in quota.values() if value) > int(pacing_config.get("max_major_quota_triggers_per_chapter") or 1):
+        issues.append("A/B/C major quota overflow")
+    if len(text) < 120:
+        warnings.append("chapter is very short; pacing signal may be unreliable")
+    if "秘密" in text and "全部" in text:
+        warnings.append("possible complete core secret reveal")
+
+    card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
+    event_recommendation = card.get("event_recommendation") if isinstance(card, dict) and isinstance(card.get("event_recommendation"), dict) else {}
+    detected_event_types = infer_event_types_from_text(text)
+    recommended_event_types = normalize_strings(event_recommendation.get("recommended")) if event_recommendation else []
+    blocked_event_types = normalize_strings(event_recommendation.get("blocked")) if event_recommendation else []
+    active_event_types = detected_event_types or tuple(recommended_event_types[:1])
+    matrix = evaluate_event_matrix(
+        config,
+        chapter_number=chapter_number,
+        event_types=active_event_types,
+        tier=tier,
+    )
+    issues.extend(f"{item.get('code')}: {item.get('message')}" for item in matrix.failures)
+    warnings.extend(matrix.warnings)
+    warnings.extend(matrix.constraints)
+    blocked_used = [event_type for event_type in active_event_types if event_type in blocked_event_types]
+    if blocked_used:
+        issues.append(f"event matrix blocked event type used: {', '.join(blocked_used)}")
+
+    reader_report = ""
+    if semantic_reader:
+        reader = reader_experience_review(
+            config,
+            chapter_number=chapter_number,
+            text=text,
+            artifact_dir=artifact_dir,
+            tier=tier,
+        )
+        reader_report = str(reader.get("report_file") or "")
+        issues.extend(str(issue) for issue in reader.get("issues", []) if str(issue).strip())
+        warnings.extend(str(warning) for warning in reader.get("warnings", []) if str(warning).strip())
+
+    report_path = artifact_dir / "pacing_review.md"
+    atomic_write_text(
+        report_path,
+        "\n".join(
+            [
+                f"# Pacing Review ch{chapter_number:03d}",
+                "",
+                f"- Tier: {tier}",
+                f"- Semantic reader review: {'enabled' if semantic_reader else 'disabled'}",
+                f"- Reader experience report: {reader_report or 'none'}",
+                f"- Quota used: {json.dumps(quota, ensure_ascii=False)}",
+                f"- Detected event types: {', '.join(active_event_types) or 'none'}",
+                f"- Matrix constraints: {', '.join(matrix.constraints) or 'none'}",
+                "",
+                "## Issues",
+                "",
+                *([f"- {issue}" for issue in issues] or ["- None"]),
+                "",
+                "## Warnings",
+                "",
+                *([f"- {warning}" for warning in warnings] or ["- None"]),
+                "",
+            ]
+        ),
+    )
+    return PacingReviewResult(
+        chapter_number=chapter_number,
+        report_file=str(report_path),
+        tier=tier,
+        issues=tuple(issues),
+        warnings=tuple(warnings),
+        reader_experience_report=reader_report,
+    )
+
+
+def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source: str = "draft") -> SemanticPacingTaskResult:
+    """Generate a host-agent semantic pacing task without mutating gate decisions."""
+
+    if chapter_number <= 0:
+        raise GateError("chapter_number must be positive.")
+    root = resolve_project_root(config)
+    chapter_path = chapter_text_path(root, chapter_number, source=source)
+    if chapter_path is None:
+        raise GateError(f"Chapter text not found for ch{chapter_number:03d} ({source}).")
+    artifact_dir = gate_artifact_dir(root, chapter_number)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    output_file = artifact_dir / "semantic_pacing_result.json"
+    task_json = artifact_dir / "semantic_pacing_task.json"
+    task_md = artifact_dir / "semantic_pacing_task.md"
+    manifest_file = artifact_dir / "semantic_pacing_task.agent_task.json"
+    text = safe_read_text(chapter_path)
+    task_payload = {
+        "schema_version": 1,
+        "chapter_number": chapter_number,
+        "source_path": relative_path(root, chapter_path),
+        "input_files": [
+            relative_path(root, chapter_path),
+            "30_state/event_matrix.json",
+            "30_state/pacing_history.json",
+            f"20_outline/chapter_cards/ch{chapter_number:03d}.json",
+        ],
+        "allowed_output_path": relative_path(root, output_file),
+        "output_schema": semantic_pacing_output_template(chapter_number, chapter_path, root),
+        "instructions": [
+            "Judge semantic pacing, escalation, reader pressure, tail hook, and reverse-brake risks.",
+            "Do not edit final/RAG/graph/TCS/SQLite or gate_result.json directly.",
+            "Return JSON only at the allowed output path.",
+        ],
+        "created_at": utc_now(),
+    }
+    write_json(task_json, task_payload)
+    atomic_write_text(
+        task_md,
+        "\n".join(
+            [
+                f"# Semantic Pacing Task ch{chapter_number:03d}",
+                "",
+                f"- Source: `{relative_path(root, chapter_path)}`",
+                f"- Output JSON: `{relative_path(root, output_file)}`",
+                f"- Validate: `longform-engine pacing semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}`",
+                f"- Apply: `longform-engine pacing semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}`",
+                "",
+                "Judge semantic pacing only. Do not mutate final/RAG/graph/TCS/SQLite or gate_result.json directly.",
+                "",
+                "## Output Schema",
+                "",
+                "```json",
+                json.dumps(task_payload["output_schema"], ensure_ascii=False, indent=2),
+                "```",
+                "",
+                "## Source Excerpt",
+                "",
+                trim_text(text, 5000),
+                "",
+            ]
+        ),
+    )
+    manifest = build_manifest(
+        root,
+        task_type="pacing_review",
+        chapter_number=chapter_number,
+        input_files=[
+            task_json,
+            task_md,
+            chapter_path,
+            root / "30_state" / "event_matrix.json",
+            root / "30_state" / "pacing_history.json",
+            root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
+            artifact_dir / "reverse_brake_report.md",
+        ],
+        allowed_output_paths=[output_file],
+        output_schema="semantic_pacing_result_v1",
+        validate_command=f"longform-engine pacing semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
+        apply_command=f"longform-engine pacing semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
+        failure_next_command=f"longform-engine pacing semantic-task project.yaml --chapter {chapter_number}",
+    )
+    write_manifest(root, manifest, manifest_file)
+    return SemanticPacingTaskResult(
+        chapter_number=chapter_number,
+        task_json=str(task_json),
+        task_markdown=str(task_md),
+        manifest_file=str(manifest_file),
+        output_file=str(output_file),
+        source_file=str(chapter_path),
+        next_command=f"longform-engine pacing semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
+    )
+
+
+def semantic_pacing_validate(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    file_path: str | Path,
+) -> SemanticPacingValidateResult:
+    """Validate a semantic pacing result before gate application."""
+
+    if chapter_number <= 0:
+        raise GateError("chapter_number must be positive.")
+    root = resolve_project_root(config)
+    artifact_dir = gate_artifact_dir(root, chapter_number)
+    path = resolve_semantic_pacing_result_path(root, artifact_dir, file_path)
+    errors: list[str] = []
+    warnings: list[str] = []
+    payload = load_json(path, default={})
+    if not isinstance(payload, dict):
+        payload = {}
+        errors.append("semantic pacing result must be a JSON object.")
+    if int(payload.get("chapter_number") or 0) != chapter_number:
+        errors.append("payload chapter_number does not match command chapter.")
+    verdict = str(payload.get("verdict") or "").strip().lower()
+    if verdict not in {"pass", "warning", "fail"}:
+        errors.append("verdict must be pass, warning, or fail.")
+    tier = str(payload.get("tier") or "").strip().lower()
+    if tier and tier not in {"slow", "medium", "fast"}:
+        errors.append("tier must be slow, medium, or fast.")
+    issues = payload.get("issues")
+    if not isinstance(issues, list):
+        errors.append("issues must be a list.")
+        issues = []
+    for index, issue in enumerate(issues):
+        if not isinstance(issue, dict):
+            errors.append(f"issues[{index}] must be an object.")
+            continue
+        if not str(issue.get("code") or "").strip():
+            errors.append(f"issues[{index}] missing code.")
+        severity = str(issue.get("severity") or "").strip().upper()
+        if severity not in {"P0", "P1", "P2"}:
+            errors.append(f"issues[{index}] severity must be P0, P1, or P2.")
+        if not str(issue.get("message") or "").strip():
+            errors.append(f"issues[{index}] missing message.")
+    raw_warnings = payload.get("warnings", [])
+    if not isinstance(raw_warnings, list):
+        errors.append("warnings must be a list.")
+    if verdict == "fail" and not any(isinstance(issue, dict) and str(issue.get("severity") or "").upper() in {"P0", "P1"} for issue in issues):
+        warnings.append("fail verdict has no P0/P1 issue; apply will treat it as P1.")
+    report_file = artifact_dir / "semantic_pacing_validation.json"
+    ok = not errors
+    next_command = (
+        f"longform-engine pacing semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, path)}"
+        if ok
+        else f"longform-engine pacing semantic-task project.yaml --chapter {chapter_number}"
+    )
+    write_json(
+        report_file,
+        {
+            "schema_version": 1,
+            "chapter_number": chapter_number,
+            "file": relative_path(root, path),
+            "ok": ok,
+            "errors": errors,
+            "warnings": warnings,
+            "next_command": next_command,
+            "updated_at": utc_now(),
+        },
+    )
+    mark_tasks_for_output(
+        root,
+        chapter_number=chapter_number,
+        output_path=path,
+        to_status="validated" if ok else "invalid",
+        command="pacing semantic-validate",
+        result=report_file,
+        from_statuses=("awaiting_agent", "submitted"),
+    )
+    return SemanticPacingValidateResult(
+        chapter_number=chapter_number,
+        ok=ok,
+        file=str(path),
+        report_file=str(report_file),
+        errors=tuple(errors),
+        warnings=tuple(warnings),
+        next_command=next_command,
+    )
+
+
+def semantic_pacing_apply(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    file_path: str | Path,
+) -> SemanticPacingApplyResult:
+    """Apply validated semantic pacing findings into gate artifacts only."""
+
+    validation = semantic_pacing_validate(config, chapter_number=chapter_number, file_path=file_path)
+    if not validation.ok:
+        raise GateError("semantic pacing result did not validate; gate artifacts were not updated.")
+    root = resolve_project_root(config)
+    artifact_dir = gate_artifact_dir(root, chapter_number)
+    path = Path(validation.file)
+    payload = load_json(path, default={})
+    if not isinstance(payload, dict):
+        raise GateError("semantic pacing result is not a JSON object.")
+    gate_path = artifact_dir / "gate_result.json"
+    pacing_path = artifact_dir / "pacing_review.md"
+    with apply_transaction(
+        root,
+        command="pacing semantic-apply",
+        chapter_number=chapter_number,
+        source_paths=[path, validation.report_file],
+        touched_paths=[artifact_dir, gate_path, pacing_path, root / "70_runtime" / "db"],
+        metadata={
+            "gate_artifact_only": True,
+            "rebuild_boundaries": ["SQLite sync"],
+        },
+    ) as transaction:
+        if not gate_path.exists():
+            gate_check(config, chapter_number=chapter_number)
+        gate_payload = load_json(gate_path, default={})
+        if not isinstance(gate_payload, dict):
+            gate_payload = {}
+        failures = [
+            item
+            for item in gate_payload.get("failures", [])
+            if not (isinstance(item, dict) and str(item.get("code") or "").startswith("semantic_pacing"))
+        ]
+        warnings = [
+            str(item)
+            for item in gate_payload.get("warnings", [])
+            if not str(item).startswith("semantic_pacing:")
+        ]
+        semantic_failures, semantic_warnings = semantic_pacing_gate_items(payload)
+        failures.extend(semantic_failures)
+        warnings.extend(semantic_warnings)
+        severity = max_severity(failures)
+        passed = severity not in {"P0", "P1"}
+        allowed_actions = ("continue_write",) if passed else ("repair_chapter", "rollback_chapter")
+        next_command = "continue-write" if passed else f"repair-chapter --chapter {chapter_number} --plan-only"
+        gate_payload.update(
+            {
+                "passed": passed,
+                "severity": "PASS" if passed else severity,
+                "failures": failures,
+                "warnings": warnings,
+                "allowed_actions": list(allowed_actions),
+                "next_command": next_command,
+                "semantic_pacing_result": relative_path(root, path),
+                "semantic_pacing": {
+                    "verdict": payload.get("verdict"),
+                    "tier": payload.get("tier"),
+                    "tail_hook_quality": payload.get("tail_hook_quality", ""),
+                    "issues": payload.get("issues", []),
+                },
+                "updated_at": utc_now(),
+            }
+        )
+        write_json(gate_path, gate_payload)
+        append_semantic_pacing_report(pacing_path, payload, relative_path(root, path))
+        sync_database(config)
+        transaction.update_metadata(escalated_failures=len(semantic_failures), passed=passed, db_synced=True)
+    mark_tasks_for_output(
+        root,
+        chapter_number=chapter_number,
+        output_path=path,
+        to_status="applied",
+        command="pacing semantic-apply",
+        result=gate_path,
+        from_statuses=("validated",),
+    )
+    return SemanticPacingApplyResult(
+        chapter_number=chapter_number,
+        applied=True,
+        result_file=str(path),
+        validation_file=validation.report_file,
+        gate_result=str(gate_path),
+        pacing_review=str(pacing_path),
+        escalated_failures=len(semantic_failures),
+        next_command=next_command,
+    )
+
+
+def repair_plan(config: ConfigDocument, *, chapter_number: int) -> RepairPlanResult:
+    """Ensure a repair plan exists for a failed or target chapter."""
+
+    root = resolve_project_root(config)
+    artifact_dir = gate_artifact_dir(root, chapter_number)
+    gate_path = artifact_dir / "gate_result.json"
+    if not gate_path.exists():
+        result = gate_check(config, chapter_number=chapter_number)
+        gate_path = Path(result.gate_result)
+    gate = load_json(gate_path, default={})
+    failures = gate.get("failures") if isinstance(gate.get("failures"), list) else []
+    warnings = gate.get("warnings") if isinstance(gate.get("warnings"), list) else []
+    repair_path = write_repair_plan(artifact_dir, chapter_number, failures, warnings)
+    return RepairPlanResult(
+        chapter_number=chapter_number,
+        repair_plan=str(repair_path),
+        gate_result=str(gate_path),
+        next_command=f"repair-chapter --chapter {chapter_number}",
+    )
+
+
+def record_waiver(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    reason: str,
+    approved_by: str = "human",
+) -> GateWaiverResult:
+    """Record a human waiver for PASS/P2 gate outcomes."""
+
+    if not reason.strip():
+        raise GateError("waiver reason is required.")
+    root = resolve_project_root(config)
+    artifact_dir = gate_artifact_dir(root, chapter_number)
+    gate_path = artifact_dir / "gate_result.json"
+    if not gate_path.exists():
+        raise GateError(f"gate_result.json not found for ch{chapter_number:03d}.")
+    gate = load_json(gate_path, default={})
+    if not isinstance(gate, dict):
+        raise GateError(f"Invalid gate_result.json for ch{chapter_number:03d}.")
+    severity = str(gate.get("severity") or "UNKNOWN")
+    if severity in {"P0", "P1"}:
+        raise GateError(f"Cannot waive blocking severity {severity}; repair or rollback is required.")
+
+    waiver = {
+        "chapter_number": chapter_number,
+        "allowed": True,
+        "severity": severity,
+        "reason": reason,
+        "approved_by": approved_by,
+        "created_at": utc_now(),
+        "scope": "gate_result",
+    }
+    waiver_path = artifact_dir / "waiver.json"
+    write_json(waiver_path, waiver)
+    gate["waiver"] = waiver
+    gate["waived"] = True
+    actions = list(gate.get("allowed_actions") or [])
+    if "continue_write_with_waiver" not in actions:
+        actions.append("continue_write_with_waiver")
+    gate["allowed_actions"] = actions
+    gate["next_command"] = "continue-write"
+    gate["updated_at"] = utc_now()
+    write_json(gate_path, gate)
+    sync_database(config)
+    return GateWaiverResult(
+        chapter_number=chapter_number,
+        waiver_file=str(waiver_path),
+        gate_result=str(gate_path),
+        allowed=True,
+        severity=severity,
+        next_command="continue-write",
+    )
+
+
+def check_meta_pollution(config: ConfigDocument, text: str) -> list[dict[str, Any]]:
+    patterns = config.data.get("gates", {}).get("p0_meta_pollution_patterns") or [
+        "TODO",
+        "写作说明",
+        "作者按",
+        "角色定位",
+        "[说明]",
+    ]
+    failures = []
+    for pattern in patterns:
+        if pattern and pattern in text:
+            failures.append(
+                {
+                    "code": "meta_pollution",
+                    "severity": "P0",
+                    "message": f"正文包含 meta/prompt 污染标记：{pattern}",
+                }
+            )
+    if re.search(r"(?i)\b(as an ai|language model)\b", text):
+        failures.append({"code": "meta_pollution", "severity": "P0", "message": "正文包含 AI 自述。"})
+    return failures
+
+
+def check_word_count(config: ConfigDocument, text: str) -> list[dict[str, Any]]:
+    wc_config = config.data.get("length", {}).get("chapter_word_count", {})
+    hard_min = int(wc_config.get("hard_min") or 0)
+    hard_max = int(wc_config.get("hard_max") or 10**9)
+    count = estimate_words(text)
+    failures = []
+    if count < hard_min:
+        failures.append({"code": "word_count", "severity": "P1", "message": f"字数低于 hard_min：{count} < {hard_min}"})
+    if count > hard_max:
+        failures.append({"code": "word_count", "severity": "P1", "message": f"字数高于 hard_max：{count} > {hard_max}"})
+    return failures
+
+
+def check_chapter_card(root: Path, chapter_number: int, text: str) -> list[dict[str, Any]]:
+    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    if not card_path.exists():
+        return [{"code": "chapter_card", "severity": "P1", "message": "章节卡缺失。"}]
+    card = load_json(card_path, default={})
+    failures = []
+    for field in ("duty", "conflict", "information", "hook"):
+        if not str(card.get(field) or "").strip():
+            failures.append({"code": "chapter_card", "severity": "P1", "message": f"章节卡缺少 {field}。"})
+    if len(text.strip()) < 80:
+        failures.append({"code": "chapter_goal", "severity": "P1", "message": "正文过短，无法判断是否履行章节目标。"})
+    return failures
+
+
+def run_consistency_check(config: ConfigDocument) -> tuple[list[dict[str, Any]], list[str]]:
+    result = check_graph(config)
+    failures = [{"code": "graph_consistency", "severity": "P1", "message": issue} for issue in result.issues]
+    return failures, list(result.warnings)
+
+
+def check_reverse_brake(
+    config: ConfigDocument,
+    root: Path,
+    chapter_number: int,
+    text: str,
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+    """Evaluate anti-resolution guardrails as an explicit gate report."""
+
+    anchor = normalize_reverse_brake_anchor(config, chapter_number, current_outline_anchor(root, chapter_number))
+    closure_allowed = bool(anchor.get("closure_allowed"))
+    allowed_reveal_level = str(anchor.get("allowed_reveal_level") or "hint").lower()
+    failures: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    checks: list[dict[str, Any]] = []
+
+    forbidden_reveals = dedupe_strings(
+        normalize_strings(anchor.get("forbidden_reveals"))
+        + normalize_strings(config.data.get("gates", {}).get("forbidden_reveals"))
+    )
+    forbidden_hits = [item for item in forbidden_reveals if item and item.lower() in text.lower()]
+    for item in forbidden_hits:
+        if not closure_allowed:
+            failures.append(
+                {
+                    "code": "anchor_forbidden_reveal",
+                    "severity": "P1",
+                    "message": f"outline anchor forbids revealing `{item}` before the planned closure.",
+                    "repair_action": "remove the reveal or revise-outline to explicitly allow it",
+                }
+            )
+    checks.append(
+        {
+            "name": "forbidden_reveals",
+            "status": "fail" if forbidden_hits and not closure_allowed else "pass",
+            "hits": forbidden_hits,
+            "policy": forbidden_reveals,
+        }
+    )
+
+    resolution_markers = normalize_strings(anchor.get("resolution_markers")) or default_resolution_markers()
+    resolution_hits = [marker for marker in resolution_markers if marker and marker.lower() in text.lower()]
+    if not closure_allowed and resolution_hits:
+        failures.append(
+            {
+                "code": "premature_resolution",
+                "severity": "P1",
+                "message": "chapter appears to resolve a core conflict before the active outline anchor allows closure.",
+                "repair_action": "rewrite the chapter so the marker remains unresolved or only partially reframed",
+            }
+        )
+    checks.append(
+        {
+            "name": "core_resolution_markers",
+            "status": "fail" if resolution_hits and not closure_allowed else "pass",
+            "hits": resolution_hits,
+            "policy": resolution_markers,
+        }
+    )
+
+    complete_reveal = complete_core_reveal_detected(text)
+    if complete_reveal and not closure_allowed and allowed_reveal_level != "full":
+        failures.append(
+            {
+                "code": "core_secret_complete_reveal",
+                "severity": "P1",
+                "message": "non-finale chapter appears to fully reveal a core secret or final answer.",
+                "repair_action": "downgrade the reveal to hint/partial evidence and preserve the final answer",
+            }
+        )
+    checks.append(
+        {
+            "name": "complete_core_secret_reveal",
+            "status": "fail" if complete_reveal and not closure_allowed and allowed_reveal_level != "full" else "pass",
+            "detected": complete_reveal,
+            "allowed_reveal_level": allowed_reveal_level,
+        }
+    )
+
+    quota = detect_quota_usage(text)
+    active_quota = [key for key, value in quota.items() if value]
+    max_quota = int(config.data.get("pacing", {}).get("max_major_quota_triggers_per_chapter") or 1)
+    if len(active_quota) > max_quota:
+        failures.append(
+            {
+                "code": "plot_quota_overflow",
+                "severity": "P1",
+                "message": f"A/B/C plot acceleration quota overflow: {len(active_quota)} > {max_quota}.",
+                "repair_action": "keep only one major acceleration lane and defer the others",
+            }
+        )
+    checks.append(
+        {
+            "name": "abc_plot_quota",
+            "status": "fail" if len(active_quota) > max_quota else "pass",
+            "quota": quota,
+            "active": active_quota,
+            "limit": max_quota,
+        }
+    )
+
+    info_release = mainline_info_release(text)
+    release_warning_threshold = int(config.data.get("gates", {}).get("mainline_info_release_warning_hits") or 8)
+    if not closure_allowed and info_release["hits"] >= release_warning_threshold:
+        warnings.append(
+            f"mainline information release is high: {info_release['hits']} reveal markers; preserve enough uncertainty for later chapters."
+        )
+    checks.append(
+        {
+            "name": "mainline_information_release",
+            "status": "warn" if not closure_allowed and info_release["hits"] >= release_warning_threshold else "pass",
+            **info_release,
+            "warning_threshold": release_warning_threshold,
+        }
+    )
+
+    tail_ok = has_tail_suspense(text)
+    requires_tail = bool(anchor.get("requires_tail_suspense"))
+    if requires_tail and not closure_allowed and not tail_ok:
+        failures.append(
+            {
+                "code": "missing_tail_suspense",
+                "severity": "P1",
+                "message": "active outline anchor requires tail suspense for this chapter.",
+                "repair_action": "add a concrete unresolved pressure, clue, threat, or changed problem in the final scene",
+            }
+        )
+    elif not closure_allowed and not tail_ok:
+        warnings.append("tail suspense signal is weak for the active outline anchor.")
+    checks.append(
+        {
+            "name": "tail_suspense",
+            "status": "fail" if requires_tail and not closure_allowed and not tail_ok else ("warn" if not closure_allowed and not tail_ok else "pass"),
+            "requires_tail_suspense": requires_tail,
+            "detected": tail_ok,
+            "must_preserve": normalize_strings(anchor.get("must_preserve_suspense")),
+        }
+    )
+
+    payload = {
+        "chapter_number": chapter_number,
+        "source": "20_outline/outline_anchors.json",
+        "anchor": anchor,
+        "closure_allowed": closure_allowed,
+        "allowed_reveal_level": allowed_reveal_level,
+        "checks": checks,
+        "failures": failures,
+        "warnings": warnings,
+        "summary": {
+            "forbidden_hits": len(forbidden_hits),
+            "resolution_hits": len(resolution_hits),
+            "complete_reveal": complete_reveal,
+            "active_quota": active_quota,
+            "mainline_info_hits": info_release["hits"],
+            "tail_suspense_detected": tail_ok,
+        },
+    }
+    return failures, warnings, payload
+
+
+def check_anchor_resolution(
+    config: ConfigDocument,
+    root: Path,
+    chapter_number: int,
+    text: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    failures, warnings, _ = check_reverse_brake(config, root, chapter_number, text)
+    return failures, warnings
+
+    anchor = current_outline_anchor(root, chapter_number)
+    if not anchor:
+        return [], []
+    failures: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    closure_allowed = bool(anchor.get("closure_allowed") or str(anchor.get("status") or "").lower() in {"closure", "closing", "finale"})
+
+    forbidden_reveals = normalize_strings(anchor.get("forbidden_reveals"))
+    forbidden_reveals.extend(normalize_strings(config.data.get("gates", {}).get("forbidden_reveals")))
+    for item in dedupe_strings(forbidden_reveals):
+        if item and item in text:
+            failures.append(
+                {
+                    "code": "anchor_forbidden_reveal",
+                    "severity": "P1",
+                    "message": f"outline anchor forbids revealing `{item}` before the planned closure.",
+                }
+            )
+
+    resolution_markers = normalize_strings(anchor.get("resolution_markers")) or [
+        "core conflict resolved",
+        "final truth",
+        "ultimate secret",
+        "everything is solved",
+        "核心矛盾解决",
+        "最终真相",
+        "终极秘密",
+        "一切都解决",
+    ]
+    if not closure_allowed and any(marker and marker.lower() in text.lower() for marker in resolution_markers):
+        failures.append(
+            {
+                "code": "premature_resolution",
+                "severity": "P1",
+                "message": "chapter appears to resolve a core conflict before the active outline anchor allows closure.",
+            }
+        )
+
+    if anchor.get("requires_tail_suspense") is True and not closure_allowed and not has_tail_suspense(text):
+        failures.append(
+            {
+                "code": "missing_tail_suspense",
+                "severity": "P1",
+                "message": "active outline anchor requires tail suspense for this chapter.",
+            }
+        )
+    elif not closure_allowed and not has_tail_suspense(text):
+        warnings.append("tail suspense signal is weak for the active outline anchor.")
+
+    return failures, warnings
+
+
+def current_outline_anchor(root: Path, chapter_number: int) -> dict[str, Any]:
+    payload = load_json(root / "20_outline" / "outline_anchors.json", default=[])
+    anchors = normalize_records(payload)
+    selected: dict[str, Any] = {}
+    for anchor in anchors:
+        if not isinstance(anchor, dict):
+            continue
+        anchor_chapter = int(anchor.get("chapter_number") or anchor.get("chapter") or 0)
+        if anchor_chapter <= chapter_number:
+            selected = anchor
+        elif not selected:
+            selected = anchor
+            break
+    return selected
+
+
+def normalize_reverse_brake_anchor(config: ConfigDocument, chapter_number: int, anchor: dict[str, Any]) -> dict[str, Any]:
+    anchor = anchor if isinstance(anchor, dict) else {}
+    status = str(anchor.get("status") or "synthetic").lower()
+    closure_allowed = bool(anchor.get("closure_allowed") or status in {"closure", "closing", "finale", "final", "resolved"})
+    allowed_reveal_level = str(anchor.get("allowed_reveal_level") or ("full" if closure_allowed else "hint")).lower()
+    if allowed_reveal_level not in {"none", "hint", "partial", "full"}:
+        allowed_reveal_level = "hint"
+    forbidden_reveals = dedupe_strings(
+        normalize_strings(anchor.get("forbidden_reveals"))
+        + normalize_strings(config.data.get("gates", {}).get("forbidden_reveals"))
+    )
+    resolution_markers = normalize_strings(anchor.get("resolution_markers")) or default_resolution_markers()
+    preserve = normalize_strings(anchor.get("must_preserve_suspense")) or [
+        "core longform mystery",
+        "main volume conflict",
+    ]
+    return {
+        **anchor,
+        "chapter_number": int(anchor.get("chapter_number") or anchor.get("chapter") or chapter_number),
+        "status": anchor.get("status") or "synthetic",
+        "duty": anchor.get("duty") or "maintain longform promise and avoid premature resolution",
+        "forbidden_reveals": forbidden_reveals,
+        "resolution_markers": resolution_markers,
+        "requires_tail_suspense": bool(anchor.get("requires_tail_suspense")),
+        "allowed_reveal_level": allowed_reveal_level,
+        "must_preserve_suspense": preserve,
+        "closure_allowed": closure_allowed,
+    }
+
+
+def default_resolution_markers() -> list[str]:
+    return [
+        "core conflict resolved",
+        "final truth",
+        "ultimate secret",
+        "everything is solved",
+        "core secret",
+        "complete truth",
+        "最终真相",
+        "终极秘密",
+        "核心秘密",
+        "一切都解决",
+    ]
+
+
+def complete_core_reveal_detected(text: str) -> bool:
+    lower = text.lower()
+    direct_markers = (
+        "final truth",
+        "ultimate secret",
+        "everything is solved",
+        "core secret is revealed",
+        "reveals the core secret",
+        "revealed the core secret",
+        "complete truth",
+        "最终真相",
+        "终极秘密",
+        "核心秘密",
+        "真相大白",
+        "全部揭开",
+        "全部揭露",
+        "一切都解决",
+    )
+    if any(marker in lower for marker in direct_markers):
+        return True
+    final_markers = ("final", "ultimate", "core", "complete", "全部", "最终", "终极", "核心")
+    reveal_markers = ("truth", "secret", "answer", "solved", "resolved", "revealed", "真相", "秘密", "答案", "解决", "揭开", "揭露")
+    return any(marker in lower for marker in final_markers) and any(marker in lower for marker in reveal_markers)
+
+
+def mainline_info_release(text: str) -> dict[str, Any]:
+    lower = text.lower()
+    markers = (
+        "truth",
+        "secret",
+        "reveal",
+        "revealed",
+        "answer",
+        "core",
+        "ultimate",
+        "final",
+        "solved",
+        "resolved",
+        "真相",
+        "秘密",
+        "揭露",
+        "揭开",
+        "答案",
+        "核心",
+        "最终",
+        "终极",
+        "解决",
+    )
+    hits_by_marker = {marker: lower.count(marker) for marker in markers if lower.count(marker)}
+    return {
+        "hits": sum(hits_by_marker.values()),
+        "markers": hits_by_marker,
+    }
+
+
+def has_tail_suspense(text: str) -> bool:
+    tail = text[-500:].lower()
+    markers = (
+        "?",
+        "？",
+        "but then",
+        "before he could",
+        "unknown",
+        "secret",
+        "clue",
+        "然而",
+        "忽然",
+        "未知",
+        "秘密",
+        "线索",
+        "没有结束",
+    )
+    return any(marker in tail for marker in markers)
+
+
+def check_style_and_humanizer(config: ConfigDocument, text: str) -> tuple[list[dict[str, Any]], list[str]]:
+    metrics = style_fingerprint(text)
+    humanize = humanizer_metrics(text)
+    humanizer_issues, humanizer_warnings = detect_humanizer_v2_issues(text)
+    failures: list[dict[str, Any]] = []
+    warnings: list[str] = list(humanizer_warnings)
+
+    failures.extend(humanizer_issues)
+    if humanize["meta_pollution_hits"]:
+        failures.append(
+            {
+                "code": "humanizer_meta_pollution",
+                "severity": "P0",
+                "message": "humanizer detected prompt/meta residue in manuscript prose",
+            }
+        )
+    if humanize["duplicate_paragraph_ratio"] >= 0.45 and metrics["paragraph_count"] >= 3:
+        failures.append(
+            {
+                "code": "duplicate_paragraphs",
+                "severity": "P1",
+                "message": f"duplicate paragraph ratio too high: {humanize['duplicate_paragraph_ratio']:.2f}",
+            }
+        )
+    if humanize["summary_heavy_ratio"] >= 0.35:
+        warnings.append(f"summary-heavy prose ratio is high: {humanize['summary_heavy_ratio']:.2f}")
+    if humanize["template_repetition_score"] >= 0.35:
+        warnings.append(f"repeated sentence/template score is high: {humanize['template_repetition_score']:.2f}")
+    if metrics["dialogue_ratio"] < 0.01:
+        warnings.append("dialogue ratio is very low; verify scene dramatization.")
+    if metrics["punctuation_density"] > 0.18:
+        warnings.append("punctuation density is high; verify rhythm and readability.")
+    if metrics["paragraph_variance"] < 8 and metrics["paragraph_count"] >= 5:
+        warnings.append("paragraph lengths are unusually uniform; possible template prose.")
+    if perspective_drift_detected(text):
+        warnings.append("possible perspective drift detected.")
+    style_drift_failures, style_drift_warnings = check_active_style_drift(config, metrics, text)
+    failures.extend(style_drift_failures)
+    warnings.extend(style_drift_warnings)
+
+    return failures, warnings
+
+
+def style_fingerprint(text: str) -> dict[str, Any]:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", text) if part.strip()]
+    sentences = [part.strip() for part in re.split(r"[。！？.!?]+", text) if part.strip()]
+    sentence_lengths = [estimate_words(sentence) for sentence in sentences]
+    paragraph_lengths = [estimate_words(paragraph) for paragraph in paragraphs]
+    avg_sentence = sum(sentence_lengths) / max(1, len(sentence_lengths))
+    avg_paragraph = sum(paragraph_lengths) / max(1, len(paragraph_lengths))
+    variance = sum(abs(length - avg_paragraph) for length in paragraph_lengths) / max(1, len(paragraph_lengths))
+    dialogue_marks = text.count('"') + text.count("'") + text.count("“") + text.count("”") + text.count("「") + text.count("」")
+    punctuation = sum(text.count(mark) for mark in "，。！？；：,.!?;:")
+    total_chars = max(1, len(re.sub(r"\s+", "", text)))
+    repeated_phrases = repeated_ngram_count(text)
+    return {
+        "paragraph_count": len(paragraphs),
+        "sentence_count": len(sentences),
+        "avg_sentence_chars": round(avg_sentence, 2),
+        "avg_paragraph_chars": round(avg_paragraph, 2),
+        "paragraph_variance": round(variance, 2),
+        "dialogue_ratio": round(dialogue_marks / total_chars, 4),
+        "punctuation_density": round(punctuation / total_chars, 4),
+        "repeated_phrase_count": repeated_phrases,
+    }
+
+
+def check_active_style_drift(config: ConfigDocument, metrics: dict[str, Any], text: str) -> tuple[list[dict[str, Any]], list[str]]:
+    root = resolve_project_root(config)
+    active = load_active_style_profile(root)
+    baseline = active.get("fingerprint") if isinstance(active.get("fingerprint"), dict) else {}
+    if not baseline:
+        return [], []
+
+    comparisons: list[str] = []
+    strong: list[str] = []
+    moderate: list[str] = []
+    compare_numeric_metric(
+        "avg_sentence_chars",
+        baseline,
+        metrics,
+        comparisons,
+        strong,
+        moderate,
+        strong_ratio=1.25,
+        moderate_ratio=0.7,
+        strong_abs=35,
+        moderate_abs=18,
+    )
+    compare_numeric_metric(
+        "avg_paragraph_chars",
+        baseline,
+        metrics,
+        comparisons,
+        strong,
+        moderate,
+        strong_ratio=1.1,
+        moderate_ratio=0.65,
+        strong_abs=180,
+        moderate_abs=90,
+    )
+    compare_numeric_metric(
+        "dialogue_ratio",
+        baseline,
+        metrics,
+        comparisons,
+        strong,
+        moderate,
+        strong_ratio=2.5,
+        moderate_ratio=1.5,
+        strong_abs=0.018,
+        moderate_abs=0.01,
+    )
+    compare_numeric_metric(
+        "punctuation_density",
+        baseline,
+        metrics,
+        comparisons,
+        strong,
+        moderate,
+        strong_ratio=1.25,
+        moderate_ratio=0.75,
+        strong_abs=0.08,
+        moderate_abs=0.045,
+    )
+    baseline_pov = baseline_pov_label(baseline)
+    current_pov = current_pov_label(text)
+    if baseline_pov != "unknown" and current_pov != "unknown" and baseline_pov != current_pov:
+        comparisons.append(f"pov {baseline_pov} -> {current_pov}")
+        strong.append("pov")
+
+    if not strong and not moderate:
+        return [], []
+
+    severity = "P1" if len(strong) >= 2 or "avg_sentence_chars" in strong else "P2"
+    message = "style drift from active sample profile: " + "; ".join(comparisons[:6])
+    failure = {
+        "code": "style_drift",
+        "severity": severity,
+        "message": message,
+        "repair_action": "align sentence/paragraph rhythm, dialogue density, and POV with current_style_profile.json",
+    }
+    warnings = [f"active style profile source: {active.get('source', '')}"]
+    if severity == "P2":
+        warnings.append(message)
+    return [failure], warnings
+
+
+def load_active_style_profile(root: Path) -> dict[str, Any]:
+    path = root / "10_bible" / "style_profiles" / "current_style_profile.json"
+    payload = load_json(path, default={})
+    if not isinstance(payload, dict):
+        return {}
+    profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else {}
+    fingerprint = profile.get("fingerprint") if isinstance(profile.get("fingerprint"), dict) else {}
+    if not fingerprint:
+        return {}
+    return {
+        "source": relative_path(root, path),
+        "profile_type": payload.get("profile_type", ""),
+        "fingerprint": fingerprint,
+        "sample_sources": payload.get("sample_sources", []),
+    }
+
+
+def compare_numeric_metric(
+    key: str,
+    baseline: dict[str, Any],
+    current: dict[str, Any],
+    comparisons: list[str],
+    strong: list[str],
+    moderate: list[str],
+    *,
+    strong_ratio: float,
+    moderate_ratio: float,
+    strong_abs: float,
+    moderate_abs: float,
+) -> None:
+    baseline_value = float_or_none(baseline.get(key))
+    current_value = float_or_none(current.get(key))
+    if baseline_value is None or current_value is None:
+        return
+    absolute_delta = abs(current_value - baseline_value)
+    ratio_delta = absolute_delta / max(abs(baseline_value), 0.001)
+    if absolute_delta >= strong_abs and ratio_delta >= strong_ratio:
+        strong.append(key)
+        comparisons.append(f"{key} {baseline_value:.3g} -> {current_value:.3g}")
+    elif absolute_delta >= moderate_abs and ratio_delta >= moderate_ratio:
+        moderate.append(key)
+        comparisons.append(f"{key} {baseline_value:.3g} -> {current_value:.3g}")
+
+
+def float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def baseline_pov_label(baseline: dict[str, Any]) -> str:
+    pov = baseline.get("pov") if isinstance(baseline.get("pov"), dict) else {}
+    return str(pov.get("dominant") or "unknown")
+
+
+def current_pov_label(text: str) -> str:
+    lower = text.lower()
+    counts = {
+        "first_person": len(re.findall(r"\b(i|me|my|mine|we|our|us)\b|\u6211|\u6211\u4eec", lower)),
+        "second_person": len(re.findall(r"\b(you|your|yours)\b|\u4f60|\u4f60\u4eec", lower)),
+        "third_person": len(re.findall(r"\b(he|she|they|him|her|them|his|their)\b|\u4ed6|\u5979|\u4ed6\u4eec|\u5979\u4eec", lower)),
+    }
+    if not any(counts.values()):
+        return "unknown"
+    return max(counts, key=lambda key: counts[key])
+
+
+def humanizer_metrics(text: str) -> dict[str, Any]:
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", text) if part.strip()]
+    unique = set(paragraphs)
+    duplicate_ratio = 0.0 if not paragraphs else 1 - (len(unique) / len(paragraphs))
+    summary_markers = ("总之", "这一章", "本章", "接下来", "可以看出", "summary", "outline")
+    summary_hits = sum(1 for paragraph in paragraphs if any(marker in paragraph.lower() for marker in summary_markers))
+    sentences = [part.strip() for part in re.split(r"[。！？.!?]+", text) if part.strip()]
+    repeated_sentences = len(sentences) - len(set(sentences))
+    meta_patterns = ("TODO", "写作说明", "作者按", "角色定位", "as an ai", "language model")
+    return {
+        "duplicate_paragraph_ratio": round(duplicate_ratio, 4),
+        "summary_heavy_ratio": round(summary_hits / max(1, len(paragraphs)), 4),
+        "template_repetition_score": round(repeated_sentences / max(1, len(sentences)), 4),
+        "meta_pollution_hits": [pattern for pattern in meta_patterns if pattern.lower() in text.lower()],
+    }
+
+
+def perspective_drift_detected(text: str) -> bool:
+    first_person = len(re.findall(r"\b(I|me|my|we|our)\b|我|我们", text, re.IGNORECASE))
+    third_person = len(re.findall(r"\b(he|she|they|him|her|them)\b|他|她|他们|她们", text, re.IGNORECASE))
+    return first_person >= 5 and third_person >= 5
+
+
+def repeated_ngram_count(text: str) -> int:
+    compact = re.sub(r"\s+", "", text)
+    counts: dict[str, int] = {}
+    for index in range(0, max(0, len(compact) - 8), 4):
+        gram = compact[index : index + 8]
+        if len(gram) == 8:
+            counts[gram] = counts.get(gram, 0) + 1
+    return sum(1 for value in counts.values() if value >= 3)
+
+
+def write_artifact_reports(
+    artifact_dir: Path,
+    *,
+    chapter_number: int,
+    draft_path: Path,
+    failures: list[dict[str, Any]],
+    warnings: list[str],
+    pacing: PacingReviewResult,
+    reverse_brake: dict[str, Any],
+) -> None:
+    consistency_issues = [failure for failure in failures if failure["code"] == "graph_consistency"]
+    text = safe_read_text(draft_path)
+    style = style_fingerprint(text)
+    active_style = load_active_style_profile(artifact_dir.parents[2]) if len(artifact_dir.parents) >= 3 else {}
+    style_issues = [failure for failure in failures if failure.get("code") == "style_drift"]
+    humanize = humanizer_metrics(text)
+    humanizer_issues, humanizer_warnings = detect_humanizer_v2_issues(text)
+    humanize["issues"] = humanizer_issues
+    humanize["warnings"] = humanizer_warnings
+    write_reverse_brake_report(artifact_dir / "reverse_brake_report.md", reverse_brake)
+    atomic_write_text(
+        artifact_dir / "consistency_report.md",
+        markdown_report(
+            f"Consistency Report ch{chapter_number:03d}",
+            [failure["message"] for failure in consistency_issues],
+            warnings,
+        ),
+    )
+    atomic_write_text(
+        artifact_dir / "style_review.md",
+        markdown_report(
+            f"Style Review ch{chapter_number:03d}",
+            [],
+            ["Deterministic style review placeholder; LLM editorial review will be added later."],
+        ),
+    )
+    atomic_write_text(
+        artifact_dir / "quality_report.md",
+        markdown_report(
+            f"Quality Report ch{chapter_number:03d}",
+            [failure["message"] for failure in failures],
+            [f"Source: {draft_path}", *warnings],
+        ),
+    )
+    atomic_write_text(
+        artifact_dir / "publish_ready.md",
+        "可发布：否\n\n当前门禁未确认发布条件，正式定稿发布需要通过 finalize 流程。\n",
+    )
+
+
+    atomic_write_text(
+        artifact_dir / "style_review.md",
+        "\n".join(
+            [
+                f"# Style Review ch{chapter_number:03d}",
+                "",
+                "## Fingerprint",
+                "",
+                f"```json\n{json.dumps(style, ensure_ascii=False, indent=2)}\n```",
+                "",
+                "## Active Style Baseline",
+                "",
+                f"```json\n{json.dumps(active_style, ensure_ascii=False, indent=2)}\n```",
+                "",
+                "## Drift Issues",
+                "",
+                *([f"- [{item.get('severity')}] {item.get('message')}" for item in style_issues] or ["- None"]),
+                "",
+                "## Warnings",
+                "",
+                *style_warning_subset(warnings),
+                "",
+            ]
+        ),
+    )
+    atomic_write_text(
+        artifact_dir / "humanize_report.md",
+        "\n".join(
+            [
+                f"# Humanize Report ch{chapter_number:03d}",
+                "",
+                f"```json\n{json.dumps(humanize, ensure_ascii=False, indent=2)}\n```",
+                "",
+                "## Deterministic Checks",
+                "",
+                "- meta pollution",
+                "- repeated templates",
+                "- summary-heavy prose",
+                "- duplicate paragraph ratio",
+                "- dialogue sameness risk",
+                "",
+            ]
+        ),
+    )
+    atomic_write_text(
+        artifact_dir / "copyedit_report.md",
+        markdown_report(
+            f"Copyedit Report ch{chapter_number:03d}",
+            [],
+            copyedit_warnings(text),
+        ),
+    )
+    atomic_write_text(
+        artifact_dir / "memory_update.md",
+        "\n".join(
+            [
+                f"# Memory Update ch{chapter_number:03d}",
+                "",
+                f"- Source: `{draft_path}`",
+                f"- Pacing tier: {pacing.tier}",
+                f"- Word count: {estimate_words(text)}",
+                "",
+                "This is a gate artifact only. Canonical memory updates occur after chapter finalize.",
+                "",
+            ]
+        ),
+    )
+    atomic_write_text(
+        artifact_dir / "publish_ready.md",
+        "\n".join(
+            [
+                f"# Publish Readiness ch{chapter_number:03d}",
+                "",
+                f"- Ready: {'yes' if not failures else 'no'}",
+                f"- Blocking failures: {len(failures)}",
+                f"- Warnings: {len(warnings)}",
+                "",
+            ]
+        ),
+    )
+
+
+def write_reverse_brake_report(path: Path, payload: dict[str, Any]) -> None:
+    checks = payload.get("checks") if isinstance(payload.get("checks"), list) else []
+    failures = payload.get("failures") if isinstance(payload.get("failures"), list) else []
+    warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+    anchor = payload.get("anchor") if isinstance(payload.get("anchor"), dict) else {}
+    lines = [
+        f"# Reverse Brake Report ch{int(payload.get('chapter_number') or 0):03d}",
+        "",
+        f"- Closure allowed: {payload.get('closure_allowed', False)}",
+        f"- Allowed reveal level: {payload.get('allowed_reveal_level', 'hint')}",
+        f"- Requires tail suspense: {anchor.get('requires_tail_suspense', False)}",
+        f"- Forbidden reveals: {', '.join(normalize_strings(anchor.get('forbidden_reveals'))) or 'none'}",
+        f"- Do not resolve: {', '.join(normalize_strings(anchor.get('resolution_markers'))) or 'none'}",
+        f"- Must preserve suspense: {', '.join(normalize_strings(anchor.get('must_preserve_suspense'))) or 'none'}",
+        "",
+        "## Checks",
+        "",
+    ]
+    for check in checks:
+        if not isinstance(check, dict):
+            continue
+        lines.append(f"- {check.get('name')}: {check.get('status')}")
+        detail = {key: value for key, value in check.items() if key not in {"name", "status"}}
+        if detail:
+            lines.append(f"  Detail: {json.dumps(detail, ensure_ascii=False)}")
+    if not checks:
+        lines.append("- None")
+    lines.extend(["", "## Failures", ""])
+    lines.extend([f"- [{item.get('severity')}] {item.get('code')}: {item.get('message')}" for item in failures if isinstance(item, dict)] or ["- None"])
+    lines.extend(["", "## Warnings", ""])
+    lines.extend([f"- {warning}" for warning in warnings] or ["- None"])
+    lines.extend(
+        [
+            "",
+            "## Raw Payload",
+            "",
+            f"```json\n{json.dumps(payload, ensure_ascii=False, indent=2)}\n```",
+            "",
+        ]
+    )
+    atomic_write_text(path, "\n".join(lines))
+
+
+def style_warning_subset(warnings: list[str]) -> list[str]:
+    keywords = ("dialogue", "punctuation", "paragraph", "perspective", "template")
+    selected = [f"- {warning}" for warning in warnings if any(keyword in warning.lower() for keyword in keywords)]
+    return selected or ["- None"]
+
+
+def copyedit_warnings(text: str) -> list[str]:
+    warnings: list[str] = []
+    if re.search(r"\s{3,}", text):
+        warnings.append("multiple consecutive spaces detected")
+    if text.count("...") + text.count("……") > 8:
+        warnings.append("ellipsis usage is high")
+    if re.search(r"([!?！？。])\1{2,}", text):
+        warnings.append("repeated terminal punctuation detected")
+    if not text.strip().startswith("#"):
+        warnings.append("chapter heading is missing or not markdown-style")
+    return warnings or ["No deterministic copyedit warnings."]
+
+
+def write_repair_plan(artifact_dir: Path, chapter_number: int, failures: list[dict[str, Any]], warnings: list[str]) -> Path:
+    path = artifact_dir / "repair_plan.md"
+    lines = [
+        f"# Repair Plan ch{chapter_number:03d}",
+        "",
+        "## Required Fixes",
+        "",
+    ]
+    if failures:
+        for failure in failures:
+            lines.append(f"- [{failure.get('severity')}] {failure.get('code')}: {failure.get('message')}")
+            lines.append(f"  Next: {repair_action_for_failure(failure, chapter_number)}")
+    else:
+        lines.append("- None")
+    lines.extend(["", "## Creative Rewrite Brief", ""])
+    if failures:
+        for index, failure in enumerate(failures, start=1):
+            guidance = creative_repair_guidance(failure, chapter_number)
+            lines.extend(
+                [
+                    f"### Failure {index}: {guidance['failure_code']}",
+                    "",
+                    f"- Rewrite goal: {guidance['rewrite_goal']}",
+                    f"- Preserve: {', '.join(guidance['preserve']) or 'chapter canon'}",
+                    f"- Delete or reduce: {', '.join(guidance['delete_or_reduce']) or 'none'}",
+                    f"- Add evidence: {', '.join(guidance['add_evidence']) or 'none'}",
+                    f"- Character state adjustment: {', '.join(guidance['character_state_adjustment']) or 'none'}",
+                    f"- Humanizer v2 target: {', '.join(guidance['humanizer_target']) or 'none'}",
+                    "",
+                ]
+            )
+    else:
+        lines.append("- None")
+    lines.extend(["", "## Warnings", ""])
+    lines.extend([f"- {warning}" for warning in warnings] or ["- None"])
+    lines.extend(
+        [
+            "",
+            "## Allowed Next Actions",
+            "",
+            "- repair-chapter",
+            "- rollback-chapter",
+            "",
+        ]
+    )
+    atomic_write_text(path, "\n".join(lines))
+    return path
+
+
+def repair_action_for_failure(failure: dict[str, Any], chapter_number: int) -> str:
+    code = str(failure.get("code") or "")
+    if code in {"meta_pollution", "humanizer_meta_pollution"}:
+        return f"remove prompt/meta residue, then rerun `longform-engine gate-check project.yaml --chapter {chapter_number}`"
+    if code.startswith("humanizer_"):
+        return f"run `longform-engine creative humanize-task project.yaml --chapter {chapter_number}`, submit the candidate, then rerun gate-check"
+    if code == "word_count":
+        return "expand or trim the draft to configured hard_min/hard_max"
+    if code == "chapter_card":
+        return f"run `longform-engine plan-chapter project.yaml --chapter {chapter_number} --overwrite` and align the draft"
+    if code == "pacing":
+        return "adjust event type, cooldown, or A/B/C reveal quota before rerunning gate-check"
+    if code in {"anchor_forbidden_reveal", "premature_resolution", "core_secret_complete_reveal"}:
+        return "remove or downgrade the reveal; if the outline intentionally allows it, run revise-outline and update allowed_reveal_level"
+    if code == "missing_tail_suspense":
+        return "add a concrete unresolved pressure, clue, threat, or changed problem in the final scene"
+    if code == "plot_quota_overflow":
+        return "keep only one A/B/C acceleration lane in this chapter and defer the others"
+    if code == "duplicate_paragraphs":
+        return "rewrite repeated paragraphs into distinct scene beats and rerun gate-check"
+    if code == "style_drift":
+        return "align the draft with 10_bible/style_profiles/current_style_profile.json sentence rhythm, paragraph scale, dialogue density, and POV"
+    if code == "graph_consistency":
+        return "run `longform-engine graph check project.yaml` and resolve canonical graph issues"
+    if code.startswith("semantic_"):
+        return f"inspect `semantic_report.md`, repair motivation/continuity evidence, then rerun `longform-engine gate-check project.yaml --chapter {chapter_number} --semantic`"
+    return f"repair draft and rerun `longform-engine gate-check project.yaml --chapter {chapter_number}`"
+
+
+def markdown_report(title: str, issues: list[str], warnings: list[str]) -> str:
+    lines = [f"# {title}", "", "## Issues", ""]
+    lines.extend([f"- {issue}" for issue in issues] or ["- None"])
+    lines.extend(["", "## Warnings", ""])
+    lines.extend([f"- {warning}" for warning in warnings] or ["- None"])
+    lines.append("")
+    return "\n".join(lines)
+
+
+def semantic_pacing_output_template(chapter_number: int, source: Path, root: Path) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "chapter_number": chapter_number,
+        "source_path": relative_path(root, source),
+        "verdict": "pass",
+        "tier": "medium",
+        "event_types": [],
+        "tail_hook_quality": "weak",
+        "issues": [
+            {
+                "code": "semantic_pacing_example",
+                "severity": "P2",
+                "message": "Concrete pacing risk.",
+                "evidence": "Short quote from the chapter.",
+                "recommendation": "Scene-level repair recommendation.",
+            }
+        ],
+        "warnings": [],
+        "notes": "",
+    }
+
+
+def resolve_semantic_pacing_result_path(root: Path, artifact_dir: Path, file_path: str | Path) -> Path:
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = root / path
+    resolved = path.expanduser().resolve()
+    expected = (artifact_dir / "semantic_pacing_result.json").resolve()
+    if resolved != expected:
+        raise GateError("semantic pacing result must be 50_workbench/gate_artifacts/chNNN/semantic_pacing_result.json.")
+    return resolved
+
+
+def semantic_pacing_gate_items(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    failures: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        severity = str(issue.get("severity") or "").upper()
+        message = str(issue.get("message") or "").strip()
+        code = str(issue.get("code") or "semantic_pacing").strip()
+        if severity in {"P0", "P1"}:
+            failures.append(
+                {
+                    "code": f"semantic_pacing:{code}",
+                    "severity": severity,
+                    "message": message or code,
+                    "evidence": issue.get("evidence", ""),
+                    "repair_action": issue.get("recommendation", "repair pacing and rerun semantic pacing review"),
+                }
+            )
+        elif severity == "P2":
+            warnings.append(f"semantic_pacing:{code}: {message or code}")
+    for warning in payload.get("warnings", []) if isinstance(payload.get("warnings"), list) else []:
+        if isinstance(warning, dict):
+            code = warning.get("code") or "warning"
+            message = warning.get("message") or ""
+            warnings.append(f"semantic_pacing:{code}: {message}")
+        else:
+            warnings.append(f"semantic_pacing:{warning}")
+    if str(payload.get("verdict") or "").lower() == "fail" and not failures:
+        failures.append(
+            {
+                "code": "semantic_pacing:fail_verdict",
+                "severity": "P1",
+                "message": "semantic pacing agent returned fail verdict without a blocking issue.",
+                "repair_action": "rerun semantic pacing task or repair pacing before finalization",
+            }
+        )
+    return failures, warnings
+
+
+def append_semantic_pacing_report(path: Path, payload: dict[str, Any], result_path: str) -> None:
+    existing = safe_read_text(path) if path.exists() else ""
+    marker = "\n## Semantic Pacing Review\n"
+    base = existing.split(marker, 1)[0].rstrip()
+    issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
+    warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+    lines = [
+        base,
+        marker.strip(),
+        "",
+        f"- Result: `{result_path}`",
+        f"- Verdict: {payload.get('verdict', '')}",
+        f"- Tier: {payload.get('tier', '')}",
+        f"- Tail hook quality: {payload.get('tail_hook_quality', '')}",
+        "",
+        "### Issues",
+        "",
+    ]
+    for issue in issues:
+        if isinstance(issue, dict):
+            lines.append(f"- [{issue.get('severity')}] {issue.get('code')}: {issue.get('message')}")
+    if not issues:
+        lines.append("- None")
+    lines.extend(["", "### Warnings", ""])
+    lines.extend([f"- {warning}" for warning in warnings] or ["- None"])
+    lines.extend(["", "Semantic pacing is advisory until applied by CLI.", ""])
+    atomic_write_text(path, "\n".join(lines))
+
+
+def trim_text(text: str, limit: int) -> str:
+    compact = text.strip()
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit].rstrip() + "\n\n...[truncated]"
+
+
+def chapter_text_path(root: Path, chapter_number: int, *, source: str) -> Path | None:
+    directory = root / "40_manuscript" / ("final" if source == "final" else "draft")
+    for name in (f"ch{chapter_number:03d}.md", f"chapter_{chapter_number:03d}.md", f"{chapter_number}.md"):
+        path = directory / name
+        if path.exists():
+            return path
+    return None
+
+
+def gate_artifact_dir(root: Path, chapter_number: int) -> Path:
+    return root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}"
+
+
+def infer_pacing_tier(text: str) -> str:
+    markers = ("决战", "爆发", "杀", "秘密", "真相", "突破", "反杀", "危机")
+    count = sum(text.count(marker) for marker in markers)
+    if count >= 4:
+        return "fast"
+    if count <= 1:
+        return "slow"
+    return "medium"
+
+
+def detect_quota_usage(text: str) -> dict[str, bool]:
+    lower = text.lower()
+    return {
+        "A": any(marker in lower for marker in ("mainline", "core conflict", "old order", "countermove", "主线", "核心矛盾", "旧秩序", "反制", "涓荤嚎", "鏍稿績鐭涚浘")),
+        "B": any(marker in lower for marker in ("relationship", "bond", "alliance", "betrayal", "breakup", "关系", "背叛", "结盟", "决裂", "鍏崇郴", "鑳屽彌", "缁撶洘", "鍐宠")),
+        "C": any(marker in lower for marker in ("secret", "truth", "reveal", "revealed", "complete", "秘密", "真相", "揭露", "全部", "绉樺瘑", "鐪熺浉", "鎻湶", "鍏ㄩ儴")),
+    }
+
+    return {
+        "A": any(marker in text for marker in ("主线", "核心矛盾", "旧秩序", "反制")),
+        "B": any(marker in text for marker in ("关系", "背叛", "结盟", "决裂")),
+        "C": any(marker in text for marker in ("秘密", "真相", "揭露", "全部")),
+    }
+
+
+def max_severity(failures: list[dict[str, Any]]) -> str:
+    order = {"P0": 3, "P1": 2, "P2": 1}
+    if not failures:
+        return "PASS"
+    return max((failure.get("severity", "P2") for failure in failures), key=lambda item: order.get(item, 0))
+
+
+def load_json(path: Path, *, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8").lstrip("\ufeff"))
+    except json.JSONDecodeError:
+        return default
+
+
+def normalize_records(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        for key in ("anchors", "items", "records", "data"):
+            if isinstance(value.get(key), list):
+                return value[key]
+        return list(value.values())
+    return []
+
+
+def normalize_strings(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, dict):
+        return [str(item) for item in value.values() if str(item).strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value if str(item).strip()]
+    return [str(value)]
+
+
+def dedupe_strings(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
+def write_json(path: Path, payload: Any) -> None:
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
+def safe_read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").lstrip("\ufeff")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="utf-8", errors="ignore").lstrip("\ufeff")
+
+
+def estimate_words(text: str) -> int:
+    return len(re.sub(r"\s+", "", text))
+
+
+def relative_path(root: Path, path: Path) -> str:
+    try:
+        return str(path.relative_to(root)).replace("\\", "/")
+    except ValueError:
+        return str(path)
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()

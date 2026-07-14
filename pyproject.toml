@@ -1,0 +1,28 @@
+[project]
+name = "longform-novel-engine"
+version = "0.1.0"
+description = "Engineering-first AI engine for million-word Chinese longform novels."
+requires-python = ">=3.10"
+dependencies = [
+  "PyYAML>=6.0.1",
+]
+
+[project.optional-dependencies]
+semantic = [
+  "huggingface_hub>=0.24",
+  "sentence-transformers>=3.0",
+]
+
+[project.scripts]
+longform-engine = "longform_engine.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

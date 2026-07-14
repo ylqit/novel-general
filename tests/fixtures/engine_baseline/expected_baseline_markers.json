@@ -1,0 +1,23 @@
+{
+  "rag_context_sections": [
+    "## Retrieval Hits",
+    "## Relationship Snippets",
+    "## Graph Facts",
+    "## Unresolved Threads",
+    "## Forbidden Repeats"
+  ],
+  "graph_suggestion_kinds": [
+    "mention",
+    "relationship",
+    "event"
+  ],
+  "gate_failure_codes": [
+    "premature_resolution",
+    "anchor_forbidden_reveal"
+  ],
+  "revise_outline_artifacts": [
+    "outline_anchors.json",
+    "stale.json",
+    "stale_indexes.json"
+  ]
+}

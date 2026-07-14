@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Runtime output
+novels/
+70_runtime/cache/
+70_runtime/locks/
+70_runtime/tmp/
+70_runtime/snapshots/
+70_runtime/db/*.sqlite
+70_runtime/db/*.sqlite-*
+70_runtime/models/
+novels/*/05_rag/vector_index/
+novels/*/06_runtime/cache/
+novels/*/06_runtime/locks/
+novels/*/06_runtime/tmp/
+novels/*/06_runtime/snapshots/*.zip
+novels/*/60_rag/vector_index/
+novels/*/70_runtime/cache/
+novels/*/70_runtime/locks/
+novels/*/70_runtime/tmp/
+novels/*/70_runtime/snapshots/
+novels/*/70_runtime/db/*.sqlite
+novels/*/70_runtime/db/*.sqlite-*
+novels/*/70_runtime/models/
+
+# Local secrets and provider configs
+.env
+.env.*
+*.local.yaml

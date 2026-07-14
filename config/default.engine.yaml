@@ -1,0 +1,213 @@
+schema_version: 1
+
+engine:
+  name: "longform-novel-engine"
+  mode: "local_filesystem_primary"
+
+project:
+  slug: "untitled_longform"
+  title: "未命名长篇小说"
+  root_dir: "novels/untitled_longform"
+  language: "zh-CN"
+  timezone: "Asia/Hong_Kong"
+
+novel:
+  target_platform: "qidian"
+  genre: "玄幻"
+  audience: "中文长篇网文读者"
+  core_promise: "以稳定主线、阶段爽点和持续伏笔回收支撑长篇连载。"
+  main_question: "主角如何在既有秩序中完成成长并改变自身命运？"
+  ending_direction: "主线矛盾完成收束，主角付出明确代价并兑现读者承诺。"
+
+length:
+  total_chapters: 500
+  target_total_words: 1500000
+  volume_count: 6
+  new_book_phase_chapters: 30
+  ending_phase_chapters: 60
+  chapter_word_count:
+    target: 3000
+    min: 2400
+    max: 3600
+    hard_min: 2000
+    hard_max: 4200
+
+models:
+  default_provider: "openai_compatible"
+  providers:
+    openai_compatible:
+      base_url_env: "OPENAI_BASE_URL"
+      api_key_env: "OPENAI_API_KEY"
+      chat_model: "gpt-5"
+      reasoning_model: "gpt-5"
+      embedding_model: "text-embedding-3-large"
+  task_model_policy:
+    planning: "reasoning_model"
+    drafting: "chat_model"
+    gate_review: "reasoning_model"
+    memory_extraction: "reasoning_model"
+    embedding: "embedding_model"
+
+workflow:
+  require_previous_gate_passed: true
+  require_beat_before_draft: true
+  require_research_promote_before_canon: true
+  require_snapshot_before_mutation: true
+  default_pipeline:
+    - "load_config"
+    - "acquire_project_lock"
+    - "verify_previous_gate"
+    - "create_snapshot"
+    - "query_rag"
+    - "load_graph_state"
+    - "make_chapter_card"
+    - "generate_beat_sheet"
+    - "draft_chapter"
+    - "run_gates"
+    - "finalize_or_repair"
+    - "update_memory"
+    - "sync_indexes"
+    - "release_project_lock"
+
+writing:
+  mode: "agent_skill"
+  agent:
+    task_dir: "50_workbench/writing_tasks"
+    draft_dir: "50_workbench/agent_drafts"
+    require_submit_command: true
+    default_agent: "codex"
+  api:
+    enabled: false
+  template_dry_run:
+    enabled: false
+
+storage:
+  layout_version: 2
+  filesystem_primary: true
+  atomic_writes: true
+  runtime_database: "70_runtime/db/longform_engine.sqlite"
+  directories:
+    governance: "00_governance"
+    bible: "10_bible"
+    outline: "20_outline"
+    state: "30_state"
+    manuscript: "40_manuscript"
+    workbench: "50_workbench"
+    rag: "60_rag"
+    runtime: "70_runtime"
+    exports: "80_exports"
+
+rag:
+  enabled: true
+  backend: "sqlite_hybrid"
+  candidate_pool_size: 40
+  top_k: 12
+  small_context_top_k: 4
+  semantic_weight: 0.55
+  keyword_weight: 0.25
+  metadata_weight: 0.20
+  embedding:
+    enabled: true
+    profile: "bge-m3"
+    model: "BAAI/bge-m3"
+    cache_dir: "70_runtime/models"
+  reranker:
+    enabled: true
+    profile: "bge-m3"
+    model: "BAAI/bge-reranker-v2-m3"
+    candidate_limit: 24
+  retrieval:
+    mode: "hybrid"
+    fusion: "rrf"
+  write_next_plot_context: true
+  query_cache: true
+
+semantic:
+  enabled: true
+  profile: "bge-m3"
+  fallback_profile: "local-hash"
+  models_dir: "70_runtime/models"
+  allow_network_download: true
+  require_real_model: true
+  allow_fallback: false
+  vector_store:
+    backend: "local_sqlite"
+    url: ""
+    collection: "longform_vectors"
+    api_key_env: "LONGFORM_VECTOR_API_KEY"
+    metric: "cosine"
+    dim: 1024
+
+memory:
+  backend: "filesystem"
+  scene_dir: "60_rag/memory/scenes"
+  chapter_dir: "60_rag/memory/chapters"
+  arc_dir: "60_rag/memory/arcs"
+  tcs_dir: "30_state/tcs"
+  semantic_task_dir: "50_workbench/memory_tasks"
+
+graph:
+  enabled: true
+  source_file: "30_state/story_graph.json"
+  mirror_to_sqlite: true
+  entity_types:
+    - "character"
+    - "location"
+    - "organization"
+    - "item"
+    - "ability"
+    - "secret"
+    - "foreshadowing"
+    - "event"
+
+gates:
+  block_on_previous_failure: true
+  artifact_dir: "50_workbench/gate_artifacts"
+  required_files:
+    - "gate_result.json"
+    - "consistency_report.md"
+    - "pacing_review.md"
+    - "style_review.md"
+    - "repair_plan.md"
+  p0_meta_pollution_patterns:
+    - "TODO"
+    - "写作说明"
+    - "作者按"
+    - "角色定位"
+    - "[说明]"
+  allowed_actions_after_failure:
+    - "repair_chapter"
+    - "rollback_chapter"
+
+pacing:
+  event_quota_window_chapters: 5
+  fast_chapter_cooldown: 1
+  max_major_quota_triggers_per_chapter: 1
+  quota_types:
+    A: "主线矛盾实质推进"
+    B: "主要关系决定性升级"
+    C: "核心秘密完整揭露"
+
+research:
+  enabled: true
+  web_search_enabled: true
+  default_ingestion: "reviewed_inbox"
+  inbox_dir: "50_workbench/research_inbox"
+  impact_report_dir: "50_workbench/impact_reports"
+  canon_file: "10_bible/research_canon.jsonl"
+  impact_ledger: "20_outline/research_impact_ledger.jsonl"
+  search_provider: "zh_wikipedia"
+  search_limit: 5
+  network_timeout_seconds: 8
+  promote_requires_approval: true
+
+revision:
+  default_strategy: "transaction_branch"
+  keep_detached_drafts: true
+  mark_indexes_stale_after_rollback: true
+  snapshot_before_rollback: true
+
+codex:
+  default_workflow: "command_driven"
+  require_human_confirmation_per_chapter: false
+  pause_on_gate_failure: true

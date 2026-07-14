@@ -1,0 +1,2824 @@
+"""Command line interface for longform-novel-engine."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any
+
+from longform_engine.agent_tasks import (
+    build_manifest,
+    list_manifests,
+    load_manifest,
+    status_summary,
+    validate_manifest_strict,
+    write_manifest,
+)
+from longform_engine.config import ConfigDocument, ConfigError, load_project_config
+from longform_engine.creative import (
+    expand_check,
+    expand_task,
+    humanize_check,
+    humanize_task,
+    init_creative_brief,
+    style_extract,
+    style_profile,
+    validate_creative_brief,
+)
+from longform_engine.db import init_database, query_table, rebuild_database, status as db_status, sync_database
+from longform_engine.editorial import (
+    editorial_aggregate,
+    editorial_batch_review,
+    editorial_need_human,
+    editorial_review,
+    editorial_status,
+    editorial_submit_review,
+)
+from longform_engine.gates import (
+    GateError,
+    gate_check,
+    pacing_review,
+    record_waiver,
+    repair_plan,
+    semantic_pacing_apply,
+    semantic_pacing_task,
+    semantic_pacing_validate,
+)
+from longform_engine.graph import (
+    check_graph,
+    semantic_graph_apply,
+    semantic_graph_task,
+    semantic_graph_validate,
+    retrieve_graph,
+    update_graph,
+    validate_graph,
+)
+from longform_engine.memory import (
+    apply_semantic_memory,
+    build_tcs,
+    build_tcs_transition,
+    character_apply,
+    character_check,
+    character_task,
+    character_validate,
+    compress_memory,
+    semantic_task,
+    semantic_validate,
+    validate_tcs,
+    validate_memory,
+)
+from longform_engine.models import install_model_profile, list_profiles, verify_models
+from longform_engine.orchestration import (
+    auto_write_plan,
+    auto_write_progress,
+    auto_write_report,
+    auto_write_run,
+    WorkflowError,
+    batch_write,
+    continue_write,
+    finalize_chapter,
+    generate_beat_sheet,
+    open_book,
+    plan_chapter,
+    submit_agent_draft,
+)
+from longform_engine.planning import revise_outline
+from longform_engine.production import agent_task_brief, production_board, production_loop, production_next, production_status
+from longform_engine.rag import build_chunks, build_context, query as rag_query
+from longform_engine.research import (
+    detect_knowledge_gaps,
+    ResearchError,
+    add_research,
+    impact_analyze,
+    promote_research,
+    search_research,
+)
+from longform_engine.revision import (
+    RevisionError,
+    create_revision_branch,
+    project_status,
+    rollback,
+    rollback_impact,
+)
+from longform_engine.storage import atomic_write_text, acquire_project_lock, init_project, resolve_project_root, snapshot_project
+from longform_engine.vectorstore import healthcheck as vector_healthcheck, rebuild_from_files as vector_rebuild
+
+
+SCALE_PRESETS: dict[str, dict[str, Any]] = {
+    "million": {
+        "label": "百万字",
+        "length": {
+            "total_chapters": 330,
+            "target_total_words": 1_000_000,
+            "volume_count": 5,
+            "chapter_word_count": {
+                "target": 3000,
+                "min": 2400,
+                "max": 3600,
+            },
+        },
+    },
+    "standard": {
+        "label": "标准长篇",
+        "length": {
+            "total_chapters": 500,
+            "target_total_words": 1_500_000,
+            "volume_count": 6,
+            "chapter_word_count": {
+                "target": 3000,
+                "min": 2400,
+                "max": 3600,
+            },
+        },
+    },
+    "extended": {
+        "label": "超长篇",
+        "length": {
+            "total_chapters": 650,
+            "target_total_words": 2_000_000,
+            "volume_count": 8,
+            "chapter_word_count": {
+                "target": 3000,
+                "min": 2400,
+                "max": 3600,
+            },
+        },
+    },
+}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="longform-engine",
+        description="Engineering-first workflow engine for million-word Chinese longform novels.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    validate = subparsers.add_parser("validate-config", help="Validate a project config or template.")
+    validate.add_argument("config", nargs="?", help="Path to project.yaml.")
+    validate.add_argument("--template", help="Template name, for example qidian-longform.")
+    add_scale_arguments(validate)
+    validate.add_argument("--explain", action="store_true", help="Print config source precedence.")
+    validate.set_defaults(func=cmd_validate_config)
+
+    init = subparsers.add_parser("init-project", help="Create a novel project layout.")
+    init.add_argument("config", nargs="?", help="Path to project.yaml.")
+    init.add_argument("--template", default=None, help="Template name, for example qidian-longform.")
+    init.add_argument("--output", help="Target project directory.")
+    init.add_argument("--interactive", action="store_true", help="Run the project creation wizard.")
+    add_scale_arguments(init)
+    init.add_argument("--force", action="store_true", help="Overwrite seed files if they already exist.")
+    init.set_defaults(func=cmd_init_project)
+
+    init_novel = subparsers.add_parser("init-novel", help="Backward-compatible alias for init-project.")
+    init_novel.add_argument("config", nargs="?", help="Path to project.yaml.")
+    init_novel.add_argument("--template", default=None, help="Template name, for example qidian-longform.")
+    init_novel.add_argument("--output", help="Target project directory.")
+    init_novel.add_argument("--interactive", action="store_true", help="Run the project creation wizard.")
+    add_scale_arguments(init_novel)
+    init_novel.add_argument("--force", action="store_true", help="Overwrite seed files if they already exist.")
+    init_novel.set_defaults(func=cmd_init_project)
+
+    status = subparsers.add_parser("status", help="Show project bootstrap status.")
+    status.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    status.set_defaults(func=cmd_status)
+
+    agent_task = subparsers.add_parser("agent-task", help="Inspect AgentTaskManifest v1 task packages.")
+    agent_task_subparsers = agent_task.add_subparsers(dest="agent_task_command", required=True)
+
+    agent_task_list = agent_task_subparsers.add_parser("list", help="List indexed agent task manifests.")
+    agent_task_list.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    agent_task_list.add_argument("--chapter", type=int, help="Filter by chapter number.")
+    agent_task_list.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    agent_task_list.set_defaults(func=cmd_agent_task_list)
+
+    agent_task_status = agent_task_subparsers.add_parser("status", help="Summarize agent task status.")
+    agent_task_status.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    agent_task_status.add_argument("--chapter", type=int, help="Filter by chapter number.")
+    agent_task_status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    agent_task_status.set_defaults(func=cmd_agent_task_status)
+
+    agent_task_show = agent_task_subparsers.add_parser("show", help="Show one manifest by task_id or path.")
+    agent_task_show.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    agent_task_show.add_argument("task", help="Task id or manifest path.")
+    agent_task_show.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    agent_task_show.set_defaults(func=cmd_agent_task_show)
+
+    agent_task_brief_cmd = agent_task_subparsers.add_parser("brief", help="Render one manifest as an Agent work order.")
+    agent_task_brief_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    agent_task_brief_cmd.add_argument("task", help="Task id or manifest path.")
+    agent_task_brief_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    agent_task_brief_cmd.set_defaults(func=cmd_agent_task_brief)
+
+    agent_task_validate = agent_task_subparsers.add_parser("validate", help="Validate one AgentTaskManifest v1 contract.")
+    agent_task_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    agent_task_validate.add_argument("task", help="Task id or manifest path.")
+    agent_task_validate.add_argument("--strict", action="store_true", help="Check task type, lanes, schemas, commands, and hard boundaries.")
+    agent_task_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    agent_task_validate.set_defaults(func=cmd_agent_task_validate)
+
+    production = subparsers.add_parser("production", help="Inspect production experience orchestration state.")
+    production_subparsers = production.add_subparsers(dest="production_command", required=True)
+
+    production_status_cmd = production_subparsers.add_parser("status", help="Show stable GUI/API production status.")
+    production_status_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    production_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    production_status_cmd.set_defaults(func=cmd_production_status)
+
+    production_next_cmd = production_subparsers.add_parser("next", help="Show the highest-priority safe next action.")
+    production_next_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    production_next_cmd.add_argument("--editorial", action="store_true", help="Include editorial role details in text output.")
+    production_next_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    production_next_cmd.set_defaults(func=cmd_production_next)
+
+    production_board_cmd = production_subparsers.add_parser("board", help="Show a chapter production board.")
+    production_board_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    production_board_cmd.add_argument("--from", dest="from_chapter", type=int, help="First chapter to show.")
+    production_board_cmd.add_argument("--to", dest="to_chapter", type=int, help="Last chapter to show.")
+    production_board_cmd.add_argument("--editorial", action="store_true", help="Expand editorial role fan-out/fan-in details in text output.")
+    production_board_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    production_board_cmd.set_defaults(func=cmd_production_board)
+
+    production_loop_cmd = production_subparsers.add_parser("loop", help="Advance deterministic production steps until the next blocker.")
+    production_loop_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    production_loop_cmd.add_argument("--max-steps", type=positive_int_arg, default=10, help="Maximum deterministic steps to execute.")
+    production_loop_cmd.add_argument("--no-apply", action="store_true", default=True, help="Keep canonical apply/finalize disabled (default).")
+    production_loop_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    production_loop_cmd.set_defaults(func=cmd_production_loop)
+
+    db = subparsers.add_parser("db", help="Manage the derived SQLite index.")
+    db_subparsers = db.add_subparsers(dest="db_command", required=True)
+
+    db_init = db_subparsers.add_parser("init", help="Create SQLite schema.")
+    db_init.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    db_init.set_defaults(func=cmd_db_init)
+
+    db_sync = db_subparsers.add_parser("sync", help="Sync derived SQLite rows from files.")
+    db_sync.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    db_sync.set_defaults(func=cmd_db_sync)
+
+    db_rebuild = db_subparsers.add_parser("rebuild", help="Delete and rebuild SQLite from files.")
+    db_rebuild.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    db_rebuild.set_defaults(func=cmd_db_rebuild)
+
+    db_status_cmd = db_subparsers.add_parser("status", help="Show SQLite index status.")
+    db_status_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    db_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    db_status_cmd.set_defaults(func=cmd_db_status)
+
+    db_query = db_subparsers.add_parser("query", help="Query a whitelisted SQLite table.")
+    db_query.add_argument("config", help="Path to project.yaml.")
+    db_query.add_argument("table", help="Table name, for example schema_meta.")
+    db_query.add_argument("--limit", type=int, default=20, help="Maximum rows to return.")
+    db_query.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    db_query.set_defaults(func=cmd_db_query)
+
+    models = subparsers.add_parser("models", help="Manage optional local semantic models.")
+    models_subparsers = models.add_subparsers(dest="models_command", required=True)
+
+    models_list = models_subparsers.add_parser("list", help="List supported semantic model profiles.")
+    models_list.set_defaults(func=cmd_models_list)
+
+    models_install = models_subparsers.add_parser("install", help="Prepare or download a semantic model profile.")
+    models_install.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    models_install.add_argument("--profile", default="bge-m3", choices=["bge-m3", "qwen3", "local-hash"], help="Model profile.")
+    models_install.add_argument("--download", action="store_true", help="Explicitly download Hugging Face models.")
+    models_install.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    models_install.set_defaults(func=cmd_models_install)
+
+    models_verify = models_subparsers.add_parser("verify", help="Verify semantic model cache readiness.")
+    models_verify.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    models_verify.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    models_verify.set_defaults(func=cmd_models_verify)
+
+    vector_store = subparsers.add_parser("vector-store", help="Verify and rebuild pluggable vector indexes.")
+    vector_subparsers = vector_store.add_subparsers(dest="vector_command", required=True)
+
+    vector_verify = vector_subparsers.add_parser("verify", help="Verify vector store backend configuration.")
+    vector_verify.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    vector_verify.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    vector_verify.set_defaults(func=cmd_vector_store_verify)
+
+    vector_rebuild_cmd = vector_subparsers.add_parser("rebuild", help="Rebuild vector store from embedding file facts.")
+    vector_rebuild_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    vector_rebuild_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    vector_rebuild_cmd.set_defaults(func=cmd_vector_store_rebuild)
+
+    creative = subparsers.add_parser("creative", help="Manage creative brief, style playbooks, and Humanizer v2 tasks.")
+    creative_subparsers = creative.add_subparsers(dest="creative_command", required=True)
+
+    creative_brief = creative_subparsers.add_parser("brief", help="Initialize or validate the canonical creative brief.")
+    creative_brief.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    creative_brief.add_argument("--init", action="store_true", help="Create or refresh 10_bible/creative_brief.json.")
+    creative_brief.add_argument("--validate", action="store_true", help="Validate the existing creative brief.")
+    creative_brief.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    creative_brief.set_defaults(func=cmd_creative_brief)
+
+    creative_style = creative_subparsers.add_parser("style-profile", help="Write a genre style profile matrix.")
+    creative_style.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    creative_style.add_argument("--genre", required=True, help="Genre label, for example xuanhuan or suspense.")
+    creative_style.add_argument("--target-audience", required=True, help="Target audience for the style profile.")
+    creative_style.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    creative_style.set_defaults(func=cmd_creative_style_profile)
+
+    style_extract_cmd = creative_subparsers.add_parser("style-extract", help="Extract a style profile from sample chapters.")
+    style_extract_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    style_extract_cmd.add_argument("--file", dest="sample_files", action="append", help="Sample chapter file. Repeat for multiple samples.")
+    style_extract_cmd.add_argument("--name", default="sample", help="Profile name.")
+    style_extract_cmd.add_argument("--source-project", default="", help="Project or authorization source for the sample.")
+    style_extract_cmd.add_argument("--library", help="Optional existing style profile JSON to import or annotate.")
+    style_extract_cmd.add_argument("--no-activate", action="store_true", help="Write the profile without making it current.")
+    style_extract_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    style_extract_cmd.set_defaults(func=cmd_creative_style_extract)
+
+    humanize_task_cmd = creative_subparsers.add_parser("humanize-task", help="Generate a Humanizer v2 workbench task.")
+    humanize_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    humanize_task_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    humanize_task_cmd.add_argument("--source", choices=["draft", "repair-candidate"], default="draft", help="Source lane.")
+    humanize_task_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    humanize_task_cmd.set_defaults(func=cmd_creative_humanize_task)
+
+    humanize_check_cmd = creative_subparsers.add_parser("humanize-check", help="Check a Humanizer v2 candidate.")
+    humanize_check_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    humanize_check_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    humanize_check_cmd.add_argument("--file", required=True, help="Candidate file to check.")
+    humanize_check_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    humanize_check_cmd.set_defaults(func=cmd_creative_humanize_check)
+
+    expand_task_cmd = creative_subparsers.add_parser("expand-task", help="Generate a content expansion workbench task.")
+    expand_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    expand_task_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    expand_task_cmd.add_argument(
+        "--source",
+        choices=["draft", "repair-candidate", "agent-draft"],
+        default="draft",
+        help="Source lane.",
+    )
+    expand_task_cmd.add_argument(
+        "--type",
+        dest="expansion_types",
+        choices=["scene", "dialogue", "psychology", "action", "transition"],
+        action="append",
+        help="Expansion type to require. Repeat for multiple types; omitted means all.",
+    )
+    expand_task_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    expand_task_cmd.set_defaults(func=cmd_creative_expand_task)
+
+    expand_check_cmd = creative_subparsers.add_parser("expand-check", help="Check a content expansion candidate.")
+    expand_check_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    expand_check_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    expand_check_cmd.add_argument("--file", required=True, help="Candidate file to check.")
+    expand_check_cmd.add_argument(
+        "--type",
+        dest="expansion_types",
+        choices=["scene", "dialogue", "psychology", "action", "transition"],
+        action="append",
+        help="Expansion type to require. Repeat for multiple types; omitted means all.",
+    )
+    expand_check_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    expand_check_cmd.set_defaults(func=cmd_creative_expand_check)
+
+    rag = subparsers.add_parser("rag", help="Build and query local RAG context.")
+    rag_subparsers = rag.add_subparsers(dest="rag_command", required=True)
+
+    rag_build = rag_subparsers.add_parser("build", help="Build paragraph-aware chunks from final manuscripts.")
+    rag_build.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    rag_build.add_argument("--max-chars", type=int, help="Maximum characters per chunk.")
+    rag_build.add_argument("--overlap-chars", type=int, help="Trailing overlap characters between chunks.")
+    rag_build.add_argument("--with-embeddings", action="store_true", help="Build semantic embedding file/index for canonical sources.")
+    rag_build.set_defaults(func=cmd_rag_build)
+
+    rag_query_cmd = rag_subparsers.add_parser("query", help="Query SQLite hybrid RAG chunks.")
+    rag_query_cmd.add_argument("config", help="Path to project.yaml.")
+    rag_query_cmd.add_argument("query", help="Search query.")
+    rag_query_cmd.add_argument("--top-k", type=int, help="Number of hits to return.")
+    rag_query_cmd.add_argument("--candidate-pool", type=int, help="Candidate pool size.")
+    rag_query_cmd.add_argument("--chapter", type=int, help="Target/current chapter for graph/TCS filtering.")
+    rag_query_cmd.add_argument("--semantic", action="store_true", help="Enable semantic/memory retrieval fallback.")
+    rag_query_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    rag_query_cmd.set_defaults(func=cmd_rag_query)
+
+    rag_context = rag_subparsers.add_parser("context", help="Write next_plot_context.md.")
+    rag_context.add_argument("config", help="Path to project.yaml.")
+    rag_context.add_argument("--chapter", type=int, help="Target chapter number.")
+    rag_context.add_argument("--query", help="Override context query.")
+    rag_context.add_argument("--top-k", type=int, help="Number of hits to include.")
+    rag_context.add_argument("--semantic", action="store_true", help="Enable semantic/memory retrieval fallback.")
+    rag_context.set_defaults(func=cmd_rag_context)
+
+    graph = subparsers.add_parser("graph", help="Validate, update, and check the story graph.")
+    graph_subparsers = graph.add_subparsers(dest="graph_command", required=True)
+
+    graph_validate = graph_subparsers.add_parser("validate", help="Validate story_graph.json.")
+    graph_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    graph_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    graph_validate.set_defaults(func=cmd_graph_validate)
+
+    graph_update = graph_subparsers.add_parser("update", help="Update story graph from a finalized chapter.")
+    graph_update.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    graph_update.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
+    graph_update.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    graph_update.set_defaults(func=cmd_graph_update)
+
+    graph_check = graph_subparsers.add_parser("check", help="Write graph conflict report.")
+    graph_check.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    graph_check.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    graph_check.set_defaults(func=cmd_graph_check)
+
+    graph_retrieve = graph_subparsers.add_parser("retrieve", help="Run local graph traversal retrieval.")
+    graph_retrieve.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    graph_retrieve.add_argument("--query", required=True, help="Graph retrieval query.")
+    graph_retrieve.add_argument("--chapter", type=int, required=True, help="Target/current chapter number.")
+    graph_retrieve.add_argument("--top-k", type=int, default=12, help="Maximum graph hits.")
+    graph_retrieve.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    graph_retrieve.set_defaults(func=cmd_graph_retrieve)
+
+    graph_semantic_task = graph_subparsers.add_parser("semantic-task", help="Generate a Codex semantic graph extraction task.")
+    graph_semantic_task.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    graph_semantic_task.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
+    graph_semantic_task.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    graph_semantic_task.set_defaults(func=cmd_graph_semantic_task)
+
+    graph_semantic_validate = graph_subparsers.add_parser("semantic-validate", help="Validate semantic graph update JSON.")
+    graph_semantic_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    graph_semantic_validate.add_argument("--chapter", type=int, required=True, help="Chapter number.")
+    graph_semantic_validate.add_argument("--file", required=True, help="Semantic graph JSON under 50_workbench/.")
+    graph_semantic_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    graph_semantic_validate.set_defaults(func=cmd_graph_semantic_validate)
+
+    graph_semantic_apply = graph_subparsers.add_parser("semantic-apply", help="Apply validated semantic graph updates.")
+    graph_semantic_apply.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    graph_semantic_apply.add_argument("--chapter", type=int, required=True, help="Chapter number.")
+    graph_semantic_apply.add_argument("--file", required=True, help="Validated semantic graph JSON under 50_workbench/.")
+    graph_semantic_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    graph_semantic_apply.set_defaults(func=cmd_graph_semantic_apply)
+
+    memory = subparsers.add_parser("memory", help="Validate narrative memory and Codex semantic extraction tasks.")
+    memory_subparsers = memory.add_subparsers(dest="memory_command", required=True)
+
+    memory_validate = memory_subparsers.add_parser("validate", help="Validate canonical Memory v2 files.")
+    memory_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    memory_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    memory_validate.set_defaults(func=cmd_memory_validate)
+
+    memory_task = memory_subparsers.add_parser("semantic-task", help="Generate a Codex semantic extraction task.")
+    memory_task.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    memory_task.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
+    memory_task.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    memory_task.set_defaults(func=cmd_memory_semantic_task)
+
+    memory_semantic_validate = memory_subparsers.add_parser("semantic-validate", help="Validate a Codex semantic extraction JSON file.")
+    memory_semantic_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    memory_semantic_validate.add_argument("--chapter", type=int, required=True, help="Chapter number.")
+    memory_semantic_validate.add_argument("--file", required=True, help="Semantic extraction JSON under 50_workbench/.")
+    memory_semantic_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    memory_semantic_validate.set_defaults(func=cmd_memory_semantic_validate)
+
+    memory_semantic_apply = memory_subparsers.add_parser("semantic-apply", help="Apply validated semantic memory to canonical memory files.")
+    memory_semantic_apply.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    memory_semantic_apply.add_argument("--chapter", type=int, required=True, help="Chapter number.")
+    memory_semantic_apply.add_argument("--file", required=True, help="Validated semantic extraction JSON under 50_workbench/.")
+    memory_semantic_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    memory_semantic_apply.set_defaults(func=cmd_memory_semantic_apply)
+
+    memory_tcs = memory_subparsers.add_parser("tcs", help="Build a Temporal Context State snapshot.")
+    memory_tcs.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    memory_tcs.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    memory_tcs.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    memory_tcs.set_defaults(func=cmd_memory_tcs)
+
+    memory_compress = memory_subparsers.add_parser("compress", help="Compress scene/chapter/arc memory into canonical memory.")
+    memory_compress.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    memory_compress.add_argument("--scope", required=True, choices=["chapter", "arc", "volume"], help="Compression scope.")
+    memory_compress.add_argument("--from-chapter", type=int, required=True, help="First chapter in range.")
+    memory_compress.add_argument("--to-chapter", type=int, required=True, help="Last chapter in range.")
+    memory_compress.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    memory_compress.set_defaults(func=cmd_memory_compress)
+
+    character_task_cmd = memory_subparsers.add_parser("character-task", help="Generate a Codex character memory task.")
+    character_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    character_task_cmd.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
+    character_task_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    character_task_cmd.set_defaults(func=cmd_memory_character_task)
+
+    character_validate_cmd = memory_subparsers.add_parser("character-validate", help="Validate Character Memory Card JSON.")
+    character_validate_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    character_validate_cmd.add_argument("--chapter", type=int, required=True, help="Chapter number.")
+    character_validate_cmd.add_argument("--file", required=True, help="Character memory JSON under 50_workbench/.")
+    character_validate_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    character_validate_cmd.set_defaults(func=cmd_memory_character_validate)
+
+    character_apply_cmd = memory_subparsers.add_parser("character-apply", help="Apply validated Character Memory Cards.")
+    character_apply_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    character_apply_cmd.add_argument("--chapter", type=int, required=True, help="Chapter number.")
+    character_apply_cmd.add_argument("--file", required=True, help="Validated character memory JSON under 50_workbench/.")
+    character_apply_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    character_apply_cmd.set_defaults(func=cmd_memory_character_apply)
+
+    character_check_cmd = memory_subparsers.add_parser("character-check", help="Check draft against Character Memory Cards.")
+    character_check_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    character_check_cmd.add_argument("--chapter", type=int, required=True, help="Chapter number.")
+    character_check_cmd.add_argument("--file", required=True, help="Draft/candidate file under project root.")
+    character_check_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    character_check_cmd.set_defaults(func=cmd_memory_character_check)
+
+    tcs_transition_cmd = memory_subparsers.add_parser("tcs-transition", help="Advance TCS state machine from a finalized chapter.")
+    tcs_transition_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    tcs_transition_cmd.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
+    tcs_transition_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    tcs_transition_cmd.set_defaults(func=cmd_memory_tcs_transition)
+
+    tcs_validate_cmd = memory_subparsers.add_parser("tcs-validate", help="Validate TCS state for future-fact leakage.")
+    tcs_validate_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    tcs_validate_cmd.add_argument("--chapter", type=int, required=True, help="TCS chapter number.")
+    tcs_validate_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    tcs_validate_cmd.set_defaults(func=cmd_memory_tcs_validate)
+
+    open_book_cmd = subparsers.add_parser("open-book", help="Confirm five opening items and write governance files.")
+    open_book_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    open_book_cmd.add_argument("--target-audience", help="Confirmed target reader.")
+    open_book_cmd.add_argument("--writing-style", help="Confirmed writing style.")
+    open_book_cmd.add_argument("--forbidden-zone", action="append", help="Confirmed forbidden reader experience. Can repeat.")
+    open_book_cmd.add_argument("--automation-level", help="Confirmed automation level.")
+    open_book_cmd.add_argument("--target-scale", help="Confirmed target scale.")
+    open_book_cmd.add_argument("--interactive", action="store_true", help="Create a project first when project.yaml is missing.")
+    open_book_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    open_book_cmd.set_defaults(func=cmd_open_book)
+
+    plan = subparsers.add_parser("plan-chapter", help="Generate a chapter card.")
+    plan.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    plan.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    plan.add_argument("--overwrite", action="store_true", help="Overwrite existing chapter card.")
+    plan.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    plan.set_defaults(func=cmd_plan_chapter)
+
+    beat = subparsers.add_parser("beat", help="Generate a beat sheet from a chapter card.")
+    beat.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    beat.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    beat.add_argument("--overwrite", action="store_true", help="Overwrite existing beat sheet.")
+    beat.add_argument("--auto-plan", action="store_true", help="Create the chapter card if missing.")
+    beat.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    beat.set_defaults(func=cmd_beat)
+
+    continue_cmd = subparsers.add_parser("continue-write", help="Generate the next chapter writing task and draft workflow artifacts.")
+    continue_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    continue_cmd.add_argument("--chapter", type=int, help="Target chapter number. Defaults to next chapter.")
+    continue_cmd.add_argument("--overwrite", action="store_true", help="Overwrite generated draft/card/beat artifacts.")
+    continue_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    continue_cmd.set_defaults(func=cmd_continue_write)
+
+    batch = subparsers.add_parser("batch-write", help="Safely schedule multiple chapter continuations.")
+    batch.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    batch.add_argument("--chapters", type=int, required=True, help="Number of chapters to attempt.")
+    batch.add_argument("--stop-on-gate-failure", action="store_true", help="Stop at first blocking gate failure.")
+    batch.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    batch.set_defaults(func=cmd_batch_write)
+
+    auto_write = subparsers.add_parser("auto-write", help="Plan, run, and inspect the persistent auto-write scheduler.")
+    auto_subparsers = auto_write.add_subparsers(dest="auto_command", required=True)
+
+    auto_plan = auto_subparsers.add_parser("plan", help="Create or inspect the auto-write plan.")
+    auto_plan.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    auto_plan.add_argument("--target-chapters", type=positive_int_arg, help="Final chapter target for this run.")
+    auto_plan.add_argument("--target-words", type=positive_int_arg, help="Final word target for this run.")
+    auto_plan.add_argument("--start-chapter", type=positive_int_arg, help="Chapter where the scheduler should start.")
+    auto_plan.add_argument("--overwrite", action="store_true", help="Reset an existing auto-write state file.")
+    auto_plan.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    auto_plan.set_defaults(func=cmd_auto_write_plan)
+
+    auto_run = auto_subparsers.add_parser("run", help="Run auto-write until the next safe pause.")
+    auto_run.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    auto_run.add_argument("--chapters", type=positive_int_arg, help="Maximum chapters/tasks to attempt in this invocation.")
+    auto_run.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    auto_run.set_defaults(func=cmd_auto_write_run)
+
+    auto_progress = auto_subparsers.add_parser("progress", help="Show auto-write state without mutating the project.")
+    auto_progress.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    auto_progress.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    auto_progress.set_defaults(func=cmd_auto_write_progress)
+
+    auto_report = auto_subparsers.add_parser("report", help="Write a readable auto-write progress report.")
+    auto_report.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    auto_report.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    auto_report.set_defaults(func=cmd_auto_write_report)
+
+    draft = subparsers.add_parser("draft", help="Submit and inspect Agent-authored drafts.")
+    draft_subparsers = draft.add_subparsers(dest="draft_command", required=True)
+
+    draft_submit = draft_subparsers.add_parser("submit", help="Submit a Codex/ClaudeCode draft into manuscript draft.")
+    draft_submit.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    draft_submit.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    draft_submit.add_argument("--file", required=True, help="Agent draft/candidate file under controlled workbench lanes.")
+    draft_submit.add_argument("--agent", default="codex", help="Submitting agent name, for example codex or claude.")
+    draft_submit.add_argument("--overwrite", action="store_true", help="Replace an existing manuscript draft.")
+    draft_submit.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    draft_submit.set_defaults(func=cmd_draft_submit)
+
+    chapter = subparsers.add_parser("chapter", help="Manage chapter lifecycle transitions.")
+    chapter_subparsers = chapter.add_subparsers(dest="chapter_command", required=True)
+
+    chapter_finalize = chapter_subparsers.add_parser("finalize", help="Promote a gate-approved draft into final manuscript.")
+    chapter_finalize.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    chapter_finalize.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    chapter_finalize.add_argument("--approved-by", required=True, help="Reviewer identity approving finalization.")
+    chapter_finalize.add_argument("--overwrite", action="store_true", help="Replace an existing final manuscript.")
+    chapter_finalize.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    chapter_finalize.set_defaults(func=cmd_chapter_finalize)
+
+    gate = subparsers.add_parser("gate-check", help="Run deterministic chapter gates.")
+    gate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    gate.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    gate.add_argument("--source", choices=["draft", "final"], default="draft", help="Chapter source.")
+    gate.add_argument("--semantic", action="store_true", help="Run semantic continuity checks using TCS/memory.")
+    gate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    gate.set_defaults(func=cmd_gate_check)
+
+    waiver = subparsers.add_parser("gate-waiver", help="Record a human waiver for PASS/P2 gate outcomes.")
+    waiver.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    waiver.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    waiver.add_argument("--reason", required=True, help="Reason for waiver.")
+    waiver.add_argument("--approved-by", default="human", help="Reviewer identity.")
+    waiver.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    waiver.set_defaults(func=cmd_gate_waiver)
+
+    pacing = subparsers.add_parser("pacing-review", help="Run deterministic pacing review.")
+    pacing.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    pacing.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    pacing.add_argument("--source", choices=["draft", "final"], default="draft", help="Chapter source.")
+    pacing.add_argument("--semantic-reader", action="store_true", help="Include reader experience pacing checks.")
+    pacing.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    pacing.set_defaults(func=cmd_pacing_review)
+
+    pacing_group = subparsers.add_parser("pacing", help="Manage semantic pacing agent tasks.")
+    pacing_subparsers = pacing_group.add_subparsers(dest="pacing_command", required=True)
+
+    semantic_pacing_task_cmd = pacing_subparsers.add_parser("semantic-task", help="Generate a semantic pacing Agent task.")
+    semantic_pacing_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    semantic_pacing_task_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    semantic_pacing_task_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    semantic_pacing_task_cmd.set_defaults(func=cmd_pacing_semantic_task)
+
+    semantic_pacing_validate_cmd = pacing_subparsers.add_parser("semantic-validate", help="Validate semantic pacing result JSON.")
+    semantic_pacing_validate_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    semantic_pacing_validate_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    semantic_pacing_validate_cmd.add_argument("--file", required=True, help="semantic_pacing_result.json under gate artifacts.")
+    semantic_pacing_validate_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    semantic_pacing_validate_cmd.set_defaults(func=cmd_pacing_semantic_validate)
+
+    semantic_pacing_apply_cmd = pacing_subparsers.add_parser("semantic-apply", help="Apply semantic pacing result into gate artifacts.")
+    semantic_pacing_apply_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    semantic_pacing_apply_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    semantic_pacing_apply_cmd.add_argument("--file", required=True, help="validated semantic_pacing_result.json under gate artifacts.")
+    semantic_pacing_apply_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    semantic_pacing_apply_cmd.set_defaults(func=cmd_pacing_semantic_apply)
+
+    repair = subparsers.add_parser("repair-chapter", help="Create a repair plan for a failed chapter.")
+    repair.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    repair.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    repair.add_argument("--plan-only", action="store_true", help="Only write repair_plan.md.")
+    repair.add_argument("--candidate-only", action="store_true", help="Write a repair candidate task without touching final/RAG/graph/memory.")
+    repair.add_argument("--agent", default="codex", help="Agent name for candidate task.")
+    repair.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    repair.set_defaults(func=cmd_repair_chapter)
+
+    research = subparsers.add_parser("research", help="Manage research inbox and canon promotion.")
+    research_subparsers = research.add_subparsers(dest="research_command", required=True)
+
+    research_add = research_subparsers.add_parser("add", help="Add a local note to research inbox.")
+    research_add.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    research_add.add_argument("--file", required=True, help="Local note file to ingest.")
+    research_add.add_argument("--title", help="Override research title.")
+    research_add.add_argument("--source-url", help="Optional source URL for the note.")
+    research_add.add_argument("--tag", action="append", default=[], help="Tag for the research item. Can repeat.")
+    research_add.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    research_add.set_defaults(func=cmd_research_add)
+
+    research_search = research_subparsers.add_parser("search", help="Search web references into research inbox.")
+    research_search.add_argument("config", help="Path to project.yaml.")
+    research_search.add_argument("query", help="Search query.")
+    research_search.add_argument("--limit", type=int, help="Maximum result count.")
+    research_search.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    research_search.set_defaults(func=cmd_research_search)
+
+    research_gaps = research_subparsers.add_parser("gaps", help="Detect chapter/project knowledge gaps.")
+    research_gaps.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    research_gaps.add_argument("--chapter", type=int, help="Target chapter number.")
+    research_gaps.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    research_gaps.set_defaults(func=cmd_research_gaps)
+
+    research_promote = research_subparsers.add_parser("promote", help="Promote an inbox item into canon.")
+    research_promote.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    research_promote.add_argument("--item", required=True, help="Research item id or JSON path.")
+    research_promote.add_argument("--approved-by", default="cli", help="Reviewer identity recorded in canon.")
+    research_promote.add_argument("--review-note", help="Optional review note.")
+    research_promote.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    research_promote.set_defaults(func=cmd_research_promote)
+
+    impact = subparsers.add_parser("impact-analyze", help="Analyze research impact before promotion.")
+    impact.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    impact.add_argument("--research-item", help="Research item id or JSON path.")
+    impact.add_argument("--after-rollback", action="store_true", help="Analyze latest rollback impact.")
+    impact.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    impact.set_defaults(func=cmd_impact_analyze)
+
+    revision = subparsers.add_parser("revision", help="Manage rewrite branches and rollbacks.")
+    revision_subparsers = revision.add_subparsers(dest="revision_command", required=True)
+
+    revision_branch = revision_subparsers.add_parser("branch", help="Create a rewrite candidate for a chapter.")
+    revision_branch.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    revision_branch.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    revision_branch.add_argument("--overwrite", action="store_true", help="Overwrite existing rewrite candidate.")
+    revision_branch.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    revision_branch.set_defaults(func=cmd_revision_branch)
+
+    revision_rollback = revision_subparsers.add_parser("rollback", help="Roll back to a chapter and detach later drafts.")
+    revision_rollback.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    revision_rollback.add_argument("--to-chapter", type=int, required=True, help="Chapter to keep as current head.")
+    revision_rollback.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    revision_rollback.set_defaults(func=cmd_revision_rollback)
+
+    revision_snapshot = revision_subparsers.add_parser("snapshot", help="Create a lightweight project snapshot.")
+    revision_snapshot.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    revision_snapshot.add_argument("--label", default="manual", help="Snapshot label.")
+    revision_snapshot.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    revision_snapshot.set_defaults(func=cmd_revision_snapshot)
+
+    revise = subparsers.add_parser("revise-outline", help="Recalculate outline anchors and mark dependent artifacts stale.")
+    revise.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    revise.add_argument("--from-chapter", type=int, required=True, help="First affected chapter.")
+    revise.add_argument("--change-description", required=True, help="Outline change description.")
+    revise.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    revise.set_defaults(func=cmd_revise_outline)
+
+    editorial = subparsers.add_parser("editorial", help="Generate and inspect editorial review artifacts.")
+    editorial_subparsers = editorial.add_subparsers(dest="editorial_command", required=True)
+
+    editorial_review_cmd = editorial_subparsers.add_parser("review", help="Review one chapter.")
+    editorial_review_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    editorial_review_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    editorial_review_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    editorial_review_cmd.set_defaults(func=cmd_editorial_review)
+
+    editorial_batch = editorial_subparsers.add_parser("batch-review", help="Review a chapter range.")
+    editorial_batch.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    editorial_batch.add_argument("--chapter-start", type=int, required=True, help="First chapter.")
+    editorial_batch.add_argument("--chapter-end", type=int, required=True, help="Last chapter.")
+    editorial_batch.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    editorial_batch.set_defaults(func=cmd_editorial_batch_review)
+
+    editorial_status_cmd = editorial_subparsers.add_parser("status", help="Show editorial review status.")
+    editorial_status_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    editorial_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    editorial_status_cmd.set_defaults(func=cmd_editorial_status)
+
+    editorial_submit = editorial_subparsers.add_parser("submit-review", help="Validate and submit one role review result.")
+    editorial_submit.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    editorial_submit.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    editorial_submit.add_argument("--role", required=True, help="Editorial role id.")
+    editorial_submit.add_argument("--file", required=True, help="Role result JSON under editorial_reviews/results/.")
+    editorial_submit.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    editorial_submit.set_defaults(func=cmd_editorial_submit_review)
+
+    editorial_aggregate_cmd = editorial_subparsers.add_parser("aggregate", help="Aggregate accepted role review results.")
+    editorial_aggregate_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    editorial_aggregate_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    editorial_aggregate_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    editorial_aggregate_cmd.set_defaults(func=cmd_editorial_aggregate)
+
+    editorial_need = editorial_subparsers.add_parser("need-human", help="Escalate editorial status to human review.")
+    editorial_need.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    editorial_need.add_argument("--chapter", type=int, help="Optional chapter number for the human review request.")
+    editorial_need.add_argument("--reason", help="Reason for human review escalation.")
+    editorial_need.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    editorial_need.set_defaults(func=cmd_editorial_need_human)
+
+    for command in (
+        init,
+        init_novel,
+        db_init,
+        db_sync,
+        db_rebuild,
+        models_install,
+        vector_rebuild_cmd,
+        creative_brief,
+        creative_style,
+        style_extract_cmd,
+        humanize_task_cmd,
+        humanize_check_cmd,
+        expand_task_cmd,
+        expand_check_cmd,
+        rag_build,
+        rag_query_cmd,
+        rag_context,
+        graph_update,
+        graph_check,
+        graph_semantic_task,
+        graph_semantic_validate,
+        graph_semantic_apply,
+        memory_validate,
+        memory_task,
+        memory_semantic_validate,
+        memory_semantic_apply,
+        memory_tcs,
+        memory_compress,
+        character_task_cmd,
+        character_validate_cmd,
+        character_apply_cmd,
+        character_check_cmd,
+        tcs_transition_cmd,
+        open_book_cmd,
+        plan,
+        beat,
+        continue_cmd,
+        batch,
+        auto_plan,
+        auto_run,
+        auto_report,
+        draft_submit,
+        chapter_finalize,
+        gate,
+        waiver,
+        pacing,
+        semantic_pacing_task_cmd,
+        semantic_pacing_validate_cmd,
+        semantic_pacing_apply_cmd,
+        repair,
+        research_add,
+        research_search,
+        research_gaps,
+        research_promote,
+        impact,
+        revision_branch,
+        revision_rollback,
+        revision_snapshot,
+        revise,
+        editorial_review_cmd,
+        editorial_batch,
+        editorial_status_cmd,
+        editorial_submit,
+        editorial_aggregate_cmd,
+        editorial_need,
+        production_loop_cmd,
+    ):
+        command.set_defaults(mutates_project=True)
+
+    return parser
+
+
+def add_scale_arguments(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--scale-preset", choices=sorted(SCALE_PRESETS), help="Project scale preset.")
+    command.add_argument("--total-chapters", type=positive_int_arg, help="Total chapter count.")
+    command.add_argument("--target-total-words", type=positive_int_arg, help="Target total word count.")
+    command.add_argument("--chapter-target-words", type=positive_int_arg, help="Target words per chapter.")
+    command.add_argument("--chapter-min-words", type=positive_int_arg, help="Soft minimum words per chapter.")
+    command.add_argument("--chapter-max-words", type=positive_int_arg, help="Soft maximum words per chapter.")
+    command.add_argument("--volume-count", type=positive_int_arg, help="Volume count.")
+
+
+def positive_int_arg(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("value must be a positive integer") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+def scale_overrides_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    preset = getattr(args, "scale_preset", None)
+    if preset:
+        overrides = json.loads(json.dumps({"length": SCALE_PRESETS[preset]["length"]}, ensure_ascii=False))
+    length: dict[str, Any] = dict(overrides.get("length", {}))
+    chapter_word_count: dict[str, Any] = dict(length.get("chapter_word_count", {}))
+    for attr, key in (
+        ("total_chapters", "total_chapters"),
+        ("target_total_words", "target_total_words"),
+        ("volume_count", "volume_count"),
+    ):
+        value = getattr(args, attr, None)
+        if value is not None:
+            length[key] = value
+    for attr, key in (
+        ("chapter_target_words", "target"),
+        ("chapter_min_words", "min"),
+        ("chapter_max_words", "max"),
+    ):
+        value = getattr(args, attr, None)
+        if value is not None:
+            chapter_word_count[key] = value
+    if not length and not chapter_word_count:
+        return {}
+    if chapter_word_count:
+        length["chapter_word_count"] = chapter_word_count
+    overrides["length"] = length
+    return {"length": length}
+
+
+def has_scale_arguments(args: argparse.Namespace) -> bool:
+    return any(
+        getattr(args, attr, None) is not None
+        for attr in (
+            "scale_preset",
+            "total_chapters",
+            "target_total_words",
+            "chapter_target_words",
+            "chapter_min_words",
+            "chapter_max_words",
+            "volume_count",
+        )
+    )
+
+
+def prepared_init_context(args: argparse.Namespace) -> tuple[ConfigDocument, str | None]:
+    prepared = getattr(args, "_prepared_init_context", None)
+    if prepared:
+        return prepared
+    if getattr(args, "interactive", False):
+        prepared = interactive_init_context(args)
+        args._prepared_init_context = prepared
+        return prepared
+
+    template = getattr(args, "template", None)
+    config_path = getattr(args, "config", None)
+    if not template and not config_path:
+        template = "qidian-longform"
+    config = load_project_config(config_path, template=template, cli_overrides=scale_overrides_from_args(args))
+    prepared = (config, getattr(args, "output", None))
+    args._prepared_init_context = prepared
+    return prepared
+
+
+def interactive_init_context(args: argparse.Namespace) -> tuple[ConfigDocument, str | None]:
+    print("Longform project creation wizard")
+    title = prompt_text("小说标题", "未命名长篇小说")
+    slug = prompt_text("项目 slug", safe_slug(title))
+    output = prompt_text("输出目录", getattr(args, "output", None) or f"novels/{slug}")
+    template = prompt_text("模板风格", getattr(args, "template", None) or "qidian-longform")
+    scale = prompt_scale_choice()
+    if scale == "custom":
+        length = prompt_custom_length()
+    else:
+        length = json.loads(json.dumps(SCALE_PRESETS[scale]["length"], ensure_ascii=False))
+
+    overrides = {
+        "project": {
+            "title": title,
+            "slug": slug,
+            "root_dir": output,
+        },
+        "length": length,
+    }
+    config = load_project_config(template=template, cli_overrides=overrides)
+    print_creation_summary(config, output, template, scale)
+    if not prompt_confirm("确认创建项目并写入配置？", default=True):
+        raise ValueError("Interactive project creation cancelled.")
+    return config, output
+
+
+def prompt_text(label: str, default: str) -> str:
+    suffix = f" [{default}]" if default else ""
+    value = input(f"{label}{suffix}: ").strip()
+    return value or default
+
+
+def prompt_positive_int(label: str, default: int) -> int:
+    while True:
+        raw = input(f"{label} [{default}]: ").strip()
+        if not raw:
+            return default
+        try:
+            parsed = int(raw)
+        except ValueError:
+            print("请输入正整数。")
+            continue
+        if parsed > 0:
+            return parsed
+        print("请输入正整数。")
+
+
+def prompt_scale_choice() -> str:
+    options = [
+        ("million", "百万字", "100 万字 / 330 章 / 单章 3000 字 / 5 卷"),
+        ("standard", "标准长篇", "150 万字 / 500 章 / 单章 3000 字 / 6 卷"),
+        ("extended", "超长篇", "200 万字 / 650 章 / 单章 3000 字 / 8 卷"),
+        ("custom", "自定义", "手动填写总字数、章节数、单章字数和卷数"),
+    ]
+    print("规模预设:")
+    for index, (_, label, detail) in enumerate(options, start=1):
+        print(f"  {index}. {label} - {detail}")
+    aliases = {
+        "1": "million",
+        "百万字": "million",
+        "百万": "million",
+        "2": "standard",
+        "标准长篇": "standard",
+        "标准": "standard",
+        "3": "extended",
+        "超长篇": "extended",
+        "超长": "extended",
+        "4": "custom",
+        "自定义": "custom",
+    }
+    valid = {key for key, _, _ in options}
+    while True:
+        raw = input("请选择规模预设 [standard]: ").strip()
+        if not raw:
+            return "standard"
+        normalized = aliases.get(raw, raw)
+        if normalized in valid:
+            return normalized
+        print("请输入 million、standard、extended、custom 或对应序号。")
+
+
+def prompt_custom_length() -> dict[str, Any]:
+    total_words = prompt_positive_int("目标总字数", 1_000_000)
+    total_chapters = prompt_positive_int("总章节数", 330)
+    target = prompt_positive_int("单章目标字数", max(1, total_words // total_chapters))
+    minimum = prompt_positive_int("单章软下限", max(1, int(target * 0.8)))
+    maximum = prompt_positive_int("单章软上限", max(target, int(target * 1.2)))
+    volume_count = prompt_positive_int("卷数", 5)
+    return {
+        "total_chapters": total_chapters,
+        "target_total_words": total_words,
+        "volume_count": volume_count,
+        "chapter_word_count": {
+            "target": target,
+            "min": minimum,
+            "max": maximum,
+        },
+    }
+
+
+def prompt_confirm(label: str, *, default: bool) -> bool:
+    suffix = "Y/n" if default else "y/N"
+    while True:
+        raw = input(f"{label} [{suffix}]: ").strip().lower()
+        if not raw:
+            return default
+        if raw in {"y", "yes"}:
+            return True
+        if raw in {"n", "no"}:
+            return False
+        print("请输入 y 或 n。")
+
+
+def safe_slug(value: str) -> str:
+    safe = []
+    last_was_separator = False
+    for char in value.lower():
+        if char.isascii() and (char.isalnum() or char in {"-", "_"}):
+            safe.append(char)
+            last_was_separator = False
+        elif not last_was_separator:
+            safe.append("_")
+            last_was_separator = True
+    slug = "".join(safe).strip("_-")
+    return slug or "longform_novel"
+
+
+def print_creation_summary(config: ConfigDocument, output: str, template: str, scale: str) -> None:
+    project = config.data["project"]
+    length = config.data["length"]
+    word_count = length["chapter_word_count"]
+    scale_label = "自定义" if scale == "custom" else SCALE_PRESETS[scale]["label"]
+    print("")
+    print("项目创建摘要")
+    print(f"Title: {project['title']}")
+    print(f"Slug: {project['slug']}")
+    print(f"Output: {output}")
+    print(f"Template: {template}")
+    print(f"Scale: {scale_label}")
+    print(f"Chapters: {length['total_chapters']}")
+    print(f"Target words: {length['target_total_words']}")
+    print(f"Words per chapter: {word_count['target']} ({word_count['min']}-{word_count['max']})")
+    print(f"Volumes: {length['volume_count']}")
+    print("")
+
+
+def cmd_validate_config(args: argparse.Namespace) -> int:
+    config = load_project_config(args.config, template=args.template, cli_overrides=scale_overrides_from_args(args))
+    print("OK: configuration is valid")
+    title = config.data["project"]["title"]
+    chapters = config.data["length"]["total_chapters"]
+    words = config.data["length"]["target_total_words"]
+    print(f"Project: {title}")
+    print(f"Scale: {chapters} chapters / {words} target words")
+    if args.explain:
+        print("Sources:")
+        for source in config.sources:
+            print(f"  - {source}")
+    return 0
+
+
+def cmd_init_project(args: argparse.Namespace) -> int:
+    config, output = prepared_init_context(args)
+    result = init_project(config, output=output, force=args.force)
+    print(f"OK: project initialized at {result.root}")
+    print(f"Project config: {result.project_config}")
+    print(f"Created directories: {len(result.created_dirs)}")
+    print(f"Created files: {len(result.created_files)}")
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    config_path = Path(args.config).expanduser().resolve()
+    config = load_project_config(config_path)
+    root = resolve_project_root(config)
+    revision_status = project_status(config)
+    payload = {
+        "title": config.data["project"]["title"],
+        "slug": config.data["project"]["slug"],
+        "root": str(root),
+        "exists": root.exists(),
+        "project_config": str(config_path),
+        "total_chapters": config.data["length"]["total_chapters"],
+        "target_total_words": config.data["length"]["target_total_words"],
+        "state_status": revision_status.state_status,
+        "current_chapter": revision_status.current_chapter,
+        "last_finalized_chapter": revision_status.last_finalized_chapter,
+        "stale": revision_status.stale,
+        "stale_chapters": revision_status.stale_chapters,
+        "chapter_states": [asdict(chapter) for chapter in revision_status.chapters],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Project: {payload['title']} ({payload['slug']})")
+        print(f"Root: {payload['root']}")
+        print(f"Exists: {payload['exists']}")
+        print(f"Scale: {payload['total_chapters']} chapters / {payload['target_total_words']} words")
+        print(f"State: {payload['state_status']}")
+        print(f"Current chapter: {payload['current_chapter']}")
+        print(f"Last finalized chapter: {payload['last_finalized_chapter']}")
+        print(f"Stale: {', '.join(payload['stale']) if payload['stale'] else 'none'}")
+        if payload["chapter_states"]:
+            print("Chapter states:")
+            for chapter in payload["chapter_states"]:
+                statuses = ", ".join(chapter["statuses"])
+                print(f"  - ch{chapter['chapter_number']:03d}: {chapter['status']} ({statuses})")
+    return 0
+
+
+def cmd_agent_task_list(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    items = list_manifests(root, chapter_number=args.chapter)
+    payload = {"tasks": items, "count": len(items), "chapter_number": args.chapter}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Agent tasks: {len(items)}")
+        for item in items:
+            print(
+                f"- {item.get('task_id')} "
+                f"ch{int(item.get('chapter_number') or 0):03d} "
+                f"{item.get('task_type')} {item.get('status')}"
+            )
+    return 0
+
+
+def cmd_agent_task_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    payload = status_summary(root, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Agent tasks: {payload['tasks']}")
+        print(f"By status: {json.dumps(payload['by_status'], ensure_ascii=False)}")
+        print(f"By type: {json.dumps(payload['by_type'], ensure_ascii=False)}")
+    return 0
+
+
+def cmd_agent_task_show(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    payload = load_manifest(root, args.task)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Task: {payload.get('task_id')}")
+        print(f"Type: {payload.get('task_type')}")
+        print(f"Chapter: {payload.get('chapter_number')}")
+        print(f"Status: {payload.get('status')}")
+        print("Inputs:")
+        for item in payload.get("input_files") or []:
+            print(f"  - {item}")
+        print("Allowed outputs:")
+        for item in payload.get("allowed_output_paths") or []:
+            print(f"  - {item}")
+        print(f"Validate: {payload.get('validate_command')}")
+        print(f"Apply: {payload.get('apply_command')}")
+        print(f"On failure: {payload.get('failure_next_command')}")
+    return 0
+
+
+def cmd_agent_task_brief(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = agent_task_brief(config, args.task)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(payload["work_order_markdown"], end="")
+    return 0
+
+
+def cmd_agent_task_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    payload = load_manifest(root, args.task)
+    result = validate_manifest_strict(root, payload, strict=args.strict)
+    output = asdict(result)
+    if args.json:
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+    else:
+        mode = "strict" if args.strict else "shape"
+        print(f"Agent task validation: {mode}")
+        print(f"Task: {result.task_id}")
+        print(f"Type: {result.task_type}")
+        print(f"OK: {result.ok}")
+        if result.errors:
+            print("Errors:")
+            for item in result.errors:
+                print(f"  - {item}")
+        if result.warnings:
+            print("Warnings:")
+            for item in result.warnings:
+                print(f"  - {item}")
+    return 0 if result.ok else 1
+
+
+def cmd_production_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = production_status(config)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        current = payload.get("current") or {}
+        board = payload.get("board") or {}
+        tasks = payload.get("agent_tasks") or {}
+        print("OK: production status ready")
+        print(f"Version: {payload.get('status_version')}")
+        print(f"Path style: {payload.get('path_style')}")
+        print(f"Command style: {payload.get('command_style')}")
+        print(f"Next status: {current.get('next_status')}")
+        print(f"Blocked by: {current.get('blocked_by')}")
+        print(f"Waiting for: {current.get('waiting_for')}")
+        print(f"Next command: {current.get('next_command')}")
+        print(f"Board range: ch{int(board.get('from_chapter') or 0):03d}-ch{int(board.get('to_chapter') or 0):03d}")
+        print(f"Board totals: {json.dumps(board.get('totals') or {}, ensure_ascii=False)}")
+        print(f"Agent tasks: {tasks.get('tasks')}")
+    return 0
+
+
+def cmd_production_next(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = production_next(config)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: production next action ready")
+        print(f"Chapter: {payload.get('chapter_number')}")
+        print(f"Status: {payload.get('status')}")
+        print(f"Blocked by: {payload.get('blocked_by')}")
+        print(f"Waiting for: {payload.get('waiting_for')}")
+        print(f"Next command: {payload.get('next_command')}")
+        if payload.get("human_summary"):
+            print(f"Summary: {payload.get('human_summary')}")
+        if payload.get("input_files"):
+            print("Inputs:")
+            for item in payload.get("input_files") or []:
+                print(f"  - {item}")
+        if payload.get("allowed_output_paths"):
+            print("Allowed outputs:")
+            for item in payload.get("allowed_output_paths") or []:
+                print(f"  - {item}")
+        if payload.get("output_schema"):
+            print(f"Schema: {payload.get('output_schema')}")
+        if payload.get("validate_command"):
+            print(f"Validate: {payload.get('validate_command')}")
+        if payload.get("apply_command"):
+            print(f"Apply: {payload.get('apply_command')}")
+        if payload.get("failure_next_command"):
+            print(f"On failure: {payload.get('failure_next_command')}")
+        if payload.get("need_human_reasons"):
+            print("Need-human reasons:")
+            for item in payload.get("need_human_reasons") or []:
+                print(f"  - {item}")
+        if getattr(args, "editorial", False):
+            print_editorial_next_details(payload)
+    return 0
+
+
+def cmd_production_board(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = production_board(config, from_chapter=args.from_chapter, to_chapter=args.to_chapter)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: production board ready")
+        print(f"Range: ch{payload['from_chapter']:03d}-ch{payload['to_chapter']:03d}")
+        print(f"Totals: {json.dumps(payload['totals'], ensure_ascii=False)}")
+        for row in payload["chapters"]:
+            gate = row.get("gate_status") or {}
+            editorial = row.get("editorial") or {}
+            print(
+                f"ch{int(row.get('chapter_number') or 0):03d} "
+                f"draft={row.get('draft_status')} "
+                f"final={row.get('final_status')} "
+                f"gate={gate.get('status')} "
+                f"repair={(row.get('repair_status') or {}).get('status')} "
+                f"humanize={(row.get('humanize_status') or {}).get('status')} "
+                f"expand={(row.get('expand_status') or {}).get('status')} "
+                f"graph={(row.get('graph_status') or {}).get('status')} "
+                f"memory={(row.get('memory_status') or {}).get('status')} "
+                f"character_memory={(row.get('character_memory_status') or {}).get('status')} "
+                f"pacing={(row.get('semantic_pacing_status') or {}).get('status')} "
+                f"editorial={editorial.get('status')} "
+                f"need_human={editorial.get('need_human')}"
+            )
+            if getattr(args, "editorial", False):
+                print_editorial_board_details(editorial)
+    return 0
+
+
+def print_editorial_next_details(payload: dict[str, Any]) -> None:
+    role = payload.get("editorial_role")
+    if isinstance(role, dict) and role:
+        print("Editorial role:")
+        print(f"  - Role: {role.get('display_name')} ({role.get('role_id')})")
+        print(f"  - Focus: {role.get('focus')}")
+        print(f"  - Work order: {role.get('work_order_file')}")
+        print(f"  - Result file: {role.get('result_file')}")
+        print(f"  - Validate: {role.get('validate_command')}")
+        print(f"  - Apply: {role.get('apply_command')}")
+    if payload.get("expected_roles") or payload.get("missing_roles"):
+        print("Editorial aggregate:")
+        print(f"  - Expected roles: {', '.join(payload.get('expected_roles') or []) or 'None'}")
+        print(f"  - Accepted roles: {', '.join(payload.get('accepted_roles') or []) or 'None'}")
+        print(f"  - Missing roles: {', '.join(payload.get('missing_roles') or []) or 'None'}")
+        print(f"  - Duplicate role results: {len(payload.get('duplicate_role_results') or [])}")
+        print(f"  - Invalid role results: {len(payload.get('invalid_results') or [])}")
+        print(f"  - Next command: {payload.get('next_command')}")
+    readable = payload.get("need_human_reasons_readable") or []
+    if readable:
+        print("Readable need-human reasons:")
+        for item in readable:
+            if isinstance(item, dict):
+                print(f"  - {item.get('code')}: {item.get('message')}")
+
+
+def print_editorial_board_details(editorial: dict[str, Any]) -> None:
+    print(f"    expected_roles={', '.join(editorial.get('expected_roles') or []) or 'None'}")
+    print(f"    accepted_roles={', '.join(editorial.get('accepted_roles') or []) or 'None'}")
+    print(f"    missing_roles={', '.join(editorial.get('missing_roles') or []) or 'None'}")
+    print(f"    duplicate_role_results={len(editorial.get('duplicate_role_results') or [])}")
+    print(f"    invalid_results={len(editorial.get('invalid_results') or [])}")
+    if editorial.get("need_human_reasons"):
+        print(f"    need_human_reasons={', '.join(editorial.get('need_human_reasons') or [])}")
+    if editorial.get("next_command"):
+        print(f"    next_command={editorial.get('next_command')}")
+    for role in editorial.get("role_statuses") or []:
+        if not isinstance(role, dict):
+            continue
+        print(
+            "    role="
+            f"{role.get('role_id')} "
+            f"status={role.get('status')} "
+            f"task={role.get('task_id') or 'None'} "
+            f"output={role.get('result_file') or 'None'}"
+        )
+
+
+def cmd_production_loop(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = production_loop(config, max_steps=args.max_steps, no_apply=args.no_apply)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: production loop stopped at safe boundary")
+        print(f"Status: {payload.get('status')}")
+        print(f"Pause reason: {payload.get('pause_reason')}")
+        print(f"Steps executed: {payload.get('steps_executed')}")
+        for step in payload.get("steps") or []:
+            print(
+                f"  - step {step.get('step')}: {step.get('action')} "
+                f"ch{int(step.get('chapter_number') or 0):03d} [{step.get('status')}]"
+            )
+        next_action = payload.get("next_action") or {}
+        print(f"Next status: {next_action.get('status')}")
+        print(f"Next command: {next_action.get('next_command')}")
+    return 0 if payload.get("status") in {"paused", "max_steps_reached"} else 1
+
+
+def cmd_db_init(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    path = init_database(config)
+    print(f"OK: database initialized at {path}")
+    return 0
+
+
+def cmd_db_sync(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    stats = sync_database(config)
+    print("OK: database synchronized")
+    for key, value in asdict(stats).items():
+        print(f"{key}: {value}")
+    return 0
+
+
+def cmd_db_rebuild(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    stats = rebuild_database(config)
+    print("OK: database rebuilt")
+    for key, value in asdict(stats).items():
+        print(f"{key}: {value}")
+    return 0
+
+
+def cmd_db_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = asdict(db_status(config))
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Database: {payload['db_path']}")
+        print(f"Exists: {payload['exists']}")
+        print(f"Schema version: {payload['schema_version']}")
+        print(f"Chapters: {payload['chapters']}")
+        print(f"Chunks: {payload['chapter_chunks']}")
+        print(f"Draft submissions: {payload['draft_submissions']}")
+        print(f"Entities: {payload['entities']}")
+        print(f"Events: {payload['events']}")
+        print(f"Gate results: {payload['gate_results']}")
+        print(f"Stale: {', '.join(payload['stale']) if payload['stale'] else 'none'}")
+    return 0
+
+
+def cmd_db_query(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    rows = query_table(config, args.table, limit=args.limit)
+    print(json.dumps(rows, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_models_list(args: argparse.Namespace) -> int:
+    _ = args
+    for profile in list_profiles():
+        print(f"{profile.name}: embedding={profile.embedding_repo} reranker={profile.reranker_repo}")
+        print(f"  {profile.description}")
+    return 0
+
+
+def cmd_models_install(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = install_model_profile(config, profile=args.profile, download=args.download)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: semantic model profile prepared")
+        print(f"Profile: {result.profile}")
+        print(f"Models dir: {result.models_dir}")
+        print(f"Manifest: {result.manifest_file}")
+        print(f"Downloaded: {result.downloaded}")
+        for warning in result.warnings:
+            print(f"WARN: {warning}")
+    return 0
+
+
+def cmd_models_verify(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = verify_models(config)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: semantic model verification completed")
+        print(f"Status: {result.status}")
+        print(f"Profile: {result.profile}")
+        print(f"Embedding: {result.embedding_model} cached={result.embedding_cached}")
+        print(f"Reranker: {result.reranker_model} cached={result.reranker_cached}")
+        print(f"Embedding loadable: {result.embedding_loadable}")
+        print(f"Reranker loadable: {result.reranker_loadable}")
+        print(f"Download required: {result.download_required}")
+        print(f"Can auto download: {result.can_auto_download}")
+        print(f"Provider ready: {result.provider_ready}")
+        print(f"Fallback allowed: {result.fallback_allowed}")
+        print(f"Fallback active: {result.fallback_active}")
+        print(f"Fallback: {result.fallback or 'none'}")
+        for warning in result.warnings:
+            print(f"WARN: {warning}")
+    return 0
+
+
+def cmd_vector_store_verify(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = vector_healthcheck(config)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: vector store verification completed" if result.ok else "ERROR: vector store verification failed")
+        print(f"Backend: {result.backend}")
+        print(f"URL: {result.url}")
+        print(f"Collection: {result.collection}")
+        print(f"Message: {result.message}")
+    return 0 if result.ok else 1
+
+
+def cmd_vector_store_rebuild(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = vector_rebuild(config)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: vector store rebuilt")
+        print(f"Backend: {result.backend}")
+        print(f"Records: {result.records}")
+        print(f"Source: {result.source_file}")
+        print(f"Store: {result.store_path}")
+    return 0
+
+
+def cmd_creative_brief(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    if args.init:
+        result = init_creative_brief(config, overwrite=True)
+    else:
+        result = validate_creative_brief(config)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: creative brief checked" if result.ok else "BLOCKED: creative brief needs confirmation")
+        print(f"Brief: {result.brief_file}")
+        if result.task_file:
+            print(f"Task: {result.task_file}")
+        print(f"Errors: {len(result.errors)}")
+    return 0 if result.ok else 1
+
+
+def cmd_creative_style_profile(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = style_profile(config, genre=args.genre, target_audience=args.target_audience)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: creative style profile written")
+        print(f"Genre: {result.genre}")
+        print(f"Target audience: {result.target_audience}")
+        print(f"Matrix: {result.profile_file}")
+        print(f"Current profile: {result.current_profile_file}")
+    return 0
+
+
+def cmd_creative_style_extract(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = style_extract(
+        config,
+        sample_files=args.sample_files,
+        name=args.name,
+        source_project=args.source_project,
+        library_profile=args.library,
+        activate=not args.no_activate,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: sample style profile extracted")
+        print(f"Name: {result.name}")
+        print(f"Profile: {result.profile_file}")
+        print(f"Current profile: {result.current_profile_file or 'not activated'}")
+        print(f"Library: {result.library_file}")
+        print(f"Source project: {result.source_project}")
+        print(f"Samples: {', '.join(result.sample_files) or 'library import'}")
+        print(f"Activated: {result.activated}")
+    return 0
+
+
+def cmd_creative_humanize_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = humanize_task(config, chapter_number=args.chapter, source=args.source)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: Humanizer v2 task written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Source: {result.source_file}")
+        print(f"Task: {result.task_file}")
+        print(f"Manifest: {result.manifest_file}")
+        print(f"Candidate: {result.candidate_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_creative_humanize_check(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = humanize_check(config, chapter_number=args.chapter, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: Humanizer v2 check completed")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Passed: {result.passed}")
+        print(f"Report: {result.report_file}")
+        print(f"Markdown: {result.markdown_report}")
+        print(f"Issues: {len(result.issues)}")
+        print(f"Warnings: {len(result.warnings)}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.passed else 1
+
+
+def cmd_creative_expand_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = expand_task(
+        config,
+        chapter_number=args.chapter,
+        source=args.source,
+        expansion_types=args.expansion_types,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: content expansion task written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Source: {result.source_file}")
+        print(f"Task: {result.task_file}")
+        print(f"Candidate: {result.candidate_file}")
+        print(f"Expansion types: {', '.join(result.expansion_types)}")
+        print(f"Current word count: {result.current_word_count}")
+        print(f"Minimum word count: {result.minimum_word_count}")
+        print(f"Missing words: {result.missing_words}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_creative_expand_check(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = expand_check(
+        config,
+        chapter_number=args.chapter,
+        file_path=args.file,
+        expansion_types=args.expansion_types,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: content expansion check completed")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Passed: {result.passed}")
+        print(f"Word count: {result.word_count}")
+        print(f"Minimum word count: {result.minimum_word_count}")
+        print(f"Report: {result.report_file}")
+        print(f"Markdown: {result.markdown_report}")
+        print(f"Issues: {len(result.issues)}")
+        print(f"Warnings: {len(result.warnings)}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.passed else 1
+
+
+def cmd_rag_build(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    stats = build_chunks(
+        config,
+        max_chars=args.max_chars,
+        overlap_chars=args.overlap_chars,
+        with_embeddings=args.with_embeddings,
+    )
+    print("OK: RAG chunks built")
+    print(f"Chapters: {stats.chapters}")
+    print(f"Chunks: {stats.chunks}")
+    print(f"Embeddings: {stats.embeddings}")
+    print(f"Output: {stats.output_dir}")
+    return 0
+
+
+def cmd_rag_query(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = rag_query(
+        config,
+        args.query,
+        top_k=args.top_k,
+        candidate_pool=args.candidate_pool,
+        semantic=args.semantic,
+        chapter_number=args.chapter,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print(f"Query: {result.query}")
+        print(f"Cache: {result.cache_file}")
+        print(f"Hits: {len(result.hits)}")
+        for hit in result.hits:
+            print(f"- {hit.id} score={hit.score:.3f} chapter={hit.chapter_number} source={hit.source_path}")
+            if args.semantic:
+                print(f"  semantic={hit.semantic_score:.3f} rerank={hit.rerank_score:.3f} reason={hit.source_reason}")
+            print(f"  reasons: {', '.join(hit.reasons) if hit.reasons else 'metadata match'}")
+            print(f"  text: {hit.text[:120].replace(chr(10), ' ')}")
+    return 0
+
+
+def cmd_rag_context(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = build_context(config, chapter_number=args.chapter, query_text=args.query, top_k=args.top_k, semantic=args.semantic)
+    print("OK: RAG context written")
+    print(f"Context: {result.context_file}")
+    print(f"Hits: {result.hit_count}")
+    return 0
+
+
+def cmd_graph_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = validate_graph(config)
+    payload = asdict(result)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Graph: {result.graph_file}")
+        print(f"Entities: {result.entities}")
+        print(f"Relationships: {result.relationships}")
+        print(f"Events: {result.events}")
+        print(f"Errors: {len(result.errors)}")
+        print(f"Warnings: {len(result.warnings)}")
+        for error in result.errors:
+            print(f"ERROR: {error}")
+        for warning in result.warnings:
+            print(f"WARN: {warning}")
+    return 1 if result.errors else 0
+
+
+def cmd_graph_update(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = update_graph(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: story graph updated")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Graph: {result.graph_file}")
+        print(f"Matched entities: {result.matched_entities}")
+        print(f"Mentions added: {result.mentions_added}")
+        print(f"Events added: {result.events_added}")
+        print(f"SQLite entities: {result.db_entities}")
+        print(f"SQLite events: {result.db_events}")
+    return 0
+
+
+def cmd_graph_check(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = check_graph(config)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: graph check written")
+        print(f"Report: {result.report_file}")
+        print(f"Issues: {len(result.issues)}")
+        print(f"Warnings: {len(result.warnings)}")
+        for issue in result.issues:
+            print(f"ISSUE: {issue}")
+        for warning in result.warnings:
+            print(f"WARN: {warning}")
+    return 1 if result.issues else 0
+
+
+def cmd_graph_retrieve(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = retrieve_graph(config, query_text=args.query, chapter_number=args.chapter, top_k=args.top_k)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: graph retrieval completed")
+        print(f"Query: {result.query}")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Hits: {len(result.hits)}")
+        for hit in result.hits:
+            print(f"- {hit.kind}:{hit.id} score={hit.graph_score:.3f} hop={hit.hop_distance}")
+            print(f"  path: {hit.path_reason}")
+            if hit.evidence_span:
+                print(f"  evidence: {hit.evidence_span}")
+    return 0
+
+
+def cmd_graph_semantic_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = semantic_graph_task(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: semantic graph extraction task written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Task: {result.task_file}")
+        print(f"Manifest: {result.manifest_file}")
+        print(f"Output: {result.output_file}")
+        print(f"Source: {result.source_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_graph_semantic_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = semantic_graph_validate(config, chapter_number=args.chapter, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: semantic graph validation completed")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Valid: {result.ok}")
+        print(f"Report: {result.report_file}")
+        for error in result.errors:
+            print(f"ERROR: {error}")
+        for warning in result.warnings:
+            print(f"WARN: {warning}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.ok else 1
+
+
+def cmd_graph_semantic_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = semantic_graph_apply(config, chapter_number=args.chapter, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: semantic graph updates applied")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Applied: {result.applied}")
+        print(f"Skipped low confidence: {result.skipped_low_confidence}")
+        print(f"Graph: {result.graph_file}")
+    return 0
+
+
+def cmd_memory_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = validate_memory(config)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: memory validation completed")
+        print(f"Scene memories: {result.scene_memories}")
+        print(f"Chapter memories: {result.chapter_memories}")
+        print(f"Arc memories: {result.arc_memories}")
+        print(f"Character memories: {result.character_memories}")
+        print(f"TCS snapshots: {result.tcs_snapshots}")
+        print(f"Errors: {len(result.errors)}")
+        print(f"Warnings: {len(result.warnings)}")
+        for error in result.errors:
+            print(f"ERROR: {error}")
+        for warning in result.warnings:
+            print(f"WARN: {warning}")
+    return 0 if result.ok else 1
+
+
+def cmd_memory_semantic_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = semantic_task(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: Codex semantic extraction task written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Task: {result.task_file}")
+        print(f"Manifest: {result.manifest_file}")
+        print(f"Output: {result.output_file}")
+        print(f"Source: {result.source_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_memory_semantic_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = semantic_validate(config, chapter_number=args.chapter, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: semantic extraction validation completed")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Valid: {result.ok}")
+        print(f"Report: {result.report_file}")
+        for error in result.errors:
+            print(f"ERROR: {error}")
+        for warning in result.warnings:
+            print(f"WARN: {warning}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.ok else 1
+
+
+def cmd_memory_semantic_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = apply_semantic_memory(config, chapter_number=args.chapter, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: semantic memory applied")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Chapter memory: {result.chapter_file}")
+        print(f"Scene memories: {len(result.scene_files)}")
+        print(f"Graph update: {result.graph_update_file}")
+        print(f"SQLite synced: {result.db_synced}")
+    return 0
+
+
+def cmd_memory_tcs(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = build_tcs(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: TCS snapshot written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"TCS: {result.tcs_file}")
+        print(f"Characters: {', '.join(result.current_characters) if result.current_characters else 'none'}")
+        print(f"Recent events: {', '.join(result.recent_events) if result.recent_events else 'none'}")
+    return 0
+
+
+def cmd_memory_compress(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = compress_memory(
+        config,
+        scope=args.scope,
+        from_chapter=args.from_chapter,
+        to_chapter=args.to_chapter,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: memory compressed")
+        print(f"Scope: {result.scope}")
+        print(f"Range: ch{result.from_chapter:03d}-ch{result.to_chapter:03d}")
+        print(f"Output: {result.output_file}")
+        print(f"Sources: {result.source_count}")
+        print(f"SQLite synced: {result.db_synced}")
+    return 0
+
+
+def cmd_memory_character_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = character_task(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: character memory task written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Task: {result.task_file}")
+        print(f"Manifest: {result.manifest_file}")
+        print(f"Output: {result.output_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_memory_character_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = character_validate(config, chapter_number=args.chapter, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: character memory validation completed")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Valid: {result.ok}")
+        print(f"Report: {result.report_file}")
+        for error in result.errors:
+            print(f"ERROR: {error}")
+        for warning in result.warnings:
+            print(f"WARN: {warning}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.ok else 1
+
+
+def cmd_memory_character_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = character_apply(config, chapter_number=args.chapter, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: character memory applied")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Character files: {len(result.character_files)}")
+        print(f"SQLite synced: {result.db_synced}")
+    return 0
+
+
+def cmd_memory_character_check(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = character_check(config, chapter_number=args.chapter, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: character consistency check completed")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Passed: {result.passed}")
+        print(f"Report: {result.report_file}")
+        print(f"Findings: {len(result.findings)}")
+    return 0 if result.passed else 1
+
+
+def cmd_memory_tcs_transition(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = build_tcs_transition(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: TCS transition written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Transition: {result.transition_file}")
+        print(f"Current: {result.current_file}")
+        print(f"Next chapter: {result.next_chapter}")
+    return 0
+
+
+def cmd_memory_tcs_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = validate_tcs(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: TCS validation completed")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Valid: {result.ok}")
+        print(f"File: {result.file}")
+        for error in result.errors:
+            print(f"ERROR: {error}")
+        for warning in result.warnings:
+            print(f"WARN: {warning}")
+    return 0 if result.ok else 1
+
+
+def cmd_open_book(args: argparse.Namespace) -> int:
+    if getattr(args, "_open_book_needs_init", False):
+        config, output = prepared_init_context(args)
+        init_result = init_project(config, output=output, force=False)
+        print(f"OK: project initialized at {init_result.root}")
+        print(f"Project config: {init_result.project_config}")
+        config = load_project_config(init_result.project_config)
+    else:
+        config = load_project_config(Path(args.config).expanduser().resolve())
+    confirmations = {
+        "target_audience": args.target_audience,
+        "writing_style": args.writing_style,
+        "core_forbidden_zone": args.forbidden_zone,
+        "automation_level": args.automation_level,
+        "target_scale": args.target_scale,
+    }
+    result = open_book(config, confirmations)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: open-book confirmed")
+        print(f"Idea seed: {result.idea_seed}")
+        print(f"Reader contract: {result.reader_contract}")
+        print(f"Book outline: {result.book_outline}")
+        print(f"State: {result.state_file}")
+    return 0
+
+
+def cmd_plan_chapter(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = plan_chapter(config, chapter_number=args.chapter, overwrite=args.overwrite)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: chapter card ready")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"JSON: {result.json_file}")
+        print(f"Markdown: {result.markdown_file}")
+    return 0
+
+
+def cmd_beat(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = generate_beat_sheet(
+        config,
+        chapter_number=args.chapter,
+        overwrite=args.overwrite,
+        auto_plan=args.auto_plan,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: beat sheet ready")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"JSON: {result.json_file}")
+        print(f"Markdown: {result.markdown_file}")
+    return 0
+
+
+def cmd_continue_write(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = continue_write(config, chapter_number=args.chapter, overwrite=args.overwrite)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        if result.status == "task_ready":
+            print("OK: continue-write task package ready")
+        else:
+            print("OK: continue-write draft pipeline completed")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Status: {result.status}")
+        print(f"Context: {result.context_file}")
+        print(f"Chapter card: {result.chapter_card}")
+        print(f"Beat sheet: {result.beat_sheet}")
+        if result.writing_task_markdown:
+            print(f"Writing task: {result.writing_task_markdown}")
+        if result.recommended_agent_draft:
+            print(f"Recommended agent draft: {result.recommended_agent_draft}")
+        if result.next_command:
+            print(f"Next command: {result.next_command}")
+        if result.draft_file:
+            print(f"Draft: {result.draft_file}")
+        print(f"Run report: {result.run_report}")
+    return 0
+
+
+def cmd_batch_write(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = batch_write(
+        config,
+        chapters=args.chapters,
+        stop_on_gate_failure=args.stop_on_gate_failure,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: batch-write scheduler completed")
+        print(f"Status: {result.status}")
+        print(f"Attempted: {result.chapters_attempted}/{result.chapters_requested}")
+        print(f"Failed: {result.failed}")
+        print(f"Skipped: {result.skipped}")
+        if result.stopped_reason:
+            print(f"Stopped: {result.stopped_reason}")
+        if result.next_command:
+            print(f"Next command: {result.next_command}")
+        print(f"Run report: {result.run_report}")
+    return 0 if result.failed == 0 else 1
+
+
+def cmd_auto_write_plan(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = auto_write_plan(
+        config,
+        target_chapters=args.target_chapters,
+        target_words=args.target_words,
+        start_chapter=args.start_chapter,
+        overwrite=args.overwrite,
+    )
+    print_auto_write_result(result, json_output=args.json)
+    return 0
+
+
+def cmd_auto_write_run(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = auto_write_run(config, chapters=args.chapters)
+    print_auto_write_result(result, json_output=args.json)
+    return 0 if result.status not in {"blocked", "paused_gate_failed"} else 1
+
+
+def cmd_auto_write_progress(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = auto_write_progress(config)
+    print_auto_write_result(result, json_output=args.json)
+    return 0
+
+
+def cmd_auto_write_report(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = auto_write_report(config)
+    print_auto_write_result(result, json_output=args.json)
+    return 0
+
+
+def print_auto_write_result(result: Any, *, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        return
+    print(f"OK: auto-write {result.action}")
+    print(f"Status: {result.status}")
+    print(f"Summary: {result.summary}")
+    print(f"Target chapters: {result.target_chapters}")
+    print(f"Target words: {result.target_words}")
+    print(f"Current chapter: {result.current_chapter}")
+    print(f"Last finalized chapter: {result.last_finalized_chapter}")
+    print(f"Chapters attempted: {result.chapters_attempted}")
+    print(f"Failure count: {result.failure_count}")
+    if result.pause_reason:
+        print(f"Pause reason: {result.pause_reason}")
+    if result.next_command:
+        print(f"Next command: {result.next_command}")
+    print(f"State: {result.state_file}")
+    if result.report_file:
+        print(f"Report: {result.report_file}")
+
+
+def cmd_draft_submit(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = submit_agent_draft(
+        config,
+        chapter_number=args.chapter,
+        file_path=args.file,
+        agent=args.agent,
+        overwrite=args.overwrite,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: agent draft submitted")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Passed: {result.passed}")
+        print(f"Severity: {result.severity}")
+        print(f"Draft: {result.draft_file}")
+        print(f"Submission: {result.submission_file}")
+        print(f"Gate result: {result.gate_result}")
+        print(f"Pacing review: {result.pacing_review}")
+        print(f"SQLite synced: {result.db_synced}")
+        print(f"Next command: {result.next_command}")
+        print(f"Run report: {result.run_report}")
+    return 0 if result.passed else 1
+
+
+def cmd_chapter_finalize(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = finalize_chapter(
+        config,
+        chapter_number=args.chapter,
+        approved_by=args.approved_by,
+        overwrite=args.overwrite,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: chapter finalized")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Approved by: {result.approved_by}")
+        print(f"Final: {result.final_file}")
+        print(f"Summary: {result.summary_file}")
+        print(f"Finalization: {result.finalization_file}")
+        print(f"Gate result: {result.gate_result}")
+        print(f"Graph: {result.graph_file}")
+        print(f"RAG chunks: {result.rag_chunks_dir}")
+        print(f"Next plot context: {result.context_file}")
+        print(f"SQLite synced: {result.db_synced}")
+        print(f"Next command: {result.next_command}")
+        print(f"Run report: {result.run_report}")
+    return 0
+
+
+def cmd_gate_check(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = gate_check(config, chapter_number=args.chapter, source=args.source, semantic=args.semantic)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: gate-check completed")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Passed: {result.passed}")
+        print(f"Severity: {result.severity}")
+        print(f"Gate result: {result.gate_result}")
+        print(f"Repair plan: {result.repair_plan}")
+        print(f"Failures: {len(result.failures)}")
+        print(f"Allowed actions: {', '.join(result.allowed_actions)}")
+    return 0 if result.passed else 1
+
+
+def cmd_gate_waiver(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = record_waiver(
+        config,
+        chapter_number=args.chapter,
+        reason=args.reason,
+        approved_by=args.approved_by,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: gate waiver recorded")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Severity: {result.severity}")
+        print(f"Waiver: {result.waiver_file}")
+        print(f"Gate result: {result.gate_result}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_pacing_review(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = pacing_review(config, chapter_number=args.chapter, source=args.source, semantic_reader=args.semantic_reader)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: pacing review completed")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Tier: {result.tier}")
+        print(f"Report: {result.report_file}")
+        if result.reader_experience_report:
+            print(f"Reader experience: {result.reader_experience_report}")
+        print(f"Issues: {len(result.issues)}")
+        print(f"Warnings: {len(result.warnings)}")
+    return 0 if not result.issues else 1
+
+
+def cmd_pacing_semantic_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = semantic_pacing_task(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: semantic pacing task written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Task JSON: {result.task_json}")
+        print(f"Task Markdown: {result.task_markdown}")
+        print(f"Manifest: {result.manifest_file}")
+        print(f"Output: {result.output_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_pacing_semantic_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = semantic_pacing_validate(config, chapter_number=args.chapter, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: semantic pacing validation completed")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Valid: {result.ok}")
+        print(f"Report: {result.report_file}")
+        for error in result.errors:
+            print(f"ERROR: {error}")
+        for warning in result.warnings:
+            print(f"WARN: {warning}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.ok else 1
+
+
+def cmd_pacing_semantic_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = semantic_pacing_apply(config, chapter_number=args.chapter, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: semantic pacing applied")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Gate result: {result.gate_result}")
+        print(f"Pacing review: {result.pacing_review}")
+        print(f"Escalated failures: {result.escalated_failures}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.escalated_failures == 0 else 1
+
+
+def cmd_repair_chapter(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    if args.candidate_only:
+        result = write_repair_candidate_task(config, chapter_number=args.chapter, agent=args.agent)
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print("OK: repair candidate task ready")
+            print(f"Chapter: {result['chapter_number']}")
+            print(f"Candidate task: {result['candidate_task']}")
+            print(f"Candidate draft: {result['candidate_draft']}")
+            print(f"Manifest: {result['manifest_file']}")
+            print(f"Next command: {result['next_command']}")
+        return 0
+    if not args.plan_only:
+        raise GateError("Use --plan-only or --candidate-only.")
+    result = repair_plan(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: repair plan ready")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Gate result: {result.gate_result}")
+        print(f"Repair plan: {result.repair_plan}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def write_repair_candidate_task(config: ConfigDocument, *, chapter_number: int, agent: str) -> dict[str, str | int]:
+    root = resolve_project_root(config)
+    artifact_dir = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}"
+    gate_result = artifact_dir / "gate_result.json"
+    repair = artifact_dir / "repair_plan.md"
+    candidate_dir = root / "50_workbench" / "repair_candidates"
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    safe_agent = str(agent or "codex").strip().lower().replace(" ", "_")
+    task_path = candidate_dir / f"ch{chapter_number:03d}.{safe_agent}.repair_task.md"
+    manifest_file = candidate_dir / f"ch{chapter_number:03d}.{safe_agent}.repair_task.agent_task.json"
+    candidate_draft = candidate_dir / f"ch{chapter_number:03d}.{safe_agent}.repair_candidate.md"
+    gate_text = gate_result.read_text(encoding="utf-8") if gate_result.exists() else "{}"
+    repair_text = repair.read_text(encoding="utf-8") if repair.exists() else "Repair plan has not been generated yet."
+    next_command = (
+        f"longform-engine draft submit project.yaml --chapter {chapter_number} "
+        f"--file {cli_relative_path(root, candidate_draft)} --agent {safe_agent} --overwrite"
+    )
+    atomic_write_text(
+        task_path,
+        "\n".join(
+            [
+                f"# Repair Candidate Task ch{chapter_number:03d}",
+                "",
+                f"- Agent: {safe_agent}",
+                f"- Candidate draft path: `{cli_relative_path(root, candidate_draft)}`",
+                f"- Next command after writing candidate: `{next_command}`",
+                "",
+                "Write only a repair candidate. Do not edit final manuscripts, RAG, graph, memory, or SQLite.",
+                "After writing, run Humanizer v2 self-check before `draft submit`.",
+                "",
+                "## Creative Operator Requirements",
+                "",
+                "- Preserve canonical facts, approved character state, and chapter duty.",
+                "- Convert gate failures into scene-level rewrites, not abstract explanations.",
+                "- Add evidence spans for motivation, relationship turns, ability limits, and foreshadow changes.",
+                "- Remove AI templates, generic significance language, prompt residue, and same-shape paragraphs.",
+                "- Keep the repair candidate in the configured agent draft lane only.",
+                "",
+                "## Humanizer v2 Passes",
+                "",
+                "- Pass 1: remove AI templates, summary lecture, explanation tone, meta residue, and homogeneous sentence patterns.",
+                "- Pass 2: strengthen dialogue difference, action-carried psychology, paragraph rhythm, scene texture, and ending hook.",
+                "",
+                "## Gate Result",
+                "",
+                "```json",
+                gate_text,
+                "```",
+                "",
+                "## Repair Plan",
+                "",
+                repair_text,
+                "",
+            ]
+        ),
+    )
+    manifest = build_manifest(
+        root,
+        task_type="repair",
+        chapter_number=chapter_number,
+        input_files=[
+            task_path,
+            gate_result,
+            repair,
+            root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md",
+            root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
+            root / "50_workbench" / "chapter_context" / f"ch{chapter_number:03d}.md",
+        ],
+        allowed_output_paths=[candidate_draft],
+        output_schema="markdown_repair_candidate",
+        validate_command=next_command,
+        apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
+        failure_next_command=(
+            f"longform-engine editorial need-human project.yaml --chapter {chapter_number} "
+            "--reason repair_candidate_failed"
+        ),
+    )
+    write_manifest(root, manifest, manifest_file)
+    return {
+        "chapter_number": chapter_number,
+        "candidate_task": str(task_path),
+        "candidate_draft": str(candidate_draft),
+        "manifest_file": str(manifest_file),
+        "next_command": next_command,
+    }
+
+
+def cmd_research_add(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = add_research(
+        config,
+        file_path=args.file,
+        title=args.title,
+        source_url=args.source_url,
+        tags=args.tag,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: research item added to inbox")
+        print(f"Item: {result.item_id}")
+        print(f"Status: {result.status}")
+        print(f"JSON: {result.item_file}")
+        print(f"Content: {result.content_file}")
+    return 0
+
+
+def cmd_research_search(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = search_research(config, args.query, limit=args.limit)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: research search saved to inbox")
+        print(f"Item: {result.item_id}")
+        print(f"Status: {result.status}")
+        print(f"JSON: {result.item_file}")
+        print(f"Sources: {len(result.sources)}")
+    return 0
+
+
+def cmd_research_gaps(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = detect_knowledge_gaps(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: knowledge gap plan written")
+        print(f"Report: {result.report_file}")
+        print(f"Plan: {result.plan_file}")
+        print(f"Gaps: {len(result.gaps)}")
+    return 0
+
+
+def cmd_research_promote(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = promote_research(
+        config,
+        research_item=args.item,
+        approved_by=args.approved_by,
+        review_note=args.review_note,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: research item promoted to canon")
+        print(f"Item: {result.item_id}")
+        print(f"Canon: {result.canon_file}")
+        print(f"Impact: {result.impact_report}")
+        print(f"RAG chunk: {result.rag_chunk_file}")
+        print(f"Context: {result.context_file}")
+        print(f"Graph: {result.graph_file}")
+        print(f"SQLite chunks: {result.db_chunks}")
+    return 0
+
+
+def cmd_impact_analyze(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    if args.after_rollback:
+        result = rollback_impact(config)
+        if args.json:
+            print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        else:
+            print("OK: rollback impact report written")
+            print(f"Report: {result.report_file}")
+            print(f"To chapter: {result.to_chapter}")
+            print(f"Affected chapters: {len(result.affected_chapters)}")
+            print(f"Settings: {len(result.affected_settings)}")
+            print(f"Summaries: {len(result.affected_summaries)}")
+        return 0
+    if not args.research_item:
+        raise ValueError("impact-analyze requires --research-item or --after-rollback.")
+    result = impact_analyze(config, research_item=args.research_item)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: research impact report written")
+        print(f"Item: {result.item_id}")
+        print(f"Report: {result.report_file}")
+        print(f"Characters: {len(result.impacted_characters)}")
+        print(f"Chapters: {len(result.impacted_chapters)}")
+        print(f"Graph nodes: {len(result.impacted_graph_nodes)}")
+        print(f"Future cards: {len(result.impacted_future_cards)}")
+    return 0
+
+
+def cmd_revision_branch(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = create_revision_branch(config, chapter_number=args.chapter, overwrite=args.overwrite)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: rewrite candidate created")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Status: {result.status}")
+        print(f"Source: {result.source_path}")
+        print(f"Candidate: {result.candidate_path}")
+        print(f"Report: {result.report_file}")
+    return 0
+
+
+def cmd_revision_rollback(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = rollback(config, to_chapter=args.to_chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: rollback completed")
+        print(f"To chapter: {result.to_chapter}")
+        print(f"Snapshot: {result.snapshot_dir or 'none'}")
+        print(f"Detached dir: {result.detached_dir}")
+        print(f"Detached files: {len(result.detached_files)}")
+        print(f"Stale chapters: {', '.join(str(item) for item in result.stale_chapters) if result.stale_chapters else 'none'}")
+        print(f"Stale report: {result.stale_report}")
+        print(f"Impact report: {result.impact_report}")
+    return 0
+
+
+def cmd_revision_snapshot(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = snapshot_project(config, label=args.label)
+    payload = {
+        "snapshot_dir": str(result.snapshot_dir),
+        "copied_paths": [str(path) for path in result.copied_paths],
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: snapshot created")
+        print(f"Snapshot: {result.snapshot_dir}")
+        print(f"Copied paths: {len(result.copied_paths)}")
+    return 0
+
+
+def cmd_revise_outline(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = revise_outline(
+        config,
+        from_chapter=args.from_chapter,
+        change_description=args.change_description,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: outline revision markers written")
+        print(f"From chapter: {result.from_chapter}")
+        print(f"Anchors: {result.anchor_file}")
+        print(f"Backup: {result.anchor_backup}")
+        print(f"Cascade: {result.cascade_report}")
+        print(f"RAG stale: {result.rag_stale_file}")
+        print(f"Stale indexes: {result.stale_index_file}")
+        print(f"Report: {result.report_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_editorial_review(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = editorial_review(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: editorial review written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Status: {result.status}")
+        print(f"Review: {result.review_file}")
+        print(f"Task: {result.task_file}")
+        print(f"Need human: {result.need_human}")
+    return 0 if not result.need_human else 1
+
+
+def cmd_editorial_batch_review(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = editorial_batch_review(config, chapter_start=args.chapter_start, chapter_end=args.chapter_end)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: editorial batch review written")
+        print(f"Range: ch{result.chapter_start:03d}-ch{result.chapter_end:03d}")
+        print(f"Reviews: {result.reviews}")
+        print(f"Batch: {result.batch_file}")
+        print(f"Need human: {result.need_human}")
+    return 0 if not result.need_human else 1
+
+
+def cmd_editorial_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = editorial_status(config)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: editorial status written")
+        print(f"Status: {result.status_file}")
+        print(f"Unresolved items: {result.unresolved_items}")
+        print(f"Conditional passes: {result.conditional_passes}")
+        print(f"Need human: {result.need_human}")
+    return 0 if not result.need_human else 1
+
+
+def cmd_editorial_submit_review(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = editorial_submit_review(config, chapter_number=args.chapter, role=args.role, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: editorial role result submitted")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Role: {result.role}")
+        print(f"Accepted: {result.accepted}")
+        print(f"Validation: {result.validation_file}")
+        print(f"Aggregate: {result.aggregate_file}")
+        print(f"Need human: {result.need_human}")
+        print(f"Next command: {result.next_command}")
+    return 0 if not result.need_human else 1
+
+
+def cmd_editorial_aggregate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = editorial_aggregate(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: editorial results aggregated")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Aggregate: {result.aggregate_file}")
+        print(f"Results: {len(result.result_files)}")
+        print(f"Unresolved items: {result.unresolved_items}")
+        print(f"Missing roles: {len(result.missing_roles)}")
+        print(f"Duplicate role results: {len(result.duplicate_role_results)}")
+        print(f"Invalid results: {len(result.invalid_results)}")
+        print(f"Conditional passes: {result.conditional_passes}")
+        print(f"Need human: {result.need_human}")
+        print(f"Next command: {result.next_command}")
+    return 0 if not result.need_human else 1
+
+
+def cmd_editorial_need_human(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = editorial_need_human(config, chapter_number=args.chapter, reason=args.reason)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: editorial human review requested")
+        print(f"Status: {result.status_file}")
+        if result.human_request_file:
+            print(f"Request: {result.human_request_file}")
+    return 0
+
+
+def cli_relative_path(root: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+def cmd_reserved(args: argparse.Namespace) -> int:
+    print(
+        f"Command '{args.command}' is reserved by the workflow contract and is not available in this build.",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    _configure_stdio()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        if getattr(args, "mutates_project", False):
+            config, output = _lock_context(args)
+            with acquire_project_lock(config, command=_command_label(args), output=output):
+                return int(args.func(args))
+        return int(args.func(args))
+    except (ConfigError, GateError, ResearchError, RevisionError, WorkflowError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _configure_stdio() -> None:
+    """Keep Chinese CLI output readable in tool and redirected environments."""
+
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
+
+
+def _lock_context(args: argparse.Namespace) -> tuple[ConfigDocument, str | None]:
+    if args.command in {"init-project", "init-novel"}:
+        config, output = prepared_init_context(args)
+        return config, output
+    if args.command == "open-book" and getattr(args, "interactive", False):
+        config_path = Path(args.config).expanduser()
+        if not config_path.exists():
+            args._open_book_needs_init = True
+            config, output = prepared_init_context(args)
+            return config, output
+    return load_project_config(Path(args.config).expanduser().resolve()), None
+
+
+def _command_label(args: argparse.Namespace) -> str:
+    parts = [args.command]
+    for attr in (
+        "db_command",
+        "models_command",
+        "vector_command",
+        "agent_task_command",
+        "production_command",
+        "rag_command",
+        "graph_command",
+        "memory_command",
+        "creative_command",
+        "pacing_command",
+        "auto_command",
+        "draft_command",
+        "chapter_command",
+        "research_command",
+        "revision_command",
+        "editorial_command",
+    ):
+        value = getattr(args, attr, None)
+        if value:
+            parts.append(value)
+    return " ".join(parts)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,118 @@
+schema_version: 1
+
+project:
+  slug: "longform_150w_demo"
+  title: "百万字长篇示例项目"
+  root_dir: "novels/longform_150w_demo"
+  language: "zh-CN"
+  timezone: "Asia/Hong_Kong"
+
+novel:
+  target_platform: "qidian"
+  genre: "玄幻"
+  subgenre: "东方玄幻"
+  audience: "中文长篇小说读者"
+  core_promise: "底层主角凭借独特体系逐步撬动旧秩序，并在每卷兑现阶段爽点。"
+  main_question: "主角如何在旧秩序压迫下完成成长、扩张势力并改写世界规则？"
+  ending_direction: "主角完成终局选择，核心秘密回收，旧秩序被重塑但代价明确。"
+  forbidden_experience:
+    - "连续多章无推进"
+    - "主角无理由降智"
+    - "战力体系无成本膨胀"
+    - "伏笔长期开坑不回收"
+
+length:
+  total_chapters: 500
+  target_total_words: 1500000
+  volume_count: 6
+  new_book_phase_chapters: 30
+  ending_phase_chapters: 60
+  chapter_word_count:
+    target: 3000
+    min: 2400
+    max: 3600
+    hard_min: 2000
+    hard_max: 4200
+
+writing:
+  mode: "agent_skill"
+  agent:
+    task_dir: "50_workbench/writing_tasks"
+    draft_dir: "50_workbench/agent_drafts"
+    require_submit_command: true
+    default_agent: "codex"
+  api:
+    enabled: false
+  template_dry_run:
+    enabled: false
+
+rag:
+  enabled: true
+  backend: "sqlite_hybrid"
+  candidate_pool_size: 40
+  top_k: 12
+  semantic_weight: 0.55
+  keyword_weight: 0.25
+  metadata_weight: 0.20
+  embedding:
+    enabled: true
+    profile: "bge-m3"
+    model: "BAAI/bge-m3"
+    cache_dir: "70_runtime/models"
+  reranker:
+    enabled: true
+    profile: "bge-m3"
+    model: "BAAI/bge-reranker-v2-m3"
+    candidate_limit: 24
+
+semantic:
+  enabled: true
+  profile: "bge-m3"
+  fallback_profile: "local-hash"
+  models_dir: "70_runtime/models"
+  allow_network_download: true
+  require_real_model: true
+  allow_fallback: false
+  vector_store:
+    backend: "local_sqlite"
+    url: ""
+    collection: "longform_vectors"
+    api_key_env: "LONGFORM_VECTOR_API_KEY"
+    metric: "cosine"
+    dim: 1024
+
+pacing:
+  volume_distribution: [80, 80, 85, 85, 85, 85]
+  event_quota_window_chapters: 5
+  fast_chapter_cooldown: 1
+  max_major_quota_triggers_per_chapter: 1
+  event_types:
+    - conflict_thrill
+    - bond_deepening
+    - faction_building
+    - world_painting
+    - tension_escalation
+  event_cooldown:
+    conflict_thrill: 1
+    bond_deepening: 1
+    faction_building: 1
+    world_painting: 1
+    tension_escalation: 1
+  soft_event_window_chapters: 5
+  max_consecutive_fast_chapters: 2
+  fast_chapter_quota_per_volume: 45
+
+research:
+  web_search_enabled: true
+  default_ingestion: "reviewed_inbox"
+  search_provider: "zh_wikipedia"
+  search_limit: 5
+  promote_requires_approval: true
+
+revision:
+  default_strategy: "transaction_branch"
+  keep_detached_drafts: true
+
+codex:
+  default_workflow: "command_driven"
+  pause_on_gate_failure: true
