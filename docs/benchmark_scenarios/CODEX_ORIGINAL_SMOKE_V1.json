@@ -1,0 +1,185 @@
+{
+  "schema": "benchmark_scenario_v1",
+  "scenario_id": "codex-original-smoke-v1",
+  "title": "照骨司夜录",
+  "creation_mode": "original",
+  "market_profile": "qidian_male",
+  "genre_profile": "oriental_fantasy_mystery",
+  "target_chapters": 10,
+  "smoke_chapters": 5,
+  "chapter_target_characters": 3000,
+  "premise": "边城照骨司案牍吏沈阙能听见遗物中最后一项未偿承诺。他借此追查失踪军粮车，也逐步触到父亲旧年通敌案被人改写的痕迹。",
+  "reader_contract": {
+    "primary": [
+      "每章至少推进一个可验证线索、人物选择或能力代价",
+      "案件依靠物证、行为和利益关系推进，不靠主角突然获知答案",
+      "主角每次获益都伴随可追踪的责任、关系成本或行动限制",
+      "前五章闭合失踪军粮车小案，同时打开父亲旧案的长期入口"
+    ],
+    "forbidden_experiences": [
+      "系统面板式信息倾倒",
+      "连续两段以上纯世界观讲解",
+      "配角集体降智为主角让路",
+      "主角能力直接读心、预知未来或判断真凶",
+      "无代价胜利和重复打脸",
+      "所有角色使用相同语气",
+      "使用“这一切才刚刚开始”作为章节结尾",
+      "每章固定使用同一种悬崖钩子"
+    ]
+  },
+  "world_rules": [
+    {
+      "rule_id": "world_bone_records",
+      "rule": "照骨司负责登记妖骨、战场遗物和异常承诺，登记记录具有官府证据效力，但不能代替审讯与实物复核。"
+    },
+    {
+      "rule_id": "world_frontier_supply",
+      "rule": "朔宁城依赖三条军粮道，粮票、车印、关牒和交接时刻必须相互吻合，任何缺口都会影响前线配给。"
+    },
+    {
+      "rule_id": "world_promises_have_cost",
+      "rule": "强烈且未完成的承诺会在长期接触的物件上留下承痕，但承痕只保存承诺本身，不保存完整经过。"
+    }
+  ],
+  "ability_contract": {
+    "name": "听契",
+    "trigger": "沈阙必须直接接触已由照骨司登记的遗物，并主动接受一项承诺约束。",
+    "information": "只能听见物主最后一项仍未偿还的明确承诺，不能读取思想、预测未来、识别谎言或直接指出真凶。",
+    "cost": "每次使用后，沈阙必须在限定时间内承担承诺中的一项可执行义务；拒绝履行会导致耳鸣、失声和下一次听契失真。",
+    "limits": [
+      "同一件遗物只能可靠听取一次",
+      "转述、伪造和多人共同持有会产生歧义",
+      "承诺可能真诚但基于错误认知",
+      "能力结论必须由物证、时间线或人物行为交叉验证"
+    ]
+  },
+  "characters": [
+    {
+      "character_id": "char_shen_que",
+      "name": "沈阙",
+      "role": "protagonist",
+      "desire": "洗清父亲通敌罪名并取得查阅旧案底册的正式权限。",
+      "flaw": "习惯把责任抢到自己身上，把求助误认为软弱。",
+      "voice": "说话短而准确，遇到不确定证据会主动区分事实与猜测；情绪越重，措辞越客气。",
+      "arc_boundary": "前五章只能学会分担一次风险，不能突然变成善于信任团队的领袖。"
+    },
+    {
+      "character_id": "char_ning_zhao",
+      "name": "宁昭",
+      "role": "night_patrol_captain",
+      "desire": "在冬封前找出军粮漏洞，保住巡夜队的独立调查权。",
+      "flaw": "过度依赖程序控制风险，对未经复核的异能证词天然反感。",
+      "voice": "问题具体，常要求时间、地点和责任人；不讲空泛鼓励，也不替沈阙收拾未经同意的承诺。",
+      "relationship": "与沈阙从互相利用发展到有限度合作，不能在五章内转为无条件信任或爱情。"
+    },
+    {
+      "character_id": "char_luo_qi",
+      "name": "骆七",
+      "role": "surviving_cart_guard",
+      "desire": "找到失踪的同伴并证明自己没有私吞军粮。",
+      "flaw": "为了保护同伴会隐瞒不利细节，越被逼问越爱说半真话。",
+      "voice": "带边军行话，习惯先报坏消息再讲条件；紧张时会反复确认退路。"
+    },
+    {
+      "character_id": "char_he_jian",
+      "name": "何简",
+      "role": "supply_registry_clerk",
+      "desire": "掩盖自己替上级修改交接时刻的行为，保住家人配给。",
+      "flaw": "把服从程序当成免除个人责任的理由。",
+      "voice": "用规章编号和被动句推卸责任，极少直接说“我”。"
+    }
+  ],
+  "protected_reveals": [
+    {
+      "reveal_id": "reveal_father_case",
+      "earliest_chapter": 5,
+      "content": "失踪军粮车的补录印泥与沈阙父亲旧案封缄使用同一批异常骨灰。"
+    },
+    {
+      "reveal_id": "reveal_mastermind",
+      "earliest_chapter": 10,
+      "content": "改写补给记录的幕后组织身份。",
+      "constraint": "前十章只能出现可复核痕迹，不得直接揭晓组织首领。"
+    }
+  ],
+  "chapter_targets": [
+    {
+      "chapter": 1,
+      "chapter_duty": "异常发现",
+      "reader_gain": "理解听契的第一条能力边界，并获得军粮车并未按记录出城的硬线索。",
+      "required_event": "沈阙从断裂车铃中听见“第三辆车从未过桥”的承诺，但登记簿显示三车均已交接。",
+      "cost": "沈阙接受在天亮前把一枚家书木牌交给骆七的义务。",
+      "ending_mode": "行动决定"
+    },
+    {
+      "chapter": 2,
+      "chapter_duty": "关系冲突",
+      "reader_gain": "看到宁昭如何用程序反驳异能线索，并找到桥头交接时刻的矛盾。",
+      "required_event": "沈阙与宁昭在是否扣押骆七上冲突，最终以限定条件换取一次共同复核。",
+      "cost": "沈阙为履行木牌承诺隐瞒了一项不影响定罪却影响信任的细节。",
+      "ending_mode": "证据反转"
+    },
+    {
+      "chapter": 3,
+      "chapter_duty": "错误判断",
+      "reader_gain": "确认听契可能真实却误导，主角必须为错误推断承担损失。",
+      "required_event": "沈阙把“没有过桥”误解为车在城内，搜查失败并令真正转运者提前销毁一处仓点。",
+      "cost": "巡夜队失去半夜时间，宁昭收回沈阙的自由调查权限。",
+      "ending_mode": "关系降温"
+    },
+    {
+      "chapter": 4,
+      "chapter_duty": "代价兑现",
+      "reader_gain": "看见主角通过行为习惯和物证修正错误，而非升级能力。",
+      "required_event": "沈阙履行另一件遗物承诺，保护看似可疑的骆七，并从车辙盐霜证明军粮经封冻河床绕桥。",
+      "cost": "沈阙短暂失声，无法在关键审讯中亲自解释，只能把推理交给宁昭执行。",
+      "ending_mode": "角色交棒"
+    },
+    {
+      "chapter": 5,
+      "chapter_duty": "小案闭环",
+      "reader_gain": "找回军粮、确认何简参与改账，并兑现正式调查权限与父亲旧案入口。",
+      "required_event": "宁昭依据沈阙留下的证据链截住转运，何简只承认改时刻而不知道幕后全貌。",
+      "cost": "沈阙必须接受照骨司内部监督，之后每次听契都要留档。",
+      "ending_mode": "收益兑现与长线证据"
+    },
+    {
+      "chapter": 6,
+      "chapter_duty": "新职责适应",
+      "reader_gain": "看到调查权限带来的实际便利和制度束缚。",
+      "required_event": "沈阙第一次以临时查案吏身份接触旧案目录，但只能申请一个卷宗盒。"
+    },
+    {
+      "chapter": 7,
+      "chapter_duty": "人物债务",
+      "reader_gain": "骆七不再只是证人，他要求沈阙兑现对失踪同伴的追查。",
+      "required_event": "新线索把军粮案与边军失踪名册连接起来。"
+    },
+    {
+      "chapter": 8,
+      "chapter_duty": "规则压力",
+      "reader_gain": "能力留档制度第一次与保护证人发生冲突。",
+      "required_event": "沈阙必须在如实登记与暴露线人之间作出有代价的选择。"
+    },
+    {
+      "chapter": 9,
+      "chapter_duty": "关系推进",
+      "reader_gain": "宁昭基于一次可验证行动扩大合作，而非通过情绪表态突然信任。",
+      "required_event": "两人共同设计一次不依赖听契的诱饵核验。"
+    },
+    {
+      "chapter": 10,
+      "chapter_duty": "阶段揭露",
+      "reader_gain": "确认旧案与补给记录存在组织化关联，但保留幕后首领。",
+      "required_event": "异常骨灰批次指向照骨司内部的封存流程，迫使沈阙选择继续留在制度内部追查。"
+    }
+  ],
+  "review_focus": [
+    "能力是否越界成为答案机器",
+    "沈阙与宁昭的声音和决策方式是否可区分",
+    "错误判断是否造成真实且持续的后果",
+    "每章读者收益是否实际出现在正文而非只写在章节卡",
+    "结尾方式是否重复",
+    "是否出现解释过度、伪细节、空泛情绪标签和机械总结"
+  ]
+}

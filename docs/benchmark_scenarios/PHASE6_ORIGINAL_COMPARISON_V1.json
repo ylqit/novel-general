@@ -1,0 +1,150 @@
+{
+  "schema": "quality_benchmark_scenario_v1",
+  "scenario_id": "phase6-original-comparison-v1",
+  "title": "照骨司夜录",
+  "language": "zh-CN",
+  "creation_mode": "original",
+  "market_profile": "qidian_male",
+  "genre_profile": [
+    "东方玄幻",
+    "悬疑调查",
+    "弱能力成长"
+  ],
+  "planned_chapters": 10,
+  "target_chinese_characters_per_chapter": 3000,
+  "premise": "边城照骨司低阶案牍吏沈阙能听见遗物中最后一项未偿承诺。他追查失踪军粮车，并逐步触及父亲旧年通敌案。",
+  "protagonist_contract": {
+    "stable_id": "char_shen_que",
+    "name": "沈阙",
+    "desire": "查清父亲旧案并保住自主判断。",
+    "flaw": "习惯独自承担代价，不愿及时向盟友说明风险。",
+    "voice": "克制、观察具体、面对权威时不逞口舌之快。",
+    "forbidden_drift": [
+      "无证据便断定真凶",
+      "突然以牺牲自己为唯一正确答案",
+      "用现代网络梗破坏叙事语体"
+    ]
+  },
+  "ability_contract": {
+    "name": "听诺",
+    "can": "听见遗物关联者最后一项仍未履行的承诺。",
+    "cannot": [
+      "读心",
+      "预测未来",
+      "直接判断真凶",
+      "绕过证据链确认承诺者身份"
+    ],
+    "cost": "每次使用后，沈阙必须在限定时间内承担该承诺的一项约束；违背时会失去一段与父亲有关的记忆。",
+    "escalation_rule": "前十章只允许提升证据解释能力，不增加读取范围或免除代价。"
+  },
+  "supporting_cast": [
+    {
+      "stable_id": "char_luo_yan",
+      "name": "罗砚",
+      "role": "边军校尉",
+      "desire": "找回军粮并证明部下没有监守自盗。",
+      "voice": "句短、重行动、遇到军纪问题时回避私人情绪。"
+    },
+    {
+      "stable_id": "char_wen_su",
+      "name": "闻素",
+      "role": "药铺掌柜兼失踪车夫之姐",
+      "desire": "先找回弟弟，再追究军粮案责任。",
+      "voice": "说话具体，善用价格、药性和街坊关系反驳空泛判断。"
+    },
+    {
+      "stable_id": "char_he_jian",
+      "name": "何简",
+      "role": "照骨司主簿",
+      "desire": "维持边城秩序并控制旧案重新浮出。",
+      "voice": "礼貌、程序化，很少直接否定，而是改变问题的办理顺序。"
+    }
+  ],
+  "long_arc": {
+    "surface_case": "五辆军粮车在城外驿道失踪，留下彼此矛盾的车辙、封签和交接账。",
+    "first_payoff_boundary": "第五章必须完成小案第一层闭环，并兑现调查权限、账册入口和父亲旧案线索。",
+    "chapter_ten_boundary": "第十章必须解释失踪车队的执行链和利益链，但不得揭露父亲旧案的最终主使。",
+    "protected_reveals": [
+      "父亲旧案最终主使",
+      "照骨司最高层真实目的",
+      "听诺能力的终极来源"
+    ]
+  },
+  "chapter_plan": [
+    {
+      "chapter": 1,
+      "duty": "异常发现",
+      "reader_gain": "确认失踪车队留下不可能同时成立的两组痕迹。",
+      "ending_mode": "证据反转"
+    },
+    {
+      "chapter": 2,
+      "duty": "关系冲突",
+      "reader_gain": "理解沈阙、罗砚和闻素对找车与找人的优先级冲突。",
+      "ending_mode": "关系选择"
+    },
+    {
+      "chapter": 3,
+      "duty": "错误判断",
+      "reader_gain": "一个合理嫌疑被证据推翻，能力边界得到具体证明。",
+      "ending_mode": "错误代价"
+    },
+    {
+      "chapter": 4,
+      "duty": "代价兑现",
+      "reader_gain": "沈阙承担未偿承诺约束，并失去一个更省事的调查路径。",
+      "ending_mode": "行动后果"
+    },
+    {
+      "chapter": 5,
+      "duty": "小案第一层闭环",
+      "reader_gain": "找到军粮去向的一部分，取得账册入口和父亲旧案线索。",
+      "ending_mode": "阶段性兑现"
+    },
+    {
+      "chapter": 6,
+      "duty": "后果扩散",
+      "reader_gain": "看见第五章结论如何改变边军、商户和照骨司三方行动。",
+      "ending_mode": "新约束"
+    },
+    {
+      "chapter": 7,
+      "duty": "盟友主动性",
+      "reader_gain": "闻素独立取得关键材料，不作为主角的工具人。",
+      "ending_mode": "信息错位"
+    },
+    {
+      "chapter": 8,
+      "duty": "制度阻力",
+      "reader_gain": "确认账册问题不是单个坏人可以完成，并看见程序如何制造盲区。",
+      "ending_mode": "权限冲突"
+    },
+    {
+      "chapter": 9,
+      "duty": "能力边界复验",
+      "reader_gain": "听诺提供的承诺真实但会被错误归因，主角必须靠普通证据纠正。",
+      "ending_mode": "因果重排"
+    },
+    {
+      "chapter": 10,
+      "duty": "第一阶段闭环",
+      "reader_gain": "解释军粮车执行链和利益链，保留父亲案终局并打开下一卷问题。",
+      "ending_mode": "选择后的新局面"
+    }
+  ],
+  "quality_constraints": [
+    "禁止系统面板式信息倾倒。",
+    "禁止配角集体降智或只为主角递答案。",
+    "禁止同质对白、万能能力和无代价胜利。",
+    "禁止每章使用相同冲突拓扑和结尾方式。",
+    "禁止以‘这一切才刚刚开始’或同义空钩子收尾。",
+    "解释必须由行动、证据或人物选择触发，不得连续大段总结设定。",
+    "每章至少兑现一项可验证的读者收益，且不能只用下一章悬念替代。"
+  ],
+  "evidence_policy": {
+    "formal_comparison_requires_same_file_sha256": true,
+    "stores_generated_prose": false,
+    "minimum_blind_judges": 3,
+    "minimum_formal_chapters": 10
+  }
+}

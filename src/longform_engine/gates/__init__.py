@@ -9,6 +9,9 @@ from .pipeline import (
     SemanticPacingApplyResult,
     SemanticPacingTaskResult,
     SemanticPacingValidateResult,
+    SemanticReviewApplyResult,
+    SemanticReviewTaskResult,
+    SemanticReviewValidateResult,
     gate_check,
     pacing_review,
     repair_plan,
@@ -16,6 +19,9 @@ from .pipeline import (
     semantic_pacing_apply,
     semantic_pacing_task,
     semantic_pacing_validate,
+    semantic_review_apply,
+    semantic_review_task,
+    semantic_review_validate,
 )
 
 __all__ = [
@@ -27,6 +33,9 @@ __all__ = [
     "SemanticPacingApplyResult",
     "SemanticPacingTaskResult",
     "SemanticPacingValidateResult",
+    "SemanticReviewApplyResult",
+    "SemanticReviewTaskResult",
+    "SemanticReviewValidateResult",
     "gate_check",
     "pacing_review",
     "repair_plan",
@@ -34,4 +43,7 @@ __all__ = [
     "semantic_pacing_apply",
     "semantic_pacing_task",
     "semantic_pacing_validate",
+    "semantic_review_apply",
+    "semantic_review_task",
+    "semantic_review_validate",
 ]

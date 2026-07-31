@@ -1,0 +1,67 @@
+"""Reader-payoff review and finalized craft-history services."""
+
+from .contracts import (
+    APPROVED_BASELINE_PATH,
+    GENRE_PROFILE_IDS,
+    MARKET_PROFILE_IDS,
+    QUALITY_STRICTNESS,
+    STORY_PHASE_IDS,
+    StyleBaselineApprovalResult,
+    approve_style_baseline,
+    compile_effective_quality_contract,
+    infer_story_phase,
+)
+from .feedback import (
+    FEEDBACK_REGISTRY,
+    FeedbackRegistryResult,
+    carry_feedback,
+    feedback_registry_status,
+    ingest_chapter_feedback,
+    refresh_feedback_registry,
+    transition_feedback,
+    truncate_feedback_registry,
+)
+from .history import (
+    analyze_structure_pattern,
+    build_structure_observation,
+    record_quality_history,
+    truncate_quality_history,
+)
+from .review import (
+    ReaderPayoffTaskResult,
+    ReaderPayoffValidateResult,
+    payoff_review_required_reasons,
+    reader_payoff_review_status,
+    reader_payoff_task,
+    reader_payoff_validate,
+)
+
+__all__ = [
+    "APPROVED_BASELINE_PATH",
+    "FEEDBACK_REGISTRY",
+    "FeedbackRegistryResult",
+    "GENRE_PROFILE_IDS",
+    "MARKET_PROFILE_IDS",
+    "QUALITY_STRICTNESS",
+    "ReaderPayoffTaskResult",
+    "ReaderPayoffValidateResult",
+    "STORY_PHASE_IDS",
+    "StyleBaselineApprovalResult",
+    "analyze_structure_pattern",
+    "approve_style_baseline",
+    "build_structure_observation",
+    "carry_feedback",
+    "compile_effective_quality_contract",
+    "infer_story_phase",
+    "feedback_registry_status",
+    "ingest_chapter_feedback",
+    "payoff_review_required_reasons",
+    "reader_payoff_review_status",
+    "reader_payoff_task",
+    "reader_payoff_validate",
+    "refresh_feedback_registry",
+    "record_quality_history",
+    "transition_feedback",
+    "truncate_feedback_registry",
+    "truncate_quality_history",
+]

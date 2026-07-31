@@ -14,6 +14,7 @@ from longform_engine.agent_tasks import mark_tasks_rolled_back
 from longform_engine.config import ConfigDocument
 from longform_engine.db import sync_database
 from longform_engine.memory import mark_memory_stale
+from longform_engine.quality import truncate_feedback_registry, truncate_quality_history
 from longform_engine.storage import atomic_write_text, resolve_project_root
 
 
@@ -249,7 +250,17 @@ def rollback(config: ConfigDocument, *, to_chapter: int) -> RevisionRollbackResu
     affected.update(mark_future_chapter_cards_stale(root, to_chapter))
     affected.update(mark_future_writing_tasks_stale(root, to_chapter))
     mark_chapter_plan_stale(root, to_chapter)
-    stale_report = write_stale_markers(root, to_chapter=to_chapter, stale_chapters=sorted(affected), timestamp=timestamp)
+    rebuilt_quality_indexes = (
+        *truncate_quality_history(root, to_chapter=to_chapter),
+        *truncate_feedback_registry(root, to_chapter=to_chapter),
+    )
+    stale_report = write_stale_markers(
+        root,
+        to_chapter=to_chapter,
+        stale_chapters=sorted(affected),
+        timestamp=timestamp,
+        rebuilt_quality_indexes=rebuilt_quality_indexes,
+    )
     mark_memory_stale(config, from_chapter=to_chapter + 1, reason=f"rollback_to_ch{to_chapter:03d}")
     state_file = update_rollback_state(root, to_chapter=to_chapter, stale_chapters=sorted(affected), timestamp=timestamp, detached_dir=detached_dir)
 
@@ -457,7 +468,14 @@ def stale_paths(root: Path, stale_chapters: list[int]) -> dict[str, list[str]]:
     }
 
 
-def write_stale_markers(root: Path, *, to_chapter: int, stale_chapters: list[int], timestamp: str) -> Path:
+def write_stale_markers(
+    root: Path,
+    *,
+    to_chapter: int,
+    stale_chapters: list[int],
+    timestamp: str,
+    rebuilt_quality_indexes: tuple[str, ...] = (),
+) -> Path:
     payload = {
         "reason": f"rollback_to_ch{to_chapter:03d}",
         "to_chapter": to_chapter,
@@ -470,6 +488,7 @@ def write_stale_markers(root: Path, *, to_chapter: int, stale_chapters: list[int
             "event_matrix",
             "chapter_summaries_after_rollback",
         ],
+        "rebuilt_quality_indexes": list(rebuilt_quality_indexes),
         "stale_paths": stale_paths(root, stale_chapters),
         "created_at": utc_now(),
     }

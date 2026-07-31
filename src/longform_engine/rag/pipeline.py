@@ -16,7 +16,10 @@ from longform_engine.db.sqlite_index import connect, database_path
 from longform_engine.graph import retrieve_graph
 from longform_engine.models import cosine_similarity, embed_text_with_provider, ensure_models_ready, rerank_pair
 from longform_engine.storage import atomic_write_text, resolve_project_root
-from longform_engine.vectorstore import rebuild_from_files as rebuild_vector_store
+from longform_engine.vectorstore import VectorQuery
+from longform_engine.vectorstore import query as query_vector_store
+from longform_engine.vectorstore import record_from_embedding
+from longform_engine.vectorstore import sync_records as sync_vector_store
 
 
 FORBIDDEN_SEMANTIC_SOURCE_FRAGMENTS = ("agent_drafts", "research_" + "inbox", "40_manuscript/draft")
@@ -302,15 +305,6 @@ def retrieve_hits(
     metadata_weight = float(rag_config.get("metadata_weight", 0.20))
     semantic_weight = float(rag_config.get("semantic_weight", 0.55))
 
-    with connect(db_path) as conn:
-        rows = conn.execute(
-            """
-            SELECT id, chapter_number, chunk_index, text, keywords_json, source_path, metadata_json
-            FROM chapter_chunks
-            ORDER BY COALESCE(chapter_number, 0) DESC, chunk_index ASC
-            """,
-        ).fetchall()
-
     semantic_status = ensure_models_ready(config, allow_download=True, require_reranker=False) if semantic else None
     embedding_only_rerank = bool(
         semantic_status
@@ -319,6 +313,35 @@ def retrieve_hits(
         and semantic_status.profile != "local-hash"
     )
     query_vector = embed_text_with_provider(config, query_text) if semantic else []
+    vector_hits = (
+        query_vector_store(
+            config,
+            VectorQuery(
+                vector=tuple(query_vector),
+                top_k=max(candidate_pool * 2, top_k),
+                owner_types=("chapter_chunk", "scene_memory", "chapter_memory", "arc_memory", "character_memory"),
+                max_chapter=(chapter_number - 1) if chapter_number and chapter_number > 1 else None,
+            ),
+        )
+        if semantic
+        else []
+    )
+    rows = load_chunk_candidates(
+        db_path,
+        terms=terms,
+        vector_owner_ids={
+            hit.owner_id for hit in vector_hits if hit.owner_type == "chapter_chunk"
+        },
+        candidate_pool=candidate_pool,
+        semantic=semantic,
+        chapter_number=chapter_number,
+    )
+    chapter_vector_scores = {
+        hit.owner_id: float(hit.score)
+        for hit in vector_hits
+        if hit.owner_type == "chapter_chunk"
+    }
+    lexical_fallback_active = semantic and not vector_hits
     coarse_scored: list[tuple[float, float, Any, dict[str, Any], tuple[str, ...], str]] = []
     for row in rows:
         metadata = loads_json(row["metadata_json"], default={})
@@ -346,7 +369,7 @@ def retrieve_hits(
             + location_overlap * 1.5
             + foreshadow_overlap * 1.6
         )
-        semantic_coarse = cosine_similarity(query_vector, embed_text_with_provider(config, haystack)) if semantic else 0.0
+        semantic_coarse = chapter_vector_scores.get(str(row["id"]), 0.0) if semantic else 0.0
         if semantic and semantic_coarse > 0:
             coarse += semantic_coarse * 2.0
         if coarse <= 0:
@@ -372,7 +395,7 @@ def retrieve_hits(
         foreshadow_overlap = score_term_overlap(terms, " ".join(normalize_strings(metadata.get("foreshadow_refs"))).lower())
         recency = (int(row["chapter_number"] or 0) / max_chapter) if max_chapter else 0.0
         semantic_candidate_text = " ".join([text, json.dumps(metadata, ensure_ascii=False)])
-        semantic_score = cosine_similarity(query_vector, embed_text_with_provider(config, semantic_candidate_text)) if semantic else 0.0
+        semantic_score = semantic_coarse if semantic else 0.0
 
         score = (
             semantic_weight * max(exact, term_overlap, summary_overlap)
@@ -403,6 +426,8 @@ def retrieve_hits(
         )
         if semantic and semantic_score > 0:
             reasons.append("semantic vector similarity")
+        if lexical_fallback_active:
+            reasons.append("warning: explicit lexical fallback; vector candidates unavailable")
         if embedding_only_rerank:
             reasons.append("warning: embedding-only semantic rerank")
         if score <= 0:
@@ -436,7 +461,7 @@ def retrieve_hits(
             retrieve_memory_hits(
                 config,
                 query_text,
-                query_vector=query_vector,
+                vector_hits=vector_hits,
                 top_k=max(candidate_pool, top_k),
                 embedding_only_rerank=embedding_only_rerank,
             )
@@ -448,6 +473,98 @@ def retrieve_hits(
     return hits[:top_k]
 
 
+def load_chunk_candidates(
+    db_path: Path,
+    *,
+    terms: list[str],
+    vector_owner_ids: set[str],
+    candidate_pool: int,
+    semantic: bool,
+    chapter_number: int | None,
+) -> list[Any]:
+    """Load bounded ANN, lexical, and recent candidates for semantic retrieval."""
+
+    columns = (
+        "id, chapter_number, chunk_index, text, keywords_json, "
+        "source_path, metadata_json"
+    )
+    if not semantic or not vector_owner_ids:
+        with connect(db_path) as conn:
+            return conn.execute(
+                f"""
+                SELECT {columns}
+                FROM chapter_chunks
+                ORDER BY COALESCE(chapter_number, 0) DESC, chunk_index ASC
+                """
+            ).fetchall()
+
+    rows_by_id: dict[str, Any] = {}
+    vector_ids = sorted(vector_owner_ids)
+    placeholders = ",".join("?" for _ in vector_ids)
+    max_chapter = chapter_number - 1 if chapter_number and chapter_number > 1 else None
+    with connect(db_path) as conn:
+        for row in conn.execute(
+            f"""
+            SELECT {columns}
+            FROM chapter_chunks
+            WHERE id IN ({placeholders})
+            """,
+            vector_ids,
+        ).fetchall():
+            rows_by_id[str(row["id"])] = row
+
+        recent_params: list[Any] = []
+        recent_where = ""
+        if max_chapter is not None:
+            recent_where = "WHERE chapter_number <= ?"
+            recent_params.append(max_chapter)
+        for row in conn.execute(
+            f"""
+            SELECT {columns}
+            FROM chapter_chunks
+            {recent_where}
+            ORDER BY COALESCE(chapter_number, 0) DESC, chunk_index ASC
+            LIMIT ?
+            """,
+            [*recent_params, max(candidate_pool, 1)],
+        ).fetchall():
+            rows_by_id[str(row["id"])] = row
+
+        lexical_terms = [term for term in terms if term][:6]
+        if lexical_terms:
+            term_clauses = []
+            term_params: list[Any] = []
+            for term in lexical_terms:
+                term_clauses.append(
+                    "(text LIKE ? OR keywords_json LIKE ? OR metadata_json LIKE ?)"
+                )
+                pattern = f"%{term}%"
+                term_params.extend((pattern, pattern, pattern))
+            chapter_clause = ""
+            lexical_params: list[Any] = []
+            if max_chapter is not None:
+                chapter_clause = "chapter_number <= ? AND "
+                lexical_params.append(max_chapter)
+            lexical_params.extend(term_params)
+            lexical_params.append(max(candidate_pool, 1))
+            for row in conn.execute(
+                f"""
+                SELECT {columns}
+                FROM chapter_chunks
+                WHERE {chapter_clause}({" OR ".join(term_clauses)})
+                ORDER BY COALESCE(chapter_number, 0) DESC, chunk_index ASC
+                LIMIT ?
+                """,
+                lexical_params,
+            ).fetchall():
+                rows_by_id[str(row["id"])] = row
+
+    return sorted(
+        rows_by_id.values(),
+        key=lambda row: (-(int(row["chapter_number"] or 0)), int(row["chunk_index"])),
+    )
+
+
 def build_embeddings(config: ConfigDocument) -> int:
     """Build deterministic semantic embeddings for canonical RAG/memory rows."""
 
@@ -455,6 +572,14 @@ def build_embeddings(config: ConfigDocument) -> int:
     sync_database(config)
     model_status = ensure_models_ready(config, allow_download=True, require_reranker=True)
     model_name = model_status.embedding_model if model_status.status == "ready" else model_status.fallback or "local-hash"
+    metadata_dir = root / "60_rag" / "metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    output = metadata_dir / "embeddings.jsonl"
+    existing = {
+        str(item.get("id")): item
+        for item in iter_jsonl(output)
+        if isinstance(item, dict) and item.get("id")
+    }
     records: list[dict[str, Any]] = []
     db_path = database_path(config)
     with connect(db_path) as conn:
@@ -471,15 +596,18 @@ def build_embeddings(config: ConfigDocument) -> int:
             if not is_allowed_rag_source(config, source_path, metadata):
                 continue
             vector_text = " ".join([str(row["text"]), json.dumps(metadata, ensure_ascii=False)])
+            record_id = f"embedding:{row['id']}"
+            vector, content_hash = reusable_embedding(config, existing.get(record_id), vector_text, model_name)
             records.append(
                 {
-                    "id": f"embedding:{row['id']}",
+                    "id": record_id,
                     "owner_type": "chapter_chunk",
                     "owner_id": str(row["id"]),
                     "chapter_number": row["chapter_number"],
                     "source_path": source_path,
                     "model": model_name,
-                    "vector": embed_text_with_provider(config, vector_text),
+                    "content_hash": content_hash,
+                    "vector": vector,
                     "updated_at": utc_now(),
                 }
             )
@@ -489,7 +617,7 @@ def build_embeddings(config: ConfigDocument) -> int:
             payload = read_json(path, default={})
             if not is_allowed_memory_payload(root, payload):
                 continue
-            records.append(embedding_record_for_memory(config, root, path, payload, owner_type="scene_memory", model=model_name))
+            records.append(embedding_record_for_memory(config, root, path, payload, owner_type="scene_memory", model=model_name, existing=existing))
         for owner_type, directory in (
             ("chapter_memory", root / "60_rag" / "memory" / "chapters"),
             ("arc_memory", root / "60_rag" / "memory" / "arcs"),
@@ -502,18 +630,25 @@ def build_embeddings(config: ConfigDocument) -> int:
                     continue
                 if owner_type == "style_memory" and not is_allowed_style_memory_payload(payload):
                     continue
-                records.append(embedding_record_for_memory(config, root, path, payload, owner_type=owner_type, model=model_name))
+                records.append(embedding_record_for_memory(config, root, path, payload, owner_type=owner_type, model=model_name, existing=existing))
 
-    metadata_dir = root / "60_rag" / "metadata"
-    metadata_dir.mkdir(parents=True, exist_ok=True)
-    output = metadata_dir / "embeddings.jsonl"
     atomic_write_text(output, "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records))
     sync_database(config)
-    rebuild_vector_store(config)
+    vector_records = [record_from_embedding(record) for record in records]
+    sync_vector_store(config, [record for record in vector_records if record is not None])
     return len(records)
 
 
-def embedding_record_for_memory(config: ConfigDocument, root: Path, path: Path, payload: dict[str, Any], *, owner_type: str, model: str) -> dict[str, Any]:
+def embedding_record_for_memory(
+    config: ConfigDocument,
+    root: Path,
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    owner_type: str,
+    model: str,
+    existing: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
     text = " ".join(
         [
             str(payload.get("summary") or ""),
@@ -531,79 +666,163 @@ def embedding_record_for_memory(config: ConfigDocument, root: Path, path: Path, 
         ]
     )
     owner_id = path.stem
+    record_id = f"embedding:{owner_type}:{owner_id}"
+    vector, content_hash = reusable_embedding(config, existing.get(record_id), text, model)
     return {
-        "id": f"embedding:{owner_type}:{owner_id}",
+        "id": record_id,
         "owner_type": owner_type,
         "owner_id": owner_id,
         "chapter_number": payload.get("chapter"),
         "scene_number": payload.get("scene"),
         "source_path": relative_path(root, path),
         "model": model,
-        "vector": embed_text_with_provider(config, text),
+        "content_hash": content_hash,
+        "vector": vector,
         "updated_at": utc_now(),
     }
+
+
+def reusable_embedding(
+    config: ConfigDocument,
+    existing: dict[str, Any] | None,
+    text: str,
+    model: str,
+) -> tuple[list[float], str]:
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if (
+        isinstance(existing, dict)
+        and existing.get("model") == model
+        and existing.get("content_hash") == content_hash
+        and isinstance(existing.get("vector"), list)
+    ):
+        return [float(item) for item in existing["vector"]], content_hash
+    return embed_text_with_provider(config, text), content_hash
 
 
 def retrieve_memory_hits(
     config: ConfigDocument,
     query_text: str,
     *,
-    query_vector: list[float],
+    vector_hits: list[Any],
     top_k: int,
     embedding_only_rerank: bool = False,
 ) -> list[RagHit]:
-    """Return semantic hits from canonical scene/chapter memory."""
+    """Hydrate precomputed vector candidates from canonical memory files."""
 
     root = resolve_project_root(config)
     if is_memory_globally_stale(root):
         return []
     hits: list[RagHit] = []
-    for memory_type, directory in (
-        ("scene", root / "60_rag" / "memory" / "scenes"),
-        ("chapter", root / "60_rag" / "memory" / "chapters"),
-        ("arc", root / "60_rag" / "memory" / "arcs"),
-        ("character", root / "60_rag" / "memory" / "characters"),
-    ):
+    owner_labels = {
+        "scene_memory": "scene",
+        "chapter_memory": "chapter",
+        "arc_memory": "arc",
+        "character_memory": "character",
+    }
+    if not vector_hits:
+        return retrieve_memory_lexical_fallback(config, query_text, top_k=top_k)
+    for vector_hit in vector_hits:
+        memory_type = owner_labels.get(str(vector_hit.owner_type))
+        if not memory_type:
+            continue
+        path = root / str(vector_hit.source_path)
+        try:
+            path.resolve().relative_to(root.resolve())
+        except ValueError:
+            continue
+        payload = read_json(path, default={})
+        if not is_allowed_memory_payload(root, payload):
+            continue
+        text = memory_text(payload)
+        semantic_score = float(vector_hit.score)
+        term_score = score_term_overlap(extract_query_terms(query_text), text.lower())
+        consistency_score, consistency_reason = consistency_score_for_candidate(config, query_text, text, payload)
+        rerank_score = rerank_pair(config, query_text, text, fallback_score=max(semantic_score, consistency_score))
+        score = semantic_score * 0.55 + term_score * 0.15 + consistency_score * 0.15 + rerank_score * 0.15
+        if score <= 0:
+            continue
+        chapter_number = as_optional_int(payload.get("chapter")) or vector_hit.chapter_number or parse_chapter_number(path)
+        hits.append(
+            RagHit(
+                id=f"memory:{memory_type}:{path.stem}",
+                chapter_number=chapter_number,
+                chunk_index=as_optional_int(payload.get("scene")) or 0,
+                score=round(score, 6),
+                text=text,
+                keywords=tuple(extract_keywords(text)),
+                source_path=relative_path(root, path),
+                reasons=tuple(
+                    [
+                        "precomputed memory vector similarity",
+                        *(["warning: embedding-only semantic rerank"] if embedding_only_rerank else []),
+                    ]
+                ),
+                entities=tuple(normalize_strings(payload.get("characters"))),
+                events=tuple(normalize_strings(payload.get("events"))),
+                locations=tuple(normalize_strings(payload.get("location") or payload.get("locations"))),
+                foreshadow_refs=tuple(normalize_strings(payload.get("foreshadow_refs"))),
+                conflict_level=str(payload.get("conflict_state") or "unknown"),
+                semantic_score=round(semantic_score, 6),
+                rerank_score=round(rerank_score, 6),
+                consistency_reason=consistency_reason,
+                source_reason="canonical narrative memory via vector store",
+                memory_type=memory_type,
+            )
+        )
+    hits.sort(key=lambda item: (-item.score, -(item.chapter_number or 0), item.chunk_index))
+    return hits[:top_k]
+
+
+def retrieve_memory_lexical_fallback(config: ConfigDocument, query_text: str, *, top_k: int) -> list[RagHit]:
+    """Degrade safely before the first vector build without embedding every candidate."""
+
+    root = resolve_project_root(config)
+    directories = {
+        "scene": root / "60_rag" / "memory" / "scenes",
+        "chapter": root / "60_rag" / "memory" / "chapters",
+        "arc": root / "60_rag" / "memory" / "arcs",
+        "character": root / "60_rag" / "memory" / "characters",
+    }
+    terms = extract_query_terms(query_text)
+    coarse: list[tuple[float, str, Path, dict[str, Any], str, str]] = []
+    for memory_type, directory in directories.items():
         for path in sorted(directory.glob("*.json")):
             payload = read_json(path, default={})
             if not is_allowed_memory_payload(root, payload):
                 continue
             text = memory_text(payload)
-            semantic_score = cosine_similarity(query_vector, embed_text_with_provider(config, text))
-            term_score = score_term_overlap(extract_query_terms(query_text), text.lower())
-            consistency_score, consistency_reason = consistency_score_for_candidate(config, query_text, text, payload)
-            rerank_score = rerank_pair(config, query_text, text, fallback_score=max(semantic_score, consistency_score))
-            score = semantic_score * 0.55 + term_score * 0.15 + consistency_score * 0.15 + rerank_score * 0.15
-            if score <= 0:
-                continue
-            chapter_number = as_optional_int(payload.get("chapter")) or parse_chapter_number(path)
-            hits.append(
-                RagHit(
-                    id=f"memory:{memory_type}:{path.stem}",
-                    chapter_number=chapter_number,
-                    chunk_index=as_optional_int(payload.get("scene")) or 0,
-                    score=round(score, 6),
-                    text=text,
-                    keywords=tuple(extract_keywords(text)),
-                    source_path=relative_path(root, path),
-                    reasons=tuple(
-                        [
-                            "memory semantic similarity" if semantic_score else "memory term overlap",
-                            *(["warning: embedding-only semantic rerank"] if embedding_only_rerank else []),
-                        ]
-                    ),
-                    entities=tuple(normalize_strings(payload.get("characters"))),
-                    events=tuple(normalize_strings(payload.get("events"))),
-                    locations=tuple(normalize_strings(payload.get("location") or payload.get("locations"))),
-                    foreshadow_refs=tuple(normalize_strings(payload.get("foreshadow_refs"))),
-                    conflict_level=str(payload.get("conflict_state") or "unknown"),
-                    semantic_score=round(semantic_score, 6),
-                    rerank_score=round(rerank_score, 6),
-                    consistency_reason=consistency_reason,
-                    source_reason="canonical narrative memory",
-                    memory_type=memory_type,
-                )
+            term_score = score_term_overlap(terms, text.lower())
+            consistency_score, reason = consistency_score_for_candidate(config, query_text, text, payload)
+            score = term_score * 0.65 + consistency_score * 0.35
+            if score > 0:
+                coarse.append((score, memory_type, path, payload, text, reason))
+    coarse.sort(key=lambda item: (-item[0], item[2].as_posix()))
+    hits: list[RagHit] = []
+    for coarse_score, memory_type, path, payload, text, reason in coarse[: max(top_k * 3, top_k)]:
+        rerank_score = rerank_pair(config, query_text, text, fallback_score=coarse_score)
+        score = coarse_score * 0.8 + rerank_score * 0.2
+        hits.append(
+            RagHit(
+                id=f"memory:{memory_type}:{path.stem}",
+                chapter_number=as_optional_int(payload.get("chapter")) or parse_chapter_number(path),
+                chunk_index=as_optional_int(payload.get("scene")) or 0,
+                score=round(score, 6),
+                text=text,
+                keywords=tuple(extract_keywords(text)),
+                source_path=relative_path(root, path),
+                reasons=("lexical fallback: vector store has no candidates",),
+                entities=tuple(normalize_strings(payload.get("characters"))),
+                events=tuple(normalize_strings(payload.get("events"))),
+                locations=tuple(normalize_strings(payload.get("location") or payload.get("locations"))),
+                foreshadow_refs=tuple(normalize_strings(payload.get("foreshadow_refs"))),
+                conflict_level=str(payload.get("conflict_state") or "unknown"),
+                semantic_score=0.0,
+                rerank_score=round(rerank_score, 6),
+                consistency_reason=reason,
+                source_reason="canonical narrative memory lexical fallback",
+                memory_type=memory_type,
             )
+        )
     hits.sort(key=lambda item: (-item.score, -(item.chapter_number or 0), item.chunk_index))
     return hits[:top_k]
 
@@ -1268,6 +1487,22 @@ def read_json(path: Path, *, default: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8").lstrip("\ufeff"))
     except json.JSONDecodeError:
         return default
+
+
+def iter_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            records.append(payload)
+    return records
 
 
 def relative_path(root: Path, path: Path) -> str:

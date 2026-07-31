@@ -5,6 +5,7 @@ from longform_engine.config import load_project_config
 from longform_engine.db import database_path, init_database, query_table, rebuild_database, status, sync_database
 from longform_engine.orchestration import continue_write, finalize_chapter, open_book, submit_agent_draft
 from longform_engine.storage import init_project
+from tests.project_fixtures import mark_project_ready
 
 
 def test_db_init_creates_schema(tmp_path):
@@ -81,6 +82,7 @@ def test_db_rebuild_recovers_agent_skill_state(tmp_path):
     )
 
     open_book(project_config)
+    mark_project_ready(root, project_config, preserve_existing_characters=True)
     continue_write(project_config, chapter_number=1)
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(draft_text, encoding="utf-8")
@@ -244,7 +246,7 @@ def passing_agent_draft_text() -> str:
         "Ari climbs the old stone road toward the north gate, hears the bronze bell answer from the mist, "
         "and chooses to protect the caravan instead of taking the easy path alone. "
     )
-    return "# Chapter 1: North Gate\n\n" + sentence * 25 + "\n"
+    return "# Chapter 1: North Gate\n\n" + sentence * 25 + "\n\nBut another bell answers from beyond the gate.\n"
 
 
 def passing_draft_text() -> str:

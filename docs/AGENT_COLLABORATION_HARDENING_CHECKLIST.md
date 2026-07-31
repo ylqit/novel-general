@@ -256,7 +256,7 @@ rg -n "auto_write|awaiting_agent_draft|awaiting_finalize|paused_gate_failed|next
 
 - [x] release guard 检查 direct external LLM call/import pattern。
 - [x] release guard 检查外部 LLM API key 字符串。
-- [x] release guard 检查 `api_provider` 保持禁用。
+- [x] release guard 检查公开运行时不包含 provider 占位模式。
 - [x] release guard 检查部分 Agent output/canonical coupling。
 - [x] release guard 增加 strict manifest validation 文档/测试入口。
 - [x] release guard 增加 `content_expand` manifest 覆盖检查。
@@ -280,7 +280,7 @@ python longform-novel-engine/scripts/release_surface_guards.py
 目标：完整章节主链路不需要 OpenAI、Anthropic 或其他外部 provider API key。
 
 - [x] no-key chapter loop 已有测试雏形。
-- [x] `api_provider` 显式禁用。
+- [x] provider 占位模式已从公开配置和运行时移除。
 - [x] `agent_skill` 默认依赖宿主 Agent。
 - [x] E2E 覆盖 `continue-write -> Agent fixture draft -> draft submit -> gate -> chapter finalize`。
 - [x] E2E 覆盖 `finalize -> graph semantic-task -> fixture JSON -> validate/apply`。

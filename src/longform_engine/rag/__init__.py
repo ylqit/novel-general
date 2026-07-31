@@ -10,6 +10,21 @@ from .pipeline import (
     build_context,
     query,
 )
+from .scale_benchmark import (
+    RAG_SCALE_BENCHMARK_SCHEMA,
+    RAG_SCALE_DATASET_ID,
+    RagScaleBenchmarkResult,
+    dataset_scenario,
+    run_rag_scale_benchmark,
+)
+from .production_benchmark import (
+    PRODUCTION_DATASET_SCHEMA,
+    REQUIRED_QUERY_CATEGORIES,
+    RagProductionBenchmarkResult,
+    RagProductionTemplateResult,
+    run_rag_production_benchmark,
+    write_rag_production_template,
+)
 
 __all__ = [
     "RagBuildStats",
@@ -20,4 +35,15 @@ __all__ = [
     "build_chunks",
     "build_context",
     "query",
+    "RAG_SCALE_BENCHMARK_SCHEMA",
+    "RAG_SCALE_DATASET_ID",
+    "RagScaleBenchmarkResult",
+    "dataset_scenario",
+    "run_rag_scale_benchmark",
+    "PRODUCTION_DATASET_SCHEMA",
+    "REQUIRED_QUERY_CATEGORIES",
+    "RagProductionBenchmarkResult",
+    "RagProductionTemplateResult",
+    "run_rag_production_benchmark",
+    "write_rag_production_template",
 ]

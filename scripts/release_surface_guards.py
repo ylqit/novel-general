@@ -37,6 +37,7 @@ ALLOW_FINAL_WRITES = {
     "src/longform_engine/research/pipeline.py",
     "src/longform_engine/gates/pipeline.py",
     "src/longform_engine/storage/layout.py",
+    "src/longform_engine/publication.py",
 }
 
 ALLOW_GRAPH_WRITES = {
@@ -58,6 +59,7 @@ ALLOW_AGENT_TO_CANON = {
     "src/longform_engine/storage/layout.py",
     "src/longform_engine/vectorstore/pipeline.py",
     "src/longform_engine/cli.py",
+    "src/longform_engine/intelligence/pipeline.py",
 }
 
 DIRECT_LLM_PATTERNS = (
@@ -108,7 +110,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "docs/AGENT_COLLABORATION_HARDENING.md",
         (
-            "AgentTaskManifest v1",
+            "AgentTaskManifest v1/v2",
             "content_expand",
             "`revision rollback`: affected tasks -> `rolled_back`",
             "rollback_restores_touched_paths",
@@ -212,9 +214,17 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
 
 def main() -> int:
     failures: list[str] = []
-    orchestration_text = (SRC / "orchestration" / "pipeline.py").read_text(encoding="utf-8", errors="ignore")
-    if "writing.mode api_provider is reserved for a future provider implementation" not in orchestration_text:
-        failures.append("api_provider mode must remain explicitly disabled in orchestration.")
+    for relative in ("config/default.engine.yaml", "templates/qidian-longform/project.yaml"):
+        text = (ROOT / relative).read_text(encoding="utf-8", errors="ignore")
+        for forbidden in ("api_provider", "OPENAI_API_KEY", "OPENAI_BASE_URL", "default_provider"):
+            if forbidden in text:
+                failures.append(f"public config must not expose provider placeholder `{forbidden}`: {relative}")
+    public_runtime = "\n".join(
+        (SRC / relative).read_text(encoding="utf-8", errors="ignore")
+        for relative in (Path("config/loader.py"), Path("orchestration/pipeline.py"))
+    )
+    if "api_provider" in public_runtime:
+        failures.append("api_provider must not remain a public runtime mode or late-failure branch.")
     for path in iter_text_files(SRC):
         rel = relpath(path)
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -239,6 +249,7 @@ def main() -> int:
             if has_write_call and re.search(r"40_manuscript[/\\]final|60_rag|story_graph\.json|70_runtime[/\\]db", text):
                 failures.append(f"agent output path and canonical path are coupled outside apply/finalize modules: {rel}")
     failures.extend(check_experience_layer_guards())
+    failures.extend(check_public_distribution_guards())
     failures.extend(check_required_release_contract_markers())
 
     if failures:
@@ -323,6 +334,47 @@ def check_experience_layer_guards() -> list[str]:
     loop_body = function_body(production_text, "production_loop")
     if re.search("|".join(DIRECT_WRITER_PATTERNS), loop_body):
         failures.append("production_loop must not directly write final/RAG/graph/SQLite; it may only call deterministic pipeline commands.")
+    return failures
+
+
+def check_public_distribution_guards() -> list[str]:
+    failures: list[str] = []
+    benchmark_path = SRC / "benchmark.py"
+    readiness_path = SRC / "release_readiness.py"
+    cli_path = SRC / "cli.py"
+    for path in (benchmark_path, readiness_path, cli_path):
+        if not path.exists():
+            failures.append(f"public distribution module is missing: {relpath(path)}")
+    if failures:
+        return failures
+
+    benchmark_text = benchmark_path.read_text(encoding="utf-8", errors="ignore")
+    readiness_text = readiness_path.read_text(encoding="utf-8", errors="ignore")
+    cli_text = cli_path.read_text(encoding="utf-8", errors="ignore")
+    for marker in (
+        "BENCHMARK_RECORD_SCHEMA",
+        "BENCHMARK_COMPARISON_SCHEMA",
+        "def record_benchmark_chapter",
+        "def compare_benchmarks",
+        '"stores_manuscript_body": False',
+        '"manuscript_bodies_included": False',
+    ):
+        if marker not in benchmark_text:
+            failures.append(f"benchmark no-body/comparison marker `{marker}` is missing")
+    for canonical in ("40_manuscript/final", "60_rag", "story_graph.json", "30_state/tcs", "70_runtime/db"):
+        if canonical in benchmark_text:
+            failures.append(f"benchmark module must not reference canonical storage `{canonical}`")
+
+    for marker in ("release_readiness_v1", "EXPECTED_REMOTE", "def check_release_readiness"):
+        if marker not in readiness_text:
+            failures.append(f"release readiness marker `{marker}` is missing")
+    forbidden_git_mutation = re.compile(r'run_git\(root,\s*["\'](?:commit|push|tag|reset|checkout|clean|add)["\']')
+    if forbidden_git_mutation.search(readiness_text):
+        failures.append("release readiness must remain diagnostic and must not execute mutating Git commands")
+
+    for marker in ("cmd_release_check", "cmd_benchmark_record", "cmd_benchmark_compare"):
+        if marker not in cli_text:
+            failures.append(f"public distribution CLI marker `{marker}` is missing")
     return failures
 
 

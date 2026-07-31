@@ -25,7 +25,9 @@ Options:
 The installer copies or symlinks only:
   - longform-novel-codex/
   - longform-novel-claude/
-  - shared/
+
+Each package contains its own synchronized references/ directory. A legacy
+global shared/ directory is never removed by this installer.
 
 It does not copy novel projects, manuscripts, runtime databases, model caches,
 environment files, or API keys.
@@ -268,7 +270,6 @@ install_tool() {
   local source_dir="$4"
   local label="$5"
 
-  install_package_directory "Shared skill references" "$REPO_ROOT/shared" "$skill_root/shared" "$skill_root"
   install_package_directory "$label" "$source_dir" "$skill_root/$skill_name" "$skill_root"
 }
 

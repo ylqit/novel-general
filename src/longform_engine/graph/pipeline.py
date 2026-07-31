@@ -646,12 +646,36 @@ def apply_graph_updates(
     graph = load_graph(root)
     ensure_graph_shape(graph)
     upsert_canon_entities(graph, root)
-    entity_index = {entity["id"]: entity for entity in graph["entities"] if isinstance(entity, dict) and entity.get("id")}
-    applied = 0
-    skipped_low = 0
-    for suggestion in payload.get("suggestions", []):
-        if not isinstance(suggestion, dict):
+    suggestions = [item for item in payload.get("suggestions", []) if isinstance(item, dict)]
+    suggested_relationship_ids: set[str] = set()
+    for suggestion in suggestions:
+        relationship = suggestion.get("relationship")
+        if suggestion.get("kind") == "relationship" and isinstance(relationship, dict) and relationship.get("id"):
+            suggested_relationship_ids.add(str(relationship["id"]))
+    source_path = str(payload.get("source_path") or "")
+    retained_relationships = []
+    removed_relationships = 0
+    for relationship in graph["relationships"]:
+        if (
+            isinstance(relationship, dict)
+            and source_path
+            and relationship.get("source_path") == source_path
+            and as_optional_int(relationship.get("first_seen_chapter")) == chapter_number
+            and str(relationship.get("id") or "") not in suggested_relationship_ids
+        ):
+            removed_relationships += 1
             continue
+        retained_relationships.append(relationship)
+    graph["relationships"] = retained_relationships
+    entity_index = {entity["id"]: entity for entity in graph["entities"] if isinstance(entity, dict) and entity.get("id")}
+    removed_statuses = remove_stale_deterministic_statuses(
+        entity_index,
+        chapter_number=chapter_number,
+        source_path=source_path,
+    )
+    applied = removed_relationships + removed_statuses
+    skipped_low = 0
+    for suggestion in suggestions:
         if suggestion.get("confidence") == "low" and not force_low_confidence:
             skipped_low += 1
             continue
@@ -686,6 +710,7 @@ def apply_graph_updates(
                         "status": new_status,
                         "evidence": suggestion.get("evidence"),
                         "confidence": suggestion.get("confidence"),
+                        "source_path": suggestion.get("source_path") or source_path,
                         "updated_at": utc_now(),
                     }
                 )
@@ -714,6 +739,7 @@ def apply_graph_updates(
                 "chapter_number": chapter_number,
                 "update_file": relative_path(root, update_path),
                 "applied": applied,
+                "removed_stale_relationships": removed_relationships,
                 "skipped_low_confidence": skipped_low,
                 "updated_at": utc_now(),
             },
@@ -913,8 +939,9 @@ def build_graph_suggestions(
                 "source_path": source,
             }
         )
-        status = detect_status_change(text, matched_label)
-        if status:
+        status_match = detect_status_change_evidence(text, matched_label)
+        if status_match:
+            status, status_evidence = status_match
             suggestions.append(
                 {
                     "kind": "status_change",
@@ -923,7 +950,7 @@ def build_graph_suggestions(
                     "new_status": status,
                     "chapter_number": chapter_number,
                     "confidence": "medium",
-                    "evidence": trim_text(extract_evidence_window(text, matched_label), 200),
+                    "evidence": trim_text(status_evidence, 200),
                     "source_path": source,
                 }
             )
@@ -988,15 +1015,18 @@ def apply_semantic_relationship(graph: dict[str, Any], update: dict[str, Any], c
     relation = str(update.get("relation") or update.get("type_label") or update.get("relationship") or "related").strip()
     if not source or not target or not relation:
         return 0
+    relationship_id = str(update.get("id") or f"rel:{source}:{target}:{relation}:ch{chapter_number:03d}").replace(" ", "_")
     for item in graph.get("relationships", []):
         if not isinstance(item, dict):
+            continue
+        if str(item.get("id") or "") == relationship_id:
             continue
         same_pair = str(item.get("source") or item.get("from")) == source and str(item.get("target") or item.get("to")) == target
         if same_pair and not item.get("to_chapter") and str(item.get("status") or "active") == "active":
             item["to_chapter"] = max(1, chapter_number - 1)
             item["status"] = "inactive"
     relationship = {
-        "id": str(update.get("id") or f"rel:{source}:{target}:{relation}:ch{chapter_number:03d}").replace(" ", "_"),
+        "id": relationship_id,
         "source": source,
         "target": target,
         "type": relation,
@@ -1008,8 +1038,7 @@ def apply_semantic_relationship(graph: dict[str, Any], update: dict[str, Any], c
         "source_path": update.get("source_path"),
         "updated_at": utc_now(),
     }
-    graph["relationships"].append(relationship)
-    return 1
+    return upsert_by_id(graph["relationships"], relationship)
 
 
 def apply_semantic_status(entity_index: dict[str, dict[str, Any]], update: dict[str, Any], chapter_number: int) -> int:
@@ -1024,15 +1053,28 @@ def apply_semantic_status(entity_index: dict[str, dict[str, Any]], update: dict[
         return 0
     entity["status"] = status
     history = entity.setdefault("status_history", [])
-    history.append(
-        {
-            "chapter_number": chapter_number,
-            "status": status,
-            "confidence": confidence_value(update.get("confidence")),
-            "evidence_span": update.get("evidence_span"),
-            "updated_at": utc_now(),
-        }
+    history_entry = {
+        "chapter_number": chapter_number,
+        "status": status,
+        "confidence": confidence_value(update.get("confidence")),
+        "evidence_span": update.get("evidence_span"),
+        "updated_at": utc_now(),
+    }
+    existing = next(
+        (
+            item
+            for item in history
+            if isinstance(item, dict)
+            and as_optional_int(item.get("chapter_number")) == chapter_number
+            and str(item.get("status") or "") == status
+            and str(item.get("evidence_span") or "") == str(update.get("evidence_span") or "")
+        ),
+        None,
     )
+    if existing is not None:
+        existing.update(history_entry)
+    else:
+        history.append(history_entry)
     return 1
 
 
@@ -1085,20 +1127,72 @@ def apply_semantic_ability(graph: dict[str, Any], update: dict[str, Any], chapte
     name = str(update.get("name") or update.get("ability") or update.get("id") or "").strip()
     if not name:
         return 0
+    requested_id = str(update.get("id") or "").strip()
+    matching_entities = [
+        item
+        for item in graph.get("entities", [])
+        if isinstance(item, dict)
+        and str(item.get("type") or "") == "ability"
+        and str(item.get("name") or "").strip() == name
+    ]
+    existing = next((item for item in matching_entities if requested_id and str(item.get("id") or "") == requested_id), None)
+    if existing is None and matching_entities:
+        existing = matching_entities[0]
+    entity_id = str((existing or {}).get("id") or requested_id or f"ability:{slugify(name)}")
     entity = {
-        "id": str(update.get("id") or f"ability:{slugify(name)}"),
+        **(existing or {}),
+        "id": entity_id,
         "name": name,
         "type": "ability",
-        "cost": update.get("cost"),
-        "limit": update.get("limit"),
-        "cooldown": update.get("cooldown"),
-        "violation_risk": update.get("violation_risk"),
+        "cost": update.get("cost") if update.get("cost") is not None else (existing or {}).get("cost"),
+        "limit": (
+            update.get("limit")
+            if update.get("limit") is not None
+            else update.get("boundary")
+            if update.get("boundary") is not None
+            else (existing or {}).get("limit")
+        ),
+        "cooldown": update.get("cooldown") if update.get("cooldown") is not None else (existing or {}).get("cooldown"),
+        "violation_risk": (
+            update.get("violation_risk")
+            if update.get("violation_risk") is not None
+            else (existing or {}).get("violation_risk")
+        ),
         "from_chapter": chapter_number,
         "confidence": confidence_value(update.get("confidence")),
         "evidence_span": update.get("evidence_span"),
         "updated_at": utc_now(),
     }
-    return upsert_by_id(graph["entities"], entity)
+    applied = upsert_by_id(graph["entities"], entity)
+    duplicate_ids = {
+        str(item.get("id") or "")
+        for item in matching_entities
+        if str(item.get("id") or "") and str(item.get("id") or "") != entity_id
+    }
+    if duplicate_ids:
+        graph["entities"] = [
+            item
+            for item in graph["entities"]
+            if not (isinstance(item, dict) and str(item.get("id") or "") in duplicate_ids)
+        ]
+        replace_graph_entity_references(graph, duplicate_ids, entity_id)
+        applied += len(duplicate_ids)
+    return applied
+
+
+def replace_graph_entity_references(graph: dict[str, Any], old_ids: set[str], new_id: str) -> None:
+    for relationship in graph.get("relationships", []):
+        if not isinstance(relationship, dict):
+            continue
+        for key in ("source", "from", "target", "to"):
+            if str(relationship.get(key) or "") in old_ids:
+                relationship[key] = new_id
+    for event in graph.get("events", []):
+        if not isinstance(event, dict):
+            continue
+        participants = normalize_list(event.get("participants"))
+        if participants:
+            event["participants"] = dedupe([new_id if item in old_ids else item for item in participants])
 
 
 def confidence_value(value: Any) -> float | None:
@@ -1169,18 +1263,19 @@ def infer_relation_type(text: str, source: dict[str, Any], target: dict[str, Any
     source_label = str(source.get("name") or source.get("id") or "")
     target_label = str(target.get("name") or target.get("id") or "")
     evidence = relation_window(text, source_label, target_label)
-    lowered = evidence.lower()
+    typed_evidence = relation_clause(text, source_label, target_label)
+    lowered = typed_evidence.lower()
     patterns = (
         ("alliance", "high", ("allies", "ally", "alliance", "swears with", "结盟", "同盟", "并肩", "盟友")),
-        ("conflict", "high", ("enemy", "duel", "fight", "attacks", "confronts", "敌", "决斗", "交手", "冲突", "追杀")),
+        ("conflict", "high", ("enemy", "duel", "fight", "attacks", "confronts", "敌人", "决斗", "交手", "冲突", "追杀")),
         ("mentor", "medium", ("mentor", "teacher", "master", "teaches", "师父", "师尊", "教导")),
         ("betrayal", "high", ("betray", "traitor", "sells out", "背叛", "出卖", "叛变")),
-        ("kinship", "medium", ("father", "mother", "brother", "sister", "family", "父", "母", "兄", "姐", "家族")),
-        ("romantic_tension", "medium", ("love", "kiss", "jealous", "心动", "相思", "吻", "吃醋")),
+        ("kinship", "medium", ("father", "mother", "brother", "sister", "family", "父亲", "母亲", "兄长", "姐姐", "弟弟", "妹妹", "家人", "亲属")),
+        ("romantic_tension", "medium", ("love", "kiss", "jealous", "爱慕", "亲吻", "心动", "相思", "吃醋", "恋慕")),
         ("organization_membership", "medium", ("sect", "guild", "clan", "门派", "宗门", "公会", "家族")),
     )
     for relation_type, confidence, markers in patterns:
-        if any(marker in lowered or marker in evidence for marker in markers):
+        if typed_evidence and any(relation_marker_present(marker, lowered, typed_evidence) for marker in markers):
             return relation_type, confidence, evidence
     if evidence:
         return "co_occurs", "medium", evidence
@@ -1190,27 +1285,161 @@ def infer_relation_type(text: str, source: dict[str, Any], target: dict[str, Any
 def relation_window(text: str, source_label: str, target_label: str, *, radius: int = 140) -> str:
     if not source_label or not target_label:
         return ""
-    source_index = text.find(source_label)
-    target_index = text.find(target_label)
-    if source_index < 0 or target_index < 0:
+    source_positions = [match.start() for match in re.finditer(re.escape(source_label), text)]
+    target_positions = [match.start() for match in re.finditer(re.escape(target_label), text)]
+    if not source_positions or not target_positions:
         return ""
+    source_index, target_index = min(
+        ((source, target) for source in source_positions for target in target_positions),
+        key=lambda pair: abs(pair[0] - pair[1]),
+    )
     start = max(0, min(source_index, target_index) - radius)
     end = min(len(text), max(source_index + len(source_label), target_index + len(target_label)) + radius)
     return text[start:end]
 
 
+def relation_clause(text: str, source_label: str, target_label: str) -> str:
+    """Return the shortest prose clause that explicitly names both entities."""
+
+    clauses = [
+        clause.strip()
+        for clause in re.split(r"(?<=[。！？!?；;])|\n+", text)
+        if source_label in clause and target_label in clause
+    ]
+    return min(clauses, key=len) if clauses else ""
+
+
+def relation_marker_present(marker: str, lowered: str, evidence: str) -> bool:
+    if marker.isascii():
+        return re.search(rf"\b{re.escape(marker.lower())}\b", lowered) is not None
+    return marker in evidence
+
+
 def detect_status_change(text: str, label: str) -> str | None:
-    window = extract_evidence_window(text, label)
-    lowered = window.lower()
-    if any(marker in lowered for marker in ("dead", "dies", "killed", "death")) or any(marker in window for marker in ("死亡", "死去", "陨落", "被杀")):
-        return "dead"
-    if any(marker in lowered for marker in ("wounded", "injured")) or any(marker in window for marker in ("受伤", "重伤")):
-        return "injured"
-    if any(marker in lowered for marker in ("betrays", "traitor")) or any(marker in window for marker in ("背叛", "叛变")):
-        return "betrayed"
-    if any(marker in lowered for marker in ("revealed", "exposed")) or any(marker in window for marker in ("揭露", "暴露")):
-        return "revealed"
+    match = detect_status_change_evidence(text, label)
+    return match[0] if match else None
+
+
+def detect_status_change_evidence(text: str, label: str) -> tuple[str, str] | None:
+    """Return only status statements grammatically bound to the named entity."""
+
+    if not label:
+        return None
+    escaped = re.escape(label)
+    patterns = (
+        (
+            "dead",
+            (
+                rf"{escaped}(?:已经|已|当场|最终|后来|忽然|突然)?(?:身亡|死亡|死去|陨落)",
+                rf"{escaped}(?:已经|已|当场)?被杀",
+                rf"(?:死亡|死去|陨落|被杀|身亡)的{escaped}",
+                rf"\b{escaped}\b\s+(?:is|was|became|lay|lies)?\s*(?:dead|killed|dies)\b",
+                rf"\b(?:dead|killed)\s+{escaped}\b",
+            ),
+        ),
+        (
+            "injured",
+            (
+                rf"{escaped}(?:已经|已|仍|正好|忽然|突然|也|又)?(?:受伤|重伤|负伤)",
+                rf"{escaped}(?:身受|身负|受了|负了)(?:重伤|伤)",
+                rf"(?:受伤|重伤|负伤|身受重伤)的{escaped}",
+                rf"\b{escaped}\b\s+(?:is|was|became|remains)?\s*(?:badly\s+|seriously\s+)?(?:wounded|injured)\b",
+                rf"\b(?:wounded|injured)\s+{escaped}\b",
+            ),
+        ),
+        (
+            "betrayed",
+            (
+                rf"{escaped}(?:已经|已|竟|忽然|突然)?(?:背叛|叛变)",
+                rf"{escaped}(?:是|成了|成为)(?:叛徒|内奸)",
+                rf"\b{escaped}\b\s+(?:betrays|betrayed|is\s+a\s+traitor)\b",
+            ),
+        ),
+        (
+            "revealed",
+            (
+                rf"{escaped}(?:的身份)?(?:已经|已|终于)?(?:被揭露|被暴露|揭露|暴露)",
+                rf"\b{escaped}(?:'s)?\b[^.!?\n]{{0,12}}\b(?:revealed|exposed)\b",
+            ),
+        ),
+    )
+    for clause in re.split(r"(?<=[。！？!?；;\n])", text):
+        if label not in clause:
+            continue
+        for status, status_patterns in patterns:
+            for pattern in status_patterns:
+                match = re.search(pattern, clause, flags=re.IGNORECASE)
+                if match and not status_match_is_negated(clause, match):
+                    return status, clause.strip()
     return None
+
+
+def status_match_is_negated(clause: str, match: re.Match[str]) -> bool:
+    start = max(0, match.start() - 5)
+    end = min(len(clause), match.end() + 2)
+    context = clause[start:end].lower()
+    return any(
+        marker in context
+        for marker in (
+            "没受伤",
+            "没有受伤",
+            "未受伤",
+            "并未受伤",
+            "并没有受伤",
+            "不是受伤",
+            "没有死亡",
+            "并未死亡",
+            "not injured",
+            "not wounded",
+            "not dead",
+        )
+    )
+
+
+def remove_stale_deterministic_statuses(
+    entity_index: dict[str, dict[str, Any]],
+    *,
+    chapter_number: int,
+    source_path: str,
+) -> int:
+    removed = 0
+    for entity in entity_index.values():
+        history = entity.get("status_history")
+        if not isinstance(history, list):
+            continue
+        retained: list[dict[str, Any]] = []
+        removed_values: list[str] = []
+        for entry in history:
+            if not isinstance(entry, dict):
+                continue
+            legacy_deterministic = (
+                not entry.get("source_path")
+                and isinstance(entry.get("confidence"), str)
+                and "evidence" in entry
+                and "evidence_span" not in entry
+            )
+            same_deterministic_source = (
+                as_optional_int(entry.get("chapter_number")) == chapter_number
+                and (str(entry.get("source_path") or "") == source_path or legacy_deterministic)
+            )
+            if same_deterministic_source:
+                removed += 1
+                removed_values.append(str(entry.get("status") or ""))
+                continue
+            retained.append(entry)
+        if len(retained) == len(history):
+            continue
+        entity["status_history"] = retained
+        if str(entity.get("status") or "") in removed_values:
+            replacement = next(
+                (str(entry.get("status")) for entry in reversed(retained) if entry.get("status")),
+                "",
+            )
+            if replacement:
+                entity["status"] = replacement
+            else:
+                entity.pop("status", None)
+    return removed
 
 
 def extract_evidence_window(text: str, label: str, *, radius: int = 80) -> str:

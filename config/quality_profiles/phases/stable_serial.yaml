@@ -1,0 +1,8 @@
+schema: quality_profile_v1
+kind: phase
+id: stable_serial
+contract:
+  phase_focus: ["轮换章节职责", "让旧承诺产生新后果", "避免连续复制同一结构"]
+  chapter_duty_distribution: [investigation, conflict, relationship, growth_cost, reveal, exploration, payoff, aftermath]
+  ending_distribution: [changed_problem, partial_payoff, closed_scene, reversal, aftermath, quiet_shift]
+  slow_chapter_policy: {allowed: true, requires_state_change: true}

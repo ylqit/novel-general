@@ -494,12 +494,17 @@ def infer_event_types_from_text(text: str) -> tuple[str, ...]:
             "strike",
             "ambush",
             "duel",
-            "冲突",
+            "战斗",
+            "交手",
+            "搏杀",
             "厮杀",
             "决战",
-            "刀",
-            "杀",
-            "爆发",
+            "伏击",
+            "追杀",
+            "拔刀",
+            "刀锋",
+            "爆发冲突",
+            "正面冲突",
         ),
         "tension_escalation": (
             "truth",
@@ -508,10 +513,14 @@ def infer_event_types_from_text(text: str) -> tuple[str, ...]:
             "threat",
             "trap",
             "危机",
-            "真相",
-            "秘密",
-            "揭露",
+            "查明真相",
+            "逼近真相",
+            "真相浮出",
+            "发现秘密",
+            "隐藏秘密",
+            "秘密揭露",
             "陷阱",
+            "威胁",
             "逼近",
         ),
         "bond_deepening": (
@@ -520,11 +529,15 @@ def infer_event_types_from_text(text: str) -> tuple[str, ...]:
             "promise",
             "forgive",
             "ally",
-            "信任",
-            "救",
-            "承诺",
-            "同伴",
-            "并肩",
+            "建立信任",
+            "获得信任",
+            "互相信任",
+            "舍命相救",
+            "救下",
+            "救出",
+            "兑现承诺",
+            "成为同伴",
+            "并肩作战",
         ),
         "faction_building": (
             "faction",
@@ -535,7 +548,8 @@ def infer_event_types_from_text(text: str) -> tuple[str, ...]:
             "势力",
             "宗门",
             "家族",
-            "盟",
+            "结盟",
+            "同盟",
             "城主",
             "议会",
         ),
@@ -547,15 +561,29 @@ def infer_event_types_from_text(text: str) -> tuple[str, ...]:
             "rule",
             "custom",
             "市井",
-            "街",
-            "城",
+            "街巷",
+            "街市",
+            "城池",
+            "城镇",
             "风俗",
             "地貌",
             "法则",
-            "雨",
+            "天气",
+            "暴雨",
+            "大雪",
+            "赶路",
         ),
     }
-    detected = [event_type for event_type, words in markers.items() if any(word in lower for word in words)]
+    detected = [
+        event_type
+        for event_type, words in markers.items()
+        if any(
+            re.search(rf"(?<![a-z0-9_]){re.escape(word)}(?![a-z0-9_])", lower)
+            if word.isascii()
+            else word in lower
+            for word in words
+        )
+    ]
     return tuple(detected)
 
 

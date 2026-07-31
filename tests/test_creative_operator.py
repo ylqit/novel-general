@@ -1,12 +1,20 @@
 import json
 from pathlib import Path
+import pytest
 
 from longform_engine.agent_tasks import load_manifest, status_summary, validate_manifest_strict
 from longform_engine.config import load_project_config
 from longform_engine.creative import expand_check, expand_task, humanize_check, humanize_task, style_extract, style_profile
 from longform_engine.gates import gate_check, pacing_review
-from longform_engine.orchestration import continue_write, open_book, plan_chapter
+from longform_engine.orchestration import WorkflowError, continue_write, open_book as engine_open_book, plan_chapter
 from longform_engine.storage import init_project
+from tests.project_fixtures import mark_project_ready
+
+
+def open_book(config):
+    result = engine_open_book(config)
+    mark_project_ready(config.path.parent, config)
+    return result
 
 
 def test_open_book_creates_creative_brief_and_continue_write_injects_craft_inputs(tmp_path):
@@ -27,7 +35,7 @@ def test_open_book_creates_creative_brief_and_continue_write_injects_craft_input
     assert task["humanizer_rules"]["two_pass_workflow"]["pass_1_remove_ai_templates"]
     assert "Creative Brief" in task_md
     assert "Writer Craft Brief" in task_md
-    assert "Humanizer v2 Self-Check" in task_md
+    assert "Humanizer v2" in task_md
 
 
 def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp_path):
@@ -106,17 +114,17 @@ def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp
     assert "Forbidden reveals: Dragon Crown" in task_md
 
 
-def test_continue_write_autofills_missing_creative_brief_and_writes_confirmation_task(tmp_path):
+def test_continue_write_blocks_missing_applied_creative_brief(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
     open_book(project_config)
     (root / "10_bible" / "creative_brief.json").unlink()
 
-    result = continue_write(project_config, chapter_number=1)
+    with pytest.raises(WorkflowError, match="Project is not ready for chapter writing"):
+        continue_write(project_config, chapter_number=1)
 
-    assert result.status == "task_ready"
-    assert (root / "10_bible" / "creative_brief.json").exists()
-    assert (root / "50_workbench" / "creative_brief_task.md").exists()
+    assert not (root / "10_bible" / "creative_brief.json").exists()
+    assert not (root / "40_manuscript" / "draft" / "ch001.md").exists()
 
 
 def test_humanizer_task_and_check_stay_in_workbench(tmp_path):
@@ -195,6 +203,26 @@ def test_chinese_humanizer_detects_uniform_sentence_length(tmp_path):
     check = humanize_check(project_config, chapter_number=1, file_path=candidate)
 
     assert any(item["code"] == "humanizer_uniform_sentence_length" and item["category"] == "等长句" for item in check.issues)
+
+
+def test_humanizer_v3_rejects_empty_text_and_counts_repeated_same_pattern(tmp_path):
+    project_config = seed_project(tmp_path)
+    root = tmp_path / "novel"
+    candidate = root / "50_workbench" / "repair_candidates" / "ch001.humanized_candidate.md"
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text(" \n\t", encoding="utf-8")
+
+    empty = humanize_check(project_config, chapter_number=1, file_path=candidate)
+    assert any(item["code"] == "humanizer_empty_candidate" for item in empty.issues)
+
+    candidate.write_text(
+        "# 第一章\n\n雨仿佛压低了城门，林远仿佛忘了自己为何而来。",
+        encoding="utf-8",
+    )
+    repeated = humanize_check(project_config, chapter_number=1, file_path=candidate)
+    issue = next(item for item in repeated.issues if item["code"] == "humanizer_high_frequency_words")
+    assert issue["evidence"][0]["pattern"] == "仿佛"
+    assert issue["evidence"][0]["count"] == 2
 
 
 def test_gate_uses_humanizer_report_for_chinese_p1_failures(tmp_path):

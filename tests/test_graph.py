@@ -3,6 +3,7 @@ import json
 from longform_engine.config import load_project_config
 from longform_engine.db import query_table
 from longform_engine.graph import check_graph, update_graph, validate_graph
+from longform_engine.graph.pipeline import infer_relation_type
 from longform_engine.storage import init_project
 
 
@@ -99,6 +100,130 @@ def test_graph_check_reports_agent_draft_risks_without_mutating_graph(tmp_path):
     assert any("Agent draft location risk ch001" in warning for warning in result.warnings)
     assert any("Agent draft ability boundary risk ch001" in warning for warning in result.warnings)
     assert "## Agent Draft Risks" in report
+
+
+def test_relation_inference_does_not_turn_unrelated_family_or_word_fragments_into_relationships():
+    shen = {"id": "char_shen", "name": "沈阙"}
+    ning = {"id": "char_ning", "name": "宁昭"}
+
+    kinship, _, _ = infer_relation_type(
+        "沈阙想起父亲的旧案。隔了两段查验记录，宁昭才推门进来。",
+        shen,
+        ning,
+    )
+    romance, _, _ = infer_relation_type(
+        "沈阙递上拓片。宁昭核对缺口，确认两枚轮印正好吻合。",
+        shen,
+        ning,
+    )
+    explicit, _, _ = infer_relation_type(
+        "宁昭是沈阙的姐姐，这层关系从未写进公档。",
+        shen,
+        ning,
+    )
+
+    assert kinship == "co_occurs"
+    assert romance == "co_occurs"
+    assert explicit == "kinship"
+
+
+def test_graph_update_removes_stale_deterministic_relationship_for_same_chapter(tmp_path):
+    config = load_project_config(template="qidian-longform")
+    project = init_project(config, output=tmp_path / "novel")
+    root = project.root
+    (root / "10_bible" / "characters.json").write_text(
+        json.dumps(
+            [
+                {"id": "char_shen", "name": "沈阙", "type": "character"},
+                {"id": "char_ning", "name": "宁昭", "type": "character"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    final = root / "40_manuscript" / "final" / "ch001.md"
+    summary = root / "40_manuscript" / "summaries" / "ch001.md"
+    final.write_text("# 第一章\n\n宁昭是沈阙的姐姐。\n", encoding="utf-8")
+    summary.write_text("宁昭与沈阙核对身份。\n", encoding="utf-8")
+    project_config = load_project_config(project.project_config)
+
+    update_graph(project_config, chapter_number=1)
+    graph_path = root / "30_state" / "story_graph.json"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    assert any(item.get("type") == "kinship" for item in graph["relationships"])
+
+    final.write_text("# 第一章\n\n沈阙递上拓片，宁昭确认两枚轮印吻合。\n", encoding="utf-8")
+    update_graph(project_config, chapter_number=1)
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+
+    assert not any(item.get("type") == "kinship" for item in graph["relationships"])
+    assert not any(item.get("type") == "romantic_tension" for item in graph["relationships"])
+    assert any(item.get("type") == "co_occurs" for item in graph["relationships"])
+
+
+def test_graph_status_inference_binds_injury_to_the_named_character(tmp_path):
+    config = load_project_config(template="qidian-longform")
+    project = init_project(config, output=tmp_path / "novel")
+    root = project.root
+    (root / "10_bible" / "characters.json").write_text(
+        json.dumps(
+            [
+                {"id": "char_luo", "name": "罗砚", "type": "character"},
+                {"id": "char_zhao", "name": "赵戍", "type": "character"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (root / "40_manuscript" / "final" / "ch001.md").write_text(
+        "# 第一章\n\n罗砚从值房出来。他没受伤。罗砚救下受伤的赵戍。赵戍正好受伤，无法押车。\n",
+        encoding="utf-8",
+    )
+    (root / "40_manuscript" / "summaries" / "ch001.md").write_text("赵戍重伤，罗砚仍在值守。\n", encoding="utf-8")
+
+    update_graph(load_project_config(project.project_config), chapter_number=1)
+    graph = json.loads((root / "30_state" / "story_graph.json").read_text(encoding="utf-8"))
+    entities = {item["id"]: item for item in graph["entities"]}
+
+    assert "status" not in entities["char_luo"]
+    assert entities["char_zhao"]["status"] == "injured"
+
+
+def test_graph_update_removes_stale_deterministic_status_for_same_chapter(tmp_path):
+    config = load_project_config(template="qidian-longform")
+    project = init_project(config, output=tmp_path / "novel")
+    root = project.root
+    (root / "10_bible" / "characters.json").write_text(
+        json.dumps(
+            [
+                {"id": "char_luo", "name": "罗砚", "type": "character"},
+                {"id": "char_zhao", "name": "赵戍", "type": "character"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    final = root / "40_manuscript" / "final" / "ch001.md"
+    summary = root / "40_manuscript" / "summaries" / "ch001.md"
+    final.write_text("# 第一章\n\n罗砚受了重伤。\n", encoding="utf-8")
+    summary.write_text("罗砚受伤。\n", encoding="utf-8")
+    project_config = load_project_config(project.project_config)
+
+    update_graph(project_config, chapter_number=1)
+    graph_path = root / "30_state" / "story_graph.json"
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    entities = {item["id"]: item for item in graph["entities"]}
+    assert entities["char_luo"]["status"] == "injured"
+
+    final.write_text("# 第一章\n\n罗砚继续值守。赵戍受了重伤。\n", encoding="utf-8")
+    summary.write_text("赵戍受伤，罗砚继续值守。\n", encoding="utf-8")
+    update_graph(project_config, chapter_number=1)
+    graph = json.loads(graph_path.read_text(encoding="utf-8"))
+    entities = {item["id"]: item for item in graph["entities"]}
+
+    assert "status" not in entities["char_luo"]
+    assert entities["char_zhao"]["status"] == "injured"
+    assert not entities["char_luo"].get("status_history")
 
 
 def seed_graph_project(tmp_path):

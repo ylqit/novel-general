@@ -7,6 +7,7 @@ from longform_engine.graph import check_graph
 from longform_engine.orchestration import continue_write, open_book, submit_agent_draft
 from longform_engine.rag import build_chunks, build_context, query
 from longform_engine.storage import init_project
+from tests.project_fixtures import mark_project_ready
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,6 +74,22 @@ def test_release_guard_covers_experience_orchestration_contracts():
         assert marker in production
 
 
+def test_release_guard_covers_benchmark_and_readiness_contracts():
+    guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
+
+    for marker in (
+        "check_public_distribution_guards",
+        "BENCHMARK_RECORD_SCHEMA",
+        "BENCHMARK_COMPARISON_SCHEMA",
+        "stores_manuscript_body",
+        "forbidden_git_mutation",
+        "cmd_release_check",
+        "cmd_benchmark_record",
+        "cmd_benchmark_compare",
+    ):
+        assert marker in guard
+
+
 def test_failed_agent_draft_does_not_pollute_long_term_memory_or_indexes(tmp_path):
     config = load_project_config(template="qidian-longform")
     project = init_project(config, output=tmp_path / "novel")
@@ -85,6 +102,7 @@ def test_failed_agent_draft_does_not_pollute_long_term_memory_or_indexes(tmp_pat
     )
 
     open_book(project_config)
+    mark_project_ready(root, project_config, preserve_existing_characters=True)
     continue_write(project_config, chapter_number=1)
     graph_path = root / "30_state" / "story_graph.json"
     graph_before = graph_path.read_text(encoding="utf-8")

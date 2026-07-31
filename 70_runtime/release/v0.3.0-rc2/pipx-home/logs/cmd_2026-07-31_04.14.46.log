@@ -1,0 +1,60 @@
+   195.6ms (setup:1347): 2026-07-31 04:14:46
+   195.7ms (setup:1348): D:\devEnv\anaconda3\Lib\site-packages\pipx\__main__.py install --force D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\dist\longform_novel_engine-0.3.0-py3-none-any.whl[semantic]
+   195.8ms (setup:1349): pipx version is 1.15.0
+   195.8ms (setup:1350): Default python interpreter is 'D:\devEnv\anaconda3\python.exe'
+   196.0ms (mkdir:72): creating directory D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\pipx-home\venvs
+   196.4ms (mkdir:72): creating directory D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\pipx-bin
+   197.1ms (mkdir:72): creating directory D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\pipx-home\.cache
+   197.4ms (mkdir:72): creating directory D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\pipx-home\py
+   197.9ms (setup:1364): Adding CACHEDIR.TAG to cache directory
+   198.3ms (setup:1364): Adding CACHEDIR.TAG to cache directory
+   217.7ms (_validate_backend_available:309): Backend resolved to uv (source: auto-bundled)
+   219.1ms (_parsed_package_to_package_or_url:138): cleaned package spec: D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\dist\longform_novel_engine-0.3.0-py3-none-any.whl[semantic]
+   220.8ms (create_venv:250): Creating virtual environment
+   234.6ms (__init__:59): using bundled uv 0.9.5 from D:\devEnv\anaconda3\Scripts\uv.exe
+   234.8ms (run_subprocess:182): running D:\devEnv\anaconda3\Scripts\uv.exe venv --python D:\devEnv\anaconda3\python.exe --quiet C:\Users\wwwab\AppData\Local\Temp\tmpawdip3u6
+   263.0ms (run_subprocess:207): stdout:
+   263.1ms (run_subprocess:209): stderr:
+   263.1ms (run_subprocess:210): returncode: 0
+   263.2ms (run_subprocess:182): running C:\Users\wwwab\AppData\Local\Temp\tmpawdip3u6\Scripts\python.exe --version
+   300.6ms (run_subprocess:207): stdout: Python 3.13.5
+   300.7ms (run_subprocess:209): stderr:
+   300.7ms (run_subprocess:210): returncode: 0
+   300.9ms (run_subprocess:182): running D:\devEnv\anaconda3\Scripts\uv.exe pip list --python C:\Users\wwwab\AppData\Local\Temp\tmpawdip3u6\Scripts\python.exe --quiet --format json
+   471.6ms (run_subprocess:207): stdout: []
+   471.7ms (run_subprocess:209): stderr:
+   471.7ms (run_subprocess:210): returncode: 0
+   471.8ms (run_subprocess:182): running D:\devEnv\anaconda3\Scripts\uv.exe pip install --python C:\Users\wwwab\AppData\Local\Temp\tmpawdip3u6\Scripts\python.exe --quiet --no-deps D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\dist\longform_novel_engine-0.3.0-py3-none-any.whl[semantic]
+   680.8ms (run_subprocess:207): stdout:
+   680.9ms (run_subprocess:209): stderr:
+   681.0ms (run_subprocess:210): returncode: 0
+   681.1ms (run_subprocess:182): running D:\devEnv\anaconda3\Scripts\uv.exe pip list --python C:\Users\wwwab\AppData\Local\Temp\tmpawdip3u6\Scripts\python.exe --quiet --format json
+   699.6ms (run_subprocess:207): stdout: [{"name":"longform-novel-engine","version":"0.3.0"}]
+   699.7ms (run_subprocess:209): stderr:
+   699.7ms (run_subprocess:210): returncode: 0
+   699.8ms (install_package_no_deps:408): Determined package name: longform-novel-engine
+   718.6ms (package_name_from_spec:421): Package name determined in 0.5s
+   719.2ms (create_venv:250): Creating virtual environment
+   719.4ms (run_subprocess:182): running D:\devEnv\anaconda3\Scripts\uv.exe venv --python D:\devEnv\anaconda3\python.exe --quiet D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\pipx-home\venvs\longform-novel-engine
+   746.3ms (run_subprocess:207): stdout:
+   746.5ms (run_subprocess:209): stderr:
+   746.6ms (run_subprocess:210): returncode: 0
+   746.8ms (run_subprocess:182): running D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\pipx-home\venvs\longform-novel-engine\Scripts\python.exe --version
+   777.9ms (run_subprocess:207): stdout: Python 3.13.5
+   778.0ms (run_subprocess:209): stderr:
+   778.0ms (run_subprocess:210): returncode: 0
+   778.4ms (_parsed_package_to_package_or_url:138): cleaned package spec: D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\dist\longform_novel_engine-0.3.0-py3-none-any.whl[semantic]
+   778.5ms (install_package:336): Installing longform-novel-engine from spec 'D:\\soft\\code\\OpenGit\\novel-generator\\longform-novel-engine\\70_runtime\\release\\v0.3.0-rc2\\dist\\longform_novel_engine-0.3.0-py3-none-any.whl[semantic]'
+   778.7ms (run_subprocess:182): running D:\devEnv\anaconda3\Scripts\uv.exe pip install --python D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\pipx-home\venvs\longform-novel-engine\Scripts\python.exe --quiet D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\dist\longform_novel_engine-0.3.0-py3-none-any.whl[semantic]
+ 12242.9ms (run_subprocess:210): returncode: 0
+ 12244.3ms (run_subprocess:182): running <fetch_info_in_venv commands>
+ 12407.1ms (run_subprocess:207): stdout: {"sys_path": ["D:\\devEnv\\anaconda3\\python313.zip", "D:\\devEnv\\anaconda3\\DLLs", "D:\\devEnv\\anaconda3\\Lib", "D:\\devEnv\\anaconda3", "D:\\soft\\code\\OpenGit\\novel-generator\\longform-novel-engine\\70_runtime\\release\\v0.3.0-rc2\\pipx-home\\venvs\\longform-novel-engine", "D:\\soft\\code\\OpenGit\\novel-generator\\longform-novel-engine\\70_runtime\\release\\v0.3.0-rc2\\pipx-home\\venvs\\longform-novel-engine\\Lib\\site-packages"], "python_version": "3.13.5", "environment": {"implementation_name": "cpython", "implementation_version": "3.13.5", "os_name": "nt", "platform_machine": "AMD64", "platform_release": "11", "platform_system": "Windows", "platform_version": "10.0.26200", "python_full_version": "3.13.5", "platform_python_implementation": "CPython", "python_version": "3.13", "sys_platform": "win32"}}
+ 12407.2ms (run_subprocess:210): returncode: 0
+ 16814.9ms (get_venv_metadata_for_package:424): get_venv_metadata_for_package: 4571ms
+ 16815.6ms (_parsed_package_to_package_or_url:138): cleaned package spec: D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\release\v0.3.0-rc2\dist\longform_novel_engine-0.3.0-py3-none-any.whl[semantic]
+ 16883.9ms (warn_if_not_on_path:507): Note: 'D:\soft\code\OpenGit\novel-generator\longform-novel-engine\70_runtime\r
+    elease\v0.3.0-rc2\pipx-bin' is not on your PATH environment variable.
+    These apps will not be globally accessible until your PATH is updated. Run
+    `pipx ensurepath` to automatically add it, or manually modify your PATH in
+    your shell's config file (e.g. ~/.bashrc).
+ 16884.8ms (cli:1449): pipx finished.

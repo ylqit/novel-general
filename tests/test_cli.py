@@ -4,9 +4,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 from longform_engine.cli import build_parser
 from longform_engine.config import load_project_config
 from longform_engine.storage import acquire_project_lock
+from tests.project_fixtures import mark_project_ready
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +42,17 @@ def run_cli_with_input(args: tuple[str, ...], stdin: str) -> subprocess.Complete
         capture_output=True,
         check=False,
     )
+
+
+def mark_cli_project_ready(project_yaml: Path) -> None:
+    payload = yaml.safe_load(project_yaml.read_text(encoding="utf-8"))
+    payload.setdefault("editorial", {})["review_mode"] = "off"
+    project_yaml.write_text(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    config = load_project_config(project_yaml)
+    mark_project_ready(project_yaml.parent, config, preserve_existing_characters=True)
 
 
 def test_cli_validate_template():
@@ -111,6 +125,29 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("creative", "style-extract", "project.yaml", "--file", "sample.md", "--name", "sample"),
         ("creative", "humanize-task", "project.yaml", "--chapter", "1", "--source", "draft"),
         ("creative", "humanize-check", "project.yaml", "--chapter", "1", "--file", "50_workbench/repair_candidates/ch001.md"),
+        ("creative", "humanize-semantic-task", "project.yaml", "--chapter", "1"),
+        (
+            "creative",
+            "humanize-semantic-validate",
+            "project.yaml",
+            "--chapter",
+            "1",
+            "--file",
+            "50_workbench/humanizer_tasks/ch001.semantic_review.json",
+        ),
+        ("quality", "payoff-task", "project.yaml", "--chapter", "1"),
+        (
+            "quality",
+            "payoff-validate",
+            "project.yaml",
+            "--chapter",
+            "1",
+            "--file",
+            "50_workbench/quality_reviews/ch001.reader_payoff.json",
+        ),
+        ("quality", "feedback-status", "project.yaml", "--chapter", "2"),
+        ("quality", "feedback-resolve", "project.yaml", "--id", "feedback:test", "--evidence", "fixed"),
+        ("quality", "feedback-suppress", "project.yaml", "--id", "feedback:test", "--evidence", "not applicable"),
         ("creative", "expand-task", "project.yaml", "--chapter", "1", "--source", "draft"),
         ("creative", "expand-check", "project.yaml", "--chapter", "1", "--file", "50_workbench/repair_candidates/ch001.md"),
         ("research", "add", "project.yaml", "--file", "note.md"),
@@ -123,6 +160,22 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("editorial", "submit-review", "project.yaml", "--chapter", "1", "--role", "anti_ai_editor", "--file", "50_workbench/editorial_reviews/results/ch001.anti_ai_editor.json"),
         ("editorial", "aggregate", "project.yaml", "--chapter", "1"),
         ("production", "loop", "project.yaml"),
+        ("intelligence", "task", "project.yaml", "--task-type", "book_design"),
+        ("intelligence", "validate", "project.yaml", "--task-type", "book_design", "--file", "50_workbench/intelligence_candidates/book_design.project.candidate.json"),
+        ("intelligence", "apply", "project.yaml", "--task-type", "book_design", "--file", "50_workbench/intelligence_candidates/book_design.project.candidate.json", "--approved-by", "human"),
+        ("benchmark", "init", "project.yaml", "--run-id", "smoke-5", "--agent-product", "codex", "--chapters", "5"),
+        ("benchmark", "record", "project.yaml", "--run-id", "smoke-5", "--chapter", "1", "--continuity", "4", "--character-consistency", "4", "--foreshadowing-control", "4", "--pacing", "4", "--reader-payoff", "4", "--ai-taste", "2", "--gate-passed", "--context-file-count", "6", "--context-character-count", "18000"),
+        ("benchmark", "technical-record", "project.yaml", "--run-id", "formal-10", "--chapter", "1", "--gate-passed", "--context-file-count", "6", "--context-character-count", "18000"),
+        ("benchmark", "rag-scale-run", "project.yaml", "--scale-chapters", "50", "--backend", "local_sqlite"),
+        ("benchmark", "rag-production-template", "project.yaml"),
+        ("benchmark", "rag-production-run", "project.yaml", "--run-id", "codex-10", "--dataset", "rag-dataset.json"),
+        ("benchmark", "source-attach", "project.yaml", "--run-id", "codex-10", "--source-dir", "40_manuscript/final"),
+        ("benchmark", "blind-pack", "project.yaml", "--comparison-id", "codex-vs-baseline", "--run-id", "codex-10", "--run-id", "baseline-10", "--seed", "private-seed"),
+        ("benchmark", "blind-template", "project.yaml", "--comparison-id", "codex-vs-baseline", "--judge-id", "judge-a"),
+        ("benchmark", "blind-submit", "project.yaml", "--comparison-id", "codex-vs-baseline", "--judge-id", "judge-a", "--file", "judge-a.json"),
+        ("benchmark", "blind-aggregate", "project.yaml", "--comparison-id", "codex-vs-baseline"),
+        ("benchmark", "report", "project.yaml", "--run-id", "smoke-5"),
+        ("benchmark", "compare", "project.yaml", "--comparison-id", "quality-compare", "--run-id", "codex-10", "--run-id", "claude-10"),
     ]
     read_only_cases = [
         ("validate-config", "--template", "qidian-longform"),
@@ -141,6 +194,10 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("db", "query", "project.yaml", "schema_meta"),
         ("graph", "validate", "project.yaml"),
         ("auto-write", "progress", "project.yaml"),
+        ("benchmark", "validate", "project.yaml", "--run-id", "smoke-5"),
+        ("release", "check", "--repository", ".", "--skip-contracts"),
+        ("skills", "status", "--tool", "all"),
+        ("doctor", "--tool", "all"),
     ]
 
     for command in mutating_cases:
@@ -328,6 +385,7 @@ def test_cli_open_plan_beat_continue(tmp_path):
 
     project_yaml = tmp_path / "novel" / "project.yaml"
     open_book = run_cli("open-book", str(project_yaml))
+    mark_cli_project_ready(project_yaml)
     plan = run_cli("plan-chapter", str(project_yaml), "--chapter", "1")
     beat = run_cli("beat", str(project_yaml), "--chapter", "1")
     cont = run_cli("continue-write", str(project_yaml), "--chapter", "1")
@@ -352,6 +410,7 @@ def test_cli_agent_task_validate_strict_json(tmp_path):
 
     project_yaml = tmp_path / "novel" / "project.yaml"
     assert run_cli("open-book", str(project_yaml)).returncode == 0
+    mark_cli_project_ready(project_yaml)
     assert run_cli("continue-write", str(project_yaml), "--chapter", "1").returncode == 0
     validate = run_cli(
         "agent-task",
@@ -376,6 +435,7 @@ def test_cli_auto_write_plan_run_progress_report(tmp_path):
 
     project_yaml = tmp_path / "novel" / "project.yaml"
     assert run_cli("open-book", str(project_yaml)).returncode == 0
+    mark_cli_project_ready(project_yaml)
     plan = run_cli("auto-write", "plan", str(project_yaml), "--target-chapters", "2", "--target-words", "6000")
     run = run_cli("auto-write", "run", str(project_yaml))
     progress = run_cli("auto-write", "progress", str(project_yaml))
@@ -405,6 +465,7 @@ def test_cli_draft_submit_agent_draft(tmp_path):
 
     project_yaml = tmp_path / "novel" / "project.yaml"
     open_book = run_cli("open-book", str(project_yaml))
+    mark_cli_project_ready(project_yaml)
     cont = run_cli("continue-write", str(project_yaml), "--chapter", "1")
     agent_draft = tmp_path / "novel" / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(passing_draft_text(), encoding="utf-8")
@@ -437,6 +498,7 @@ def test_cli_chapter_finalize_agent_draft(tmp_path):
 
     project_yaml = tmp_path / "novel" / "project.yaml"
     assert run_cli("open-book", str(project_yaml)).returncode == 0
+    mark_cli_project_ready(project_yaml)
     assert run_cli("continue-write", str(project_yaml), "--chapter", "1").returncode == 0
     agent_draft = tmp_path / "novel" / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(passing_draft_text(), encoding="utf-8")
@@ -692,4 +754,4 @@ def test_cli_revision_branch_rollback_and_impact(tmp_path):
 
 def passing_draft_text() -> str:
     sentence = "林迟沿着山门石阶向上，旧钟声在雾里回荡，他记住师父留下的规矩，也看见山下灯火一步步逼近。"
-    return "# 第一章 山门\n\n" + sentence * 80 + "\n"
+    return "# 第一章 山门\n\n" + sentence * 80 + "\n\n然而，封死三年的山门忽然从里面开了。\n"

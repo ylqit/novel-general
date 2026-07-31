@@ -4,6 +4,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from longform_engine.config import load_project_config
+from tests.project_fixtures import mark_project_ready
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PROVIDER_KEY_NAMES = (
@@ -55,6 +58,7 @@ def test_e2e_agent_skill_no_api_key_full_chapter_lifecycle(tmp_path):
     )
 
     open_book = run_cli("open-book", str(project_yaml))
+    mark_project_ready(project_dir, load_project_config(project_yaml), preserve_existing_characters=True)
     continue_write = run_cli("continue-write", str(project_yaml), "--chapter", "1")
 
     task_md = project_dir / "50_workbench" / "writing_tasks" / "ch001.md"
@@ -345,7 +349,8 @@ def test_e2e_no_key_repair_humanize_expand_branch(tmp_path):
     repair_plan = run_cli("repair-chapter", str(project_yaml), "--chapter", "2", "--plan-only")
     repair_task = run_cli("repair-chapter", str(project_yaml), "--chapter", "2", "--candidate-only", "--agent", "codex")
     repair_candidate = project_dir / "50_workbench" / "repair_candidates" / "ch002.codex.repair_candidate.md"
-    repair_candidate.write_text(passing_agent_draft("REPAIRCANDIDATEMARKER"), encoding="utf-8")
+    repair_text = passing_agent_draft("REPAIRCANDIDATEMARKER")
+    repair_candidate.write_text(repair_text, encoding="utf-8")
 
     assert repair_plan.returncode == 0, repair_plan.stderr
     assert repair_task.returncode == 0, repair_task.stderr
@@ -353,10 +358,18 @@ def test_e2e_no_key_repair_humanize_expand_branch(tmp_path):
 
     humanize_task = run_cli("creative", "humanize-task", str(project_yaml), "--chapter", "2", "--source", "repair-candidate")
     humanized_candidate = project_dir / "50_workbench" / "repair_candidates" / "ch002.humanized_candidate.md"
-    humanized_candidate.write_text(passing_agent_draft("HUMANIZEDCANDIDATEMARKER"), encoding="utf-8")
+    humanized_candidate.write_text(repair_text.replace("harder road", "steeper road", 1), encoding="utf-8")
     humanize_check = run_cli("creative", "humanize-check", str(project_yaml), "--chapter", "2", "--file", str(humanized_candidate), "--json")
 
     assert humanize_task.returncode == 0, humanize_task.stderr
+    humanize_task_text = (
+        project_dir
+        / "50_workbench"
+        / "humanizer_tasks"
+        / "ch002.repair_candidate.humanize_task.md"
+    ).read_text(encoding="utf-8")
+    assert "ch002.codex.repair_candidate.md" in humanize_task_text
+    assert "ch002.codex.repair_task.md" not in humanize_task_text
     assert humanize_check.returncode == 0, humanize_check.stdout + humanize_check.stderr
     assert json.loads(humanize_check.stdout)["passed"] is True
 
@@ -427,7 +440,7 @@ def passing_agent_draft(marker: str) -> str:
         "she chooses the harder road, protects the witness, keeps the promise, "
         "and turns the local conflict into a sharper chapter hook. "
     )
-    return "# Chapter 1: North Gate\n\n" + sentence * 22 + "\n"
+    return "# Chapter 1: North Gate\n\n" + sentence * 22 + "\n\nBut the sealed gate opened from inside.\n"
 
 
 def expanded_agent_draft(marker: str) -> str:
@@ -458,6 +471,7 @@ def finalized_agent_skill_project(tmp_path, name: str, marker: str) -> tuple[Pat
         encoding="utf-8",
     )
     open_book = run_cli("open-book", str(project_yaml))
+    mark_project_ready(project_dir, load_project_config(project_yaml), preserve_existing_characters=True)
     continue_write = run_cli("continue-write", str(project_yaml), "--chapter", "1")
     agent_draft = project_dir / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(passing_agent_draft(marker), encoding="utf-8")

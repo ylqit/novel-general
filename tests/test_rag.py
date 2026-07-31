@@ -5,6 +5,7 @@ from longform_engine.db import query_table, status
 from longform_engine.orchestration import continue_write, finalize_chapter, open_book, submit_agent_draft
 from longform_engine.rag import build_chunks, build_context, query
 from longform_engine.storage import init_project
+from tests.project_fixtures import mark_project_ready
 
 
 def test_rag_build_query_and_context(tmp_path):
@@ -51,6 +52,7 @@ def test_failed_agent_draft_and_draft_chunk_do_not_enter_rag(tmp_path):
     project_config = seed_agent_project(tmp_path)
     root = tmp_path / "novel"
     open_book(project_config)
+    mark_project_ready(root, project_config)
     continue_write(project_config, chapter_number=1)
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text("# Chapter One\n\nTODO DRAFTLEAKPHRASE cannot be final.\n", encoding="utf-8")
@@ -96,6 +98,7 @@ def test_finalized_chapter_enters_rag_and_context_excludes_inbox(tmp_path):
     project_config = seed_agent_project(tmp_path)
     root = tmp_path / "novel"
     open_book(project_config)
+    mark_project_ready(root, project_config)
     continue_write(project_config, chapter_number=1)
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(passing_agent_text("FINALONLYPHRASE"), encoding="utf-8")
@@ -151,4 +154,4 @@ def seed_agent_project(tmp_path):
 
 def passing_agent_text(marker: str) -> str:
     sentence = f"{marker} Lin chooses the harder road, keeps the promise, and moves the chapter conflict forward. "
-    return "# Chapter One: Mountain Gate\n\n" + sentence * 32 + "\n"
+    return "# Chapter One: Mountain Gate\n\n" + sentence * 32 + "\n\nBut a second seal breaks outside the archive.\n"

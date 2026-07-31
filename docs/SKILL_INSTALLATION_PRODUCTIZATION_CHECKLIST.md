@@ -1,5 +1,7 @@
 # Skill Installation Productization Checklist
 
+> 历史说明：本文档记录旧的源码 copy/junction 安装阶段。`v0.2.0` 起的 wheel/pipx、自包含 Skill、lifecycle CLI 与公开发布验收，以 `docs/PUBLIC_DISTRIBUTION_PRODUCTIZATION_CHECKLIST.md` 为准；旧的全局 `shared/` 和 `<owner>` 占位结论不再代表当前公开安装契约。
+
 本文档用于后续验证 `longform-novel-engine` 的 README、Codex skill、Claude Code skill、安装文档和安装脚本是否达到“复制即用”的 skill 包体验。
 
 本 checklist 只约束文档与安装体验，不改变 `agent_skill` 默认模式，不引入脚本内 LLM 调用，不改变 final/RAG/graph/SQLite 硬边界。

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import hashlib
 import json
 import re
 
@@ -14,7 +15,7 @@ from longform_engine.config import ConfigDocument
 from longform_engine.creative import creative_repair_guidance, detect_humanizer_v2_issues, reader_experience_review
 from longform_engine.db import sync_database
 from longform_engine.graph import check_graph
-from longform_engine.memory import semantic_gate_findings
+from longform_engine.memory import deterministic_evidence_gate_findings
 from longform_engine.planning import evaluate_event_matrix, infer_event_types_from_text
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 
@@ -83,6 +84,37 @@ class SemanticPacingApplyResult:
 
 
 @dataclass(frozen=True)
+class SemanticReviewTaskResult:
+    chapter_number: int
+    task_markdown: str
+    manifest_file: str
+    output_file: str
+    source_file: str
+    next_command: str
+
+
+@dataclass(frozen=True)
+class SemanticReviewValidateResult:
+    chapter_number: int
+    ok: bool
+    file: str
+    report_file: str
+    errors: tuple[str, ...]
+    warnings: tuple[str, ...]
+    next_command: str
+
+
+@dataclass(frozen=True)
+class SemanticReviewApplyResult:
+    chapter_number: int
+    applied: bool
+    application_file: str
+    gate_result: str
+    blocking_findings: int
+    next_command: str
+
+
+@dataclass(frozen=True)
 class RepairPlanResult:
     """Public result for repair-chapter --plan-only."""
 
@@ -138,15 +170,28 @@ def gate_check(
     style_failures, style_warnings = check_style_and_humanizer(config, text)
     failures.extend(style_failures)
     warnings.extend(style_warnings)
-    semantic_report = None
+    fanfiction_failures, fanfiction_warnings = check_fanfiction_source_reproduction(config, root, text)
+    failures.extend(fanfiction_failures)
+    warnings.extend(fanfiction_warnings)
+    deterministic_evidence_report = None
     if semantic:
-        semantic_failures, semantic_warnings, semantic_report = semantic_gate_findings(
+        semantic_failures, semantic_warnings, deterministic_evidence_report = deterministic_evidence_gate_findings(
             config,
             chapter_number=chapter_number,
             text=text,
         )
         failures.extend(semantic_failures)
         warnings.extend(semantic_warnings)
+        review_failures, review_warnings, review_state = semantic_review_gate_items(
+            config,
+            chapter_number=chapter_number,
+            source_path=draft_path,
+            deterministic_failures=semantic_failures,
+        )
+        failures.extend(review_failures)
+        warnings.extend(review_warnings)
+    else:
+        review_state = {"required": False, "status": "not_requested"}
 
     severity = max_severity(failures)
     passed = severity not in {"P0", "P1"}
@@ -172,8 +217,11 @@ def gate_check(
         "next_command": next_command,
         "artifact_dir": str(artifact_dir),
         "source_path": relative_path(root, draft_path),
+        "deterministic_evidence_enabled": semantic,
+        "deterministic_evidence_report": str(deterministic_evidence_report) if deterministic_evidence_report else "",
         "semantic_enabled": semantic,
-        "semantic_report": str(semantic_report) if semantic_report else "",
+        "semantic_report": str(deterministic_evidence_report) if deterministic_evidence_report else "",
+        "agent_semantic_review": review_state,
         "reverse_brake_report": str(artifact_dir / "reverse_brake_report.md"),
         "reverse_brake": reverse_brake,
         "updated_at": utc_now(),
@@ -190,6 +238,284 @@ def gate_check(
         repair_plan=str(repair_path),
         failures=tuple(failures),
         allowed_actions=allowed_actions,
+    )
+
+
+def semantic_review_task(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    source: str = "draft",
+) -> SemanticReviewTaskResult:
+    """Create an evidence-backed semantic review task for a high-risk chapter."""
+
+    if chapter_number <= 0:
+        raise GateError("chapter_number must be positive.")
+    root = resolve_project_root(config)
+    chapter_path = chapter_text_path(root, chapter_number, source=source)
+    if chapter_path is None:
+        raise GateError(f"Chapter text not found for ch{chapter_number:03d} ({source}).")
+    artifact_dir = gate_artifact_dir(root, chapter_number)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    task_md = artifact_dir / "semantic_review_task.md"
+    output_file = artifact_dir / "semantic_review_result.json"
+    manifest_file = artifact_dir / "semantic_review_task.agent_task.json"
+    candidate_inputs = [
+        chapter_path,
+        root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json",
+        root / "30_state" / "story_graph.json",
+        root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
+        root / "10_bible" / "characters.json",
+        root / "20_outline" / "outline_anchors.json",
+    ]
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        candidate_inputs.extend(
+            [
+                root / "10_bible" / "fanfiction" / "source_canon.json",
+                root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
+            ]
+        )
+    inputs = [path for path in candidate_inputs if path.exists()]
+    source_text = safe_read_text(chapter_path)
+    source_rel = relative_path(root, chapter_path)
+    schema = semantic_review_output_template(chapter_number, chapter_path, root)
+    atomic_write_text(
+        task_md,
+        "\n".join(
+            [
+                f"# Agent Semantic Review ch{chapter_number:03d}",
+                "",
+                "## Objective",
+                "",
+                "Judge motivation, location, ability boundaries, relationship changes, foreshadowing leakage, and causal continuity.",
+                "For fanfiction, also judge canon voice, relationship phase, source-world rules, divergence causality, "
+                "canon character agency, and original contribution. Declared AU/divergence is not itself an OOC error.",
+                "Flag skin-only characterization, collective irrationality, canon characters used only as props, "
+                "or retained setting names whose declared rules no longer operate without causal support.",
+                "Every finding must cite an exact chapter character span and declared canonical references.",
+                "",
+                "## Required Input",
+                "",
+                f"- `{source_rel}` (sha256 `{sha256_text(source_text)}`)",
+                "",
+                "## Canonical References You May Use",
+                "",
+                *[f"- `{relative_path(root, path)}`" for path in inputs if path != chapter_path],
+                "",
+                "## Output Contract",
+                "",
+                f"- Write JSON only: `{relative_path(root, output_file)}`",
+                f"- Validate: `longform-engine gate semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}`",
+                f"- Apply: `longform-engine gate semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}`",
+                "- Never edit final/RAG/graph/TCS/SQLite or canonical source files.",
+                "",
+                "```json",
+                json.dumps(schema, ensure_ascii=False, indent=2),
+                "```",
+                "",
+            ]
+        ),
+    )
+    manifest_inputs = [task_md, *inputs]
+    manifest = build_manifest(
+        root,
+        task_type="semantic_review",
+        chapter_number=chapter_number,
+        input_files=manifest_inputs,
+        allowed_output_paths=[output_file],
+        output_schema="semantic_review_result_v1",
+        validate_command=f"longform-engine gate semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
+        apply_command=f"longform-engine gate semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
+        failure_next_command=f"longform-engine gate semantic-task project.yaml --chapter {chapter_number}",
+        context_policy={
+            "required_files": [relative_path(root, task_md), source_rel],
+            "optional_files": [relative_path(root, path) for path in inputs if path != chapter_path],
+            "forbidden_paths": [
+                "40_manuscript/final/",
+                "50_workbench/agent_drafts/",
+                "60_rag/query_cache/",
+                "70_runtime/db/",
+            ],
+            "max_files": 7,
+            "max_chars": 18_000,
+            "compiled_brief": relative_path(root, task_md),
+            "selection_report": "",
+        },
+    )
+    write_manifest(root, manifest, manifest_file)
+    return SemanticReviewTaskResult(
+        chapter_number=chapter_number,
+        task_markdown=str(task_md),
+        manifest_file=str(manifest_file),
+        output_file=str(output_file),
+        source_file=str(chapter_path),
+        next_command=f"longform-engine gate semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
+    )
+
+
+def semantic_review_validate(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    file_path: str | Path,
+) -> SemanticReviewValidateResult:
+    """Validate chapter spans and canonical references in an Agent semantic review."""
+
+    root = resolve_project_root(config)
+    artifact_dir = gate_artifact_dir(root, chapter_number)
+    path = resolve_semantic_review_result_path(root, artifact_dir, file_path)
+    payload = load_json(path, default={})
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(payload, dict):
+        payload = {}
+        errors.append("semantic review result must be a JSON object.")
+    expected_keys = {"schema", "chapter_number", "source_path", "source_hash", "verdict", "findings", "notes"}
+    if set(payload) != expected_keys:
+        errors.append(f"top-level keys must be exactly {sorted(expected_keys)}.")
+    if payload.get("schema") != "semantic_review_result_v1":
+        errors.append("schema must be semantic_review_result_v1.")
+    if int(payload.get("chapter_number") or 0) != chapter_number:
+        errors.append("payload chapter_number does not match command chapter.")
+    source = resolve_review_source(root, chapter_number, str(payload.get("source_path") or ""))
+    if source is None:
+        errors.append("chapter source is missing.")
+        source_text = ""
+    else:
+        source_text = safe_read_text(source)
+        if str(payload.get("source_path") or "") != relative_path(root, source):
+            errors.append("source_path does not match the current chapter source.")
+        if str(payload.get("source_hash") or "") != sha256_text(source_text):
+            errors.append("source_hash does not match the current chapter source.")
+    verdict = str(payload.get("verdict") or "").lower()
+    if verdict not in {"pass", "warning", "fail"}:
+        errors.append("verdict must be pass, warning, or fail.")
+    manifest = load_semantic_review_manifest(manifest_path=artifact_dir / "semantic_review_task.agent_task.json")
+    allowed_refs = {
+        str(item).replace("\\", "/")
+        for item in manifest.get("input_files", [])
+        if is_canonical_reference(str(item))
+    }
+    known_entities = semantic_review_known_entities(root)
+    findings = payload.get("findings")
+    if not isinstance(findings, list):
+        errors.append("findings must be a list.")
+        findings = []
+    for index, finding in enumerate(findings):
+        validate_semantic_review_finding(
+            finding,
+            index=index,
+            source_text=source_text,
+            allowed_refs=allowed_refs,
+            known_entities=known_entities,
+            errors=errors,
+        )
+    if verdict == "fail" and not any(
+        isinstance(item, dict) and str(item.get("severity") or "").upper() in {"P0", "P1"}
+        for item in findings
+    ):
+        errors.append("fail verdict requires at least one P0/P1 finding.")
+    report_file = artifact_dir / "semantic_review_validation.json"
+    ok = not errors
+    next_command = (
+        f"longform-engine gate semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, path)}"
+        if ok
+        else f"longform-engine gate semantic-task project.yaml --chapter {chapter_number}"
+    )
+    write_json(
+        report_file,
+        {
+            "schema": "semantic_review_validation_v1",
+            "chapter_number": chapter_number,
+            "file": relative_path(root, path),
+            "ok": ok,
+            "errors": errors,
+            "warnings": warnings,
+            "next_command": next_command,
+            "updated_at": utc_now(),
+        },
+    )
+    mark_tasks_for_output(
+        root,
+        chapter_number=chapter_number,
+        output_path=path,
+        to_status="validated" if ok else "invalid",
+        command="gate semantic-validate",
+        result=report_file,
+        from_statuses=("awaiting_agent", "submitted", "invalid"),
+    )
+    return SemanticReviewValidateResult(
+        chapter_number=chapter_number,
+        ok=ok,
+        file=str(path),
+        report_file=str(report_file),
+        errors=tuple(errors),
+        warnings=tuple(warnings),
+        next_command=next_command,
+    )
+
+
+def semantic_review_apply(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    file_path: str | Path,
+) -> SemanticReviewApplyResult:
+    """Apply a validated review to gate artifacts and rerun all semantic gates."""
+
+    validation = semantic_review_validate(config, chapter_number=chapter_number, file_path=file_path)
+    if not validation.ok:
+        raise GateError("semantic review result did not validate; no gate artifact was applied.")
+    root = resolve_project_root(config)
+    path = Path(validation.file)
+    artifact_dir = gate_artifact_dir(root, chapter_number)
+    application_file = artifact_dir / "semantic_review_application.json"
+    payload = load_json(path, default={})
+    blocking = sum(
+        1
+        for item in payload.get("findings", [])
+        if isinstance(item, dict) and str(item.get("severity") or "").upper() in {"P0", "P1"}
+    )
+    with apply_transaction(
+        root,
+        command="gate semantic-apply",
+        chapter_number=chapter_number,
+        source_paths=[path, validation.report_file],
+        touched_paths=[artifact_dir],
+        metadata={"gate_artifact_only": True, "blocking_findings": blocking},
+    ):
+        write_json(
+            application_file,
+            {
+                "schema": "semantic_review_application_v1",
+                "chapter_number": chapter_number,
+                "result_file": relative_path(root, path),
+                "source_hash": payload.get("source_hash"),
+                "payload": payload,
+                "applied_at": utc_now(),
+            },
+        )
+        gate_result = gate_check(config, chapter_number=chapter_number, semantic=True)
+    mark_tasks_for_output(
+        root,
+        chapter_number=chapter_number,
+        output_path=path,
+        to_status="applied",
+        command="gate semantic-apply",
+        result=application_file,
+        from_statuses=("validated",),
+    )
+    return SemanticReviewApplyResult(
+        chapter_number=chapter_number,
+        applied=True,
+        application_file=str(application_file),
+        gate_result=gate_result.gate_result,
+        blocking_findings=blocking,
+        next_command=(
+            f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only"
+            if blocking
+            else f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
+        ),
     )
 
 
@@ -232,7 +558,7 @@ def pacing_review(
         issues.append("A/B/C major quota overflow")
     if len(text) < 120:
         warnings.append("chapter is very short; pacing signal may be unreliable")
-    if "秘密" in text and "全部" in text:
+    if complete_core_reveal_detected(text):
         warnings.append("possible complete core secret reveal")
 
     card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
@@ -992,26 +1318,33 @@ def default_resolution_markers() -> list[str]:
 def complete_core_reveal_detected(text: str) -> bool:
     lower = text.lower()
     direct_markers = (
-        "final truth",
-        "ultimate secret",
         "everything is solved",
         "core secret is revealed",
         "reveals the core secret",
         "revealed the core secret",
-        "complete truth",
-        "最终真相",
-        "终极秘密",
-        "核心秘密",
         "真相大白",
         "全部揭开",
         "全部揭露",
         "一切都解决",
     )
-    if any(marker in lower for marker in direct_markers):
-        return True
     final_markers = ("final", "ultimate", "core", "complete", "全部", "最终", "终极", "核心")
     reveal_markers = ("truth", "secret", "answer", "solved", "resolved", "revealed", "真相", "秘密", "答案", "解决", "揭开", "揭露")
-    return any(marker in lower for marker in final_markers) and any(marker in lower for marker in reveal_markers)
+    negation_markers = ("not", "unknown", "unresolved", "remain", "未", "没有", "并非", "不是", "尚未", "仍未", "只", "一角")
+    clauses = [item.strip() for item in re.split(r"[。！？!?；;\n]+", lower) if item.strip()]
+    for clause in clauses:
+        if any(marker in clause for marker in negation_markers):
+            continue
+        if any(marker in clause for marker in direct_markers):
+            return True
+        final_positions = [clause.find(marker) for marker in final_markers if marker in clause]
+        reveal_positions = [clause.find(marker) for marker in reveal_markers if marker in clause]
+        if final_positions and reveal_positions and min(
+            abs(final_pos - reveal_pos)
+            for final_pos in final_positions
+            for reveal_pos in reveal_positions
+        ) <= 80:
+            return True
+    return False
 
 
 def mainline_info_release(text: str) -> dict[str, Any]:
@@ -1105,6 +1438,81 @@ def check_style_and_humanizer(config: ConfigDocument, text: str) -> tuple[list[d
     warnings.extend(style_drift_warnings)
 
     return failures, warnings
+
+
+def check_fanfiction_source_reproduction(
+    config: ConfigDocument,
+    root: Path,
+    text: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    if str(config.data.get("creation", {}).get("mode") or "original") != "fanfiction":
+        return [], []
+    canon = load_json(root / "10_bible" / "fanfiction" / "source_canon.json", default={})
+    if not isinstance(canon, dict):
+        return [], ["fanfiction source canon is missing; source-prose reproduction check could not run"]
+    protected_terms = fanfiction_protected_terms(canon)
+    candidate_parts = [
+        part.strip()
+        for part in re.split(r"\n\s*\n+|(?<=[。！？!?])", text)
+        if len(normalize_fanfiction_similarity(part, protected_terms)) >= 36
+    ]
+    if len(normalize_fanfiction_similarity(text, protected_terms)) >= 36:
+        candidate_parts.insert(0, text)
+    for source in canon.get("sources") or []:
+        if not isinstance(source, dict):
+            continue
+        for source_file in source.get("source_files") or []:
+            path = root / str(source_file)
+            if not path.is_file():
+                continue
+            source_text = normalize_fanfiction_similarity(safe_read_text(path), protected_terms)
+            for part in candidate_parts:
+                candidate = normalize_fanfiction_similarity(part, protected_terms)
+                overlap = ngram_overlap_ratio(candidate, source_text, size=10)
+                if candidate in source_text or overlap >= 0.62:
+                    return [
+                        {
+                            "code": "fanfiction_source_prose_reproduction",
+                            "severity": "P1",
+                            "message": (
+                                "continuous prose is too similar to a declared source after excluding names, "
+                                "abilities, and world terminology"
+                            ),
+                            "source_path": str(source_file),
+                            "overlap_ratio": round(overlap, 4),
+                        }
+                    ], []
+    return [], []
+
+
+def fanfiction_protected_terms(canon: dict[str, Any]) -> tuple[str, ...]:
+    terms: set[str] = set()
+    for source in canon.get("sources") or []:
+        if not isinstance(source, dict):
+            continue
+        for field in ("characters", "abilities", "terminology"):
+            for item in source.get(field) or []:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if name:
+                    terms.add(name)
+    return tuple(sorted(terms, key=len, reverse=True))
+
+
+def normalize_fanfiction_similarity(text: str, protected_terms: tuple[str, ...]) -> str:
+    normalized = str(text).lower()
+    for term in protected_terms:
+        normalized = normalized.replace(term.lower(), "")
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", normalized, flags=re.UNICODE)
+
+
+def ngram_overlap_ratio(candidate: str, source: str, *, size: int) -> float:
+    if len(candidate) < size or len(source) < size:
+        return 0.0
+    candidate_grams = {candidate[index:index + size] for index in range(len(candidate) - size + 1)}
+    source_grams = {source[index:index + size] for index in range(len(source) - size + 1)}
+    return len(candidate_grams & source_grams) / max(1, len(candidate_grams))
 
 
 def style_fingerprint(text: str) -> dict[str, Any]:
@@ -1581,7 +1989,7 @@ def repair_action_for_failure(failure: dict[str, Any], chapter_number: int) -> s
     if code == "graph_consistency":
         return "run `longform-engine graph check project.yaml` and resolve canonical graph issues"
     if code.startswith("semantic_"):
-        return f"inspect `semantic_report.md`, repair motivation/continuity evidence, then rerun `longform-engine gate-check project.yaml --chapter {chapter_number} --semantic`"
+        return f"inspect `deterministic_evidence_report.md`, repair motivation/continuity evidence, then rerun `longform-engine gate-check project.yaml --chapter {chapter_number} --semantic`"
     return f"repair draft and rerun `longform-engine gate-check project.yaml --chapter {chapter_number}`"
 
 
@@ -1615,6 +2023,250 @@ def semantic_pacing_output_template(chapter_number: int, source: Path, root: Pat
         "warnings": [],
         "notes": "",
     }
+
+
+def semantic_review_output_template(chapter_number: int, source: Path, root: Path) -> dict[str, Any]:
+    text = safe_read_text(source)
+    example_end = min(len(text), 20)
+    return {
+        "schema": "semantic_review_result_v1",
+        "chapter_number": chapter_number,
+        "source_path": relative_path(root, source),
+        "source_hash": sha256_text(text),
+        "verdict": "pass",
+        "findings": [
+            {
+                "code": "motivation_jump_example",
+                "category": "motivation",
+                "severity": "P2",
+                "message": "Concrete semantic issue.",
+                "evidence_span": {
+                    "start": 0,
+                    "end": example_end,
+                    "text": text[:example_end],
+                },
+                "canonical_refs": ["10_bible/characters.json"],
+                "entity_ids": [],
+                "recommendation": "Concrete scene-level repair.",
+            }
+        ],
+        "notes": "",
+    }
+
+
+def semantic_review_gate_items(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    source_path: Path,
+    deterministic_failures: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+    root = resolve_project_root(config)
+    artifact_dir = gate_artifact_dir(root, chapter_number)
+    card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
+    explicit = isinstance(card, dict) and bool(card.get("requires_semantic_review"))
+    deterministic_risk = any(
+        str(item.get("severity") or "").upper() in {"P0", "P1"}
+        for item in deterministic_failures
+        if isinstance(item, dict)
+    )
+    required = explicit or deterministic_risk
+    application_file = artifact_dir / "semantic_review_application.json"
+    application = load_json(application_file, default={})
+    source_hash = sha256_text(safe_read_text(source_path))
+    current = (
+        isinstance(application, dict)
+        and application.get("schema") == "semantic_review_application_v1"
+        and str(application.get("source_hash") or "") == source_hash
+        and isinstance(application.get("payload"), dict)
+    )
+    if not required and not current:
+        return [], [], {"required": False, "status": "not_required"}
+    if not current:
+        task = semantic_review_task(config, chapter_number=chapter_number, source="final" if "final" in source_path.parts else "draft")
+        failure = {
+            "code": "semantic_review_required",
+            "severity": "P1",
+            "message": "High-risk semantic evidence requires an Agent review before finalization.",
+            "repair_action": task.next_command,
+        }
+        return [failure], [], {
+            "required": True,
+            "status": "awaiting_agent",
+            "task": relative_path(root, Path(task.manifest_file)),
+            "next_command": f"longform-engine agent-task brief project.yaml --task-id semantic_review:ch{chapter_number:03d}:v1",
+        }
+    payload = application["payload"]
+    failures: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for item in payload.get("findings", []):
+        if not isinstance(item, dict):
+            continue
+        severity = str(item.get("severity") or "").upper()
+        code = str(item.get("code") or "finding")
+        message = str(item.get("message") or code)
+        if severity in {"P0", "P1"}:
+            failures.append(
+                {
+                    "code": f"agent_semantic:{code}",
+                    "severity": severity,
+                    "message": message,
+                    "evidence_span": item.get("evidence_span"),
+                    "canonical_refs": item.get("canonical_refs"),
+                    "repair_action": item.get("recommendation"),
+                }
+            )
+        elif severity == "P2":
+            warnings.append(f"agent_semantic:{code}: {message}")
+    return failures, warnings, {
+        "required": required,
+        "status": "applied",
+        "result": str(application.get("result_file") or ""),
+        "source_hash": source_hash,
+        "verdict": payload.get("verdict"),
+    }
+
+
+def resolve_semantic_review_result_path(root: Path, artifact_dir: Path, file_path: str | Path) -> Path:
+    path = Path(file_path)
+    if not path.is_absolute():
+        path = root / path
+    resolved = path.expanduser().resolve()
+    expected = (artifact_dir / "semantic_review_result.json").resolve()
+    if resolved != expected:
+        raise GateError("semantic review result must be 50_workbench/gate_artifacts/chNNN/semantic_review_result.json.")
+    return resolved
+
+
+def resolve_review_source(root: Path, chapter_number: int, source_path: str) -> Path | None:
+    if not source_path:
+        return None
+    candidate = (root / source_path).resolve()
+    allowed = {
+        path.resolve()
+        for lane in ("draft", "final")
+        for path in [chapter_text_path(root, chapter_number, source=lane)]
+        if path is not None
+    }
+    return candidate if candidate in allowed and candidate.exists() else None
+
+
+def load_semantic_review_manifest(*, manifest_path: Path) -> dict[str, Any]:
+    payload = load_json(manifest_path, default={})
+    return payload if isinstance(payload, dict) else {}
+
+
+def is_canonical_reference(path: str) -> bool:
+    normalized = path.replace("\\", "/")
+    return normalized.startswith(("10_bible/", "20_outline/", "30_state/", "60_rag/memory/"))
+
+
+def semantic_review_known_entities(root: Path) -> set[str]:
+    ids: set[str] = set()
+    characters = load_json(root / "10_bible" / "characters.json", default={})
+    for item in normalize_records(characters):
+        if isinstance(item, dict):
+            for key in ("id", "character_id", "name"):
+                value = str(item.get(key) or "").strip()
+                if value:
+                    ids.add(value)
+    graph = load_json(root / "30_state" / "story_graph.json", default={})
+    if isinstance(graph, dict):
+        for item in normalize_records(graph.get("nodes")):
+            if isinstance(item, dict):
+                for key in ("id", "entity_id", "name"):
+                    value = str(item.get(key) or "").strip()
+                    if value:
+                        ids.add(value)
+    canon = load_json(root / "10_bible" / "fanfiction" / "source_canon.json", default={})
+    if isinstance(canon, dict):
+        for source in canon.get("sources") or []:
+            if not isinstance(source, dict):
+                continue
+            for field in ("characters", "abilities", "terminology", "world_rules"):
+                for item in source.get(field) or []:
+                    if not isinstance(item, dict):
+                        continue
+                    for key in ("id", "name"):
+                        value = str(item.get(key) or "").strip()
+                        if value:
+                            ids.add(value)
+    return ids
+
+
+def validate_semantic_review_finding(
+    finding: Any,
+    *,
+    index: int,
+    source_text: str,
+    allowed_refs: set[str],
+    known_entities: set[str],
+    errors: list[str],
+) -> None:
+    if not isinstance(finding, dict):
+        errors.append(f"findings[{index}] must be an object.")
+        return
+    expected = {
+        "code",
+        "category",
+        "severity",
+        "message",
+        "evidence_span",
+        "canonical_refs",
+        "entity_ids",
+        "recommendation",
+    }
+    if set(finding) != expected:
+        errors.append(f"findings[{index}] keys must be exactly {sorted(expected)}.")
+    if not str(finding.get("code") or "").strip():
+        errors.append(f"findings[{index}].code is required.")
+    if str(finding.get("category") or "") not in {
+        "motivation",
+        "location",
+        "ability",
+        "relationship",
+        "foreshadowing",
+        "causality",
+        "canon_fidelity",
+        "voice",
+        "divergence",
+        "original_contribution",
+    }:
+        errors.append(f"findings[{index}].category is invalid.")
+    if str(finding.get("severity") or "").upper() not in {"P0", "P1", "P2"}:
+        errors.append(f"findings[{index}].severity must be P0, P1, or P2.")
+    if not str(finding.get("message") or "").strip() or not str(finding.get("recommendation") or "").strip():
+        errors.append(f"findings[{index}] requires message and recommendation.")
+    span = finding.get("evidence_span")
+    if not isinstance(span, dict) or set(span) != {"start", "end", "text"}:
+        errors.append(f"findings[{index}].evidence_span must contain exactly start, end, text.")
+    else:
+        start = span.get("start")
+        end = span.get("end")
+        quoted = span.get("text")
+        if not isinstance(start, int) or not isinstance(end, int) or not (0 <= start < end <= len(source_text)):
+            errors.append(f"findings[{index}].evidence_span is outside the chapter.")
+        elif quoted != source_text[start:end]:
+            errors.append(f"findings[{index}].evidence_span.text does not match the chapter slice.")
+    refs = finding.get("canonical_refs")
+    if not isinstance(refs, list) or not refs:
+        errors.append(f"findings[{index}].canonical_refs must be a non-empty list.")
+    else:
+        for ref in refs:
+            normalized = str(ref).replace("\\", "/")
+            if normalized not in allowed_refs:
+                errors.append(f"findings[{index}] references undeclared canonical file: {normalized}.")
+    entity_ids = finding.get("entity_ids")
+    if not isinstance(entity_ids, list):
+        errors.append(f"findings[{index}].entity_ids must be a list.")
+    else:
+        for entity_id in entity_ids:
+            if str(entity_id) not in known_entities:
+                errors.append(f"findings[{index}] references unknown entity_id: {entity_id}.")
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def resolve_semantic_pacing_result_path(root: Path, artifact_dir: Path, file_path: str | Path) -> Path:

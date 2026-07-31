@@ -1,6 +1,6 @@
 # Agent Experience Orchestration
 
-本文档定义 `longform-novel-engine` 的 Agent 体验层编排方向。底层 Agent 协作层已经通过 `AgentTaskManifest v1`、strict validation、no-pollution boundary、apply transaction、release guard 和 no-key E2E 固化为安全底座；体验层要补齐的是 novel-skill 式“生产现场感”：让用户、Codex、Claude、未来 GUI/API 能一眼看出当前卡点、下一步动作、允许写入位置和验收命令。
+本文档定义 `longform-novel-engine` 的 Agent 体验层编排方向。底层 Agent 协作层已经通过兼容 v1 的 `AgentTaskManifest v2`、strict validation、no-pollution boundary、apply transaction、release guard 和 no-key E2E 固化为安全底座；体验层要让用户、Codex、Claude、未来 GUI/API 能一眼看出当前卡点、下一步动作、允许写入位置和验收命令。
 
 体验层不是新的写作引擎。它只汇总状态、渲染任务、推进确定性命令和提示下一步，不在 Python 内部调用 LLM，不生成正文，不绕过 manifest、validate、apply、finalize。
 
@@ -21,7 +21,7 @@
 
 - 不调用 OpenAI、Anthropic、Gemini、DeepSeek、OpenRouter 或其他外部 LLM。
 - 不在 Python 脚本内自动写正文、修章、润色、审稿意见或语义判断。
-- 不绕过 `AgentTaskManifest v1`。
+- 不绕过兼容 v1 的 `AgentTaskManifest v2`。
 - 不绕过 validate/apply/finalize。
 - 不直接写 `40_manuscript/final/`、`60_rag/`、`30_state/story_graph.json`、`30_state/tcs/`、`70_runtime/db/`。
 - 不发明 GUI/API 专用的第二套 workflow。
@@ -59,7 +59,7 @@ longform-engine production next project.yaml
 longform-engine production next project.yaml --json
 ```
 
-已落地的第一阶段实现是 `longform-engine production next project.yaml [--json]`。它是只读 Next Action Center：读取 `AgentTaskManifest v1`、`agent_task_index.json`、`gate_result.json`、draft/final 文件存在性和 editorial aggregate，不执行 submit、validate、apply、finalize，也不写 final/RAG/graph/SQLite。
+已落地的第一阶段实现是 `longform-engine production next project.yaml [--json]`。它是只读 Next Action Center：读取 `AgentTaskManifest v1/v2`、`agent_task_index.json`、`gate_result.json`、draft/final 文件存在性和 editorial aggregate，不执行 submit、validate、apply、finalize，也不写 final/RAG/graph/SQLite。
 
 当前优先级顺序：
 
@@ -99,7 +99,7 @@ longform-engine production next project.yaml --json
 
 ## 5. Agent Work Order Renderer
 
-Work Order Renderer 将 `AgentTaskManifest v1` 渲染为可直接交给宿主 Agent 的 Markdown。它不能改变任务，只能解释任务。
+Work Order Renderer 将 `AgentTaskManifest v1/v2` 渲染为可直接交给宿主 Agent 的 Markdown。它不能改变任务，只能解释任务。
 
 建议 CLI：
 
@@ -108,7 +108,7 @@ longform-engine agent-task brief project.yaml TASK_OR_PATH
 longform-engine agent-task brief project.yaml TASK_OR_PATH --json
 ```
 
-已落地的第一阶段实现是 `longform-engine agent-task brief project.yaml TASK_OR_PATH [--json]`。它是只读 Work Order Renderer：读取指定 `AgentTaskManifest v1`，输出同源的 JSON payload 和 Markdown work order，不修改 manifest、agent task index、events、final/RAG/graph/SQLite。
+已落地的第一阶段实现是 `longform-engine agent-task brief project.yaml TASK_OR_PATH [--json]`。它是只读 Work Order Renderer：读取指定 `AgentTaskManifest v1/v2`，输出同源的 JSON payload 和 Markdown work order，不修改 manifest、agent task index、events、final/RAG/graph/SQLite。
 
 当前 JSON 顶层字段：
 
@@ -297,7 +297,7 @@ longform-engine production next project.yaml --editorial
 
 GUI/API 必须复用同一批事实源：
 
-- `AgentTaskManifest v1`
+- `AgentTaskManifest v1/v2`
 - `50_workbench/agent_tasks/agent_task_index.json`
 - `50_workbench/agent_tasks/events.jsonl`
 - `gate_result.json`
@@ -366,7 +366,7 @@ longform-engine production loop project.yaml [--max-steps N --no-apply]
 第一阶段体验层编排已达到以下完成标准：
 
 - `production status/next/board/loop` CLI 已实现，并有 JSON/text 双输出。
-- `agent-task brief` CLI 已实现，并可渲染所有 `AgentTaskManifest v1` 支持的 task type。
+- `agent-task brief` CLI 已实现，并可渲染所有 `AgentTaskManifest v1/v2` 支持的 task type。
 - Next Action Center、Work Order Renderer、Production Board、Safe Loop Driver、Editorial Team UX 和 GUI/API JSON contract 均已进入同一套 `src/longform_engine/production.py` 编排模块。
 - release guard 已覆盖体验层 no LLM、no hidden API key、no direct canonical write、brief read-only 等边界。
 - 体验层测试和 fixture 覆盖 gate failed、awaiting repair、awaiting semantic、awaiting editorial、awaiting finalize 等阻断状态。

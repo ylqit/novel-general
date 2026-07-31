@@ -1,0 +1,31 @@
+{
+  "current_chapter": 0,
+  "last_finalized_chapter": 0,
+  "status": "open_book_confirmed",
+  "stale": [],
+  "required_confirmations": {
+    "target_audience": "中文长篇小说读者",
+    "writing_style": "东方玄幻",
+    "core_forbidden_zone": [
+      "连续多章无推进",
+      "主角无理由降智",
+      "战力体系无成本膨胀",
+      "伏笔长期开坑不回收"
+    ],
+    "automation_level": "command_driven",
+    "target_scale": "500 chapters / 1500000 words / 3000 words per chapter"
+  },
+  "creation_mode": "original",
+  "project_intelligence": {
+    "book_ideation": {
+      "status": "required"
+    },
+    "book_design": {
+      "status": "blocked_by_book_ideation"
+    },
+    "outline_design": {
+      "status": "blocked_by_book_design"
+    }
+  },
+  "updated_at": "2026-07-30T20:04:34.593447+00:00"
+}

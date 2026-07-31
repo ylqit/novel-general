@@ -950,12 +950,19 @@ def validate_tcs(config: ConfigDocument, *, chapter_number: int) -> TcsValidateR
     )
 
 
-def semantic_gate_findings(config: ConfigDocument, *, chapter_number: int, text: str) -> tuple[list[dict[str, Any]], list[str], Path]:
-    """Run deterministic semantic-level gate checks with evidence spans."""
+def deterministic_evidence_gate_findings(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    text: str,
+) -> tuple[list[dict[str, Any]], list[str], Path]:
+    """Run deterministic phrase/statistical evidence checks; this is not semantic reasoning."""
 
     root = resolve_project_root(config)
-    tcs = build_tcs(config, chapter_number=chapter_number)
-    payload = read_json(Path(tcs.tcs_file), default={})
+    tcs_path = root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json"
+    if not tcs_path.exists():
+        tcs_path = Path(build_tcs(config, chapter_number=chapter_number).tcs_file)
+    payload = read_json(tcs_path, default={})
     failures: list[dict[str, Any]] = []
     warnings: list[str] = []
     checks = [
@@ -999,7 +1006,7 @@ def semantic_gate_findings(config: ConfigDocument, *, chapter_number: int, text:
             "severity": severity,
             "message": message,
             "evidence_span": span,
-            "tcs_file": relative_path(root, Path(tcs.tcs_file)),
+            "tcs_file": relative_path(root, tcs_path),
         }
         if severity in {"P0", "P1"}:
             failures.append(finding)
@@ -1027,15 +1034,15 @@ def semantic_gate_findings(config: ConfigDocument, *, chapter_number: int, text:
 
     if failures and not payload.get("recent_events"):
         warnings.append("semantic gate ran without recent TCS events; consider memory semantic-task/apply.")
-    report_path = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "semantic_report.md"
+    report_path = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "deterministic_evidence_report.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(
         report_path,
         "\n".join(
             [
-                f"# Semantic Gate Report ch{chapter_number:03d}",
+                f"# Deterministic Evidence Gate Report ch{chapter_number:03d}",
                 "",
-                f"- TCS: `{relative_path(root, Path(tcs.tcs_file))}`",
+                f"- TCS: `{relative_path(root, tcs_path)}`",
                 f"- Failures: {len(failures)}",
                 f"- Warnings: {len(warnings)}",
                 "",
@@ -1049,6 +1056,12 @@ def semantic_gate_findings(config: ConfigDocument, *, chapter_number: int, text:
         ),
     )
     return failures, warnings, report_path
+
+
+def semantic_gate_findings(config: ConfigDocument, *, chapter_number: int, text: str) -> tuple[list[dict[str, Any]], list[str], Path]:
+    """Backward-compatible alias for deterministic_evidence_gate_findings."""
+
+    return deterministic_evidence_gate_findings(config, chapter_number=chapter_number, text=text)
 
 
 def style_drift_finding(baseline: dict[str, Any], current: dict[str, Any]) -> dict[str, Any] | None:

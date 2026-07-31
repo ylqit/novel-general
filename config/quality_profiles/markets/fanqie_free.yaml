@@ -1,0 +1,15 @@
+schema: quality_profile_v1
+kind: market
+id: fanqie_free
+contract:
+  opening_promise_window: {chapters: 2, requirement: "尽早给出可识别困境和阅读收益，但不靠空泛强刺激。"}
+  chapter_duty_distribution: [conflict, information, relationship, payoff, reversal, aftermath]
+  payoff_cadence: {information: "高频小兑现", ability: "短周期见效且保留代价", status: "清晰可感", relationship: "持续推进", emotion: "场景内可感"}
+  upgrade_cost: ["收益必须改变后续选择", "禁止无代价连续碾压"]
+  scene_entry_friction: {preferred: "低摩擦进入当下事件", allowed_slow_entry: true}
+  exposition_density: {mode: low_to_medium, rule: "信息拆入行动和对白，不做面板式倾倒"}
+  dialogue: {range: medium_to_high, functions: [推进, 冲突, 误解, 关系, 笑点]}
+  relationship_change_cadence: "允许高频变化，但每次变化需要具体触发"
+  foreshadow_release: {mode: frequent_partial, preserve_core_answer: true}
+  ending_distribution: [changed_problem, immediate_question, partial_payoff, closed_scene]
+  slow_chapter_policy: {allowed: true, requires_state_change: true, max_consecutive: 2}

@@ -1,0 +1,8 @@
+{
+  "engine_version": "0.3.0",
+  "schema": "longform_skill_install_v1",
+  "skill_name": "longform-novel-codex",
+  "source": "bundled-wheel-resource",
+  "tool": "codex",
+  "tree_hash": "e9e6c5aa6ce73519999445f27b0e1b27db48ba65fe697da3a2473761427543ab"
+}

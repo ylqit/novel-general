@@ -11,7 +11,7 @@
 5. `docs/AGENT_APP_WORKFLOW_PRODUCTIZATION.md`
 6. `docs/AGENT_APP_WORKFLOW_PRODUCTIZATION_CHECKLIST.md`
 
-硬化文档定义了 `agent_skill` 默认路径、`api_provider` 保留但禁用的边界、`no final` / `no rag` / `no graph direct` / `no sqlite direct` hard boundaries，以及后续 strict manifest validation、lifecycle states 和 transaction rollback 的验收标准。
+硬化文档定义了 `agent_skill` 默认路径、公开运行时不提供 `api_provider` 的边界、`no final` / `no rag` / `no graph direct` / `no sqlite direct` / `no bible direct` / `no outline direct` / `no research canon direct` hard boundaries，以及 strict manifest validation、lifecycle states 和 transaction rollback 的验收标准。
 体验层编排文档定义了 Next Action Center、Agent Work Order Renderer、Production Board、Safe Loop Driver 和 GUI/API JSON contract 的后续优化方向。
 
 本项目是面向中文长篇网文的本地工程化创作引擎。Agent 处理本目录时，应优先保证长篇连续性、命令驱动、可恢复落盘和发布边界，不要把它退化成单次 prompt 生成器。

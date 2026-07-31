@@ -11,6 +11,7 @@ from .pipeline import (
     editorial_finalization_blockers,
     editorial_need_human,
     editorial_review,
+    editorial_review_required_reasons,
     editorial_submit_review,
     editorial_status,
 )
@@ -26,6 +27,7 @@ __all__ = [
     "editorial_finalization_blockers",
     "editorial_need_human",
     "editorial_review",
+    "editorial_review_required_reasons",
     "editorial_submit_review",
     "editorial_status",
 ]

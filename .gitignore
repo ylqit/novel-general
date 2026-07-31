@@ -6,6 +6,9 @@ __pycache__/
 .mypy_cache/
 .venv/
 venv/
+build/
+dist/
+*.egg-info/
 
 # Runtime output
 novels/
@@ -16,6 +19,7 @@ novels/
 70_runtime/db/*.sqlite
 70_runtime/db/*.sqlite-*
 70_runtime/models/
+70_runtime/benchmarks/
 novels/*/05_rag/vector_index/
 novels/*/06_runtime/cache/
 novels/*/06_runtime/locks/
@@ -29,6 +33,7 @@ novels/*/70_runtime/snapshots/
 novels/*/70_runtime/db/*.sqlite
 novels/*/70_runtime/db/*.sqlite-*
 novels/*/70_runtime/models/
+novels/*/70_runtime/benchmarks/
 
 # Local secrets and provider configs
 .env

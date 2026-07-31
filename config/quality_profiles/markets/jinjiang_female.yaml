@@ -1,0 +1,15 @@
+schema: quality_profile_v1
+kind: market
+id: jinjiang_female
+contract:
+  opening_promise_window: {chapters: 3, requirement: "建立人物欲望、关系张力和题材承诺，允许克制开场。"}
+  chapter_duty_distribution: [character_choice, relationship, conflict, reveal, emotional_payoff, aftermath]
+  payoff_cadence: {information: "服从人物视角", ability: "非必需", status: "因关系与选择变化", relationship: "核心收益", emotion: "允许长线积累"}
+  upgrade_cost: ["关系推进必须伴随认知或边界变化", "人物不能为情节方便突然失去主体性"]
+  scene_entry_friction: {preferred: "人物处境或关系压力", allowed_slow_entry: true}
+  exposition_density: {mode: viewpoint_bound, rule: "解释必须服务人物当下判断"}
+  dialogue: {range: flexible, functions: [边界协商, 试探, 亲密, 冲突, 潜台词]}
+  relationship_change_cadence: "允许细密累积，重大变化必须有事件链"
+  foreshadow_release: {mode: character_linked, preserve_core_answer: true}
+  ending_distribution: [emotional_shift, changed_relationship, partial_payoff, closed_scene, quiet_aftershock]
+  slow_chapter_policy: {allowed: true, requires_state_change: true}

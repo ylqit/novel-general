@@ -1,0 +1,4 @@
+interface:
+  display_name: "Longform Novel Codex"
+  short_description: "Command-driven longform novel workflow"
+  default_prompt: "Use $longform-novel-codex to run the Chinese engineering-command workflow for a million-word longform novel project."

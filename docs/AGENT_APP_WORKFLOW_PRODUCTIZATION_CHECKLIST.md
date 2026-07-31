@@ -66,7 +66,7 @@
 
 - [x] 产品化文档包含 5 章 smoke benchmark 方法。
 - [x] 产品化文档包含 10 章 quality benchmark 记录字段。
-- [~] 5 章 smoke benchmark 需要真实 Agent 产品会话执行。
+- [x] Codex App 原创 5 章已完成新项目 clean replay，平均工作单低于 20K、输入不超过 7 个文件、零 P0/污染，且安全指向第 6 章。
 - [~] 10 章 quality benchmark 需要真实 Agent 产品会话执行。
 
 ## 8. Verification Commands

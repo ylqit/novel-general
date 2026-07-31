@@ -1,6 +1,8 @@
 import copy
 import json
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -39,6 +41,7 @@ from longform_engine.vectorstore import (
     rebuild_from_files as vector_rebuild,
     upsert as vector_upsert,
 )
+from tests.project_fixtures import mark_project_ready
 
 
 def test_models_verify_reports_download_required_when_real_model_missing(tmp_path):
@@ -65,6 +68,29 @@ def test_models_verify_can_auto_download_default_bge_profile(tmp_path):
     assert result.can_auto_download is True
     assert result.embedding_model == "BAAI/bge-m3"
     assert result.reranker_model == "BAAI/bge-reranker-v2-m3"
+
+
+def test_models_install_skips_unused_runtime_variants(tmp_path, monkeypatch):
+    config = seed_semantic_project(tmp_path, fallback=False, allow_network_download=True)
+    calls = []
+
+    def fake_snapshot_download(**kwargs):
+        calls.append(kwargs)
+        target = Path(kwargs["local_dir"])
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "model.safetensors").write_text("model", encoding="utf-8")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        SimpleNamespace(snapshot_download=fake_snapshot_download),
+    )
+
+    result = model_pipeline.install_model_profile(config, profile="bge-m3", download=True)
+
+    assert result.downloaded is True
+    assert [call["repo_id"] for call in calls] == ["BAAI/bge-m3", "BAAI/bge-reranker-v2-m3"]
+    assert all(call["ignore_patterns"] == model_pipeline.MODEL_SNAPSHOT_IGNORE_PATTERNS for call in calls)
 
 
 def test_models_verify_allows_explicit_local_fallback(tmp_path):
@@ -161,25 +187,25 @@ def test_remote_vector_store_contract_does_not_query_or_persist_facts(tmp_path, 
     monkeypatch.setenv("LONGFORM_VECTOR_API_KEY", "test-token")
 
     health = vector_healthcheck(remote)
-    written = vector_upsert(
-        remote,
-        [
-            VectorRecord(
-                id="memory:scene:ch001:001",
-                owner_type="scene_memory",
-                owner_id="ch001_scene001",
-                vector=(0.1, 0.9),
-                source_path="60_rag/memory/scenes/ch001_scene001.json",
-                chapter_number=1,
-            )
-        ],
-    )
+    with pytest.raises(NotImplementedError, match="experimental"):
+        vector_upsert(
+            remote,
+            [
+                VectorRecord(
+                    id="memory:scene:ch001:001",
+                    owner_type="scene_memory",
+                    owner_id="ch001_scene001",
+                    vector=(0.1, 0.9),
+                    source_path="60_rag/memory/scenes/ch001_scene001.json",
+                    chapter_number=1,
+                )
+            ],
+        )
     hits = vector_query(remote, VectorQuery(vector=(0.1, 0.9), top_k=3))
 
-    assert health.ok is True
+    assert health.ok is False
     assert health.backend == "milvus"
-    assert written.records == 1
-    assert written.store_path == "http://milvus.local:19530"
+    assert "experimental" in health.message
     assert hits == []
 
 
@@ -246,6 +272,7 @@ def test_continue_write_includes_tcs_and_semantic_gate_writes_report(tmp_path):
     config = seed_semantic_project(tmp_path)
     root = tmp_path / "novel"
     tcs = build_tcs(config, chapter_number=2)
+    mark_project_ready(root, config, preserve_existing_characters=True)
     cont = continue_write(config, chapter_number=2)
 
     draft = root / "40_manuscript" / "draft" / "ch002.md"
@@ -258,7 +285,7 @@ def test_continue_write_includes_tcs_and_semantic_gate_writes_report(tmp_path):
     assert "temporal_context_state" in task_payload
     assert gate.passed is False
     assert any(failure["code"] == "semantic_motivation_break" for failure in gate.failures)
-    assert (root / "50_workbench" / "gate_artifacts" / "ch002" / "semantic_report.md").exists()
+    assert (root / "50_workbench" / "gate_artifacts" / "ch002" / "deterministic_evidence_report.md").exists()
 
 
 def test_revise_outline_marks_memory_stale_and_semantic_query_skips_memory(tmp_path):
@@ -432,6 +459,46 @@ def test_graph_semantic_validate_requires_evidence(tmp_path):
 
     assert validation.ok is False
     assert any("evidence_span" in error for error in validation.errors)
+
+
+def test_graph_semantic_ability_reuses_stable_id_and_is_idempotent(tmp_path):
+    config = seed_semantic_project(tmp_path)
+    root = tmp_path / "novel"
+    final = root / "40_manuscript" / "final" / "ch001.md"
+    final.write_text(final.read_text(encoding="utf-8") + "沈岚以护身印挡住追兵，但护身印不能识别敌人。\n", encoding="utf-8")
+    payload_file = root / "50_workbench" / "graph_updates" / "ch001.semantic.json"
+    payload_file.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "chapter_number": 1,
+                "source": "final",
+                "source_path": "40_manuscript/final/ch001.md",
+                "updates": [
+                    {
+                        "type": "ability_boundary_change",
+                        "ability": "护身印",
+                        "boundary": "不能识别敌人",
+                        "from_chapter": 1,
+                        "confidence": 0.9,
+                        "evidence_span": "护身印不能识别敌人",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    semantic_graph_apply(config, chapter_number=1, file_path=payload_file)
+    semantic_graph_apply(config, chapter_number=1, file_path=payload_file)
+    graph = json.loads((root / "30_state" / "story_graph.json").read_text(encoding="utf-8"))
+    abilities = [item for item in graph["entities"] if item.get("type") == "ability" and item.get("name") == "护身印"]
+
+    assert len(abilities) == 1
+    assert abilities[0]["id"] == "ability:shield"
+    assert abilities[0]["cost"] == "burns stamina"
+    assert abilities[0]["limit"] == "不能识别敌人"
 
 
 def test_character_memory_task_validate_apply_check_and_db_rebuild(tmp_path):

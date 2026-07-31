@@ -2,8 +2,11 @@ import json
 
 from longform_engine.config import load_project_config
 from longform_engine.gates import GateError, gate_check, pacing_review, record_waiver, repair_plan
+from longform_engine.gates.pipeline import complete_core_reveal_detected
 from longform_engine.orchestration import continue_write, open_book, plan_chapter
+from longform_engine.planning import infer_event_types_from_text
 from longform_engine.storage import init_project
+from tests.project_fixtures import mark_project_ready
 
 
 def test_gate_check_writes_failed_schema_for_meta_pollution(tmp_path):
@@ -128,6 +131,25 @@ def test_reverse_brake_blocks_complete_core_secret_reveal(tmp_path):
     assert "complete_core_secret_reveal" in report
 
 
+def test_complete_reveal_requires_local_semantic_pairing():
+    distant_markers = "他知道车辙背后藏着庞然秘密。\n\n所有验收记录必须全部留档。"
+    explicitly_unresolved = "这并非真相大白，眼下揭开的只是一角。"
+
+    assert complete_core_reveal_detected(distant_markers) is False
+    assert complete_core_reveal_detected(explicitly_unresolved) is False
+    assert complete_core_reveal_detected("核心秘密已经全部揭开。") is True
+
+
+def test_event_inference_ignores_single_character_and_negated_prose_noise():
+    prose = "两份证词相互冲突，月光像刀。他听见遗物里的承诺，却说这不是信任。回城的路覆着白雪。"
+
+    assert infer_event_types_from_text(prose) == ()
+    assert infer_event_types_from_text("两人在城门前拔刀交手，随后并肩作战。") == (
+        "conflict_thrill",
+        "bond_deepening",
+    )
+
+
 def test_reverse_brake_requires_tail_hook_when_anchor_demands_it(tmp_path):
     project_config = seed_gate_project(tmp_path)
     project_config.data["length"]["chapter_word_count"]["hard_min"] = 20
@@ -177,10 +199,11 @@ def test_reverse_brake_reports_abc_quota_overflow(tmp_path):
 
 def test_continue_write_generates_gate_artifacts(tmp_path):
     project_config = seed_gate_project(tmp_path, writing_mode="template_dry_run")
+    root = tmp_path / "novel"
     open_book(project_config)
+    mark_project_ready(root, project_config)
 
     result = continue_write(project_config, chapter_number=1)
-    root = tmp_path / "novel"
 
     assert result.status.startswith("draft_ready_gate_")
     assert (root / "50_workbench" / "gate_artifacts" / "ch001" / "gate_result.json").exists()

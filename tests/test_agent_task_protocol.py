@@ -19,7 +19,9 @@ from longform_engine.gates import gate_check, semantic_pacing_apply, semantic_pa
 from longform_engine.graph import semantic_graph_task
 from longform_engine.memory import character_task, semantic_task as memory_semantic_task
 from longform_engine.orchestration import WorkflowError, continue_write, finalize_chapter, open_book, plan_chapter, submit_agent_draft
+from longform_engine.production import production_next
 from longform_engine.storage import init_project
+from tests.project_fixtures import mark_project_ready
 
 
 def test_no_key_agent_task_chapter_loop_and_manifest_index(tmp_path, monkeypatch):
@@ -28,6 +30,7 @@ def test_no_key_agent_task_chapter_loop_and_manifest_index(tmp_path, monkeypatch
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
     open_book(config)
+    mark_project_ready(root, config)
 
     task = continue_write(config, chapter_number=1)
     draft_path = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
@@ -58,6 +61,64 @@ def test_no_key_agent_task_chapter_loop_and_manifest_index(tmp_path, monkeypatch
     strict = validate_manifest_strict(root, json.loads(manifest.read_text(encoding="utf-8")))
     assert strict.ok, strict.errors
     assert strict.warnings
+
+
+def test_finalize_applies_submitted_candidate_and_supersedes_unused_repair(tmp_path):
+    config = seed_project(tmp_path)
+    root = tmp_path / "novel"
+    open_book(config)
+    mark_project_ready(root, config)
+
+    continue_write(config, chapter_number=1)
+    draft_path = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
+    draft_path.write_text(passing_text("FINALIZED_AFTER_SEMANTIC_GATE"), encoding="utf-8")
+    submitted = submit_agent_draft(config, chapter_number=1, file_path=draft_path, agent="codex")
+    assert submitted.passed is False
+    gate_result = json.loads(Path(submitted.gate_result).read_text(encoding="utf-8"))
+    gate_result.update({"passed": True, "severity": "PASS", "failures": []})
+    Path(submitted.gate_result).write_text(
+        json.dumps(gate_result, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    update_task_status(
+        root,
+        "chapter_write:ch001:v1",
+        to_status="invalid",
+        command="gate-check",
+        artifact=submitted.gate_result,
+        result="semantic review required",
+    )
+
+    repair_output = root / "50_workbench" / "repair_candidates" / "ch001.codex.repair_candidate.md"
+    repair_manifest = build_manifest(
+        root,
+        task_type="repair",
+        chapter_number=1,
+        input_files=[root / "40_manuscript" / "draft" / "ch001.md"],
+        allowed_output_paths=[repair_output],
+        output_schema="markdown_repair_candidate",
+        validate_command=(
+            "longform-engine draft submit project.yaml --chapter 1 "
+            "--file 50_workbench/repair_candidates/ch001.codex.repair_candidate.md --agent codex --overwrite"
+        ),
+        apply_command="longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
+        failure_next_command="longform-engine editorial need-human project.yaml --chapter 1 --reason repair_failed",
+        task_id="repair:ch001:unused",
+    )
+    write_manifest(
+        root,
+        repair_manifest,
+        root / "50_workbench" / "repair_candidates" / "ch001.codex.repair_task.agent_task.json",
+    )
+
+    finalize_chapter(config, chapter_number=1, approved_by="human")
+
+    manifests = {item["task_id"]: item for item in list_manifests(root, chapter_number=1)}
+    assert manifests["chapter_write:ch001:v1"]["status"] == "applied"
+    assert manifests["repair:ch001:unused"]["status"] == "superseded"
+    next_action = production_next(config)
+    assert next_action["status"] == "ready_for_continue_write"
+    assert next_action["chapter_number"] == 2
 
 
 def test_agent_task_manifests_for_repair_humanizer_graph_and_character_memory(tmp_path):
@@ -150,11 +211,11 @@ def test_editorial_submit_review_aggregates_need_human_without_canon_pollution(t
     assert aggregate.severity_counts["P1"] == 1
     assert "unresolved_P1" in aggregate.need_human_reasons
     assert "missing_editorial_roles" in aggregate.need_human_reasons
-    assert "planning_chief_editor" in aggregate.missing_roles
+    assert {"writing_agent", "executive_editor"} <= set(aggregate.missing_roles)
     assert not aggregate.duplicate_role_results
     assert not aggregate.invalid_results
     assert editorial_manifests
-    serial_task = next(item for item in editorial_manifests if item["task_id"] == "editorial_review:serial_verifier:ch001:v1")
+    serial_task = next(item for item in editorial_manifests if item["task_id"] == "editorial_review:serial_verifier:ch001:v2")
     assert serial_task["status"] == "applied"
     for item in editorial_manifests:
         result = validate_manifest_strict(root, load_manifest(root, item["task_id"]))
@@ -166,6 +227,11 @@ def test_editorial_submit_review_aggregates_need_human_without_canon_pollution(t
 def test_editorial_aggregate_reports_missing_duplicate_invalid_repeated_and_lifecycle(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
+    config.data.setdefault("editorial", {})["review_roles"] = [
+        "writing_agent",
+        "serial_verifier",
+        "anti_ai_editor",
+    ]
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(
         "# Chapter 1\n\nAri keeps the gate clue alive, but the editor wants more scene pressure.\n",
         encoding="utf-8",
@@ -230,30 +296,32 @@ def test_editorial_aggregate_reports_missing_duplicate_invalid_repeated_and_life
     assert "missing_editorial_roles" in aggregate.need_human_reasons
     assert "duplicate_role_results" in aggregate.need_human_reasons
     assert "invalid_role_results" in aggregate.need_human_reasons
-    assert {"planning_chief_editor", "anti_ai_editor", "executive_editor"}.issubset(set(aggregate.missing_roles))
+    assert aggregate.missing_roles == ("anti_ai_editor",)
     assert aggregate.duplicate_role_results[0]["role_id"] == "serial_verifier"
     assert aggregate.invalid_results[0]["role_id"] == "anti_ai_editor"
-    assert payload["missing_roles"]
+    assert payload["missing_roles"] == ["anti_ai_editor"]
     assert payload["duplicate_role_results"]
     assert payload["invalid_results"]
     assert "Team Completeness" in markdown
     assert "Duplicate Role Results" in markdown
     assert "Invalid Role Results" in markdown
-    assert summary["by_status"]["applied"] >= 2
-    assert summary["by_status"]["invalid"] >= 1
-    assert summary["by_status"]["awaiting_agent"] >= 2
+    assert summary["by_status"]["applied"] == 2
+    assert summary["by_status"]["invalid"] == 1
+    assert summary["by_status"].get("awaiting_agent", 0) == 0
 
 
 def test_editorial_unresolved_p1_blocks_chapter_finalize(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
     open_book(config)
+    mark_project_ready(root, config)
     continue_write(config, chapter_number=1)
     draft_path = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     draft_path.write_text(passing_text("EDITORIAL_BLOCK"), encoding="utf-8")
     submitted = submit_agent_draft(config, chapter_number=1, file_path=draft_path, agent="codex")
     assert submitted.passed is True
 
+    config.data.setdefault("editorial", {})["review_roles"] = ["serial_verifier"]
     editorial_review(config, chapter_number=1)
     result_file = write_editorial_role_result(
         root / "50_workbench" / "editorial_reviews" / "results",
@@ -455,7 +523,10 @@ def test_agent_task_lifecycle_supports_superseded_and_rolled_back_events(tmp_pat
 def seed_project(tmp_path):
     config = load_project_config(template="qidian-longform")
     project = init_project(config, output=tmp_path / "novel")
-    return load_project_config(project.project_config)
+    return load_project_config(
+        project.project_config,
+        cli_overrides={"editorial": {"review_mode": "off"}},
+    )
 
 
 def passing_text(marker: str) -> str:

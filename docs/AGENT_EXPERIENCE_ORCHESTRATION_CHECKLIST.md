@@ -35,7 +35,7 @@ rg -n "production next|Next Action Center|blocked_by|waiting_for|next_command" l
 
 ## 3. Agent Work Order Renderer
 
-目标：把任意 `AgentTaskManifest v1` 渲染成可交给宿主 Agent 的工作单。
+目标：把任意兼容 v1 的 `AgentTaskManifest v2` 渲染成可交给宿主 Agent 的工作单。
 
 - [x] 各 task markdown 已有局部任务说明，并已由统一 brief 渲染器聚合。
 - [x] 新增 `longform-engine agent-task brief project.yaml TASK_OR_PATH [--json]`。
@@ -171,7 +171,7 @@ rg -n "production status|production next|production board|agent-task brief|--jso
 
 - [x] release guard 已检查直接外部 LLM import/call pattern。
 - [x] release guard 已检查隐藏外部 LLM API key 字符串。
-- [x] release guard 已检查 `api_provider` 保持禁用。
+- [x] release guard 已检查公开运行时不包含 provider 占位模式。
 - [x] release guard 增加体验层命令 guard marker。
 - [x] release guard 检查 `production loop` 不 import OpenAI/Anthropic。
 - [x] release guard 检查 `production loop` 不直接写 final/RAG/graph/SQLite。

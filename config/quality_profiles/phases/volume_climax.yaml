@@ -1,0 +1,8 @@
+schema: quality_profile_v1
+kind: phase
+id: volume_climax
+contract:
+  phase_focus: ["兑现卷级承诺", "使代价不可撤销", "改变下一卷的问题结构"]
+  payoff_cadence: {information: "集中但保留全书核心答案", status: "可发生卷级变化", emotion: "允许峰值"}
+  foreshadow_release: {mode: volume_payoff, preserve_core_answer: true}
+  ending_distribution: [volume_payoff, irreversible_choice, status_change, next_volume_problem]

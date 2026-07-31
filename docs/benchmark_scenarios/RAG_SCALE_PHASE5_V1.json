@@ -1,0 +1,27 @@
+{
+  "schema": "rag_scale_dataset_spec_v1",
+  "dataset_id": "chinese-webnovel-rag-scale-phase5-v1",
+  "purpose": "Reproducible vector-store engineering scale benchmark; not literary or production-model evidence.",
+  "scales": [50, 200, 500],
+  "vector_dimension": 64,
+  "vectors_per_chapter": 20,
+  "vector_counts": {
+    "50": 1000,
+    "200": 4000,
+    "500": 10000
+  },
+  "query_count": 60,
+  "top_k": 10,
+  "generator": "sha256-normalized-vector-v1",
+  "backends": ["local_sqlite", "local_hnsw"],
+  "required_checks": [
+    "recall_at_k",
+    "fact_error_rate",
+    "p95_query_ms",
+    "initial_index_ms",
+    "incremental_index_ms",
+    "stale_sync",
+    "rollback_restore"
+  ],
+  "claim_eligible": false
+}

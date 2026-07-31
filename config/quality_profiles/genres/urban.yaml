@@ -1,0 +1,9 @@
+schema: quality_profile_v1
+kind: genre
+id: urban
+contract:
+  genre_focus: ["现实反馈可信", "职业和社会关系有摩擦", "资源变化可追踪"]
+  payoff_cadence: {status: "地位变化需由行动和社会反馈确认", relationship: "避免工具人网络"}
+  upgrade_cost: ["财富、职业或影响力增长必须改变责任和风险"]
+  exposition_density: {rule: "专业信息需影响决策，禁止百科式堆砌"}
+  dialogue: {functions: [利益协商, 身份差异, 关系边界, 信息不对称]}

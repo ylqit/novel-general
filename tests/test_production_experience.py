@@ -7,6 +7,7 @@ from pathlib import Path
 from longform_engine.agent_tasks import build_manifest, update_task_status, write_manifest
 from longform_engine.config import load_project_config
 from longform_engine.db import query_table
+from tests.project_fixtures import mark_project_ready
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +46,32 @@ def create_open_project(tmp_path: Path) -> tuple[Path, Path]:
     assert init.returncode == 0, init.stderr
     open_book = run_cli("open-book", str(project_yaml))
     assert open_book.returncode == 0, open_book.stderr
+    mark_project_ready(project_dir, load_project_config(project_yaml))
     return project_dir, project_yaml
+
+
+def test_empty_project_requires_open_book_then_book_ideation(tmp_path):
+    project_dir = tmp_path / "empty-book"
+    project_yaml = project_dir / "project.yaml"
+    initialized = run_cli("init-project", "--template", "qidian-longform", "--output", str(project_dir))
+    assert initialized.returncode == 0, initialized.stderr
+
+    before_open = json.loads(run_cli("production", "next", str(project_yaml), "--json").stdout)
+    assert before_open["status"] == "ready_for_open_book"
+    assert before_open["next_command"] == "longform-engine open-book project.yaml"
+
+    opened = run_cli("open-book", str(project_yaml))
+    assert opened.returncode == 0, opened.stderr
+    after_open = json.loads(run_cli("production", "next", str(project_yaml), "--json").stdout)
+    assert after_open["status"] == "ready_for_intelligence_task"
+    assert after_open["task_type"] == "book_ideation"
+
+    loop = run_cli("production", "loop", str(project_yaml), "--max-steps", "1", "--json")
+    assert loop.returncode == 0, loop.stdout + loop.stderr
+    loop_payload = json.loads(loop.stdout)
+    assert loop_payload["steps"][0]["action"] == "intelligence_task"
+    assert loop_payload["steps"][0]["task_type"] == "book_ideation"
+    assert not (project_dir / "40_manuscript" / "draft" / "ch001.md").exists()
 
 
 def test_production_status_json_contract_for_gui_api(tmp_path):
@@ -100,7 +126,7 @@ def test_production_next_returns_continue_write_when_no_blocker(tmp_path):
 
 
 def test_production_next_reports_agent_task_contract_after_continue_write(tmp_path):
-    _, project_yaml = create_open_project(tmp_path)
+    project_dir, project_yaml = create_open_project(tmp_path)
     continue_write = run_cli("continue-write", str(project_yaml), "--chapter", "1")
     assert continue_write.returncode == 0, continue_write.stderr
 
@@ -116,12 +142,15 @@ def test_production_next_reports_agent_task_contract_after_continue_write(tmp_pa
     assert payload["waiting_for"] == "agent_draft"
     assert payload["task_type"] == "chapter_write"
     assert payload["output_schema"] == "markdown_chapter_only"
-    assert "50_workbench/writing_tasks/ch001.json" in payload["input_files"]
+    assert "50_workbench/writing_tasks/ch001.json" not in payload["input_files"]
     assert "50_workbench/writing_tasks/ch001.md" in payload["input_files"]
+    assert len(payload["input_files"]) <= 7
+    assert payload["context_policy"]["max_chars"] == 20000
     assert payload["allowed_output_paths"] == ["50_workbench/agent_drafts/ch001.codex.md"]
     assert payload["validate_command"].startswith("longform-engine draft submit ")
     assert payload["apply_command"] == "longform-engine chapter finalize project.yaml --chapter 1 --approved-by human"
     assert payload["failure_next_command"] == "longform-engine repair-chapter project.yaml --chapter 1 --plan-only"
+    assert len((project_dir / "50_workbench" / "writing_tasks" / "ch001.md").read_text(encoding="utf-8")) <= 20000
     assert payload["next_command"] == payload["validate_command"]
     assert {"no final", "no rag", "no graph direct", "no sqlite direct"}.issubset(set(payload["hard_boundaries"]))
     assert "OK: production next action ready" in text_result.stdout
@@ -165,7 +194,8 @@ def test_agent_task_brief_renders_work_order_without_mutation(tmp_path):
     assert "# Agent Work Order: chapter_write:ch001:v1" in payload["work_order_markdown"]
     assert "## Role And Goal" in payload["work_order_markdown"]
     assert "## Context Budget" in payload["work_order_markdown"]
-    assert "## Input Files" in payload["work_order_markdown"]
+    assert "## Required Input Files" in payload["work_order_markdown"]
+    assert "## Optional Input Files" in payload["work_order_markdown"]
     assert "## Allowed Output Paths" in payload["work_order_markdown"]
     assert "Validate command:" in payload["work_order_markdown"]
     assert "## Forbidden Direct Writes" in payload["work_order_markdown"]
@@ -637,7 +667,10 @@ def test_production_next_editorial_task_includes_role_specific_work_order(tmp_pa
     assert role["focus"]
     assert role["work_order_file"].startswith("50_workbench/editorial_reviews/agent_tasks/ch001/")
     assert role["result_file"].startswith("50_workbench/editorial_reviews/results/ch001.")
-    assert role["output_schema"] == "editorial_role_review_v1"
+    assert role["output_schema"] == "editorial_role_review_v2"
+    assert role["context_file"].endswith(".context.json")
+    assert role["reviewer_instance_id"]
+    assert len(role["context_digest_hash"]) == 64
     assert role["validate_command"].startswith("longform-engine editorial submit-review ")
     assert role["apply_command"] == "longform-engine editorial aggregate project.yaml --chapter 1"
     assert "no final" in role["hard_boundaries"]
@@ -746,6 +779,21 @@ def test_production_loop_aggregates_validated_editorial_task_and_pauses_need_hum
                 "role_id": "serial_verifier",
                 "verdict": "pass",
                 "items": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (project_dir / "50_workbench" / "editorial_reviews" / "ch001.review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "chapter_number": 1,
+                "editorial_team": [
+                    {"id": "serial_verifier"},
+                    {"id": "writing_agent"},
+                ],
             },
             ensure_ascii=False,
             indent=2,
@@ -884,7 +932,7 @@ def passing_agent_draft(marker: str) -> str:
         "she chooses the harder road, protects the witness, keeps the promise, "
         "and turns the local conflict into a sharper chapter hook. "
     )
-    return "# Chapter 1: North Gate\n\n" + sentence * 22 + "\n"
+    return "# Chapter 1: North Gate\n\n" + sentence * 22 + "\n\nBut a second witness is already waiting outside the archive.\n"
 
 
 def agent_task_manifest_specs() -> dict[str, dict[str, str]]:

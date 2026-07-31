@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 import json
@@ -73,7 +74,8 @@ class ApplyTransaction:
         self.report_dir = self.root / "70_runtime" / "transactions"
         self.report_file = unique_report_path(self.report_dir / f"{self.base_name}.json")
         self.rollback_file = self.report_file.with_name(f"{self.report_file.stem}.rollback.json")
-        self.snapshot_dir = self.report_dir / "snapshots" / self.report_file.stem
+        snapshot_id = sha256(self.report_file.stem.encode("utf-8")).hexdigest()[:12]
+        self.snapshot_dir = self.report_dir / "s" / snapshot_id
         self._snapshots: list[dict[str, Any]] = []
         self._active = False
         self._finished = False
@@ -452,7 +454,8 @@ def resolve_project_transaction_path(root: Path, path: str | Path) -> Path:
 
 def snapshot_transaction_path(root: Path, snapshot_dir: Path, path: Path) -> dict[str, Any]:
     relative = project_relative_path(root, path)
-    snapshot = snapshot_dir / relative
+    object_name = f"{sha256(relative.encode('utf-8')).hexdigest()[:20]}_{path.name}"
+    snapshot = snapshot_dir / "objects" / object_name
     item = {
         "path": relative,
         "existed": path.exists(),
@@ -478,7 +481,12 @@ def restore_transaction_path(root: Path, snapshot_dir: Path, item: dict[str, Any
     target = root / relative
     existed = bool(item.get("existed"))
     kind = str(item.get("kind") or "missing")
-    snapshot = snapshot_dir / relative
+    snapshot_relative = str(item.get("snapshot_path") or "")
+    snapshot = root / snapshot_relative if snapshot_relative else snapshot_dir / relative
+    try:
+        snapshot.resolve().relative_to(snapshot_dir.resolve())
+    except ValueError as exc:
+        raise StorageError(f"Transaction snapshot escaped its snapshot directory: {snapshot}") from exc
     remove_path(target)
     if not existed:
         return

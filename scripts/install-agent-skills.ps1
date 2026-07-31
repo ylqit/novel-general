@@ -8,7 +8,9 @@ Codex / Claude Code:
 
 - longform-novel-codex/
 - longform-novel-claude/
-- shared/
+
+Each package contains its own synchronized references/ directory. A legacy
+global shared/ directory is never removed by this installer.
 
 It does not copy novel projects, manuscripts, runtime databases, model caches,
 environment files, or API keys.
@@ -234,7 +236,6 @@ function Install-PackageDirectory {
     }
 }
 
-$sharedSource = Join-Path $RepoRoot "shared"
 $packages = @{
     "codex" = @{
         Label = "Codex skill"
@@ -258,17 +259,10 @@ else {
 }
 
 $installed = New-Object System.Collections.Generic.List[object]
-$installedSharedRoots = @{}
 
 foreach ($selectedTool in $selectedTools) {
     $package = $packages[$selectedTool]
     $skillRoot = Convert-ToFullPath $package["SkillRoot"]
-
-    if (-not $installedSharedRoots.ContainsKey($skillRoot)) {
-        $sharedTarget = Join-Path $skillRoot "shared"
-        $installed.Add((Install-PackageDirectory -Label "Shared skill references" -Source $sharedSource -Target $sharedTarget -SkillRoot $skillRoot))
-        $installedSharedRoots[$skillRoot] = $true
-    }
 
     $skillTarget = Join-Path $skillRoot $package["SkillName"]
     $installed.Add((Install-PackageDirectory -Label $package["Label"] -Source $package["Source"] -Target $skillTarget -SkillRoot $skillRoot))

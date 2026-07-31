@@ -91,6 +91,12 @@ PROFILES: dict[str, ModelProfile] = {
     ),
 }
 
+MODEL_SNAPSHOT_IGNORE_PATTERNS = (
+    "onnx/*",
+    "openvino/*",
+    "*.onnx",
+)
+
 CONCEPT_TERMS: dict[str, tuple[str, ...]] = {
     "forgiveness": ("原谅", "宽恕", "和解", "forgive", "forgiveness", "reconcile"),
     "rescue": ("救援", "救命", "搭救", "保护", "救下", "rescue", "save", "saved"),
@@ -178,8 +184,16 @@ def install_model_profile(
         try:
             from huggingface_hub import snapshot_download  # type: ignore
 
-            snapshot_download(repo_id=chosen.embedding_repo, local_dir=embedding_path)
-            snapshot_download(repo_id=chosen.reranker_repo, local_dir=reranker_path)
+            snapshot_download(
+                repo_id=chosen.embedding_repo,
+                local_dir=embedding_path,
+                ignore_patterns=MODEL_SNAPSHOT_IGNORE_PATTERNS,
+            )
+            snapshot_download(
+                repo_id=chosen.reranker_repo,
+                local_dir=reranker_path,
+                ignore_patterns=MODEL_SNAPSHOT_IGNORE_PATTERNS,
+            )
             downloaded = True
         except Exception as exc:  # pragma: no cover - depends on optional network/deps
             warnings.append(f"Hugging Face download skipped/failed: {exc}")

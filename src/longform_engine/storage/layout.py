@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+FINAL_MANUSCRIPT_DIRECTORY = "40_manuscript/final"
+
 BASE_DIRECTORIES = [
     "00_governance",
     "10_bible",
@@ -15,10 +17,12 @@ BASE_DIRECTORIES = [
 ]
 
 SUBDIRECTORIES = [
+    "10_bible/fanfiction",
     "20_outline/chapter_cards",
     "20_outline/revise_reports",
+    "30_state/quality",
     "40_manuscript/draft",
-    "40_manuscript/final",
+    FINAL_MANUSCRIPT_DIRECTORY,
     "40_manuscript/summaries",
     "40_manuscript/snapshots",
     "40_manuscript/rewrite",
@@ -31,9 +35,14 @@ SUBDIRECTORIES = [
     "50_workbench/graph_reports",
     "50_workbench/impact_reports",
     "50_workbench/memory_tasks",
+    "50_workbench/quality_reviews",
     "50_workbench/repair_plans",
     "50_workbench/repair_candidates",
     "50_workbench/humanizer_tasks",
+    "50_workbench/intelligence_tasks",
+    "50_workbench/intelligence_candidates",
+    "50_workbench/intelligence_validations",
+    "50_workbench/fanfiction_sources",
     "50_workbench/research_inbox",
     "50_workbench/writing_tasks",
     "50_workbench/agent_drafts",
@@ -55,11 +64,14 @@ SUBDIRECTORIES = [
     "70_runtime/locks",
     "70_runtime/logs",
     "70_runtime/models",
+    "70_runtime/provenance",
+    "70_runtime/benchmarks",
     "70_runtime/run_reports",
     "70_runtime/snapshots",
     "70_runtime/tmp",
     "80_exports/bundles",
     "80_exports/platform",
+    "80_exports/publication_reports",
 ]
 
 INITIAL_TEXT_FILES = {
@@ -127,6 +139,7 @@ INITIAL_JSON_FILES = {
 
 INITIAL_JSONL_FILES = {
     "30_state/reward_ledger.jsonl": "",
+    "30_state/quality/structure_history.jsonl": "",
     "40_manuscript/chapter_meta.jsonl": "",
     "70_runtime/logs/generation_log.jsonl": "",
 }

@@ -1,0 +1,15 @@
+schema: quality_profile_v1
+kind: market
+id: qidian_male
+contract:
+  opening_promise_window: {chapters: 3, requirement: "用具体处境、能力边界或主线异常兑现核心卖点，不用设定说明代替事件。"}
+  chapter_duty_distribution: [investigation, conflict, growth_cost, relationship, reveal, aftermath, payoff]
+  payoff_cadence: {information: "每1-2章", ability: "以代价换取", status: "阶段性", relationship: "因事件变化", emotion: "允许延迟兑现"}
+  upgrade_cost: ["能力、资源、名望或关系至少承担一种可见代价", "升级不得自动解决当前主线"]
+  scene_entry_friction: {preferred: "从具体压力或行动进入", allowed_slow_entry: true}
+  exposition_density: {mode: bounded, rule: "设定随选择、冲突和后果释放"}
+  dialogue: {range: flexible, functions: [试探, 交易, 对抗, 隐瞒, 关系重估]}
+  relationship_change_cadence: "由共同事件和代价推动，不按固定章数升级"
+  foreshadow_release: {mode: layered, preserve_core_answer: true}
+  ending_distribution: [changed_problem, partial_payoff, closed_scene, reversal, aftermath]
+  slow_chapter_policy: {allowed: true, requires_state_change: true}

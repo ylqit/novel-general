@@ -1,0 +1,2317 @@
+"""Candidate/validate/explicit-apply workflows for project-level intelligence."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from hashlib import sha256
+import json
+from pathlib import Path
+import re
+from typing import Any, Iterable
+
+from longform_engine.agent_tasks import (
+    build_manifest,
+    list_manifests,
+    mark_tasks_for_output,
+    mark_tasks_for_chapter_type,
+    write_manifest,
+)
+from longform_engine.config import ConfigDocument
+from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
+
+
+INTELLIGENCE_TASK_TYPES = (
+    "fanfiction_canon",
+    "fanfiction_design",
+    "book_ideation",
+    "book_design",
+    "outline_design",
+    "chapter_direction",
+    "outline_revision",
+    "research_synthesis",
+    "style_analysis",
+    "adaptation_analysis",
+)
+
+TASK_SPECS: dict[str, dict[str, Any]] = {
+    "book_ideation": {
+        "schema": "book_ideation_candidate_v1",
+        "scope": "project",
+        "human": True,
+        "targets": (
+            "10_bible/creative_decisions.json",
+            "30_state/novel_state.json",
+        ),
+        "defaults": (
+            "project.yaml",
+            "00_governance/idea_seed.md",
+            "00_governance/reader_contract.md",
+        ),
+    },
+    "fanfiction_canon": {
+        "schema": "fanfiction_source_canon_v1",
+        "scope": "project",
+        "human": True,
+        "targets": (
+            "10_bible/fanfiction/source_canon.json",
+            "30_state/novel_state.json",
+            "70_runtime/provenance/creation_events.jsonl",
+        ),
+        "defaults": (),
+    },
+    "fanfiction_design": {
+        "schema": "fanfiction_design_candidate_v1",
+        "scope": "project",
+        "human": True,
+        "targets": (
+            "10_bible/fanfiction/fanfiction_bible.json",
+            "10_bible/creative_brief.json",
+            "10_bible/world.md",
+            "10_bible/power_system.md",
+            "10_bible/characters.json",
+            "10_bible/relationships.json",
+            "30_state/novel_state.json",
+            "70_runtime/provenance/creation_events.jsonl",
+        ),
+        "defaults": (
+            "project.yaml",
+            "10_bible/fanfiction/source_canon.json",
+            "00_governance/idea_seed.md",
+            "00_governance/reader_contract.md",
+        ),
+    },
+    "book_design": {
+        "schema": "book_design_candidate_v1",
+        "scope": "project",
+        "human": True,
+        "targets": (
+            "10_bible/creative_brief.json",
+            "10_bible/world.md",
+            "10_bible/power_system.md",
+            "10_bible/characters.json",
+            "10_bible/relationships.json",
+            "30_state/novel_state.json",
+        ),
+        "defaults": (
+            "project.yaml",
+            "00_governance/idea_seed.md",
+            "00_governance/reader_contract.md",
+        ),
+    },
+    "outline_design": {
+        "schema": "outline_design_candidate_v1",
+        "scope": "project",
+        "human": True,
+        "targets": (
+            "20_outline/book_outline.md",
+            "20_outline/volumes.json",
+            "20_outline/chapter_plan.json",
+            "20_outline/foreshadowing_ledger.json",
+            "30_state/novel_state.json",
+        ),
+        "defaults": (
+            "project.yaml",
+            "10_bible/creative_brief.json",
+            "10_bible/world.md",
+            "10_bible/characters.json",
+            "10_bible/relationships.json",
+        ),
+    },
+    "chapter_direction": {
+        "schema": "chapter_direction_candidate_v1",
+        "scope": "chapter",
+        "human": True,
+        "targets": (),
+        "defaults": (),
+    },
+    "outline_revision": {
+        "schema": "outline_revision_candidate_v1",
+        "scope": "range",
+        "human": True,
+        "targets": (
+            "20_outline/book_outline.md",
+            "20_outline/volumes.json",
+            "20_outline/chapter_plan.json",
+            "20_outline/foreshadowing_ledger.json",
+            "30_state/novel_state.json",
+        ),
+        "defaults": (
+            "20_outline/book_outline.md",
+            "20_outline/volumes.json",
+            "20_outline/chapter_plan.json",
+            "20_outline/foreshadowing_ledger.json",
+            "30_state/novel_state.json",
+        ),
+    },
+    "research_synthesis": {
+        "schema": "research_synthesis_v1",
+        "scope": "project",
+        "human": False,
+        "targets": ("10_bible/research_canon.jsonl",),
+        "defaults": (),
+    },
+    "style_analysis": {
+        "schema": "semantic_style_profile_v1",
+        "scope": "project",
+        "human": False,
+        "targets": ("10_bible/style_profiles/current_style_profile.json",),
+        "defaults": (),
+    },
+    "adaptation_analysis": {
+        "schema": "adaptation_analysis_v1",
+        "scope": "project",
+        "human": False,
+        "targets": ("10_bible/style_profiles/adaptation_profile.json",),
+        "defaults": (),
+    },
+}
+
+BOOK_IDEATION_DIMENSIONS = (
+    "target_reader_and_reading_context",
+    "core_hook",
+    "world_core_rule",
+    "protagonist_desire_and_flaw",
+    "long_conflict",
+    "volume_escalation",
+    "ending_boundary",
+    "taboos_and_unwanted_tropes",
+)
+
+
+@dataclass(frozen=True)
+class IntelligenceTaskResult:
+    task_type: str
+    task_id: str
+    manifest_file: str
+    instruction_file: str
+    candidate_file: str
+    next_command: str
+
+
+@dataclass(frozen=True)
+class IntelligenceValidationResult:
+    task_type: str
+    ok: bool
+    candidate_file: str
+    report_file: str
+    errors: tuple[str, ...]
+    next_command: str
+
+
+@dataclass(frozen=True)
+class IntelligenceApplyResult:
+    task_type: str
+    status: str
+    candidate_file: str
+    touched_paths: tuple[str, ...]
+    transaction_report: str
+    next_command: str
+
+
+@dataclass(frozen=True)
+class ProjectReadinessResult:
+    ready: bool
+    stage: str
+    required_task_type: str
+    errors: tuple[str, ...]
+
+
+def create_intelligence_task(
+    config: ConfigDocument,
+    *,
+    task_type: str,
+    input_files: Iterable[str | Path] = (),
+    chapter_number: int | None = None,
+    from_chapter: int | None = None,
+    to_chapter: int | None = None,
+) -> IntelligenceTaskResult:
+    root = resolve_project_root(config)
+    spec = require_spec(task_type)
+    scope = task_scope(
+        spec,
+        chapter_number=chapter_number,
+        from_chapter=from_chapter,
+        to_chapter=to_chapter,
+    )
+    if task_type == "chapter_direction":
+        from longform_engine.orchestration.pipeline import plan_chapter
+
+        plan_chapter(config, chapter_number=int(scope["chapter_number"]))
+    inputs = normalize_inputs(
+        root,
+        input_files or intelligence_default_inputs(root, task_type, spec, scope),
+    )
+    if task_type in {"fanfiction_canon", "research_synthesis", "style_analysis", "adaptation_analysis"} and not inputs:
+        raise ValueError(f"{task_type} requires at least one --input file.")
+    if task_type.startswith("fanfiction_") and str(config.data.get("creation", {}).get("mode") or "") != "fanfiction":
+        raise ValueError(f"{task_type} requires creation.mode=fanfiction.")
+
+    token = scope_token(scope)
+    round_number = next_book_ideation_round(root) if task_type == "book_ideation" else 0
+    base = (
+        f"{task_type}.{token}.round{round_number:02d}"
+        if round_number
+        else f"{task_type}.{token}"
+    )
+    instruction = root / "50_workbench" / "intelligence_tasks" / f"{base}.md"
+    candidate_base = f"{task_type}.{token}" if task_type == "book_ideation" else base
+    candidate = root / "50_workbench" / "intelligence_candidates" / f"{candidate_base}.candidate.json"
+    manifest_file = root / "50_workbench" / "agent_tasks" / f"{base}.manifest.json"
+    input_rel = [relative(root, path) for path in inputs]
+    instruction_context = dict(scope)
+    if task_type == "book_ideation":
+        instruction_context.update(
+            {
+                "round": round_number,
+                "dimension": next_book_ideation_dimension(root),
+            }
+        )
+    if task_type == "chapter_direction":
+        status = assess_chapter_direction(config, int(scope["chapter_number"]))
+        instruction_context["trigger_reasons"] = list(status["reasons"])
+    atomic_write_text(
+        instruction,
+        render_instruction(task_type, spec, instruction_context, input_rel, relative(root, candidate)),
+    )
+    input_rel.append(relative(root, instruction))
+
+    config_arg = "project.yaml"
+    range_args = scope_command_args(scope)
+    input_args = "".join(f" --input {path}" for path in input_rel if path != relative(root, instruction))
+    validate_command, apply_command, failure_command = intelligence_commands(
+        task_type,
+        candidate=relative(root, candidate),
+        range_args=range_args,
+        input_args=input_args,
+        requires_human=bool(spec["human"]),
+    )
+    manifest = build_manifest(
+        root,
+        task_type=task_type,
+        chapter_number=int(scope.get("chapter_number") or 0) or None,
+        scope=scope,
+        input_files=input_rel,
+        allowed_output_paths=(candidate,),
+        output_schema=str(spec["schema"]),
+        validate_command=validate_command,
+        apply_command=apply_command,
+        failure_next_command=failure_command,
+        canonical_targets=intelligence_canonical_targets(root, task_type, scope),
+        requires_human_apply=bool(spec["human"]),
+        context_policy={
+            "required_files": [instruction],
+            "optional_files": inputs,
+            "compiled_brief": instruction,
+            "selection_report": instruction,
+            "max_files": 5 if task_type == "book_ideation" else 6 if task_type == "chapter_direction" else 7,
+            "max_chars": 12_000 if task_type == "book_ideation" else 16_000 if task_type == "chapter_direction" else 20_000,
+        },
+        task_id=(
+            f"book_ideation:project:round{round_number:02d}:v1"
+            if task_type == "book_ideation"
+            else None
+        ),
+    )
+    written = write_manifest(root, manifest, manifest_file)
+    return IntelligenceTaskResult(
+        task_type=task_type,
+        task_id=str(manifest["task_id"]),
+        manifest_file=relative(root, written),
+        instruction_file=relative(root, instruction),
+        candidate_file=relative(root, candidate),
+        next_command=f"longform-engine agent-task brief project.yaml {manifest['task_id']}",
+    )
+
+
+def validate_intelligence_candidate(
+    config: ConfigDocument,
+    *,
+    task_type: str,
+    file_path: str | Path,
+) -> IntelligenceValidationResult:
+    root = resolve_project_root(config)
+    spec = require_spec(task_type)
+    candidate = resolve_candidate(root, file_path)
+    errors: list[str] = []
+    payload = load_candidate(candidate, errors)
+    manifest = manifest_for_output(root, task_type, candidate)
+    if manifest is None:
+        errors.append("candidate is not declared by an active AgentTaskManifest.")
+    if payload is not None:
+        validate_payload(config, root, task_type, spec, payload, manifest, errors)
+
+    report = root / "50_workbench" / "intelligence_validations" / f"{candidate.stem}.validation.json"
+    ok = not errors
+    report_payload = {
+        "schema": "intelligence_validation_v1",
+        "task_type": task_type,
+        "candidate_file": relative(root, candidate),
+        "ok": ok,
+        "errors": errors,
+        "canonical_mutated": False,
+        "next_command": (
+            f"longform-engine intelligence apply project.yaml --task-type {task_type} --file {relative(root, candidate)}"
+            + (" --approved-by human" if spec["human"] else "")
+            if ok
+            else str((manifest or {}).get("failure_next_command") or f"longform-engine intelligence task project.yaml --task-type {task_type}")
+        ),
+    }
+    atomic_write_text(report, json.dumps(report_payload, ensure_ascii=False, indent=2) + "\n")
+    manifest_chapter = int((manifest or {}).get("chapter_number") or 0)
+    mark_tasks_for_output(
+        root,
+        chapter_number=manifest_chapter,
+        output_path=candidate,
+        to_status="validated" if ok else "invalid",
+        command="intelligence validate",
+        result=report,
+        from_statuses=("awaiting_agent", "submitted", "invalid", "validated"),
+    )
+    return IntelligenceValidationResult(
+        task_type=task_type,
+        ok=ok,
+        candidate_file=relative(root, candidate),
+        report_file=relative(root, report),
+        errors=tuple(errors),
+        next_command=str(report_payload["next_command"]),
+    )
+
+
+def apply_intelligence_candidate(
+    config: ConfigDocument,
+    *,
+    task_type: str,
+    file_path: str | Path,
+    approved_by: str | None = None,
+) -> IntelligenceApplyResult:
+    root = resolve_project_root(config)
+    spec = require_spec(task_type)
+    candidate = resolve_candidate(root, file_path)
+    validation = validate_intelligence_candidate(config, task_type=task_type, file_path=candidate)
+    if not validation.ok:
+        raise ValueError("Intelligence candidate is invalid: " + "; ".join(validation.errors))
+    if spec["human"] and approved_by != "human":
+        raise ValueError(f"{task_type} apply requires --approved-by human.")
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    touched = apply_targets(root, task_type, payload)
+    scope = manifest_for_output(root, task_type, candidate) or {}
+    task_chapter = int(scope.get("chapter_number") or 0)
+    with apply_transaction(
+        root,
+        command=f"intelligence apply {task_type}",
+        chapter_number=task_chapter or None,
+        source_paths=(candidate,),
+        touched_paths=tuple(touched),
+        metadata={
+            "task_type": task_type,
+            "task_id": scope.get("task_id", ""),
+            "approved_by": approved_by or "explicit_cli",
+            "requires_human_apply": bool(spec["human"]),
+        },
+    ) as transaction:
+        write_targets(root, task_type, payload)
+    mark_tasks_for_chapter_type(
+        root,
+        chapter_number=task_chapter,
+        task_types=(task_type,),
+        to_status="applied",
+        command="intelligence apply",
+        artifact=candidate,
+        result=transaction.report_file,
+        from_statuses=("validated",),
+    )
+    return IntelligenceApplyResult(
+        task_type=task_type,
+        status="applied",
+        candidate_file=relative(root, candidate),
+        touched_paths=tuple(relative(root, path) for path in touched),
+        transaction_report=relative(root, transaction.report_file),
+        next_command="longform-engine production next project.yaml",
+    )
+
+
+def require_spec(task_type: str) -> dict[str, Any]:
+    if task_type not in TASK_SPECS:
+        raise ValueError(f"task_type must be one of: {', '.join(INTELLIGENCE_TASK_TYPES)}")
+    return TASK_SPECS[task_type]
+
+
+def assess_project_readiness(config: ConfigDocument) -> ProjectReadinessResult:
+    """Verify that opening decisions and full-book outline were explicitly applied."""
+
+    root = resolve_project_root(config)
+    state = read_json(root / "30_state" / "novel_state.json", {})
+    status = str(state.get("status") or "initialized") if isinstance(state, dict) else "initialized"
+    if status == "initialized":
+        return ProjectReadinessResult(False, "open_book", "", ("open-book confirmations have not been recorded.",))
+    markers = state.get("project_intelligence") if isinstance(state, dict) and isinstance(state.get("project_intelligence"), dict) else {}
+    creation_mode = str(config.data.get("creation", {}).get("mode") or "original")
+    if creation_mode == "fanfiction":
+        canon_marker = markers.get("fanfiction_canon") if isinstance(markers.get("fanfiction_canon"), dict) else {}
+        if canon_marker.get("status") != "applied":
+            return ProjectReadinessResult(
+                False,
+                "fanfiction_canon",
+                "fanfiction_canon",
+                ("fanfiction_canon has not been explicitly applied.",),
+            )
+        canon_errors: list[str] = []
+        canon_payload = read_json(root / "10_bible" / "fanfiction" / "source_canon.json", {})
+        if not isinstance(canon_payload, dict):
+            canon_errors.append("10_bible/fanfiction/source_canon.json must be an object.")
+        else:
+            validate_fanfiction_canon(
+                config,
+                {
+                    key: canon_payload.get(key)
+                    for key in ("schema", "continuity_mode", "sources")
+                },
+                canon_errors,
+            )
+        if canon_errors:
+            return ProjectReadinessResult(False, "fanfiction_canon", "fanfiction_canon", tuple(canon_errors))
+    ideation_errors = book_ideation_readiness_errors(root)
+    if ideation_errors:
+        return ProjectReadinessResult(False, "book_ideation", "book_ideation", tuple(ideation_errors))
+    if creation_mode == "fanfiction":
+        design_marker = markers.get("fanfiction_design") if isinstance(markers.get("fanfiction_design"), dict) else {}
+        if design_marker.get("status") != "applied":
+            return ProjectReadinessResult(
+                False,
+                "fanfiction_design",
+                "fanfiction_design",
+                ("fanfiction_design has not been explicitly applied.",),
+            )
+        design_errors: list[str] = []
+        design_payload = read_json(root / "10_bible" / "fanfiction" / "fanfiction_bible.json", {})
+        if not isinstance(design_payload, dict):
+            design_errors.append("10_bible/fanfiction/fanfiction_bible.json must be an object.")
+        else:
+            validate_fanfiction_design(config, root, design_payload, design_errors)
+        if design_errors:
+            return ProjectReadinessResult(False, "fanfiction_design", "fanfiction_design", tuple(design_errors))
+    else:
+        book_marker = markers.get("book_design") if isinstance(markers.get("book_design"), dict) else {}
+        if book_marker.get("status") != "applied":
+            return ProjectReadinessResult(False, "book_design", "book_design", ("book_design has not been explicitly applied.",))
+    book_errors: list[str] = []
+    validate_book_design(
+        {
+            "schema": "book_design_candidate_v1",
+            "creative_brief": read_json(root / "10_bible" / "creative_brief.json", {}),
+            "world_markdown": read_text(root / "10_bible" / "world.md"),
+            "power_system_markdown": read_text(root / "10_bible" / "power_system.md"),
+            "characters": read_json(root / "10_bible" / "characters.json", []),
+            "relationships": read_json(root / "10_bible" / "relationships.json", []),
+        },
+        book_errors,
+    )
+    if book_errors:
+        return ProjectReadinessResult(False, "book_design", "book_design", tuple(book_errors))
+    outline_marker = markers.get("outline_design") if isinstance(markers.get("outline_design"), dict) else {}
+    if outline_marker.get("status") != "applied":
+        return ProjectReadinessResult(False, "outline_design", "outline_design", ("outline_design has not been explicitly applied.",))
+    outline_errors: list[str] = []
+    outline_payload = {
+        "schema": "outline_design_candidate_v1",
+        "book_outline_markdown": read_text(root / "20_outline" / "book_outline.md"),
+        "volumes": read_json(root / "20_outline" / "volumes.json", []),
+        "chapter_plan": read_json(root / "20_outline" / "chapter_plan.json", []),
+        "foreshadowing_ledger": read_json(root / "20_outline" / "foreshadowing_ledger.json", []),
+    }
+    validate_outline_design(config, outline_payload, outline_errors)
+    if outline_errors:
+        return ProjectReadinessResult(False, "outline_design", "outline_design", tuple(outline_errors))
+    return ProjectReadinessResult(True, "ready", "", ())
+
+
+def task_scope(
+    spec: dict[str, Any],
+    *,
+    chapter_number: int | None,
+    from_chapter: int | None,
+    to_chapter: int | None,
+) -> dict[str, Any]:
+    if spec["scope"] == "chapter":
+        if chapter_number is None or chapter_number <= 0:
+            raise ValueError("chapter_direction requires --chapter N.")
+        if from_chapter is not None or to_chapter is not None:
+            raise ValueError("chapter scope cannot use --from-chapter/--to-chapter.")
+        return {"kind": "chapter", "chapter_number": chapter_number}
+    if spec["scope"] == "range":
+        if from_chapter is None or to_chapter is None or from_chapter <= 0 or to_chapter < from_chapter:
+            raise ValueError("outline_revision requires --from-chapter N --to-chapter M with N <= M.")
+        return {"kind": "range", "from_chapter": from_chapter, "to_chapter": to_chapter}
+    if chapter_number is not None:
+        raise ValueError(f"{spec['scope']} scope does not accept --chapter.")
+    if from_chapter is not None or to_chapter is not None:
+        if from_chapter is None or to_chapter is None or from_chapter <= 0 or to_chapter < from_chapter:
+            raise ValueError("range scope requires both --from-chapter and --to-chapter.")
+        return {"kind": "range", "from_chapter": from_chapter, "to_chapter": to_chapter}
+    return {"kind": "project"}
+
+
+def scope_token(scope: dict[str, Any]) -> str:
+    if scope["kind"] == "chapter":
+        return f"ch{scope['chapter_number']:03d}"
+    if scope["kind"] == "range":
+        return f"ch{scope['from_chapter']:03d}-ch{scope['to_chapter']:03d}"
+    return "project"
+
+
+def scope_command_args(scope: dict[str, Any]) -> str:
+    if scope["kind"] == "chapter":
+        return f" --chapter {scope['chapter_number']}"
+    if scope["kind"] != "range":
+        return ""
+    return f" --from-chapter {scope['from_chapter']} --to-chapter {scope['to_chapter']}"
+
+
+def intelligence_default_inputs(
+    root: Path,
+    task_type: str,
+    spec: dict[str, Any],
+    scope: dict[str, Any],
+) -> list[Path]:
+    candidates = [root / str(item) for item in spec["defaults"]]
+    if task_type in {"book_design", "fanfiction_design"}:
+        candidates.append(root / "10_bible" / "creative_decisions.json")
+    if task_type == "book_ideation":
+        candidates.append(root / "10_bible" / "creative_decisions.json")
+    if task_type == "chapter_direction":
+        chapter_number = int(scope["chapter_number"])
+        candidates.extend(
+            [
+                root / "project.yaml",
+                root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
+                root / "20_outline" / "chapter_plan.json",
+                root / "20_outline" / "foreshadowing_ledger.json",
+                root / "10_bible" / "creative_brief.json",
+            ]
+        )
+    return [path for path in candidates if path.is_file()]
+
+
+def intelligence_canonical_targets(
+    root: Path,
+    task_type: str,
+    scope: dict[str, Any],
+) -> tuple[str, ...]:
+    if task_type == "chapter_direction":
+        chapter_number = int(scope["chapter_number"])
+        return (
+            f"20_outline/chapter_cards/ch{chapter_number:03d}.json",
+            f"20_outline/chapter_cards/ch{chapter_number:03d}.md",
+            "20_outline/chapter_plan.json",
+        )
+    return tuple(str(item) for item in TASK_SPECS[task_type]["targets"])
+
+
+def book_ideation_readiness_errors(root: Path) -> list[str]:
+    payload = read_json(root / "10_bible" / "creative_decisions.json", {})
+    if not isinstance(payload, dict) or payload.get("schema") != "book_ideation_decisions_v1":
+        return ["book_ideation has not recorded any human-approved creative decisions."]
+    decisions = payload.get("decisions")
+    if not isinstance(decisions, dict):
+        return ["book_ideation decisions must be an object."]
+    missing = [dimension for dimension in BOOK_IDEATION_DIMENSIONS if not str(decisions.get(dimension) or "").strip()]
+    if missing:
+        return [f"book_ideation is incomplete; next dimension: {missing[0]}."]
+    if payload.get("complete") is not True:
+        return ["book_ideation decisions are present but not marked complete."]
+    return []
+
+
+def next_book_ideation_round(root: Path) -> int:
+    payload = read_json(root / "10_bible" / "creative_decisions.json", {})
+    rounds = payload.get("rounds") if isinstance(payload, dict) else []
+    return len(rounds) + 1 if isinstance(rounds, list) else 1
+
+
+def next_book_ideation_dimension(root: Path) -> str:
+    payload = read_json(root / "10_bible" / "creative_decisions.json", {})
+    decisions = payload.get("decisions") if isinstance(payload, dict) else {}
+    decisions = decisions if isinstance(decisions, dict) else {}
+    for dimension in BOOK_IDEATION_DIMENSIONS:
+        if not str(decisions.get(dimension) or "").strip():
+            return dimension
+    return "complete"
+
+
+def assess_chapter_direction(config: ConfigDocument, chapter_number: int) -> dict[str, Any]:
+    """Return deterministic reasons for requiring a human chapter-direction choice."""
+
+    root = resolve_project_root(config)
+    quality = config.data.get("quality")
+    quality = quality if isinstance(quality, dict) else {}
+    guidance = quality.get("creative_guidance")
+    guidance = guidance if isinstance(guidance, dict) else {}
+    mode = str(guidance.get("mode") or "automatic")
+    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    card = read_json(card_path, {})
+    if isinstance(card, dict):
+        selected = card.get("direction_selection")
+        if isinstance(selected, dict) and selected.get("status") == "applied":
+            return {"required": False, "reasons": [], "status": "applied"}
+    if mode == "off":
+        return {"required": False, "reasons": [], "status": "disabled"}
+    plan = read_json(root / "20_outline" / "chapter_plan.json", [])
+    planned = next(
+        (
+            item
+            for item in plan
+            if isinstance(item, dict) and int(item.get("chapter_number") or 0) == chapter_number
+        ),
+        {},
+    ) if isinstance(plan, list) else {}
+    reasons: list[str] = []
+    if mode == "guided":
+        reasons.append("guided_mode")
+    text = " ".join(
+        str(planned.get(key) or "")
+        for key in ("title", "duty", "chapter_duty", "conflict", "information_release", "hook")
+    ).lower()
+    abstract_markers = (
+        "待定",
+        "推进主线",
+        "推进剧情",
+        "advance the active investigation",
+        "advance one bounded",
+        "open the next contradiction",
+    )
+    if any(marker in text for marker in abstract_markers):
+        reasons.append("abstract_outline_target")
+    volumes = read_json(root / "20_outline" / "volumes.json", [])
+    if isinstance(volumes, list) and any(
+        isinstance(item, dict)
+        and chapter_number in {
+            int(item.get("from_chapter") or 0),
+            int(item.get("to_chapter") or 0),
+        }
+        for item in volumes
+    ):
+        reasons.append("volume_boundary")
+    if any(bool(planned.get(key)) for key in ("major_turn", "major_reveal", "relationship_turn")):
+        reasons.append("major_turn")
+    if isinstance(planned.get("plotline_options"), list) and len(planned["plotline_options"]) >= 2:
+        reasons.append("multiple_valid_plotlines")
+    if planned.get("multiple_valid_plotlines") is True:
+        reasons.append("multiple_valid_plotlines")
+    repair_count = sum(
+        1
+        for task in list_manifests(root, chapter_number=chapter_number)
+        if task.get("task_type") == "repair" and task.get("status") in {"invalid", "applied"}
+    )
+    if repair_count >= 2:
+        reasons.append("repeated_repairs")
+    deduped = list(dict.fromkeys(reasons))
+    return {
+        "required": bool(deduped),
+        "reasons": deduped,
+        "status": "required" if deduped else "not_required",
+    }
+
+
+def normalize_inputs(root: Path, inputs: Iterable[str | Path]) -> list[Path]:
+    result: list[Path] = []
+    for item in inputs:
+        candidate = Path(item)
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.expanduser().resolve()
+        try:
+            candidate.relative_to(root.resolve())
+        except ValueError as exc:
+            raise ValueError(f"Input must live under project root: {item}") from exc
+        if not candidate.is_file():
+            raise ValueError(f"Input file does not exist: {item}")
+        if candidate not in result:
+            result.append(candidate)
+    return result
+
+
+def resolve_candidate(root: Path, file_path: str | Path) -> Path:
+    candidate = Path(file_path)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    candidate = candidate.expanduser().resolve()
+    try:
+        relative_path = candidate.relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise ValueError(f"Candidate must live under project root: {file_path}") from exc
+    if not relative_path.startswith("50_workbench/intelligence_candidates/"):
+        raise ValueError("Candidate must live under 50_workbench/intelligence_candidates/.")
+    return candidate
+
+
+def manifest_for_output(root: Path, task_type: str, candidate: Path) -> dict[str, Any] | None:
+    output = relative(root, candidate)
+    active = {"awaiting_agent", "submitted", "validated", "invalid"}
+    for entry in reversed(list_manifests(root)):
+        if entry.get("task_type") == task_type and entry.get("status") in active and output in entry.get("allowed_output_paths", []):
+            manifest_path = root / str(entry.get("manifest_file") or "")
+            try:
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return None
+            return payload if isinstance(payload, dict) else None
+    return None
+
+
+def load_candidate(path: Path, errors: list[str]) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        errors.append(f"candidate file does not exist: {path}")
+        return None
+    except json.JSONDecodeError as exc:
+        errors.append(f"candidate is not valid JSON: {exc}")
+        return None
+    if not isinstance(payload, dict):
+        errors.append("candidate must be a JSON object.")
+        return None
+    return payload
+
+
+def validate_payload(
+    config: ConfigDocument,
+    root: Path,
+    task_type: str,
+    spec: dict[str, Any],
+    payload: dict[str, Any],
+    manifest: dict[str, Any] | None,
+    errors: list[str],
+) -> None:
+    if payload.get("schema") != spec["schema"]:
+        errors.append(f"schema must be {spec['schema']}.")
+    validators = {
+        "book_ideation": lambda value, target: validate_book_ideation(root, value, target),
+        "fanfiction_canon": lambda value, target: validate_fanfiction_canon(config, value, target),
+        "fanfiction_design": lambda value, target: validate_fanfiction_design(config, root, value, target),
+        "book_design": lambda value, target: validate_book_design(value, target),
+        "outline_design": lambda value, target: validate_outline_design(config, value, target),
+        "chapter_direction": lambda value, target: validate_chapter_direction(config, root, value, manifest, target),
+        "outline_revision": lambda value, target: validate_outline_revision(config, root, value, target),
+        "research_synthesis": validate_research_synthesis,
+        "style_analysis": validate_style_analysis,
+        "adaptation_analysis": validate_adaptation_analysis,
+    }
+    validators[task_type](payload, errors)
+    if task_type in {"fanfiction_canon", "research_synthesis", "style_analysis", "adaptation_analysis"}:
+        validate_sources(root, payload, manifest, errors, require_hashes=True)
+
+
+def require_keys(payload: dict[str, Any], required: set[str], allowed: set[str], errors: list[str]) -> None:
+    missing = sorted(required - set(payload))
+    extra = sorted(set(payload) - allowed)
+    if missing:
+        errors.append("missing fields: " + ", ".join(missing))
+    if extra:
+        errors.append("unknown fields: " + ", ".join(extra))
+
+
+def require_nonempty_string(payload: dict[str, Any], key: str, errors: list[str]) -> None:
+    if not isinstance(payload.get(key), str) or not str(payload.get(key)).strip():
+        errors.append(f"{key} must be a non-empty string.")
+
+
+def require_list(payload: dict[str, Any], key: str, errors: list[str]) -> None:
+    if not isinstance(payload.get(key), list):
+        errors.append(f"{key} must be a list.")
+
+
+def validate_book_ideation(root: Path, payload: dict[str, Any], errors: list[str]) -> None:
+    required = {"schema", "round", "dimension", "question", "options", "selection"}
+    require_keys(payload, required, required, errors)
+    expected_round = next_book_ideation_round(root)
+    expected_dimension = next_book_ideation_dimension(root)
+    if payload.get("round") != expected_round:
+        errors.append(f"round must be the current unapplied round: {expected_round}.")
+    if payload.get("dimension") != expected_dimension:
+        errors.append(f"dimension must be the next undecided dimension: {expected_dimension}.")
+    require_nonempty_string(payload, "question", errors)
+    options = payload.get("options")
+    option_ids: set[str] = set()
+    if not isinstance(options, list) or not 2 <= len(options) <= 3:
+        errors.append("options must contain two or three choices.")
+    else:
+        for index, option in enumerate(options):
+            if not isinstance(option, dict) or set(option) != {"id", "proposal", "tradeoffs"}:
+                errors.append(f"options[{index}] must contain id, proposal, and tradeoffs only.")
+                continue
+            option_id = str(option.get("id") or "")
+            if not stable_id(option_id) or option_id in option_ids:
+                errors.append(f"options[{index}].id must be stable and unique.")
+            option_ids.add(option_id)
+            if not isinstance(option.get("proposal"), str) or not option["proposal"].strip():
+                errors.append(f"options[{index}].proposal must be a non-empty string.")
+            tradeoffs = option.get("tradeoffs")
+            if (
+                not isinstance(tradeoffs, list)
+                or not tradeoffs
+                or any(not isinstance(item, str) or not item.strip() for item in tradeoffs)
+            ):
+                errors.append(f"options[{index}].tradeoffs must be a non-empty string list.")
+    selection = payload.get("selection")
+    if not isinstance(selection, dict) or set(selection) != {"mode", "option_id", "answer"}:
+        errors.append("selection must contain mode, option_id, and answer only.")
+        return
+    mode = selection.get("mode")
+    if mode not in {"selected_option", "provided_answer"}:
+        errors.append("selection.mode must be selected_option or provided_answer.")
+    if mode == "selected_option":
+        if selection.get("option_id") not in option_ids:
+            errors.append("selection.option_id must reference one declared option.")
+        if str(selection.get("answer") or "").strip():
+            errors.append("selection.answer must be empty when mode=selected_option.")
+    if mode == "provided_answer":
+        if str(selection.get("option_id") or "").strip():
+            errors.append("selection.option_id must be empty when mode=provided_answer.")
+        if not isinstance(selection.get("answer"), str) or not selection["answer"].strip():
+            errors.append("selection.answer must be non-empty when mode=provided_answer.")
+
+
+def validate_chapter_direction(
+    config: ConfigDocument,
+    root: Path,
+    payload: dict[str, Any],
+    manifest: dict[str, Any] | None,
+    errors: list[str],
+) -> None:
+    required = {
+        "schema",
+        "chapter_number",
+        "chapter_card_sha256",
+        "trigger_reasons",
+        "directions",
+        "selection",
+    }
+    require_keys(payload, required, required, errors)
+    chapter_number = payload.get("chapter_number")
+    manifest_chapter = int((manifest or {}).get("chapter_number") or 0)
+    if not isinstance(chapter_number, int) or chapter_number <= 0:
+        errors.append("chapter_number must be a positive integer.")
+        return
+    if chapter_number != manifest_chapter:
+        errors.append("chapter_number must match the active Agent task.")
+    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    if not card_path.is_file():
+        errors.append("declared chapter card does not exist.")
+        return
+    expected_hash = sha256(card_path.read_bytes()).hexdigest()
+    if payload.get("chapter_card_sha256") != expected_hash:
+        errors.append("chapter_card_sha256 does not match the current chapter card.")
+    status = assess_chapter_direction(config, chapter_number)
+    reasons = payload.get("trigger_reasons")
+    if not isinstance(reasons, list) or sorted(str(item) for item in reasons) != sorted(status["reasons"]):
+        errors.append("trigger_reasons must match CLI-computed chapter direction reasons.")
+
+    directions = payload.get("directions")
+    direction_ids: set[str] = set()
+    required_direction = {
+        "id",
+        "title",
+        "chapter_duty",
+        "conflict",
+        "information_release",
+        "local_payoff",
+        "character_cost",
+        "longline_impact",
+        "foreshadow_impact",
+        "relationship_impact",
+        "ending_mode",
+        "main_risks",
+    }
+    if not isinstance(directions, list) or not 2 <= len(directions) <= 3:
+        errors.append("directions must contain two or three choices.")
+    else:
+        for index, direction in enumerate(directions):
+            if not isinstance(direction, dict) or set(direction) != required_direction:
+                errors.append(
+                    f"directions[{index}] must contain exactly: {', '.join(sorted(required_direction))}."
+                )
+                continue
+            direction_id = str(direction.get("id") or "")
+            if not stable_id(direction_id) or direction_id in direction_ids:
+                errors.append(f"directions[{index}].id must be stable and unique.")
+            direction_ids.add(direction_id)
+            for key in sorted(required_direction - {"id", "main_risks"}):
+                if not isinstance(direction.get(key), str) or not direction[key].strip():
+                    errors.append(f"directions[{index}].{key} must be a non-empty string.")
+            risks = direction.get("main_risks")
+            if not isinstance(risks, list) or not risks or any(
+                not isinstance(item, str) or not item.strip() for item in risks
+            ):
+                errors.append(f"directions[{index}].main_risks must be a non-empty string list.")
+    selection = payload.get("selection")
+    if not isinstance(selection, dict) or set(selection) != {"direction_id", "user_adjustments"}:
+        errors.append("selection must contain direction_id and user_adjustments only.")
+        return
+    if selection.get("direction_id") not in direction_ids:
+        errors.append("selection.direction_id must reference a declared direction.")
+    adjustments = selection.get("user_adjustments")
+    allowed_adjustments = required_direction - {"id", "main_risks"}
+    if not isinstance(adjustments, dict) or set(adjustments) - allowed_adjustments:
+        errors.append("selection.user_adjustments contains unsupported fields.")
+    elif any(not isinstance(value, str) or not value.strip() for value in adjustments.values()):
+        errors.append("selection.user_adjustments values must be non-empty strings.")
+
+
+def validate_book_design(payload: dict[str, Any], errors: list[str]) -> None:
+    required = {"schema", "creative_brief", "world_markdown", "power_system_markdown", "characters", "relationships"}
+    allowed = required | {"factions", "locations"}
+    require_keys(payload, required, allowed, errors)
+    brief = payload.get("creative_brief")
+    if not isinstance(brief, dict):
+        errors.append("creative_brief must be an object.")
+    else:
+        for field in ("target_audience", "writing_style", "automation_level", "target_scale"):
+            if not isinstance(brief.get(field), str) or not brief[field].strip():
+                errors.append(f"creative_brief.{field} must be a non-empty string.")
+        if not isinstance(brief.get("genre_style_profile"), dict) or not brief.get("genre_style_profile"):
+            errors.append("creative_brief.genre_style_profile must be a non-empty object.")
+        decisions = brief.get("design_decisions")
+        decision_fields = {
+            "core_hook",
+            "world_rule",
+            "protagonist_desire",
+            "long_conflict",
+            "volume_escalation",
+            "ending_boundary",
+        }
+        if not isinstance(decisions, dict) or set(decisions) != decision_fields:
+            errors.append("creative_brief.design_decisions must contain the six opening decisions only.")
+        else:
+            for field in sorted(decision_fields):
+                if not isinstance(decisions.get(field), str) or not decisions[field].strip():
+                    errors.append(f"creative_brief.design_decisions.{field} must be a non-empty string.")
+        if not isinstance(brief.get("reader_contract"), dict):
+            errors.append("creative_brief.reader_contract must be an object.")
+        if not isinstance(brief.get("core_taboo"), list) or not brief.get("core_taboo"):
+            errors.append("creative_brief.core_taboo must be a non-empty list.")
+    for key in ("world_markdown", "power_system_markdown"):
+        require_nonempty_string(payload, key, errors)
+    for key in ("characters", "relationships"):
+        require_list(payload, key, errors)
+    for key in ("factions", "locations"):
+        if key in payload:
+            require_list(payload, key, errors)
+
+    characters = payload.get("characters")
+    character_ids: set[str] = set()
+    if not isinstance(characters, list) or not characters:
+        errors.append("characters must contain at least one designed character.")
+    else:
+        for index, character in enumerate(characters):
+            if not isinstance(character, dict):
+                errors.append(f"characters[{index}] must be an object.")
+                continue
+            required_character = {"id", "name", "goal", "flaw", "arc_stages"}
+            missing = required_character - set(character)
+            if missing:
+                errors.append(f"characters[{index}] missing fields: {', '.join(sorted(missing))}.")
+                continue
+            character_id = stable_id(character.get("id"))
+            if not character_id:
+                errors.append(f"characters[{index}].id must be a stable id.")
+            elif character_id in character_ids:
+                errors.append(f"characters[{index}].id is duplicated: {character_id}.")
+            else:
+                character_ids.add(character_id)
+            for field in ("name", "goal", "flaw"):
+                if not isinstance(character.get(field), str) or not character[field].strip():
+                    errors.append(f"characters[{index}].{field} must be a non-empty string.")
+            stages = character.get("arc_stages")
+            if not isinstance(stages, list) or len(stages) < 3 or any(not isinstance(item, str) or not item.strip() for item in stages):
+                errors.append(f"characters[{index}].arc_stages must contain at least three non-empty stages.")
+
+    relationships = payload.get("relationships")
+    relationship_ids: set[str] = set()
+    if not isinstance(relationships, list) or not relationships:
+        errors.append("relationships must contain at least one relationship arc.")
+    else:
+        for index, relation in enumerate(relationships):
+            if not isinstance(relation, dict):
+                errors.append(f"relationships[{index}] must be an object.")
+                continue
+            required_relation = {"id", "source_id", "target_id", "type", "stage"}
+            missing = required_relation - set(relation)
+            if missing:
+                errors.append(f"relationships[{index}] missing fields: {', '.join(sorted(missing))}.")
+                continue
+            relation_id = stable_id(relation.get("id"))
+            if not relation_id or relation_id in relationship_ids:
+                errors.append(f"relationships[{index}].id must be stable and unique.")
+            else:
+                relationship_ids.add(relation_id)
+            for endpoint in ("source_id", "target_id"):
+                if str(relation.get(endpoint) or "") not in character_ids:
+                    errors.append(f"relationships[{index}].{endpoint} must reference a declared character id.")
+            for field in ("type", "stage"):
+                if not isinstance(relation.get(field), str) or not relation[field].strip():
+                    errors.append(f"relationships[{index}].{field} must be a non-empty string.")
+
+    for key in ("factions", "locations"):
+        records = payload.get(key)
+        if not isinstance(records, list):
+            continue
+        seen: set[str] = set()
+        for index, record in enumerate(records):
+            if not isinstance(record, dict) or not stable_id(record.get("id")) or not str(record.get("name") or "").strip():
+                errors.append(f"{key}[{index}] must contain stable id and non-empty name.")
+                continue
+            record_id = str(record["id"])
+            if record_id in seen:
+                errors.append(f"{key}[{index}].id is duplicated: {record_id}.")
+            seen.add(record_id)
+
+
+def validate_outline_design(config: ConfigDocument, payload: dict[str, Any], errors: list[str]) -> None:
+    required = {"schema", "book_outline_markdown", "volumes", "chapter_plan", "foreshadowing_ledger"}
+    require_keys(payload, required, required, errors)
+    require_nonempty_string(payload, "book_outline_markdown", errors)
+    for key in ("volumes", "chapter_plan", "foreshadowing_ledger"):
+        require_list(payload, key, errors)
+    validate_outline_structures(config, payload, errors)
+
+
+def validate_outline_revision(config: ConfigDocument, root: Path, payload: dict[str, Any], errors: list[str]) -> None:
+    required = {"schema", "from_chapter", "to_chapter", "change_summary", "impact", "replacements"}
+    require_keys(payload, required, required, errors)
+    start, end = payload.get("from_chapter"), payload.get("to_chapter")
+    if not isinstance(start, int) or start <= 0 or not isinstance(end, int) or end < start:
+        errors.append("from_chapter/to_chapter must be a valid positive range.")
+    require_nonempty_string(payload, "change_summary", errors)
+    impact = payload.get("impact")
+    if not isinstance(impact, dict) or not isinstance(impact.get("stale_chapters"), list) or not isinstance(impact.get("stale_artifacts"), list):
+        errors.append("impact must contain stale_chapters and stale_artifacts lists.")
+    replacements = payload.get("replacements")
+    allowed = {"book_outline_markdown", "volumes", "chapter_plan", "foreshadowing_ledger"}
+    if not isinstance(replacements, dict) or not replacements:
+        errors.append("replacements must be a non-empty object.")
+    elif set(replacements) - allowed:
+        errors.append("replacements contains unknown targets.")
+    elif isinstance(replacements, dict):
+        replacement_payload = {
+            "volumes": replacements.get("volumes", read_json(root / "20_outline" / "volumes.json", [])),
+            "chapter_plan": replacements.get("chapter_plan", read_json(root / "20_outline" / "chapter_plan.json", [])),
+            "foreshadowing_ledger": replacements.get(
+                "foreshadowing_ledger",
+                read_json(root / "20_outline" / "foreshadowing_ledger.json", []),
+            ),
+        }
+        validate_outline_structures(config, replacement_payload, errors)
+    if isinstance(start, int) and isinstance(end, int) and start > 0 and end >= start and isinstance(impact, dict):
+        expected_chapters, expected_artifacts = recompute_revision_impact(root, start, end)
+        supplied_chapters = sorted({item for item in impact.get("stale_chapters", []) if isinstance(item, int)})
+        supplied_artifacts = sorted({str(item) for item in impact.get("stale_artifacts", [])})
+        if supplied_chapters != expected_chapters:
+            errors.append("impact.stale_chapters does not match CLI-recomputed project dependencies.")
+        if supplied_artifacts != expected_artifacts:
+            errors.append("impact.stale_artifacts does not match CLI-recomputed project dependencies.")
+
+
+def validate_research_synthesis(payload: dict[str, Any], errors: list[str]) -> None:
+    required = {"schema", "synthesis_id", "source_files", "source_hashes", "summary", "claims"}
+    require_keys(payload, required, required, errors)
+    require_nonempty_string(payload, "synthesis_id", errors)
+    require_nonempty_string(payload, "summary", errors)
+    require_list(payload, "source_files", errors)
+    if not isinstance(payload.get("source_hashes"), dict):
+        errors.append("source_hashes must be an object.")
+    claims = payload.get("claims")
+    if not isinstance(claims, list) or not claims:
+        errors.append("claims must be a non-empty list.")
+        return
+    for index, claim in enumerate(claims):
+        claim_fields = {"claim_id", "statement", "evidence", "source_path", "source_hash", "evidence_span"}
+        if not isinstance(claim, dict) or set(claim) != claim_fields:
+            errors.append(
+                f"claims[{index}] must contain claim_id, statement, evidence, source_path, source_hash, evidence_span only."
+            )
+            continue
+        for key in ("claim_id", "statement", "evidence", "source_path", "source_hash"):
+            if not isinstance(claim.get(key), str) or not claim[key].strip():
+                errors.append(f"claims[{index}].{key} must be a non-empty string.")
+        span = claim.get("evidence_span")
+        if not isinstance(span, dict) or set(span) != {"start", "end"}:
+            errors.append(f"claims[{index}].evidence_span must contain start and end only.")
+        elif not isinstance(span.get("start"), int) or not isinstance(span.get("end"), int) or span["start"] < 0 or span["end"] <= span["start"]:
+            errors.append(f"claims[{index}].evidence_span must be a valid character range.")
+
+
+def validate_style_analysis(payload: dict[str, Any], errors: list[str]) -> None:
+    required = {"schema", "source_files", "source_hashes", "semantic_profile"}
+    require_keys(payload, required, required, errors)
+    require_list(payload, "source_files", errors)
+    if not isinstance(payload.get("source_hashes"), dict):
+        errors.append("source_hashes must be an object.")
+    profile = payload.get("semantic_profile")
+    fields = {"pov", "tone", "pacing", "dialogue", "craft_rules", "forbidden_patterns"}
+    if not isinstance(profile, dict) or set(profile) != fields:
+        errors.append("semantic_profile must contain pov, tone, pacing, dialogue, craft_rules, forbidden_patterns only.")
+    elif not isinstance(profile.get("craft_rules"), list) or not isinstance(profile.get("forbidden_patterns"), list):
+        errors.append("semantic_profile craft_rules and forbidden_patterns must be lists.")
+
+
+def validate_adaptation_analysis(payload: dict[str, Any], errors: list[str]) -> None:
+    required = {
+        "schema", "source_files", "source_hashes", "structural_patterns", "pacing_patterns",
+        "character_methods", "prose_constraints", "forbidden_copying",
+    }
+    require_keys(payload, required, required, errors)
+    require_list(payload, "source_files", errors)
+    if not isinstance(payload.get("source_hashes"), dict):
+        errors.append("source_hashes must be an object.")
+    for key in ("structural_patterns", "pacing_patterns", "character_methods", "prose_constraints", "forbidden_copying"):
+        require_list(payload, key, errors)
+    forbidden_fields = {"quoted_passages", "sample_text", "excerpts", "prose_examples", "source_body"}
+    if forbidden_fields & set(payload):
+        errors.append("adaptation output must not copy source prose or excerpts.")
+    for value in walk_strings(payload):
+        if len(value) > 800:
+            errors.append("adaptation output contains an overlong passage; store techniques, not source prose.")
+            break
+
+
+def validate_fanfiction_canon(config: ConfigDocument, payload: dict[str, Any], errors: list[str]) -> None:
+    required = {"schema", "continuity_mode", "sources"}
+    require_keys(payload, required, required, errors)
+    configured = config.data.get("fanfiction", {}) if isinstance(config.data.get("fanfiction"), dict) else {}
+    continuity_mode = str(configured.get("continuity_mode") or "")
+    if payload.get("continuity_mode") != continuity_mode:
+        errors.append("continuity_mode must match project.yaml fanfiction.continuity_mode.")
+    sources = payload.get("sources")
+    if not isinstance(sources, list) or not sources:
+        errors.append("sources must be a non-empty list.")
+        return
+    configured_sources = {
+        str(item.get("source_id")): item
+        for item in configured.get("sources") or []
+        if isinstance(item, dict) and item.get("source_id")
+    }
+    payload_ids = {
+        str(item.get("source_id"))
+        for item in sources
+        if isinstance(item, dict) and item.get("source_id")
+    }
+    if payload_ids != set(configured_sources):
+        errors.append("sources must contain exactly the source_id values declared in project.yaml.")
+    all_entity_ids: set[str] = set()
+    for index, source in enumerate(sources):
+        validate_fanfiction_canon_source(
+            source,
+            index=index,
+            configured=configured_sources.get(str(source.get("source_id"))) if isinstance(source, dict) else None,
+            all_entity_ids=all_entity_ids,
+            errors=errors,
+        )
+
+
+def validate_fanfiction_canon_source(
+    source: Any,
+    *,
+    index: int,
+    configured: dict[str, Any] | None,
+    all_entity_ids: set[str],
+    errors: list[str],
+) -> None:
+    prefix = f"sources[{index}]"
+    required = {
+        "source_id",
+        "title",
+        "creator",
+        "canon_cutoff",
+        "source_files",
+        "source_hashes",
+        "characters",
+        "relationships",
+        "world_rules",
+        "abilities",
+        "timeline",
+        "terminology",
+        "canon_events",
+        "unresolved_questions",
+        "evidence",
+    }
+    if not isinstance(source, dict):
+        errors.append(f"{prefix} must be an object.")
+        return
+    require_keys(source, required, required, errors)
+    source_id = stable_id(source.get("source_id"))
+    if not source_id:
+        errors.append(f"{prefix}.source_id must be a stable id.")
+        return
+    if configured is None:
+        errors.append(f"{prefix}.source_id is not configured: {source_id}.")
+    else:
+        for field in ("title", "creator", "canon_cutoff"):
+            if source.get(field) != configured.get(field):
+                errors.append(f"{prefix}.{field} must match project.yaml.")
+    if not isinstance(source.get("source_files"), list) or not source.get("source_files"):
+        errors.append(f"{prefix}.source_files must be a non-empty list.")
+    if not isinstance(source.get("source_hashes"), dict):
+        errors.append(f"{prefix}.source_hashes must be an object.")
+    evidence_ids: set[str] = set()
+    evidence = source.get("evidence")
+    if not isinstance(evidence, list) or not evidence:
+        errors.append(f"{prefix}.evidence must be a non-empty list.")
+        evidence = []
+    for evidence_index, item in enumerate(evidence):
+        evidence_prefix = f"{prefix}.evidence[{evidence_index}]"
+        fields = {"evidence_id", "source_path", "source_hash", "evidence_span"}
+        if not isinstance(item, dict) or set(item) != fields:
+            errors.append(f"{evidence_prefix} must contain evidence_id, source_path, source_hash, evidence_span only.")
+            continue
+        evidence_id = stable_id(item.get("evidence_id"))
+        if not evidence_id or evidence_id in evidence_ids:
+            errors.append(f"{evidence_prefix}.evidence_id must be stable and unique.")
+        else:
+            evidence_ids.add(evidence_id)
+        span = item.get("evidence_span")
+        if (
+            not isinstance(span, dict)
+            or set(span) != {"start", "end"}
+            or not isinstance(span.get("start"), int)
+            or not isinstance(span.get("end"), int)
+            or span["start"] < 0
+            or span["end"] <= span["start"]
+        ):
+            errors.append(f"{evidence_prefix}.evidence_span must be a valid start/end character range.")
+    characters = source.get("characters")
+    character_ids: set[str] = set()
+    if not isinstance(characters, list) or not characters:
+        errors.append(f"{prefix}.characters must be a non-empty list.")
+        characters = []
+    for item_index, item in enumerate(characters):
+        item_prefix = f"{prefix}.characters[{item_index}]"
+        fields = {"id", "name", "summary", "motivation", "voice_traits", "evidence_refs"}
+        validate_fanfiction_fact(item, item_prefix, fields, source_id, evidence_ids, all_entity_ids, errors)
+        if isinstance(item, dict) and stable_id(item.get("id")):
+            character_ids.add(str(item["id"]))
+        if isinstance(item, dict) and not isinstance(item.get("voice_traits"), list):
+            errors.append(f"{item_prefix}.voice_traits must be a list.")
+    relationships = source.get("relationships")
+    if not isinstance(relationships, list):
+        errors.append(f"{prefix}.relationships must be a list.")
+        relationships = []
+    for item_index, item in enumerate(relationships):
+        item_prefix = f"{prefix}.relationships[{item_index}]"
+        fields = {"id", "source_character_id", "target_character_id", "stage", "summary", "evidence_refs"}
+        validate_fanfiction_fact(item, item_prefix, fields, source_id, evidence_ids, all_entity_ids, errors)
+        if isinstance(item, dict):
+            for field in ("source_character_id", "target_character_id"):
+                if str(item.get(field) or "") not in character_ids:
+                    errors.append(f"{item_prefix}.{field} must reference a character in the same source namespace.")
+    fact_specs = {
+        "world_rules": {"id", "summary", "evidence_refs"},
+        "abilities": {"id", "name", "summary", "limits", "evidence_refs"},
+        "timeline": {"id", "order", "summary", "evidence_refs"},
+        "terminology": {"id", "name", "summary", "evidence_refs"},
+        "canon_events": {"id", "order", "summary", "evidence_refs"},
+        "unresolved_questions": {"id", "summary", "evidence_refs"},
+    }
+    for field, fields in fact_specs.items():
+        records = source.get(field)
+        if not isinstance(records, list):
+            errors.append(f"{prefix}.{field} must be a list.")
+            continue
+        for item_index, item in enumerate(records):
+            validate_fanfiction_fact(
+                item,
+                f"{prefix}.{field}[{item_index}]",
+                fields,
+                source_id,
+                evidence_ids,
+                all_entity_ids,
+                errors,
+            )
+
+
+def validate_fanfiction_fact(
+    item: Any,
+    prefix: str,
+    fields: set[str],
+    source_id: str,
+    evidence_ids: set[str],
+    all_entity_ids: set[str],
+    errors: list[str],
+) -> None:
+    if not isinstance(item, dict) or set(item) != fields:
+        errors.append(f"{prefix} must contain exactly: {', '.join(sorted(fields))}.")
+        return
+    item_id = stable_id(item.get("id"))
+    if not item_id or not item_id.startswith(f"{source_id}:") or item_id in all_entity_ids:
+        errors.append(f"{prefix}.id must be unique and start with `{source_id}:`.")
+    else:
+        all_entity_ids.add(item_id)
+    if not isinstance(item.get("summary"), str) or not item["summary"].strip():
+        errors.append(f"{prefix}.summary must be a non-empty paraphrased fact.")
+    refs = item.get("evidence_refs")
+    if not isinstance(refs, list) or not refs:
+        errors.append(f"{prefix}.evidence_refs must be a non-empty list.")
+    elif any(str(ref) not in evidence_ids for ref in refs):
+        errors.append(f"{prefix}.evidence_refs must reference evidence from the same source.")
+
+
+def validate_fanfiction_design(
+    config: ConfigDocument,
+    root: Path,
+    payload: dict[str, Any],
+    errors: list[str],
+) -> None:
+    required = {
+        "schema",
+        "continuity_mode",
+        "canon_cutoff",
+        "divergence_point",
+        "ooc_tolerance",
+        "character_voice_contracts",
+        "original_mainline",
+        "original_characters",
+        "world_rule_changes",
+        "butterfly_effects",
+        "ending_boundary",
+        "original_contribution",
+        "protected_reveals",
+        "cross_source_rules",
+        "book_design",
+    }
+    require_keys(payload, required, required, errors)
+    configured = config.data.get("fanfiction", {}) if isinstance(config.data.get("fanfiction"), dict) else {}
+    if payload.get("continuity_mode") != configured.get("continuity_mode"):
+        errors.append("continuity_mode must match project.yaml fanfiction.continuity_mode.")
+    for field in ("canon_cutoff", "divergence_point", "ending_boundary"):
+        require_nonempty_string(payload, field, errors)
+    if payload.get("ooc_tolerance") not in {"strict", "bounded", "transformative"}:
+        errors.append("ooc_tolerance must be strict, bounded, or transformative.")
+    for field in (
+        "character_voice_contracts",
+        "original_characters",
+        "world_rule_changes",
+        "butterfly_effects",
+        "original_contribution",
+        "protected_reveals",
+        "cross_source_rules",
+    ):
+        require_list(payload, field, errors)
+    mainline = payload.get("original_mainline")
+    if not isinstance(mainline, dict) or set(mainline) != {"premise", "central_conflict", "reader_promise"}:
+        errors.append("original_mainline must contain premise, central_conflict, reader_promise only.")
+    elif any(not isinstance(value, str) or not value.strip() for value in mainline.values()):
+        errors.append("original_mainline fields must be non-empty strings.")
+    canon = read_json(root / "10_bible" / "fanfiction" / "source_canon.json", {})
+    known_characters = {
+        str(character.get("id"))
+        for source in canon.get("sources", []) if isinstance(canon, dict) and isinstance(source, dict)
+        for character in source.get("characters", []) if isinstance(character, dict) and character.get("id")
+    }
+    contracts = payload.get("character_voice_contracts")
+    if not isinstance(contracts, list) or not contracts:
+        errors.append("character_voice_contracts must be a non-empty list.")
+    else:
+        seen: set[str] = set()
+        for index, contract in enumerate(contracts):
+            fields = {"character_id", "baseline_voice", "invariants", "allowed_changes", "forbidden_shortcuts"}
+            if not isinstance(contract, dict) or set(contract) != fields:
+                errors.append(f"character_voice_contracts[{index}] must contain exactly {sorted(fields)}.")
+                continue
+            character_id = str(contract.get("character_id") or "")
+            if character_id not in known_characters or character_id in seen:
+                errors.append(f"character_voice_contracts[{index}].character_id must be unique and declared in source canon.")
+            seen.add(character_id)
+            require_nonempty_string(contract, "baseline_voice", errors)
+            for field in ("invariants", "allowed_changes", "forbidden_shortcuts"):
+                if not isinstance(contract.get(field), list):
+                    errors.append(f"character_voice_contracts[{index}].{field} must be a list.")
+    if configured.get("continuity_mode") == "crossover" and not payload.get("cross_source_rules"):
+        errors.append("crossover fanfiction requires cross_source_rules.")
+    if configured.get("continuity_mode") == "crossover":
+        validate_crossover_rules(configured, payload.get("cross_source_rules"), errors)
+    book_design = payload.get("book_design")
+    if not isinstance(book_design, dict):
+        errors.append("book_design must be a book_design_candidate_v1 object.")
+    else:
+        validate_book_design(book_design, errors)
+
+
+def validate_crossover_rules(
+    configured: dict[str, Any],
+    rules: Any,
+    errors: list[str],
+) -> None:
+    if not isinstance(rules, list):
+        return
+    configured_ids = {
+        str(source.get("source_id"))
+        for source in configured.get("sources") or []
+        if isinstance(source, dict) and source.get("source_id")
+    }
+    covered_ids: set[str] = set()
+    expected_fields = {
+        "source_ids",
+        "conflict_rule",
+        "power_conversion",
+        "terminology_collision_policy",
+    }
+    for index, rule in enumerate(rules):
+        prefix = f"cross_source_rules[{index}]"
+        if not isinstance(rule, dict) or set(rule) != expected_fields:
+            errors.append(f"{prefix} must contain exactly {sorted(expected_fields)}.")
+            continue
+        source_ids = rule.get("source_ids")
+        if (
+            not isinstance(source_ids, list)
+            or len(source_ids) < 2
+            or len(source_ids) != len(set(str(item) for item in source_ids))
+            or any(str(item) not in configured_ids for item in source_ids)
+        ):
+            errors.append(f"{prefix}.source_ids must contain at least two unique configured source ids.")
+        else:
+            covered_ids.update(str(item) for item in source_ids)
+        for field in ("conflict_rule", "power_conversion", "terminology_collision_policy"):
+            if not isinstance(rule.get(field), str) or not rule[field].strip():
+                errors.append(f"{prefix}.{field} must be a non-empty string.")
+    missing = sorted(configured_ids - covered_ids)
+    if missing:
+        errors.append("cross_source_rules must cover every configured source: " + ", ".join(missing) + ".")
+
+
+def validate_sources(
+    root: Path,
+    payload: dict[str, Any],
+    manifest: dict[str, Any] | None,
+    errors: list[str],
+    *,
+    require_hashes: bool,
+) -> None:
+    if payload.get("schema") == "fanfiction_source_canon_v1":
+        validate_fanfiction_source_evidence(root, payload, manifest, errors)
+        return
+    sources = payload.get("source_files")
+    if not isinstance(sources, list) or not sources:
+        errors.append("source_files must be a non-empty list.")
+        return
+    declared = set(str(item) for item in (manifest or {}).get("input_files", []))
+    hashes = payload.get("source_hashes") if isinstance(payload.get("source_hashes"), dict) else {}
+    for index, item in enumerate(sources):
+        source = str(item)
+        if source not in declared:
+            errors.append(f"source_files[{index}] is not declared in manifest input_files: {source}")
+            continue
+        path = root / source
+        if not path.is_file():
+            errors.append(f"source_files[{index}] does not exist: {source}")
+            continue
+        if require_hashes and hashes.get(source) != sha256(path.read_bytes()).hexdigest():
+            errors.append(f"source_hashes[{source}] does not match current input content.")
+    if payload.get("schema") == "research_synthesis_v1":
+        for index, claim in enumerate(payload.get("claims") or []):
+            if not isinstance(claim, dict):
+                continue
+            source = str(claim.get("source_path") or "")
+            if source not in sources:
+                errors.append(f"claims[{index}].source_path must reference source_files.")
+                continue
+            path = root / source
+            if not path.is_file():
+                continue
+            expected_hash = sha256(path.read_bytes()).hexdigest()
+            if claim.get("source_hash") != expected_hash:
+                errors.append(f"claims[{index}].source_hash does not match current source content.")
+            span = claim.get("evidence_span")
+            evidence = str(claim.get("evidence") or "")
+            if not isinstance(span, dict) or not isinstance(span.get("start"), int) or not isinstance(span.get("end"), int):
+                continue
+            source_text = path.read_text(encoding="utf-8").lstrip("\ufeff")
+            start, end = span["start"], span["end"]
+            if start < 0 or end > len(source_text) or end <= start:
+                errors.append(f"claims[{index}].evidence_span is outside source content.")
+            elif source_text[start:end] != evidence:
+                errors.append(f"claims[{index}].evidence must exactly match the declared source span.")
+    if payload.get("schema") == "adaptation_analysis_v1":
+        validate_adaptation_similarity(root, payload, errors)
+
+
+def validate_fanfiction_source_evidence(
+    root: Path,
+    payload: dict[str, Any],
+    manifest: dict[str, Any] | None,
+    errors: list[str],
+) -> None:
+    declared = set(str(item) for item in (manifest or {}).get("input_files", []))
+    for source_index, source in enumerate(payload.get("sources") or []):
+        if not isinstance(source, dict):
+            continue
+        source_files = source.get("source_files") if isinstance(source.get("source_files"), list) else []
+        source_hashes = source.get("source_hashes") if isinstance(source.get("source_hashes"), dict) else {}
+        source_texts: list[str] = []
+        for file_index, source_path in enumerate(source_files):
+            source_path = str(source_path)
+            if source_path not in declared:
+                errors.append(
+                    f"sources[{source_index}].source_files[{file_index}] is not declared in manifest input_files."
+                )
+                continue
+            path = root / source_path
+            if not path.is_file():
+                errors.append(f"sources[{source_index}].source_files[{file_index}] does not exist.")
+                continue
+            expected_hash = sha256(path.read_bytes()).hexdigest()
+            if source_hashes.get(source_path) != expected_hash:
+                errors.append(f"sources[{source_index}].source_hashes[{source_path}] does not match current content.")
+            source_texts.append(path.read_text(encoding="utf-8").lstrip("\ufeff"))
+        for evidence_index, evidence in enumerate(source.get("evidence") or []):
+            if not isinstance(evidence, dict):
+                continue
+            source_path = str(evidence.get("source_path") or "")
+            if source_path not in source_files:
+                errors.append(
+                    f"sources[{source_index}].evidence[{evidence_index}].source_path must reference source_files."
+                )
+                continue
+            path = root / source_path
+            if not path.is_file():
+                continue
+            expected_hash = sha256(path.read_bytes()).hexdigest()
+            if evidence.get("source_hash") != expected_hash:
+                errors.append(
+                    f"sources[{source_index}].evidence[{evidence_index}].source_hash does not match current content."
+                )
+            span = evidence.get("evidence_span")
+            if not isinstance(span, dict):
+                continue
+            text = path.read_text(encoding="utf-8").lstrip("\ufeff")
+            start, end = span.get("start"), span.get("end")
+            if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end > len(text) or end <= start:
+                errors.append(
+                    f"sources[{source_index}].evidence[{evidence_index}].evidence_span is outside source content."
+                )
+        validate_fanfiction_canon_prose_originality(
+            source,
+            source_texts=source_texts,
+            source_index=source_index,
+            errors=errors,
+        )
+
+
+def validate_fanfiction_canon_prose_originality(
+    source: dict[str, Any],
+    *,
+    source_texts: list[str],
+    source_index: int,
+    errors: list[str],
+) -> None:
+    protected_terms = {
+        str(source.get("title") or ""),
+        str(source.get("creator") or ""),
+    }
+    for field in ("characters", "abilities", "terminology"):
+        for item in source.get(field) or []:
+            if isinstance(item, dict) and item.get("name"):
+                protected_terms.add(str(item["name"]))
+    parts = [
+        normalize_fanfiction_canon_text(value, protected_terms)
+        for value in fanfiction_canon_prose_fields(source)
+    ]
+    parts = [part for part in parts if len(part) >= 8]
+    if not parts:
+        return
+    candidate_grams = {
+        part[index:index + 8]
+        for part in parts
+        for index in range(len(part) - 7)
+    }
+    for source_text in source_texts:
+        normalized_source = normalize_fanfiction_canon_text(source_text, protected_terms)
+        if any(
+            len(part) >= 36
+            and (
+                part in normalized_source
+                or ngram_overlap_ratio(part, normalized_source, size=8) >= 0.80
+            )
+            for part in parts
+        ) or has_reconstructed_source_run(normalized_source, candidate_grams, size=8):
+            errors.append(
+                f"sources[{source_index}] reconstructs source prose in canon fields; "
+                "store paraphrased facts and evidence locations only."
+            )
+            return
+
+
+def fanfiction_canon_prose_fields(source: dict[str, Any]) -> Iterable[str]:
+    scalar_fields = ("summary", "motivation", "stage")
+    list_fields = ("voice_traits", "limits")
+    for collection in (
+        "characters",
+        "relationships",
+        "world_rules",
+        "abilities",
+        "timeline",
+        "terminology",
+        "canon_events",
+        "unresolved_questions",
+    ):
+        for item in source.get(collection) or []:
+            if not isinstance(item, dict):
+                continue
+            for field in scalar_fields:
+                if isinstance(item.get(field), str):
+                    yield item[field]
+            for field in list_fields:
+                for value in item.get(field) or []:
+                    if isinstance(value, str):
+                        yield value
+
+
+def normalize_fanfiction_canon_text(value: str, protected_terms: set[str]) -> str:
+    normalized = str(value).lower()
+    for term in sorted((item for item in protected_terms if item), key=len, reverse=True):
+        normalized = normalized.replace(term.lower(), "")
+    return normalize_similarity_text(normalized)
+
+
+def has_reconstructed_source_run(source: str, candidate_grams: set[str], *, size: int) -> bool:
+    if len(source) < 36 or not candidate_grams:
+        return False
+    run_start: int | None = None
+    last_hit: int | None = None
+    hit_count = 0
+    for index in range(len(source) - size + 1):
+        if source[index:index + size] not in candidate_grams:
+            continue
+        if last_hit is None or index - last_hit > size:
+            run_start = index
+            hit_count = 0
+        last_hit = index
+        hit_count += 1
+        assert run_start is not None
+        run_grams = index - run_start + 1
+        run_chars = run_grams + size - 1
+        if run_chars >= 36 and hit_count / run_grams >= 0.65:
+            return True
+    return False
+
+
+def stable_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:_-]{1,79}", text):
+        return ""
+    return text
+
+
+def validate_outline_structures(config: ConfigDocument, payload: dict[str, Any], errors: list[str]) -> None:
+    length = config.data.get("length", {}) if isinstance(config.data.get("length"), dict) else {}
+    total_chapters = int(length.get("total_chapters") or 0)
+    volume_count = int(length.get("volume_count") or 0)
+    volumes = payload.get("volumes")
+    chapter_plan = payload.get("chapter_plan")
+    ledger = payload.get("foreshadowing_ledger")
+    if not isinstance(volumes, list) or not volumes:
+        errors.append("volumes must contain the configured volume plan.")
+    else:
+        if volume_count and len(volumes) != volume_count:
+            errors.append(f"volumes must contain exactly {volume_count} configured volumes.")
+        expected_start = 1
+        seen_volume_ids: set[str] = set()
+        for index, volume in enumerate(volumes, start=1):
+            if not isinstance(volume, dict):
+                errors.append(f"volumes[{index - 1}] must be an object.")
+                continue
+            required = {"id", "number", "title", "from_chapter", "to_chapter", "goal", "escalation", "ending_turn"}
+            missing = required - set(volume)
+            if missing:
+                errors.append(f"volumes[{index - 1}] missing fields: {', '.join(sorted(missing))}.")
+                continue
+            volume_id = stable_id(volume.get("id"))
+            if not volume_id or volume_id in seen_volume_ids:
+                errors.append(f"volumes[{index - 1}].id must be stable and unique.")
+            else:
+                seen_volume_ids.add(volume_id)
+            start, end = volume.get("from_chapter"), volume.get("to_chapter")
+            if volume.get("number") != index:
+                errors.append(f"volumes[{index - 1}].number must be {index}.")
+            if not isinstance(start, int) or not isinstance(end, int) or start != expected_start or end < start:
+                errors.append(f"volumes[{index - 1}] must continue coverage from chapter {expected_start}.")
+            else:
+                expected_start = end + 1
+            for field in ("title", "goal", "escalation", "ending_turn"):
+                if not isinstance(volume.get(field), str) or not volume[field].strip():
+                    errors.append(f"volumes[{index - 1}].{field} must be a non-empty string.")
+        if total_chapters and expected_start != total_chapters + 1:
+            errors.append(f"volumes must cover chapters 1 through {total_chapters} without gaps.")
+
+    if not isinstance(chapter_plan, list) or not chapter_plan:
+        errors.append("chapter_plan must contain every configured chapter.")
+    else:
+        if total_chapters and len(chapter_plan) != total_chapters:
+            errors.append(f"chapter_plan must contain exactly {total_chapters} chapters.")
+        seen_chapters: set[int] = set()
+        for index, chapter in enumerate(chapter_plan, start=1):
+            if not isinstance(chapter, dict):
+                errors.append(f"chapter_plan[{index - 1}] must be an object.")
+                continue
+            required = {
+                "chapter_number",
+                "title",
+                "duty",
+                "conflict",
+                "information_release",
+                "hook",
+                "reader_payoff",
+                "volume_id",
+                "forbidden_reveals",
+            }
+            missing = required - set(chapter)
+            if missing:
+                errors.append(f"chapter_plan[{index - 1}] missing fields: {', '.join(sorted(missing))}.")
+                continue
+            number = chapter.get("chapter_number")
+            if number != index or number in seen_chapters:
+                errors.append(f"chapter_plan[{index - 1}].chapter_number must be unique and equal {index}.")
+            elif isinstance(number, int):
+                seen_chapters.add(number)
+            if str(chapter.get("volume_id") or "") not in seen_volume_ids:
+                errors.append(f"chapter_plan[{index - 1}].volume_id must reference a declared volume.")
+            for field in ("title", "duty", "conflict", "information_release", "hook", "reader_payoff"):
+                if not isinstance(chapter.get(field), str) or not chapter[field].strip():
+                    errors.append(f"chapter_plan[{index - 1}].{field} must be a non-empty string.")
+            if not isinstance(chapter.get("forbidden_reveals"), list):
+                errors.append(f"chapter_plan[{index - 1}].forbidden_reveals must be a list.")
+
+    if not isinstance(ledger, list) or not ledger:
+        errors.append("foreshadowing_ledger must contain at least one planned thread.")
+    else:
+        seen_threads: set[str] = set()
+        for index, thread in enumerate(ledger):
+            if not isinstance(thread, dict):
+                errors.append(f"foreshadowing_ledger[{index}] must be an object.")
+                continue
+            required = {"id", "description", "plant_chapter", "payoff_window", "status"}
+            missing = required - set(thread)
+            if missing:
+                errors.append(f"foreshadowing_ledger[{index}] missing fields: {', '.join(sorted(missing))}.")
+                continue
+            thread_id = stable_id(thread.get("id"))
+            if not thread_id or thread_id in seen_threads:
+                errors.append(f"foreshadowing_ledger[{index}].id must be stable and unique.")
+            else:
+                seen_threads.add(thread_id)
+            plant = thread.get("plant_chapter")
+            window = thread.get("payoff_window")
+            if not isinstance(plant, int) or plant <= 0 or (total_chapters and plant > total_chapters):
+                errors.append(f"foreshadowing_ledger[{index}].plant_chapter is outside the book range.")
+            if not isinstance(window, list) or len(window) != 2 or any(not isinstance(item, int) for item in window):
+                errors.append(f"foreshadowing_ledger[{index}].payoff_window must be [start, end].")
+            else:
+                plant_value = plant if isinstance(plant, int) else 0
+                if window[0] < plant_value or window[1] < window[0] or (total_chapters and window[1] > total_chapters):
+                    errors.append(f"foreshadowing_ledger[{index}].payoff_window is invalid.")
+            for field in ("description", "status"):
+                if not isinstance(thread.get(field), str) or not thread[field].strip():
+                    errors.append(f"foreshadowing_ledger[{index}].{field} must be a non-empty string.")
+
+
+def recompute_revision_impact(root: Path, start: int, end: int) -> tuple[list[int], list[str]]:
+    chapters: set[int] = set()
+    artifacts: set[str] = set()
+    patterns = (
+        ("20_outline/chapter_cards", "ch*.json"),
+        ("50_workbench/beats", "ch*.json"),
+        ("50_workbench/writing_tasks", "ch*.json"),
+        ("30_state/tcs", "ch*.json"),
+    )
+    for directory, pattern in patterns:
+        for path in (root / directory).glob(pattern):
+            match = re.search(r"ch(\d+)", path.name)
+            if not match:
+                continue
+            number = int(match.group(1))
+            if start <= number <= end:
+                chapters.add(number)
+                artifacts.add(path.resolve().relative_to(root.resolve()).as_posix())
+    return sorted(chapters), sorted(artifacts)
+
+
+def validate_adaptation_similarity(root: Path, payload: dict[str, Any], errors: list[str]) -> None:
+    sources: list[str] = [str(item) for item in payload.get("source_files") or []]
+    source_texts = [read_text(root / item) for item in sources if (root / item).is_file()]
+    technique_fields = ("structural_patterns", "pacing_patterns", "character_methods", "prose_constraints")
+    candidate_parts = [
+        str(item)
+        for field in technique_fields
+        for item in payload.get(field) or []
+        if isinstance(item, str)
+    ]
+    for candidate in candidate_parts:
+        normalized_candidate = normalize_similarity_text(candidate)
+        if len(normalized_candidate) < 30:
+            continue
+        for source_text in source_texts:
+            normalized_source = normalize_similarity_text(source_text)
+            if normalized_candidate in normalized_source or ngram_overlap_ratio(normalized_candidate, normalized_source) >= 0.35:
+                errors.append("adaptation output is too similar to declared source prose; keep abstract techniques only.")
+                return
+    combined = normalize_similarity_text(" ".join(candidate_parts))
+    if len(combined) >= 60:
+        for source_text in source_texts:
+            if ngram_overlap_ratio(combined, normalize_similarity_text(source_text)) >= 0.35:
+                errors.append("adaptation output reconstructs source prose across fields.")
+                return
+
+
+def normalize_similarity_text(value: str) -> str:
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", str(value).lower(), flags=re.UNICODE)
+
+
+def ngram_overlap_ratio(candidate: str, source: str, *, size: int = 8) -> float:
+    if len(candidate) < size or len(source) < size:
+        return 0.0
+    candidate_grams = {candidate[index:index + size] for index in range(len(candidate) - size + 1)}
+    source_grams = {source[index:index + size] for index in range(len(source) - size + 1)}
+    return len(candidate_grams & source_grams) / max(1, len(candidate_grams))
+
+
+def read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").lstrip("\ufeff")
+    except OSError:
+        return ""
+
+
+def walk_strings(value: Any) -> Iterable[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from walk_strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from walk_strings(child)
+
+
+def apply_targets(root: Path, task_type: str, payload: dict[str, Any]) -> list[Path]:
+    spec = TASK_SPECS[task_type]
+    targets = [root / item for item in spec["targets"]]
+    if task_type == "chapter_direction":
+        chapter_number = int(payload["chapter_number"])
+        targets.extend(
+            [
+                root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
+                root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.md",
+                root / "20_outline" / "chapter_plan.json",
+            ]
+        )
+    if task_type == "book_design":
+        for optional in ("factions", "locations"):
+            if optional in payload:
+                targets.append(root / "10_bible" / f"{optional}.json")
+    if task_type == "fanfiction_design":
+        book_design = payload.get("book_design") if isinstance(payload.get("book_design"), dict) else {}
+        for optional in ("factions", "locations"):
+            if optional in book_design:
+                targets.append(root / "10_bible" / f"{optional}.json")
+    if task_type == "outline_revision":
+        targets.append(root / "20_outline" / "revise_reports" / revision_report_name(payload))
+    return targets
+
+
+def write_targets(root: Path, task_type: str, payload: dict[str, Any]) -> None:
+    if task_type == "book_ideation":
+        write_book_ideation_decision(root, payload)
+        return
+    if task_type == "book_design":
+        write_book_design_targets(root, payload)
+        mark_project_intelligence_applied(root, "book_design", payload)
+        return
+    if task_type == "fanfiction_canon":
+        canonical = dict(payload)
+        canonical["rights_declarations"] = fanfiction_rights_declarations(root)
+        canonical["rights_policy"] = {
+            "advisory_only": True,
+            "blocks_creation": False,
+            "blocks_export": False,
+            "statement": "Rights entries are user declarations and are not legal verification.",
+        }
+        write_json(root / "10_bible" / "fanfiction" / "source_canon.json", canonical)
+        mark_project_intelligence_applied(root, "fanfiction_canon", canonical)
+        append_creation_event(root, "fanfiction_canon_applied", canonical)
+        return
+    if task_type == "fanfiction_design":
+        write_json(root / "10_bible" / "fanfiction" / "fanfiction_bible.json", payload)
+        write_book_design_targets(root, payload["book_design"])
+        mark_project_intelligence_applied(root, "fanfiction_design", payload)
+        mark_project_intelligence_applied(root, "book_design", payload["book_design"])
+        append_creation_event(root, "fanfiction_design_applied", payload)
+        return
+    if task_type == "outline_design":
+        atomic_write_text(root / "20_outline" / "book_outline.md", payload["book_outline_markdown"].rstrip() + "\n")
+        write_json(root / "20_outline" / "volumes.json", payload["volumes"])
+        write_json(root / "20_outline" / "chapter_plan.json", payload["chapter_plan"])
+        write_json(root / "20_outline" / "foreshadowing_ledger.json", payload["foreshadowing_ledger"])
+        mark_project_intelligence_applied(root, "outline_design", payload)
+        return
+    if task_type == "chapter_direction":
+        write_chapter_direction(root, payload)
+        return
+    if task_type == "outline_revision":
+        replacements = payload["replacements"]
+        if "book_outline_markdown" in replacements:
+            atomic_write_text(root / "20_outline" / "book_outline.md", str(replacements["book_outline_markdown"]).rstrip() + "\n")
+        for key, filename in (
+            ("volumes", "volumes.json"),
+            ("chapter_plan", "chapter_plan.json"),
+            ("foreshadowing_ledger", "foreshadowing_ledger.json"),
+        ):
+            if key in replacements:
+                write_json(root / "20_outline" / filename, replacements[key])
+        state_path = root / "30_state" / "novel_state.json"
+        state = read_json(state_path, {})
+        stale = list(state.get("stale") or []) if isinstance(state, dict) else []
+        for item in payload["impact"]["stale_artifacts"]:
+            if item not in stale:
+                stale.append(item)
+        state["stale"] = stale
+        state["stale_chapters"] = payload["impact"]["stale_chapters"]
+        write_json(state_path, state)
+        write_json(root / "20_outline" / "revise_reports" / revision_report_name(payload), payload)
+        return
+    if task_type == "research_synthesis":
+        path = root / "10_bible" / "research_canon.jsonl"
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        lines = []
+        for claim in payload["claims"]:
+            lines.append(json.dumps({
+                "schema": "research_canon_claim_v1",
+                "synthesis_id": payload["synthesis_id"],
+                **claim,
+            }, ensure_ascii=False))
+        prefix = existing if not existing or existing.endswith("\n") else existing + "\n"
+        atomic_write_text(path, prefix + "\n".join(lines) + "\n")
+        return
+    if task_type == "style_analysis":
+        path = root / "10_bible" / "style_profiles" / "current_style_profile.json"
+        current = read_json(path, {})
+        current["schema"] = "combined_style_profile_v1"
+        current["semantic_profile"] = payload["semantic_profile"]
+        current["semantic_sources"] = payload["source_files"]
+        current["semantic_source_hashes"] = payload["source_hashes"]
+        write_json(path, current)
+        return
+    if task_type == "adaptation_analysis":
+        write_json(root / "10_bible" / "style_profiles" / "adaptation_profile.json", payload)
+
+
+def write_book_design_targets(root: Path, payload: dict[str, Any]) -> None:
+    creative_brief = dict(payload["creative_brief"])
+    creative_brief["status"] = "confirmed"
+    write_json(root / "10_bible" / "creative_brief.json", creative_brief)
+    atomic_write_text(root / "10_bible" / "world.md", payload["world_markdown"].rstrip() + "\n")
+    atomic_write_text(root / "10_bible" / "power_system.md", payload["power_system_markdown"].rstrip() + "\n")
+    write_json(root / "10_bible" / "characters.json", payload["characters"])
+    write_json(root / "10_bible" / "relationships.json", payload["relationships"])
+    for optional in ("factions", "locations"):
+        if optional in payload:
+            write_json(root / "10_bible" / f"{optional}.json", payload[optional])
+
+
+def fanfiction_rights_declarations(root: Path) -> list[dict[str, Any]]:
+    project = read_json(root / "project.json", {})
+    if isinstance(project, dict):
+        return list(project.get("fanfiction", {}).get("sources") or [])
+    try:
+        import yaml
+
+        project_yaml = yaml.safe_load((root / "project.yaml").read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        project_yaml = {}
+    sources = project_yaml.get("fanfiction", {}).get("sources") if isinstance(project_yaml, dict) else []
+    return [dict(item) for item in sources or [] if isinstance(item, dict)]
+
+
+def append_creation_event(root: Path, event: str, payload: dict[str, Any]) -> None:
+    path = root / "70_runtime" / "provenance" / "creation_events.jsonl"
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    record = {
+        "schema": "creation_provenance_event_v1",
+        "event": event,
+        "payload_hash": sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest(),
+        "stores_source_body": False,
+    }
+    prefix = existing if not existing or existing.endswith("\n") else existing + "\n"
+    atomic_write_text(path, prefix + json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def mark_project_intelligence_applied(root: Path, task_type: str, payload: dict[str, Any]) -> None:
+    state_path = root / "30_state" / "novel_state.json"
+    state = read_json(state_path, {})
+    if not isinstance(state, dict):
+        state = {}
+    project_intelligence = state.get("project_intelligence")
+    if not isinstance(project_intelligence, dict):
+        project_intelligence = {}
+    project_intelligence[task_type] = {
+        "status": "applied",
+        "candidate_hash": sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest(),
+    }
+    state["project_intelligence"] = project_intelligence
+    if task_type == "outline_design":
+        state["status"] = "project_ready"
+    write_json(state_path, state)
+
+
+def write_book_ideation_decision(root: Path, payload: dict[str, Any]) -> None:
+    path = root / "10_bible" / "creative_decisions.json"
+    current = read_json(path, {})
+    if not isinstance(current, dict) or current.get("schema") != "book_ideation_decisions_v1":
+        current = {
+            "schema": "book_ideation_decisions_v1",
+            "decisions": {},
+            "rounds": [],
+            "complete": False,
+        }
+    selection = payload["selection"]
+    if selection["mode"] == "selected_option":
+        selected = next(item for item in payload["options"] if item["id"] == selection["option_id"])
+        answer = str(selected["proposal"]).strip()
+    else:
+        answer = str(selection["answer"]).strip()
+    decisions = current.get("decisions")
+    decisions = dict(decisions) if isinstance(decisions, dict) else {}
+    decisions[str(payload["dimension"])] = answer
+    rounds = current.get("rounds")
+    rounds = list(rounds) if isinstance(rounds, list) else []
+    rounds.append(
+        {
+            "round": int(payload["round"]),
+            "dimension": str(payload["dimension"]),
+            "question": str(payload["question"]),
+            "selection_mode": str(selection["mode"]),
+            "selected_option_id": str(selection["option_id"]),
+            "answer": answer,
+            "applied_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    complete = all(str(decisions.get(item) or "").strip() for item in BOOK_IDEATION_DIMENSIONS)
+    canonical = {
+        "schema": "book_ideation_decisions_v1",
+        "dimensions": list(BOOK_IDEATION_DIMENSIONS),
+        "decisions": decisions,
+        "rounds": rounds,
+        "complete": complete,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    write_json(path, canonical)
+    state_path = root / "30_state" / "novel_state.json"
+    state = read_json(state_path, {})
+    state = state if isinstance(state, dict) else {}
+    markers = state.get("project_intelligence")
+    markers = dict(markers) if isinstance(markers, dict) else {}
+    markers["book_ideation"] = {
+        "status": "applied" if complete else "in_progress",
+        "rounds": len(rounds),
+        "next_dimension": "" if complete else next(
+            item for item in BOOK_IDEATION_DIMENSIONS if not str(decisions.get(item) or "").strip()
+        ),
+        "candidate_hash": sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
+    }
+    if complete:
+        next_type = "fanfiction_design" if state.get("creation_mode") == "fanfiction" else "book_design"
+        next_marker = markers.get(next_type)
+        if not isinstance(next_marker, dict) or next_marker.get("status") != "applied":
+            markers[next_type] = {"status": "required"}
+    state["project_intelligence"] = markers
+    write_json(state_path, state)
+
+
+def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
+    from longform_engine.orchestration.pipeline import upsert_chapter_plan, write_chapter_card_artifacts
+
+    chapter_number = int(payload["chapter_number"])
+    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    card = read_json(card_path, {})
+    if not isinstance(card, dict):
+        raise ValueError("Chapter card must be a JSON object.")
+    selection = payload["selection"]
+    selected = next(
+        item for item in payload["directions"] if item["id"] == selection["direction_id"]
+    )
+    resolved = dict(selected)
+    resolved.update(selection["user_adjustments"])
+    card.update(
+        {
+            "duty": resolved["chapter_duty"],
+            "chapter_duty": resolved["chapter_duty"],
+            "conflict": resolved["conflict"],
+            "information": resolved["information_release"],
+            "reader_payoff": resolved["local_payoff"],
+            "reader_gain": resolved["local_payoff"],
+            "cost": resolved["character_cost"],
+            "ending_mode": resolved["ending_mode"],
+            "longline_impact": resolved["longline_impact"],
+            "foreshadow_impact": resolved["foreshadow_impact"],
+            "relationship_impact": resolved["relationship_impact"],
+            "direction_risks": list(selected["main_risks"]),
+            "direction_selection": {
+                "status": "applied",
+                "direction_id": selected["id"],
+                "title": selected["title"],
+                "trigger_reasons": list(payload["trigger_reasons"]),
+                "candidate_hash": sha256(
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                ).hexdigest(),
+                "applied_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+    )
+    write_chapter_card_artifacts(root, card)
+    upsert_chapter_plan(root, card)
+
+
+def revision_report_name(payload: dict[str, Any]) -> str:
+    return f"agent_revision_ch{int(payload['from_chapter']):03d}-ch{int(payload['to_chapter']):03d}.json"
+
+
+def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, Any], inputs: list[str], output: str) -> str:
+    requirements = {
+        "book_ideation": (
+            "Ask exactly one core question for the declared dimension. Return two or three materially different "
+            "options with explicit tradeoffs. selection must record the user's explicit option or provided answer; "
+            "do not infer consent or answer additional dimensions."
+        ),
+        "fanfiction_canon": (
+            "Extract paraphrased canon facts with source-scoped ids and evidence hash/span records. Preserve names, "
+            "relationships, world rules, abilities, terminology, timeline, and unresolved canon questions. Do not "
+            "store source prose in the output and do not infer rights status."
+        ),
+        "fanfiction_design": (
+            "Design the declared fanfiction form, divergence causality, voice contracts, original mainline, original "
+            "contribution, protected reveals, and nested book_design. Canon divergence is allowed when declared and "
+            "causally supported. Crossover rules must explain namespace, power conversion, and conflict resolution."
+        ),
+        "book_design": (
+            "creative_brief.design_decisions must define core_hook, world_rule, protagonist_desire, "
+            "long_conflict, volume_escalation, and ending_boundary. Every character needs stable id, name, "
+            "goal, flaw, and at least three arc_stages. Relationships need stable ids and valid character references."
+        ),
+        "outline_design": (
+            "Read project.yaml length settings. Volumes must continuously cover the configured book; chapter_plan "
+            "must contain every chapter with duty, conflict, information_release, hook, reader_payoff, volume_id, "
+            "and forbidden_reveals. Foreshadowing entries need plant_chapter and a valid payoff_window."
+        ),
+        "outline_revision": (
+            "Return full replacement structures. impact.stale_chapters and stale_artifacts must match files that "
+            "currently exist inside the declared chapter range; CLI recomputes both lists."
+        ),
+        "chapter_direction": (
+            "Return two or three causally distinct chapter directions. Each direction must state chapter duty, "
+            "conflict, information release, local payoff, character cost, longline/foreshadow/relationship impact, "
+            "ending mode, and risks. selection must record the human's explicit choice."
+        ),
+        "research_synthesis": (
+            "Include source_hashes. Every claim needs source_hash and evidence_span {start,end}; evidence must be "
+            "the exact UTF-8 character slice from the declared source."
+        ),
+        "adaptation_analysis": (
+            "Store abstract techniques only. Do not quote, reconstruct, split, or lightly paraphrase source prose "
+            "across output fields; CLI runs exact and n-gram similarity checks."
+        ),
+    }.get(task_type, "Use only declared sources and return the exact output schema.")
+    return "\n".join((
+        f"# {task_type} Agent Task",
+        "",
+        f"Output schema: `{spec['schema']}`",
+        f"Scope: `{json.dumps(scope, ensure_ascii=False)}`",
+        f"Allowed output: `{output}`",
+        "",
+        "Read only:",
+        *(f"- `{item}`" for item in inputs),
+        "",
+        "Validation requirements:",
+        f"- {requirements}",
+        "",
+        "Do not write Bible, outline, research canon, final, RAG, graph, TCS, or SQLite directly.",
+        "Return JSON only. The CLI validates before any explicit apply.",
+        "",
+    ))
+
+
+def intelligence_commands(
+    task_type: str,
+    *,
+    candidate: str,
+    range_args: str,
+    input_args: str,
+    requires_human: bool,
+) -> tuple[str, str, str]:
+    if task_type == "fanfiction_canon":
+        return (
+            f"longform-engine fanfiction canon-validate project.yaml --file {candidate}",
+            f"longform-engine fanfiction canon-apply project.yaml --file {candidate} --approved-by human",
+            f"longform-engine fanfiction canon-task project.yaml{input_args}",
+        )
+    if task_type == "fanfiction_design":
+        return (
+            f"longform-engine fanfiction design-validate project.yaml --file {candidate}",
+            f"longform-engine fanfiction design-apply project.yaml --file {candidate} --approved-by human",
+            "longform-engine fanfiction design-task project.yaml",
+        )
+    approval = " --approved-by human" if requires_human else ""
+    return (
+        f"longform-engine intelligence validate project.yaml --task-type {task_type} --file {candidate}",
+        f"longform-engine intelligence apply project.yaml --task-type {task_type} --file {candidate}{approval}",
+        f"longform-engine intelligence task project.yaml --task-type {task_type}{range_args}{input_args}",
+    )
+
+
+def fanfiction_status(config: ConfigDocument) -> dict[str, Any]:
+    root = resolve_project_root(config)
+    state = read_json(root / "30_state" / "novel_state.json", {})
+    markers = state.get("project_intelligence") if isinstance(state, dict) else {}
+    if not isinstance(markers, dict):
+        markers = {}
+    sources = config.data.get("fanfiction", {}).get("sources") or []
+    rights_warnings = [
+        {
+            "source_id": str(source.get("source_id") or ""),
+            "rights_status": str(source.get("rights_status") or "unverified"),
+            "commercial_intent": bool(source.get("commercial_intent")),
+            "blocking": False,
+        }
+        for source in sources
+        if isinstance(source, dict)
+    ]
+    readiness = assess_project_readiness(config)
+    return {
+        "schema": "fanfiction_status_v1",
+        "creation_mode": str(config.data.get("creation", {}).get("mode") or "original"),
+        "continuity_mode": str(config.data.get("fanfiction", {}).get("continuity_mode") or ""),
+        "source_count": len(sources),
+        "canon_status": str((markers.get("fanfiction_canon") or {}).get("status") or "not_applied"),
+        "design_status": str((markers.get("fanfiction_design") or {}).get("status") or "not_applied"),
+        "rights_advisory_only": True,
+        "rights_warnings": rights_warnings,
+        "ready": readiness.ready,
+        "next_task_type": readiness.required_task_type,
+    }
+
+
+def write_json(path: Path, payload: Any) -> None:
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
+def read_json(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def relative(root: Path, path: str | Path) -> str:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    return candidate.resolve().relative_to(root.resolve()).as_posix()

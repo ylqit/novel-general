@@ -1,0 +1,7 @@
+schema: quality_profile_v1
+kind: phase
+id: early_serial
+contract:
+  phase_focus: ["验证开篇承诺可持续", "形成角色关系杠杆", "让小兑现服务长期矛盾"]
+  payoff_cadence: {information: "稳定小兑现", relationship: "建立可追踪变化", status: "首次阶段反馈"}
+  slow_chapter_policy: {allowed: true, requires_state_change: true, max_consecutive: 2}

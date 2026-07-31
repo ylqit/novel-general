@@ -12,7 +12,7 @@
 - CLI 不直接生成小说正文，不伪造语义判断。
 - Agent 只写入 workbench 允许路径。
 - 所有 Agent 输出必须先 validate，再由 apply 或 finalize 命令进入 canonical state。
-- `api_provider` 只能作为未来保留模式，默认路径必须显式禁用。
+- 脚本内 provider 只保留为未来路线图议题，不进入公开配置或当前运行时。
 - 任何进入 `40_manuscript/final/`、`60_rag/`、`30_state/story_graph.json`、`30_state/tcs/`、`70_runtime/db/` 的内容都必须经过受控命令。
 
 ## 2. 非目标
@@ -26,9 +26,9 @@
 - 不复制 `novel-skill` 的脚本内 LLM 调用模式。
 - 不在本阶段要求操作系统级沙箱；先通过 manifest、路径白名单、validate/apply、事务、release guard 和测试建立工程边界。
 
-## 3. AgentTaskManifest v1 强语义契约
+## 3. AgentTaskManifest v1/v2 强语义契约
 
-所有需要 Agent 创作或语义判断的任务都必须生成 `AgentTaskManifest v1`。现有字段保持兼容，但要从形状校验升级到强语义校验。
+所有需要 Agent 创作或语义判断的任务都必须生成 `AgentTaskManifest v2`；已有 v1 继续读取并规范化。字段校验必须从形状校验升级到强语义校验。
 
 标准字段：
 
@@ -439,7 +439,7 @@ Release guard 必须覆盖：
 
 GUI/API 不应发明第二套工作流，应直接消费这些文件和命令：
 
-- `AgentTaskManifest v1`
+- `AgentTaskManifest v1/v2`
 - `50_workbench/agent_tasks/agent_task_index.json`
 - `50_workbench/agent_tasks/events.jsonl`
 - validate report
@@ -462,12 +462,12 @@ GUI/API 不应发明第二套工作流，应直接消费这些文件和命令：
 
 当前硬化完成标准由 `docs/AGENT_COLLABORATION_HARDENING_CHECKLIST.md` 第 13 项统一验收。完成状态必须同时满足：
 
-- Agent 智能任务全部生成 `AgentTaskManifest v1`，并通过 `validate_manifest_strict` 的 task type、schema、lane、command 和 hard boundary 校验。
+- Agent 智能任务生成 `AgentTaskManifest v2`，v1 读取兼容，并通过 `validate_manifest_strict` 的 task type、scope、schema、lane、command 和 hard boundary 校验。
 - Agent 输出只能落在 `50_workbench/` 的声明 lane，canonical 写入只能由 `draft submit`、`chapter finalize` 或各类 `semantic/character/pacing apply` 命令推进。
 - apply/finalize 命令必须进入 `apply_transaction` 或写出等价可恢复报告，失败时能回滚 touched paths。
 - invalid graph、memory、editorial、pacing 输出只生成 validation/report，不污染 final、RAG、graph、TCS 或 SQLite。
 - Agent task lifecycle 可通过 task index 和 events 读取，至少覆盖 `awaiting_agent`、`submitted`、`validated`、`invalid`、`applied`、`superseded`、`rolled_back`。
-- release guard 覆盖脚本内 LLM 调用、隐藏 API key 需求、`api_provider` 默认禁用、strict manifest、content expansion、lifecycle states 和 transaction rollback 合约。
+- release guard 覆盖脚本内 LLM 调用、隐藏 API key 需求、公开运行时无 provider 占位、strict manifest、content expansion、lifecycle states 和 transaction rollback 合约。
 - no-key E2E 覆盖主链路、semantic apply、invalid no-pollution 和 repair/humanize/expand 分支。
 - README、项目级 AGENTS 和根 AGENTS 均引用本硬化文档和 checklist。
 

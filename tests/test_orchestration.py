@@ -1,6 +1,6 @@
 import json
 
-from longform_engine.agent_tasks import build_manifest, write_manifest
+from longform_engine.agent_tasks import build_manifest, list_manifests, write_manifest
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_review
 from longform_engine.gates import semantic_pacing_task
@@ -13,18 +13,26 @@ from longform_engine.orchestration import (
     continue_write,
     finalize_chapter,
     generate_beat_sheet,
-    open_book,
+    open_book as engine_open_book,
     plan_chapter,
     submit_agent_draft,
 )
 from longform_engine.db import query_table
+from longform_engine.production import production_next
 from longform_engine.storage import init_project
+from tests.project_fixtures import mark_project_ready
+
+
+def open_book(config):
+    result = engine_open_book(config)
+    mark_project_ready(config.path.parent, config, preserve_existing_characters=True)
+    return result
 
 
 def test_open_book_writes_five_confirmations(tmp_path):
     project_config = seed_project(tmp_path)
 
-    result = open_book(project_config)
+    result = engine_open_book(project_config)
 
     idea_seed = (tmp_path / "novel" / "00_governance" / "idea_seed.md").read_text(encoding="utf-8")
     state = json.loads((tmp_path / "novel" / "30_state" / "novel_state.json").read_text(encoding="utf-8"))
@@ -325,6 +333,32 @@ def test_submit_agent_draft_records_submission_and_runs_gate(tmp_path):
     assert any(row["chapter_number"] == 1 and row["status"] == "gate_passed" for row in chapters)
 
 
+def test_submit_agent_draft_waits_for_required_semantic_review_without_invalidating_prose(tmp_path):
+    project_config = seed_project(tmp_path)
+    open_book(project_config)
+    project_config.data["quality"]["semantic_review_milestones"] = [1]
+    project_config.data["quality"]["semantic_review_boundaries"] = True
+    continue_write(project_config, chapter_number=1)
+    root = tmp_path / "novel"
+    agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
+    agent_draft.write_text(passing_draft_text(), encoding="utf-8")
+
+    result = submit_agent_draft(project_config, chapter_number=1, file_path=agent_draft, agent="codex")
+    tasks = {task["task_id"]: task for task in list_manifests(root)}
+    next_action = production_next(project_config)
+    gate = json.loads(
+        (root / "50_workbench" / "gate_artifacts" / "ch001" / "gate_result.json").read_text(encoding="utf-8")
+    )
+
+    assert result.passed is False
+    assert result.next_command == "agent-task brief project.yaml semantic_review:ch001:v1"
+    assert tasks["chapter_write:ch001:v1"]["status"] == "validated"
+    assert tasks["semantic_review:ch001:v1"]["status"] == "awaiting_agent"
+    assert next_action["task_type"] == "semantic_review"
+    assert next_action["status"] == "agent_task_awaiting_agent"
+    assert "agent_semantic_review" in gate["allowed_actions"]
+
+
 def test_submit_agent_draft_requires_agent_draft_directory(tmp_path):
     project_config = seed_project(tmp_path)
     open_book(project_config)
@@ -382,8 +416,13 @@ def test_finalize_chapter_requires_gate_and_refreshes_memory(tmp_path):
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(draft_text, encoding="utf-8")
     submit_agent_draft(project_config, chapter_number=1, file_path=agent_draft, agent="codex")
+    pending_state_path = root / "30_state" / "novel_state.json"
+    pending_state = json.loads(pending_state_path.read_text(encoding="utf-8"))
+    pending_state["pending_semantic_review_chapter"] = 1
+    pending_state_path.write_text(json.dumps(pending_state, ensure_ascii=False, indent=2), encoding="utf-8")
 
     result = finalize_chapter(project_config, chapter_number=1, approved_by="human")
+    finalize_chapter(project_config, chapter_number=1, approved_by="human", overwrite=True)
 
     final_path = root / "40_manuscript" / "final" / "ch001.md"
     finalization_path = root / "40_manuscript" / "final" / "ch001.finalization.json"
@@ -392,6 +431,11 @@ def test_finalize_chapter_requires_gate_and_refreshes_memory(tmp_path):
     state = json.loads((root / "30_state" / "novel_state.json").read_text(encoding="utf-8"))
     chunks = query_table(project_config, "chapter_chunks", limit=20)
     chapters = query_table(project_config, "chapters", limit=20)
+    reward_entries = [
+        json.loads(line)
+        for line in (root / "30_state" / "reward_ledger.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
     assert result.next_command == "continue-write --chapter 2"
     assert final_path.exists()
@@ -403,8 +447,16 @@ def test_finalize_chapter_requires_gate_and_refreshes_memory(tmp_path):
     assert any(entity.get("id") == "character:lin" and entity.get("mentions") for entity in story_graph["entities"])
     assert state["status"] == "chapter_finalized"
     assert state["last_finalized_chapter"] == 1
+    assert "pending_semantic_review_chapter" not in state
     assert any(row["chapter_number"] == 1 and row["status"] == "final" for row in chapters)
     assert any(row["chapter_number"] == 1 for row in chunks)
+    assert reward_entries[-1]["schema"] == "reader_reward_entry_v2"
+    assert reward_entries[-1]["chapter_number"] == 1
+    assert reward_entries[-1]["chapter_duty"]
+    assert reward_entries[-1]["planned_gain"]
+    assert reward_entries[-1]["observed_gain"] == ""
+    assert reward_entries[-1]["observation_status"] == "not_required"
+    assert len([item for item in reward_entries if item["chapter_number"] == 1]) == 1
     transaction_reports = list((root / "70_runtime" / "transactions").glob("*chapter_finalize_ch001*.json"))
     assert transaction_reports
     transaction = json.loads(transaction_reports[-1].read_text(encoding="utf-8"))
@@ -548,15 +600,20 @@ def test_continue_write_carries_previous_controlled_feedback_forward(tmp_path):
     assert feedback["status"] == "available"
     assert feedback["source_chapter"] == 1
     assert "50_workbench/gate_artifacts/ch001/gate_result.json" in feedback["source_files"]
-    assert "50_workbench/gate_artifacts/ch001/repair_plan.md" in feedback["source_files"]
+    assert "50_workbench/gate_artifacts/ch001/repair_plan.md" not in feedback["source_files"]
     assert "50_workbench/humanizer_tasks/ch001.humanize_check.json" in feedback["source_files"]
     assert "50_workbench/gate_artifacts/ch001/semantic_pacing_result.json" in feedback["source_files"]
     assert "50_workbench/editorial_reviews/ch001.aggregate.json" in feedback["source_files"]
+    assert not any(item["kind"] == "repair_plan" for item in feedback["items"])
     assert any(item["kind"] == "humanize_check" and "summary" in item for item in feedback["items"])
+    assert "story graph must remain frozen" not in json.dumps(feedback, ensure_ascii=False)
+    assert "graph update waits for chapter finalize" not in json.dumps(feedback, ensure_ascii=False)
     assert "## Feedback Carryover" in task_md
     assert "humanizer_summary_voice" in task_md
     for source in feedback["source_files"]:
-        assert source in manifest["input_files"]
+        assert source not in manifest["input_files"]
+    assert len(manifest["input_files"]) <= 7
+    assert set(feedback["source_files"]).issubset(set(task["context_plan"]["excluded_duplicates"]))
     assert not (root / "40_manuscript" / "final" / "ch002.md").exists()
     assert not (root / "60_rag" / "chunks" / "ch002.json").exists()
     story_graph = json.loads((root / "30_state" / "story_graph.json").read_text(encoding="utf-8"))
@@ -584,12 +641,18 @@ def test_finalize_chapter_blocks_failed_gate_without_waiver(tmp_path):
 def seed_project(tmp_path, *, writing_mode: str = "agent_skill"):
     config = load_project_config(template="qidian-longform")
     project = init_project(config, output=tmp_path / "novel")
-    return load_project_config(project.project_config, cli_overrides={"writing": {"mode": writing_mode}})
+    return load_project_config(
+        project.project_config,
+        cli_overrides={
+            "writing": {"mode": writing_mode},
+            "editorial": {"review_mode": "off"},
+        },
+    )
 
 
 def passing_draft_text() -> str:
     sentence = "林迟沿着山门石阶向上，旧钟声在雾里回荡，他记住师父留下的规矩，也看见山下灯火一步步逼近。"
-    return "# 第一章 山门\n\n" + sentence * 80 + "\n"
+    return "# 第一章 山门\n\n" + sentence * 80 + "\n\n然而，门外又响起了第二个人的脚步。\n"
 
 
 def write_repair_manifest(root):

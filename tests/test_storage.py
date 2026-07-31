@@ -102,6 +102,8 @@ def test_apply_transaction_writes_report_and_rolls_back_touched_paths(tmp_path):
     assert applied["status"] == "applied"
     assert applied["metadata"]["applied"] == 1
     assert applied["boundary"]["rollback_restores_touched_paths"] is True
+    assert "/objects/" in applied["snapshots"][0]["snapshot_path"].replace("\\", "/")
+    assert "30_state/story_graph.json" not in applied["snapshots"][0]["snapshot_path"].replace("\\", "/")
     before_rollback = existing.read_text(encoding="utf-8")
 
     try:

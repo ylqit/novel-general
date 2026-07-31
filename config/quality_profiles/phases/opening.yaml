@@ -1,0 +1,8 @@
+schema: quality_profile_v1
+kind: phase
+id: opening
+contract:
+  phase_focus: ["明确视角人物的当下困境", "展示核心卖点的一次可验证作用", "建立不可轻易解除的长期压力"]
+  opening_promise_window: {active: true, requirement: "承诺必须进入事件，不以旁白口号代替"}
+  exposition_density: {maximum: low_to_medium}
+  ending_distribution: [changed_problem, concrete_question, costly_choice, partial_payoff]

@@ -1,0 +1,824 @@
+"""Agent work order and strict validation for reader-payoff review."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+import hashlib
+import json
+
+from longform_engine.agent_tasks import build_manifest, mark_tasks_for_output, write_manifest
+from longform_engine.config import ConfigDocument
+from longform_engine.storage import atomic_write_text, resolve_project_root
+
+from .history import analyze_structure_pattern, build_structure_observation
+
+
+OPENING_MODES = {"action", "dialogue", "aftermath", "discovery", "reflection", "travel", "description", "other"}
+ENDING_MODES = {"decision", "reveal", "threat", "question", "closure", "reversal", "aftermath", "image", "other"}
+GAIN_POSITIONS = {"opening", "middle", "ending", "distributed", "implicit"}
+PROMISE_STATUSES = {"advanced", "fulfilled", "complicated", "unchanged"}
+VERDICTS = {"pass", "repair", "need_human"}
+FINAL_LANE = "fin" + "al"
+RAG_LANE = "60_" + "rag"
+RUNTIME_DB_LANE = "70_runtime/" + "db"
+
+
+@dataclass(frozen=True)
+class ReaderPayoffTaskResult:
+    chapter_number: int
+    task_file: str
+    context_file: str
+    manifest_file: str
+    output_file: str
+    reasons: tuple[str, ...]
+    next_command: str
+
+
+@dataclass(frozen=True)
+class ReaderPayoffValidateResult:
+    chapter_number: int
+    ok: bool
+    passed: bool
+    need_human: bool
+    file: str
+    report_file: str
+    errors: tuple[str, ...]
+    blocking_findings: tuple[str, ...]
+    warnings: tuple[str, ...]
+    next_command: str
+
+
+def payoff_review_required_reasons(config: ConfigDocument, *, chapter_number: int) -> tuple[str, ...]:
+    """Return deterministic reasons for requiring a semantic payoff review."""
+
+    root = resolve_project_root(config)
+    quality = config.data.get("quality", {}) if isinstance(config.data.get("quality"), dict) else {}
+    mode = str(quality.get("assurance_mode") or "balanced")
+    payoff_config = quality.get("reader_payoff") if isinstance(quality.get("reader_payoff"), dict) else {}
+    review_mode = str(payoff_config.get("review_mode") or "risk_based")
+    card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
+    if not isinstance(card, dict):
+        card = {}
+    reasons: list[str] = []
+    if mode == "strict" or review_mode == "always":
+        reasons.append("strict_assurance")
+    if mode == "balanced" and (
+        str(card.get("reader_gain") or card.get("reader_payoff") or "").strip()
+        or str(card.get("chapter_duty") or card.get("duty") or "").strip()
+    ):
+        reasons.append("planned_reader_contract")
+    if bool(card.get("requires_reader_payoff_review")):
+        reasons.append("chapter_card_payoff_risk")
+    if chapter_number in {
+        int(item)
+        for item in quality.get("semantic_review_milestones", [])
+        if isinstance(item, int) and not isinstance(item, bool)
+    }:
+        reasons.append("quality_milestone")
+    if bool(quality.get("semantic_review_boundaries")) and is_volume_boundary(config, chapter_number):
+        reasons.append("volume_boundary")
+    if card.get("promise_refs"):
+        reasons.append("promise_progress")
+    return tuple(dict.fromkeys(reasons))
+
+
+def reader_payoff_task(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    reasons: tuple[str, ...] | list[str] | None = None,
+) -> ReaderPayoffTaskResult:
+    """Create a bounded reader-payoff review task after the deterministic gate passes."""
+
+    if chapter_number <= 0:
+        raise ValueError("chapter_number must be positive.")
+    root = resolve_project_root(config)
+    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    gate_path = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
+    if not draft.exists():
+        raise ValueError(f"Draft not found for ch{chapter_number:03d}.")
+    if not card_path.exists():
+        raise ValueError(f"Chapter card not found for ch{chapter_number:03d}.")
+    gate = load_json(gate_path, default={})
+    if not gate_allows_finalize(gate):
+        raise ValueError(f"Reader payoff review requires a passing gate for ch{chapter_number:03d}.")
+
+    review_reasons = tuple(reasons or payoff_review_required_reasons(config, chapter_number=chapter_number))
+    task_dir = root / "50_workbench" / "quality_reviews"
+    task_file = task_dir / f"ch{chapter_number:03d}.reader_payoff.task.md"
+    manifest_file = task_dir / f"ch{chapter_number:03d}.reader_payoff.agent_task.json"
+    output_file = task_dir / f"ch{chapter_number:03d}.reader_payoff.json"
+    validation_file = task_dir / f"ch{chapter_number:03d}.reader_payoff.validation.json"
+    context_file = task_dir / f"ch{chapter_number:03d}.reader_payoff.context.json"
+    card = load_json(card_path, default={})
+    text = draft.read_text(encoding="utf-8")
+    write_json(
+        context_file,
+        build_payoff_context(config, root=root, chapter_number=chapter_number, card=card),
+    )
+    schema = payoff_output_template(root, chapter_number, draft, text, card)
+    validate_command = (
+        f"longform-engine quality payoff-validate project.yaml --chapter {chapter_number} "
+        f"--file {relative_path(root, output_file)}"
+    )
+    apply_command = (
+        f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
+    )
+    failure_command = (
+        f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only"
+    )
+    inputs = [task_file, draft, card_path, gate_path, context_file]
+    atomic_write_text(
+        task_file,
+        "\n".join(
+            [
+                f"# Reader Payoff Review ch{chapter_number:03d}",
+                "",
+                "## Role And Objective",
+                "",
+                "You are an independent Chinese web-novel reader-payoff reviewer, not the chapter author.",
+                "Judge what the reader actually receives on the page. Planned gain is not evidence of observed gain.",
+                f"- Trigger reasons: {', '.join(review_reasons) or 'manual review'}",
+                "",
+                "## Required Inputs",
+                "",
+                f"- Draft: `{relative_path(root, draft)}` (sha256 `{sha256_text(text)}`)",
+                f"- Chapter card: `{relative_path(root, card_path)}`",
+                f"- Gate result: `{relative_path(root, gate_path)}`",
+                f"- Compact payoff/promise context: `{relative_path(root, context_file)}`",
+                "",
+                "## Review Rules",
+                "",
+                "- Cite exact draft spans for duty, reader gain, cost, promise progress, and ending.",
+                "- Flag fake payoff: restated plans, unearned praise, cost-free victory, information without changed choice, or a generic hook.",
+                "- Describe observed opening, topology, scene type, dialogue acts, emotional curve, payoff position, and ending.",
+                "- Do not demand a battle, reversal, cliffhanger, short sentences, or any fixed chapter template.",
+                "",
+                "## Output And Boundaries",
+                "",
+                f"- Write JSON only: `{relative_path(root, output_file)}`",
+                f"- Validate: `{validate_command}`",
+                f"- Finalize after pass: `{apply_command}`",
+                f"- Failure: `{failure_command}`",
+                f"- Validation report is CLI-owned: `{relative_path(root, validation_file)}`",
+                "- Do not edit manuscript final, RAG, graph, TCS, Bible, outline, reward ledger, structure history, or SQLite.",
+                "",
+                "```json",
+                json.dumps(schema, ensure_ascii=False, indent=2),
+                "```",
+                "",
+            ]
+        ),
+    )
+    manifest = build_manifest(
+        root,
+        task_type="reader_payoff_review",
+        chapter_number=chapter_number,
+        input_files=inputs,
+        allowed_output_paths=[output_file],
+        output_schema="reader_payoff_review_v1",
+        validate_command=validate_command,
+        apply_command=apply_command,
+        failure_next_command=failure_command,
+        context_policy={
+            "required_files": inputs[:4],
+            "optional_files": inputs[4:],
+            "forbidden_paths": [
+                "40_manuscript/" + FINAL_LANE + "/",
+                "50_workbench/research_inbox/",
+                RAG_LANE + "/query_cache/",
+                RUNTIME_DB_LANE + "/",
+            ],
+            "max_files": 6,
+            "max_chars": 20_000,
+            "compiled_brief": task_file,
+            "selection_report": task_file,
+        },
+    )
+    write_manifest(root, manifest, manifest_file)
+    return ReaderPayoffTaskResult(
+        chapter_number=chapter_number,
+        task_file=str(task_file),
+        context_file=str(context_file),
+        manifest_file=str(manifest_file),
+        output_file=str(output_file),
+        reasons=review_reasons,
+        next_command=validate_command,
+    )
+
+
+def reader_payoff_validate(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    file_path: str | Path,
+) -> ReaderPayoffValidateResult:
+    """Strictly validate payoff evidence without writing canonical state."""
+
+    root = resolve_project_root(config)
+    task_dir = root / "50_workbench" / "quality_reviews"
+    target = resolve_input_file(root, file_path)
+    expected = (task_dir / f"ch{chapter_number:03d}.reader_payoff.json").resolve()
+    if target.resolve() != expected:
+        raise ValueError(
+            "Reader payoff result must be "
+            f"50_workbench/quality_reviews/ch{chapter_number:03d}.reader_payoff.json."
+        )
+    payload = load_json(target, default={})
+    review_file_hash = sha256_text(target.read_text(encoding="utf-8")) if target.exists() else ""
+    errors: list[str] = []
+    warnings: list[str] = []
+    blockers: list[str] = []
+    need_human = False
+    if not isinstance(payload, dict):
+        payload = {}
+        errors.append("reader payoff result must be a JSON object.")
+    require_exact_keys(
+        payload,
+        {
+            "schema",
+            "chapter_number",
+            "source_path",
+            "source_hash",
+            "planned",
+            "observed",
+            "evidence_spans",
+            "fake_payoff_flags",
+            "craft_observation",
+            "verdict",
+            "recommendations",
+        },
+        "top-level",
+        errors,
+    )
+    if payload.get("schema") != "reader_payoff_review_v1":
+        errors.append("schema must be reader_payoff_review_v1.")
+    if int(payload.get("chapter_number") or 0) != chapter_number:
+        errors.append("payload chapter_number does not match command chapter.")
+    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    text = draft.read_text(encoding="utf-8") if draft.exists() else ""
+    if not draft.exists():
+        errors.append("current chapter draft is missing.")
+    if str(payload.get("source_path") or "") != relative_path(root, draft):
+        errors.append("source_path does not match the current chapter draft.")
+    if str(payload.get("source_hash") or "") != sha256_text(text):
+        errors.append("source_hash does not match the current chapter draft.")
+    card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
+    if not isinstance(card, dict):
+        card = {}
+        errors.append("chapter card is missing or invalid.")
+    validate_planned(payload.get("planned"), card, errors)
+    evidence = validate_evidence_spans(payload.get("evidence_spans"), text, errors)
+    validate_observed(payload.get("observed"), card, evidence, errors, blockers)
+    validate_fake_payoff_flags(payload.get("fake_payoff_flags"), evidence, errors, blockers)
+    validate_craft_observation(payload.get("craft_observation"), errors)
+    recommendations = payload.get("recommendations")
+    if not isinstance(recommendations, list) or any(not isinstance(item, str) for item in recommendations):
+        errors.append("recommendations must be a list of strings.")
+    verdict = str(payload.get("verdict") or "").lower()
+    if verdict not in VERDICTS:
+        errors.append("verdict must be pass, repair, or need_human.")
+    if verdict == "need_human":
+        need_human = True
+    if verdict == "pass" and blockers:
+        errors.append("verdict=pass cannot override failed duty/gain/cost evidence or P0/P1 fake-payoff findings.")
+
+    structure_analysis: dict[str, Any] = {}
+    if not errors:
+        observation = build_structure_observation(
+            chapter_number=chapter_number,
+            text=text,
+            card=card,
+            review=payload,
+        )
+        quality = config.data.get("quality", {}) if isinstance(config.data.get("quality"), dict) else {}
+        payoff_config = quality.get("reader_payoff") if isinstance(quality.get("reader_payoff"), dict) else {}
+        structure_analysis = analyze_structure_pattern(
+            root,
+            observation,
+            window=int(payoff_config.get("structure_window") or 20),
+            language_similarity_threshold=float(
+                payoff_config.get("language_similarity_threshold") or 0.72
+            ),
+        )
+        for finding in structure_analysis.get("findings", []):
+            if not isinstance(finding, dict):
+                continue
+            severity = str(finding.get("severity") or "")
+            code = str(finding.get("code") or "")
+            if severity == "P1":
+                blockers.append(f"structure:{code}")
+            elif severity == "P2":
+                warnings.append(f"structure:{code}")
+        if verdict == "pass" and structure_analysis.get("blocking"):
+            errors.append("verdict=pass cannot override combined structure+language+payoff formula repetition.")
+    ok = not errors
+    passed = ok and verdict == "pass" and not blockers
+    if passed:
+        next_command = (
+            f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
+        )
+    elif need_human and ok:
+        next_command = (
+            f"longform-engine editorial need-human project.yaml --chapter {chapter_number} "
+            "--reason reader_payoff_uncertainty"
+        )
+    elif ok:
+        next_command = (
+            f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only"
+        )
+    else:
+        next_command = (
+            f"longform-engine quality payoff-task project.yaml --chapter {chapter_number}"
+        )
+    report_file = task_dir / f"ch{chapter_number:03d}.reader_payoff.validation.json"
+    write_json(
+        report_file,
+        {
+            "schema": "reader_payoff_validation_v1",
+            "chapter_number": chapter_number,
+            "file": relative_path(root, target),
+            "source_path": relative_path(root, draft),
+            "source_hash": sha256_text(text),
+            "review_hash": review_file_hash,
+            "ok": ok,
+            "passed": passed,
+            "need_human": need_human,
+            "errors": errors,
+            "blocking_findings": blockers,
+            "warnings": warnings,
+            "structure_analysis": structure_analysis,
+            "next_command": next_command,
+            "validated_at": utc_now(),
+        },
+    )
+    mark_tasks_for_output(
+        root,
+        chapter_number=chapter_number,
+        output_path=target,
+        to_status="validated" if passed else "invalid",
+        command="quality payoff-validate",
+        result=report_file,
+        from_statuses=("awaiting_agent", "submitted", "validated", "invalid"),
+    )
+    return ReaderPayoffValidateResult(
+        chapter_number=chapter_number,
+        ok=ok,
+        passed=passed,
+        need_human=need_human,
+        file=str(target),
+        report_file=str(report_file),
+        errors=tuple(errors),
+        blocking_findings=tuple(blockers),
+        warnings=tuple(warnings),
+        next_command=next_command,
+    )
+
+
+def reader_payoff_review_status(config: ConfigDocument, *, chapter_number: int) -> dict[str, Any]:
+    """Return whether the current draft has a required, current, passing payoff review."""
+
+    root = resolve_project_root(config)
+    reasons = payoff_review_required_reasons(config, chapter_number=chapter_number)
+    if not reasons:
+        return {"required": False, "passed": True, "reason": "not_required", "reasons": []}
+    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    output = root / "50_workbench" / "quality_reviews" / f"ch{chapter_number:03d}.reader_payoff.json"
+    report_file = root / "50_workbench" / "quality_reviews" / f"ch{chapter_number:03d}.reader_payoff.validation.json"
+    text = draft.read_text(encoding="utf-8") if draft.exists() else ""
+    report = load_json(report_file, default={})
+    review = load_json(output, default={})
+    passed = (
+        isinstance(report, dict)
+        and report.get("schema") == "reader_payoff_validation_v1"
+        and report.get("ok") is True
+        and report.get("passed") is True
+        and str(report.get("source_path") or "") == relative_path(root, draft)
+        and str(report.get("source_hash") or "") == sha256_text(text)
+        and isinstance(review, dict)
+        and review.get("schema") == "reader_payoff_review_v1"
+        and str(review.get("source_hash") or "") == sha256_text(text)
+        and output.exists()
+        and str(report.get("review_hash") or "") == sha256_text(output.read_text(encoding="utf-8"))
+    )
+    return {
+        "required": True,
+        "passed": passed,
+        "reason": "validated" if passed else "payoff_review_missing_failed_or_stale",
+        "reasons": list(reasons),
+        "review": review if passed else None,
+        "report": report if passed else None,
+        "output_file": relative_path(root, output),
+        "report_file": relative_path(root, report_file),
+    }
+
+
+def build_payoff_context(
+    config: ConfigDocument,
+    *,
+    root: Path,
+    chapter_number: int,
+    card: dict[str, Any],
+) -> dict[str, Any]:
+    """Compile bounded history and promise facts instead of exposing full ledgers."""
+
+    previous = next(
+        (
+            item
+            for item in reversed(read_jsonl(root / "30_state" / "reward_ledger.jsonl"))
+            if int(item.get("chapter_number") or 0) < chapter_number
+        ),
+        None,
+    )
+    promises = load_json(root / "20_outline" / "foreshadowing_ledger.json", default=[])
+    declared = {str(item) for item in card.get("promise_refs", []) if str(item)}
+    related: list[dict[str, Any]] = []
+    for item in promises if isinstance(promises, list) else []:
+        if not isinstance(item, dict):
+            continue
+        promise_id = str(item.get("id") or "")
+        window = item.get("payoff_window")
+        in_window = (
+            isinstance(window, list)
+            and len(window) == 2
+            and all(isinstance(value, int) and not isinstance(value, bool) for value in window)
+            and int(window[0]) <= chapter_number <= int(window[1])
+        )
+        if declared and promise_id not in declared:
+            continue
+        if not declared and not in_window:
+            continue
+        related.append(
+            {
+                "id": promise_id,
+                "description": bounded_text(item.get("description"), 500),
+                "status": bounded_text(item.get("status"), 80),
+                "plant_chapter": item.get("plant_chapter"),
+                "payoff_window": window if isinstance(window, list) else [],
+            }
+        )
+        if len(related) >= 8:
+            break
+    quality = config.data.get("quality", {}) if isinstance(config.data.get("quality"), dict) else {}
+    profile = quality.get("profile") if isinstance(quality.get("profile"), dict) else {}
+    return {
+        "schema": "reader_payoff_context_v1",
+        "chapter_number": chapter_number,
+        "previous_reward": compact_previous_reward(previous),
+        "related_promises": related,
+        "quality_contract": {
+            "market_profile": str(profile.get("market") or quality.get("market_profile") or ""),
+            "genre_profile": str(profile.get("genre") or quality.get("genre_profile") or ""),
+            "assurance_mode": str(quality.get("assurance_mode") or ""),
+        },
+        "selection": {
+            "previous_reward_limit": 1,
+            "related_promise_limit": 8,
+            "full_ledgers_excluded": True,
+        },
+    }
+
+
+def compact_previous_reward(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    return {
+        "chapter_number": int(value.get("chapter_number") or 0),
+        "planned_gain": bounded_text(value.get("planned_gain") or value.get("reader_gain"), 500),
+        "observed_gain": bounded_text(value.get("observed_gain"), 500),
+        "planned_cost": bounded_text(value.get("planned_cost") or value.get("cost"), 500),
+        "observed_cost": bounded_text(value.get("observed_cost"), 500),
+        "duty_fulfilled": value.get("duty_fulfilled"),
+        "topology_id": bounded_text(value.get("topology_id"), 120),
+        "ending_mode": bounded_text(value.get("ending_mode"), 80),
+    }
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    records: list[dict[str, Any]] = []
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid reward ledger JSON at line {line_number}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"Invalid reward ledger entry at line {line_number}: expected object.")
+        records.append(payload)
+    return records
+
+
+def bounded_text(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def payoff_output_template(
+    root: Path,
+    chapter_number: int,
+    draft: Path,
+    text: str,
+    card: dict[str, Any],
+) -> dict[str, Any]:
+    end = min(len(text), 24)
+    promises = [str(item) for item in card.get("promise_refs", []) if str(item)]
+    return {
+        "schema": "reader_payoff_review_v1",
+        "chapter_number": chapter_number,
+        "source_path": relative_path(root, draft),
+        "source_hash": sha256_text(text),
+        "planned": {
+            "chapter_duty": str(card.get("chapter_duty") or card.get("duty") or ""),
+            "reader_gain": str(card.get("reader_gain") or card.get("reader_payoff") or ""),
+            "cost": str(card.get("cost") or ""),
+            "promise_refs": promises,
+        },
+        "observed": {
+            "duty_fulfilled": True,
+            "reader_gain": "Describe the concrete change in reader knowledge, emotion, leverage, or expectation.",
+            "cost": "Describe the visible cost, obligation, loss, or narrowed choice.",
+            "promise_progress": [
+                {
+                    "promise_ref": promise,
+                    "status": "advanced",
+                    "evidence_span_indices": [0],
+                    "message": "Explain the evidence-backed progress.",
+                }
+                for promise in promises
+            ],
+            "ending_mode": "decision",
+        },
+        "evidence_spans": [
+            {
+                "start": 0,
+                "end": end,
+                "text": text[:end],
+                "supports": ["duty", "reader_gain", "cost", "ending"],
+            }
+        ],
+        "fake_payoff_flags": [],
+        "craft_observation": {
+            "opening_mode": "action",
+            "topology_id": str(card.get("topology_id") or "conflict_escalation"),
+            "ending_mode": "decision",
+            "scene_count": 1,
+            "dominant_scene_type": "investigation",
+            "reader_gain_position": "ending",
+            "dialogue_acts": ["probe"],
+            "emotional_curve": ["guarded", "pressured", "decisive"],
+        },
+        "verdict": "pass",
+        "recommendations": [],
+    }
+
+
+def validate_planned(value: Any, card: dict[str, Any], errors: list[str]) -> None:
+    expected_keys = {"chapter_duty", "reader_gain", "cost", "promise_refs"}
+    if not isinstance(value, dict):
+        errors.append("planned must be an object.")
+        return
+    require_exact_keys(value, expected_keys, "planned", errors)
+    expected = {
+        "chapter_duty": str(card.get("chapter_duty") or card.get("duty") or ""),
+        "reader_gain": str(card.get("reader_gain") or card.get("reader_payoff") or ""),
+        "cost": str(card.get("cost") or ""),
+        "promise_refs": [str(item) for item in card.get("promise_refs", []) if str(item)],
+    }
+    for key in ("chapter_duty", "reader_gain", "cost"):
+        if value.get(key) != expected[key]:
+            errors.append(f"planned.{key} must exactly match the current chapter card.")
+    if value.get("promise_refs") != expected["promise_refs"]:
+        errors.append("planned.promise_refs must exactly match the current chapter card.")
+
+
+def validate_evidence_spans(value: Any, text: str, errors: list[str]) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not value:
+        errors.append("evidence_spans must be a non-empty list.")
+        return []
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        label = f"evidence_spans[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{label} must be an object.")
+            continue
+        require_exact_keys(item, {"start", "end", "text", "supports"}, label, errors)
+        start = item.get("start")
+        end = item.get("end")
+        if (
+            not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or start < 0
+            or end <= start
+            or end > len(text)
+        ):
+            errors.append(f"{label} has an invalid start/end range.")
+        elif item.get("text") != text[start:end]:
+            errors.append(f"{label}.text does not match the current draft span.")
+        supports = item.get("supports")
+        if not isinstance(supports, list) or not supports or any(not isinstance(entry, str) or not entry for entry in supports):
+            errors.append(f"{label}.supports must be a non-empty list of strings.")
+        result.append(item)
+    return result
+
+
+def validate_observed(
+    value: Any,
+    card: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    errors: list[str],
+    blockers: list[str],
+) -> None:
+    expected_keys = {"duty_fulfilled", "reader_gain", "cost", "promise_progress", "ending_mode"}
+    if not isinstance(value, dict):
+        errors.append("observed must be an object.")
+        return
+    require_exact_keys(value, expected_keys, "observed", errors)
+    evidence_supports = {
+        support
+        for item in evidence
+        for support in item.get("supports", [])
+        if isinstance(support, str)
+    }
+    if not isinstance(value.get("duty_fulfilled"), bool):
+        errors.append("observed.duty_fulfilled must be boolean.")
+    elif value["duty_fulfilled"] is False:
+        blockers.append("duty_not_fulfilled")
+    elif "duty" not in evidence_supports:
+        errors.append("duty_fulfilled=true requires an evidence span supporting duty.")
+    for key in ("reader_gain", "cost"):
+        if not isinstance(value.get(key), str) or not value[key].strip():
+            errors.append(f"observed.{key} must be a non-empty string.")
+            blockers.append(f"missing_observed_{key}")
+        elif key not in evidence_supports:
+            errors.append(f"observed.{key} requires an evidence span supporting {key}.")
+    ending_mode = str(value.get("ending_mode") or "")
+    if ending_mode not in ENDING_MODES:
+        errors.append(f"observed.ending_mode must be one of: {', '.join(sorted(ENDING_MODES))}.")
+    elif "ending" not in evidence_supports:
+        errors.append("observed.ending_mode requires an evidence span supporting ending.")
+    progress = value.get("promise_progress")
+    if not isinstance(progress, list):
+        errors.append("observed.promise_progress must be a list.")
+        return
+    expected_promises = [str(item) for item in card.get("promise_refs", []) if str(item)]
+    seen: list[str] = []
+    for index, item in enumerate(progress):
+        label = f"observed.promise_progress[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{label} must be an object.")
+            continue
+        require_exact_keys(item, {"promise_ref", "status", "evidence_span_indices", "message"}, label, errors)
+        promise = str(item.get("promise_ref") or "")
+        seen.append(promise)
+        if promise not in expected_promises:
+            errors.append(f"{label}.promise_ref is not declared by the chapter card.")
+        if item.get("status") not in PROMISE_STATUSES:
+            errors.append(f"{label}.status must be one of: {', '.join(sorted(PROMISE_STATUSES))}.")
+        validate_span_indices(item.get("evidence_span_indices"), evidence, f"{label}.evidence_span_indices", errors)
+        if not isinstance(item.get("message"), str) or not item["message"].strip():
+            errors.append(f"{label}.message must be non-empty.")
+    if sorted(seen) != sorted(expected_promises):
+        errors.append("observed.promise_progress must contain every planned promise_ref exactly once.")
+
+
+def validate_fake_payoff_flags(
+    value: Any,
+    evidence: list[dict[str, Any]],
+    errors: list[str],
+    blockers: list[str],
+) -> None:
+    if not isinstance(value, list):
+        errors.append("fake_payoff_flags must be a list.")
+        return
+    for index, item in enumerate(value):
+        label = f"fake_payoff_flags[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{label} must be an object.")
+            continue
+        require_exact_keys(item, {"code", "severity", "message", "evidence_span_indices", "recommendation"}, label, errors)
+        severity = str(item.get("severity") or "").upper()
+        if severity not in {"P0", "P1", "P2"}:
+            errors.append(f"{label}.severity must be P0, P1, or P2.")
+        elif severity in {"P0", "P1"}:
+            blockers.append(f"fake_payoff:{severity}:{item.get('code') or index}")
+        for key in ("code", "message", "recommendation"):
+            if not isinstance(item.get(key), str) or not item[key].strip():
+                errors.append(f"{label}.{key} must be non-empty.")
+        validate_span_indices(item.get("evidence_span_indices"), evidence, f"{label}.evidence_span_indices", errors)
+
+
+def validate_craft_observation(value: Any, errors: list[str]) -> None:
+    expected = {
+        "opening_mode",
+        "topology_id",
+        "ending_mode",
+        "scene_count",
+        "dominant_scene_type",
+        "reader_gain_position",
+        "dialogue_acts",
+        "emotional_curve",
+    }
+    if not isinstance(value, dict):
+        errors.append("craft_observation must be an object.")
+        return
+    require_exact_keys(value, expected, "craft_observation", errors)
+    if value.get("opening_mode") not in OPENING_MODES:
+        errors.append(f"craft_observation.opening_mode must be one of: {', '.join(sorted(OPENING_MODES))}.")
+    if value.get("ending_mode") not in ENDING_MODES:
+        errors.append(f"craft_observation.ending_mode must be one of: {', '.join(sorted(ENDING_MODES))}.")
+    if value.get("reader_gain_position") not in GAIN_POSITIONS:
+        errors.append(
+            f"craft_observation.reader_gain_position must be one of: {', '.join(sorted(GAIN_POSITIONS))}."
+        )
+    if not isinstance(value.get("scene_count"), int) or isinstance(value.get("scene_count"), bool) or value["scene_count"] <= 0:
+        errors.append("craft_observation.scene_count must be a positive integer.")
+    for key in ("topology_id", "dominant_scene_type"):
+        if not isinstance(value.get(key), str) or not value[key].strip():
+            errors.append(f"craft_observation.{key} must be non-empty.")
+    for key in ("dialogue_acts", "emotional_curve"):
+        if not isinstance(value.get(key), list) or any(not isinstance(item, str) or not item.strip() for item in value[key]):
+            errors.append(f"craft_observation.{key} must be a list of non-empty strings.")
+
+
+def validate_span_indices(value: Any, evidence: list[dict[str, Any]], label: str, errors: list[str]) -> None:
+    if not isinstance(value, list) or not value:
+        errors.append(f"{label} must be a non-empty list.")
+        return
+    for item in value:
+        if not isinstance(item, int) or isinstance(item, bool) or item < 0 or item >= len(evidence):
+            errors.append(f"{label} contains an out-of-range evidence index.")
+
+
+def require_exact_keys(value: dict[str, Any], expected: set[str], label: str, errors: list[str]) -> None:
+    if set(value) != expected:
+        errors.append(f"{label} keys must be exactly {sorted(expected)}.")
+
+
+def gate_allows_finalize(payload: Any) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("passed") is True:
+        return True
+    waiver = payload.get("waiver")
+    return isinstance(waiver, dict) and bool(waiver.get("approved_by") or waiver.get("reason"))
+
+
+def is_volume_boundary(config: ConfigDocument, chapter_number: int) -> bool:
+    root = resolve_project_root(config)
+    volumes = load_json(root / "20_outline" / "volumes.json", default=[])
+    boundaries: set[int] = {1}
+    if isinstance(volumes, list):
+        for item in volumes:
+            if not isinstance(item, dict):
+                continue
+            for key in ("from_chapter", "to_chapter"):
+                number = item.get(key)
+                if isinstance(number, int) and not isinstance(number, bool) and number > 0:
+                    boundaries.add(number)
+    return chapter_number in boundaries
+
+
+def resolve_input_file(root: Path, value: str | Path) -> Path:
+    path = Path(value)
+    resolved = path.expanduser().resolve() if path.is_absolute() else (root / path).resolve()
+    if root.resolve() not in (resolved, *resolved.parents):
+        raise ValueError(f"Path escapes project root: {value}")
+    return resolved
+
+
+def load_json(path: Path, *, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return default
+
+
+def write_json(path: Path, payload: Any) -> None:
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
+def relative_path(root: Path, path: str | Path) -> str:
+    value = Path(path)
+    try:
+        return value.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return value.as_posix()
+
+
+def sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()

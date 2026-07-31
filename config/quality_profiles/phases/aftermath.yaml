@@ -1,0 +1,9 @@
+schema: quality_profile_v1
+kind: phase
+id: aftermath
+contract:
+  phase_focus: ["让人物消化后果", "重估关系和目标", "把卷末结果转化为新约束"]
+  scene_entry_friction: {preferred: "从后果的具体痕迹进入", allowed_slow_entry: true}
+  payoff_cadence: {emotion: "允许完整余波", relationship: "确认但不机械升级", information: "低到中"}
+  ending_distribution: [quiet_aftershock, changed_relationship, new_obligation, closed_scene]
+  slow_chapter_policy: {allowed: true, requires_state_change: true}

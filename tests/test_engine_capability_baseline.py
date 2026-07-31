@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from longform_engine.config import load_project_config
+from longform_engine.config import ConfigError, load_project_config
 from longform_engine.db import query_table, rebuild_database
 from longform_engine.editorial import editorial_batch_review, editorial_review, editorial_status
 from longform_engine.gates import gate_check
@@ -22,6 +22,7 @@ from longform_engine.rag import build_chunks, build_context, query
 from longform_engine.research import detect_knowledge_gaps, search_research
 from longform_engine.revision import rollback
 from longform_engine.storage import init_project
+from tests.project_fixtures import mark_project_ready
 
 
 def test_rag_metadata_context_and_source_safety(tmp_path):
@@ -107,6 +108,7 @@ def test_revise_outline_blocks_until_db_rebuild(tmp_path):
 
     rebuild_database(config)
     open_book(config)
+    mark_project_ready(root, config)
     ready = continue_write(config, chapter_number=1)
     assert ready.status == "task_ready"
 
@@ -142,6 +144,7 @@ def test_editorial_research_gap_and_batch_agent_mode(tmp_path):
     status = editorial_status(config)
     gaps = detect_knowledge_gaps(config, chapter_number=1, text="needs research: medieval gate tax")
     open_book(config)
+    mark_project_ready(root, config)
     batch = batch_write(config, chapters=2, stop_on_gate_failure=True)
 
     assert review.unresolved_items >= 1
@@ -149,13 +152,7 @@ def test_editorial_research_gap_and_batch_agent_mode(tmp_path):
     assert review_payload["agent_task_files"]
     assert all((root / path).exists() for path in review_payload["agent_task_files"])
     role_ids = {role["id"] for role in review_payload["editorial_team"]}
-    assert {
-        "planning_chief_editor",
-        "writing_agent",
-        "anti_ai_editor",
-        "serial_verifier",
-        "executive_editor",
-    }.issubset(role_ids)
+    assert role_ids == {"writing_agent", "anti_ai_editor", "executive_editor"}
     assert review_payload["severity_counts"]["P0"] == 1
     assert review_payload["review_round"] == 1
     assert "unresolved_P0" in review_payload["need_human_reasons"]
@@ -263,19 +260,13 @@ def test_anchor_anti_resolution_blocks_forbidden_reveal(tmp_path):
     assert set(expected["gate_failure_codes"]).issubset(codes)
 
 
-def test_api_provider_mode_is_explicitly_disabled(tmp_path):
-    config = seed_project(tmp_path, cli_overrides={"writing": {"mode": "api_provider"}})
-    root = tmp_path / "novel"
-    open_book(config)
-
+def test_api_provider_mode_is_rejected_during_config_validation(tmp_path):
     try:
-        continue_write(config, chapter_number=1)
-    except WorkflowError as exc:
+        seed_project(tmp_path, cli_overrides={"writing": {"mode": "api_provider"}})
+    except ConfigError as exc:
         assert "api_provider" in str(exc)
     else:
-        raise AssertionError("Expected api_provider to be disabled")
-
-    assert not (root / "40_manuscript" / "draft" / "ch001.md").exists()
+        raise AssertionError("Expected api_provider to be rejected by config validation")
 
 
 def test_research_static_provider_writes_inbox_only(tmp_path):
@@ -294,8 +285,10 @@ def test_research_static_provider_writes_inbox_only(tmp_path):
 
 def test_full_baseline_e2e_no_failed_pollution_and_rebuild(tmp_path):
     config = seed_project(tmp_path)
+    config.data.setdefault("editorial", {})["review_mode"] = "off"
     root = tmp_path / "novel"
     open_book(config)
+    mark_project_ready(root, config)
     continue_write(config, chapter_number=1)
     ch1 = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     ch1.write_text(passing_text("SAFECH1"), encoding="utf-8")

@@ -1,0 +1,15 @@
+schema: quality_profile_v1
+kind: market
+id: general_cn
+contract:
+  opening_promise_window: {chapters: 3, requirement: "以具体事件建立题材、人物和长线承诺。"}
+  chapter_duty_distribution: [conflict, investigation, relationship, reveal, payoff, aftermath, exploration]
+  payoff_cadence: {information: "稳定", ability: "按题材", status: "按因果", relationship: "按事件", emotion: "按场景"}
+  upgrade_cost: ["重要收益必须留下后果或新约束"]
+  scene_entry_friction: {preferred: "具体时空和行动", allowed_slow_entry: true}
+  exposition_density: {mode: adaptive, rule: "解释不替代戏剧行动"}
+  dialogue: {range: adaptive, functions: [推进, 关系, 冲突, 信息, 个性]}
+  relationship_change_cadence: "由事件证据支持"
+  foreshadow_release: {mode: layered, preserve_core_answer: true}
+  ending_distribution: [changed_problem, partial_payoff, closed_scene, reversal, aftermath]
+  slow_chapter_policy: {allowed: true, requires_state_change: true}

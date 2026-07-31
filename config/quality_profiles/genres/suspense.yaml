@@ -1,0 +1,9 @@
+schema: quality_profile_v1
+kind: genre
+id: suspense
+contract:
+  genre_focus: ["证据链可复核", "误判有依据", "真相揭示改变旧信息含义"]
+  payoff_cadence: {information: "每章至少改变一个可验证判断", emotion: "恐惧来自具体不确定性"}
+  foreshadow_release: {rule: "线索可见但解释延迟；禁止藏掉推理必需事实", preserve_core_answer: true}
+  ending_distribution: [new_evidence, changed_suspect, partial_answer, closed_case_step, aftermath]
+  exposition_density: {rule: "调查结论必须由场景证据支撑"}
