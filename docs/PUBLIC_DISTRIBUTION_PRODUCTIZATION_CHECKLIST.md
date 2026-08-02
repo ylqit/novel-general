@@ -4,7 +4,7 @@
 
 唯一公开发布源：`https://github.com/ylqit/novel-general`，仓库根目录即 engine 根目录，默认分支为 `master`。
 
-当前包版本为 `0.3.0`。当前协议 Codex 原创五章 smoke 已通过，本地进入 release candidate 验收；在 tag、GitHub Release 与全新远程安装验证完成前，不宣称 `v0.3.0` 已公开发布。
+当前包版本为 `0.3.0`。`v0.3.0` tag、GitHub Release、跨平台 CI 和全新远程 pipx 安装均已验证通过；当前协议 Codex 原创五章 smoke 也已通过。文学质量领先声明仍受 Claude Code、十章对照和独立盲评证据约束。
 
 ## 状态说明
 
@@ -18,11 +18,11 @@
 - [x] 根目录存在 MIT `LICENSE`。
 - [x] `pyproject.toml` 包含 README、许可证、真实仓库 URL、Issues URL 和 Python 版本元数据。
 - [x] README、Skill 和安装提示只使用 `https://github.com/ylqit/novel-general`，不存在 `<owner>` 等占位地址。
-- [x] `git ls-remote` 已确认公开仓库存在 `master`；当前没有公开 tag。
-- [x] 本地验收不擅自创建或推送 Git tag/GitHub Release。
+- [x] `git ls-remote` 已确认公开仓库存在 `master` 和公开 `v0.3.0` tag。
+- [x] `v0.3.0` tag 与 GitHub Release 只在用户明确确认和本地验收通过后创建。
 - [x] 本地 `master` 已以不覆盖工作树的方式接回 `origin/master` 基线，`origin` 固定为公开仓库，变更可按正常 diff 审查。
-- [~] 当前实现仍未 commit/push；必须先审查工作树并完成 master 提交，远程 CI 才能验证本轮实现。
-- [~] 得到明确发布确认后创建 `v0.3.0` tag 和 GitHub Release；当前尚未执行远程发布。
+- [x] `v0.3.0` 实现已审查、提交并推送到公开仓库 `master`。
+- [x] `v0.3.0` annotated tag 和 GitHub Release 已公开发布。
 
 ## 2. Wheel Resources
 
@@ -117,7 +117,8 @@
 - [x] `docs/QUALITY_BENCHMARK_RUNBOOK.md` 固化盲评、公平性、5 章 smoke、10 章 quality 与三方 baseline 流程。
 - [x] 指标包含连贯性、角色一致性、伏笔控制、节奏、读者收益和 AI 味。
 - [x] Codex 真实原创 5 章生产 smoke 已按当前 mandatory `book_ideation` 协议完成：五章 PASS/final、章节 1/3 语义审查、零 P0、零残留 canonical 污染，且 `benchmark acceptance_passed=true`。证据见 `docs/benchmarks/PHASE6_EXECUTION_STATUS.md`。
-- [~] Codex 从 tagged GitHub release 执行 pipx 安装、Skill discovery 后再生产的公开安装复现仍待发布版本验证。
+- [x] Codex 从 tagged GitHub release 执行 pipx 安装、Skill install/status 与 doctor 的公开安装复现已通过。
+- [~] Codex App 重启后的新任务 Skill discovery 与再次五章生产仍保留为宿主侧验收，不把安装 smoke 冒充生产重放。
 - [~] Claude Code 真实 5 章安装/生产 smoke 尚未运行；当前只完成工具链 smoke。
 - [~] 同一设定的 Codex 与 Claude Code 真实 10 章对比尚未运行。
 - [~] `novel-skill` baseline 本轮未运行；等待同一设定 10 章实验时一并记录。
@@ -142,20 +143,20 @@
 
 ## 11. CI And Release
 
-- [~] GitHub Actions 已配置 Windows/Ubuntu + Python 3.10/3.11/3.12；等待推送后首次远程运行。
-- [~] CI 已配置构建 wheel/sdist 并审计必需资源；等待首次远程运行。
-- [~] CI 已配置安装后 CLI、模板、Skill 和 doctor smoke；等待首次远程运行。
-- [~] CI 已配置 pytest、`validate_skills.py` 和 `release_surface_guards.py`；等待首次远程运行。
+- [x] GitHub Actions 的 Windows/Ubuntu + Python 3.10/3.11/3.12 矩阵已远程运行通过。
+- [x] CI 构建 wheel/sdist 并审计必需资源的远程运行已通过。
+- [x] CI 的安装后 CLI、模板、Skill 和 doctor smoke 已通过。
+- [x] CI 的 pytest、`validate_skills.py` 和 `release_surface_guards.py` 已通过。
 - [x] CI 与 Release workflow 不再硬编码 wheel 版本文件名，后续升级版本不会因旧文件名直接失败。
 - [x] CI 与 Release workflow 同时审计 wheel 和 sdist，不只验证 Python 模块是否可导入。
 - [x] `release check` 输出稳定的 `release_readiness_v1`，检查版本/tag、Git、origin、README、资源、Skill 与发布防线，但不执行发布动作。
 - [x] Release workflow 可从 `v*` tag 构建并附加 wheel/sdist。
-- [~] macOS 3.11 pipx wheel、Skill install/status/doctor/uninstall smoke 已加入 CI；等待首次远程运行与必要的人工宿主验收。
+- [x] macOS 3.11 pipx wheel、Skill install/status/doctor/uninstall smoke 已在 CI 通过。
 - [x] GitHub tag/release 推送只在本地验收通过并得到明确确认后执行。
 
 ## 12. Definition Of Done
 
-- [~] README 命令已通过本地 `v0.3.0` wheel/pipx RC 等价 smoke；真实 `v0.3.0` tag 尚未发布，因此远程复制安装仍待验收。
+- [x] README 的真实 `v0.3.0` tag pipx 命令已在全新隔离环境完成远程复制安装验收。
 - [x] 发布 readiness 现在能机器识别本地无 commit、dirty worktree、缺少 origin 和 tag/version 不一致等阻断条件。
 - [~] Skill 已安装到临时 Codex/Claude Code roots；真实宿主重启与 discovery 待人工验收。
 - [x] `longform-engine doctor --tool all` 给出明确、可执行的诊断结果。
@@ -163,25 +164,29 @@
 - [x] 每个 Agent 任务都有明确输入、允许输出、schema、validate、apply、failure command 和硬边界。
 - [x] 本地完整测试、wheel smoke、安装生命周期 smoke 和 no-pollution 验收通过。
 - [x] Codex 源码树已按当前协议完成 5 章 smoke，且第 6 章 next action 正确。
-- [~] Claude Code、同人、正式 10 章盲评与远程 Release 尚未完成，没有用代码测试替代。
+- [~] 远程 Release 已完成；Claude Code、同人和正式 10 章盲评仍未完成，也没有用代码测试替代文学证据。
 
 ## 本轮本地验收记录
 
-- `python -m pytest -q`：286 passed。
+- `python -m pytest -q`：314 passed。
 - `python scripts/sync_skill_references.py --check`：passed。
 - `python scripts/build_resource_manifest.py --check`：passed。
 - `python scripts/validate_skills.py`：passed。
 - `python scripts/release_surface_guards.py`：passed。
 - `python -m build`：从最终源码成功构建 `longform_novel_engine-0.3.0.tar.gz` 与 wheel。
-- `python scripts/audit_wheel.py`：96 entries，必需配置、模板、Skills、references 与资源 manifest 齐全。
-- `python scripts/audit_sdist.py`：175 entries，文档、workflow、Skills、源码与测试齐全。
+- `python scripts/audit_wheel.py`：100 entries，必需配置、模板、Skills、references 与资源 manifest 齐全。
+- `python scripts/audit_sdist.py`：189 entries，文档、workflow、Skills、源码与测试齐全。
 - 全新隔离 pipx `[semantic]` 安装：`--version=0.3.0`、模板校验、Skill install/status/update/uninstall、`doctor_v1` 和首个 `book_ideation` 工作单通过。
 - 安装态模型验证：`bge-m3` embedding/reranker 均可加载，`fallback_active=false`；项目 doctor 为 green。
 - `codex-longform-phase6-smoke-5-current-v1`：5 个 final、5 个 PASS gate、1 次候选返修、1/3 章强制语义审查、平均上下文 7 个文件 / 12,608 字符、P0 为 0、残留 canonical 污染为 0。
 - 每章技术记录包含 work order、manifest、reviewed draft 与 gate SHA-256；五章 final 来源 Merkle root 已落盘。
 - 用户 Codex Skill 已更新为 `0.3.0`；宿主 App 重启后的 discovery 仍需人工确认。
-- `longform-engine release check --repository . --check-remote --json`：16 pass、1 warning、1 failure；failure 是工作树尚未 commit，warning 是尚未提供 `v0.3.0` tag。
-- 未执行 Git commit/tag/push、GitHub Release、Claude Code 5/10 章生产、同人 smoke、10 章对照、独立盲评或 macOS 真实宿主 smoke。
+- `longform-engine release check --repository . --tag v0.3.0 --check-remote --json`：发布前 17 pass、0 warning、0 failure。
+- GitHub Actions 主分支矩阵 8 个 job 全部通过；Release workflow 恢复运行成功并发布 wheel/sdist。
+- GitHub Release：`https://github.com/ylqit/novel-general/releases/tag/v0.3.0`。
+- Release 资产：wheel SHA-256 `e71266e0ef0d9411109ee0b157faefd128f0e119b4ee7ba77893445eb40de7df`；sdist SHA-256 `3b2635a49c1027bf16a636f7c9f972e0e19d72cfeb0da5cea4b1fcdf2d0d62ff`。
+- 真实 Git tag pipx `[semantic]` 安装、Codex/Claude Code Skill 生命周期和 doctor 已在隔离目录复现通过。
+- 尚未执行 Claude Code 5/10 章生产、同人 smoke、10 章对照或独立盲评；macOS 已完成 CI 主机 smoke，尚无 Claude Code 图形宿主人工验收。
 
 ## 推荐验证命令
 
