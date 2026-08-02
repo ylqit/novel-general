@@ -24,9 +24,13 @@ def configure_skill_roots(monkeypatch, tmp_path: Path):
 
 def test_version_and_bundled_resource_manifest_are_aligned():
     manifest = load_resource_manifest()
+    asset_paths = [item["path"] for item in manifest["assets"]]
 
     assert __version__ == "0.3.0"
     assert manifest["engine_version"] == __version__
+    for prefix in ("config/", "templates/", "longform-novel-codex/", "longform-novel-claude/", "shared/"):
+        group = [path for path in asset_paths if path.startswith(prefix)]
+        assert group == sorted(group, key=str.casefold)
     assert resource_path("config", "default.engine.yaml").is_file()
     assert resource_path("templates", "qidian-longform", "project.yaml").is_file()
     assert resource_path("longform-novel-codex", "references", "command_protocol.md").is_file()

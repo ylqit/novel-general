@@ -25,7 +25,8 @@ RESOURCE_DIRS = (
 def build_payload() -> dict[str, object]:
     assets: list[dict[str, object]] = []
     for directory in RESOURCE_DIRS:
-        for path in sorted(candidate for candidate in directory.rglob("*") if candidate.is_file()):
+        candidates = (candidate for candidate in directory.rglob("*") if candidate.is_file())
+        for path in sorted(candidates, key=lambda item: item.relative_to(ROOT).as_posix().casefold()):
             if "__pycache__" in path.parts or path.suffix == ".pyc":
                 continue
             data = path.read_bytes()
