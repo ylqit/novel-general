@@ -53,17 +53,18 @@ jobs:
 
   macos-pipx-smoke:
     runs-on: macos-latest
-    env:
-      PIPX_HOME: ${{ runner.temp }}/pipx-home
-      PIPX_BIN_DIR: ${{ runner.temp }}/pipx-bin
-      LONGFORM_CODEX_SKILL_ROOT: ${{ runner.temp }}/codex-skills
-      LONGFORM_CLAUDE_SKILL_ROOT: ${{ runner.temp }}/claude-skills
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
+      - name: Configure isolated runtime paths
+        run: |
+          echo "PIPX_HOME=$RUNNER_TEMP/pipx-home" >> "$GITHUB_ENV"
+          echo "PIPX_BIN_DIR=$RUNNER_TEMP/pipx-bin" >> "$GITHUB_ENV"
+          echo "LONGFORM_CODEX_SKILL_ROOT=$RUNNER_TEMP/codex-skills" >> "$GITHUB_ENV"
+          echo "LONGFORM_CLAUDE_SKILL_ROOT=$RUNNER_TEMP/claude-skills" >> "$GITHUB_ENV"
       - run: python -m pip install --upgrade pip build pipx
       - run: python -m build --wheel
       - run: python scripts/audit_wheel.py
