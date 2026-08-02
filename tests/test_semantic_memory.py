@@ -41,7 +41,7 @@ from longform_engine.vectorstore import (
     rebuild_from_files as vector_rebuild,
     upsert as vector_upsert,
 )
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import complete_unified_semantic_lifecycle, mark_project_ready
 
 
 def test_models_verify_reports_download_required_when_real_model_missing(tmp_path):
@@ -248,7 +248,7 @@ def test_semantic_memory_task_validate_apply_rag_and_db_rebuild(tmp_path):
     assert context.hit_count >= 1
     memory_reports = transaction_payloads(root, "memory semantic-apply")
     assert memory_reports
-    assert "60_rag/memory/chapters/ch001.json" in memory_reports[-1]["touched_paths"]
+    assert "60_rag/memory" in memory_reports[-1]["touched_paths"]
     context_text = (root / "60_rag" / "context" / "next_plot_context.md").read_text(encoding="utf-8")
     assert "Temporal Context State" in context_text
     assert "Semantic score" in context_text
@@ -273,6 +273,7 @@ def test_continue_write_includes_tcs_and_semantic_gate_writes_report(tmp_path):
     root = tmp_path / "novel"
     tcs = build_tcs(config, chapter_number=2)
     mark_project_ready(root, config, preserve_existing_characters=True)
+    complete_unified_semantic_lifecycle(root, config, 1)
     cont = continue_write(config, chapter_number=2)
 
     draft = root / "40_manuscript" / "draft" / "ch002.md"
@@ -546,7 +547,7 @@ def test_character_memory_task_validate_apply_check_and_db_rebuild(tmp_path):
     assert query_table(config, "character_memories", limit=10)
     character_reports = transaction_payloads(root, "memory character-apply")
     assert character_reports
-    assert "60_rag/memory/characters/character_shen_lan.json" in character_reports[-1]["touched_paths"]
+    assert "60_rag/memory/characters" in character_reports[-1]["touched_paths"]
 
 
 def test_graph_traversal_and_rag_fusion_return_temporal_graph_facts(tmp_path):

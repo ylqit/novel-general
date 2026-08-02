@@ -2,7 +2,11 @@
 
 本文档是“功能、效率与生成质量全面超越 `novel-skill`”的可执行验收标准。状态含义：`[x]` 已有代码和自动测试证据，`[~]` 已具备工具但仍需真实运行证据，`[ ]` 尚未完成。工程能力完成不等于文学质量已经领先。
 
+起点优先的平台合同与番茄非阻断兼容视图见 [`PLATFORM_WRITING_ADAPTATION_CHECKLIST.md`](PLATFORM_WRITING_ADAPTATION_CHECKLIST.md)。平台适配接口通过测试不能替代真实题材盲评，也不能作为平台推荐效果证明。
+
 中文网文、Humanizer v3 与同人创作的细分验收见 [`CHINESE_WEBNOVEL_AND_FANFICTION_QUALITY_CHECKLIST.md`](CHINESE_WEBNOVEL_AND_FANFICTION_QUALITY_CHECKLIST.md)。其中真实 5/10 章证据未完成前，同样不能升级公开文学质量声明。
+
+人物声音、身体在场、场景欲望和对白可交换性的专项准入见 [`CHARACTER_EXPRESSION_AND_SCENE_NARRATIVE_CHECKLIST.md`](CHARACTER_EXPRESSION_AND_SCENE_NARRATIVE_CHECKLIST.md)；现有 15 章 audit 与独立盲评完成前，不得据此宣称人物质量已经超过 `novel-skill`。
 
 Humanizer v4、正文事实差分、读者收益验真、平台质量合同、创意交互、编辑独立性、feedback 生命周期和 RAG 规模优化的实施架构见 [`CHINESE_WEBNOVEL_QUALITY_OPTIMIZATION_ARCHITECTURE.md`](CHINESE_WEBNOVEL_QUALITY_OPTIMIZATION_ARCHITECTURE.md)。该架构是后续实施依据，不等于相关项目已经完成。
 
@@ -37,6 +41,7 @@ Humanizer v4、正文事实差分、读者收益验真、平台质量合同、�
 - [x] selection report 记录选择理由、截断、按需输入和被排除的重复内容。
 - [x] Agent 工作单明确禁止主动扫描全项目及读取未声明 draft/research inbox。
 - [x] 当前 `book_ideation` 协议下 Codex 连续 5 章已确认平均上下文为 `7 files / 12,608 chars`，最大工作单为 `14,437 chars`，均低于硬预算。
+- [x] 同一当前协议项目已继续完成第 6-15 章；15 章平均上下文为 `7 files / 14,405.667 chars`，最大工作单为 `16,087 chars`，仍低于硬预算。
 - [~] Claude Code 与跨宿主主观理解负担仍待验证。
 
 ## 4. Semantic RAG At Scale
@@ -78,7 +83,8 @@ Humanizer v4、正文事实差分、读者收益验真、平台质量合同、�
 - [x] 遇到 Agent output、human apply、graph/memory apply 或 finalize 时立即暂停。
 - [x] 批量准备不会自动确认开书、改纲、研究 canon 或章节定稿。
 - [x] action 输出包含 task type、input files、context policy、allowed outputs、schema、validate/apply/failure command。
-- [~] 当前协议 Codex 原创 5 章已记录工程指标、逐章 work order/manifest/reviewed draft/gate SHA-256 与 final 来源 Merkle root；尚缺 `novel-skill` 同条件效率对比。证据见 `docs/benchmarks/PHASE6_EXECUTION_STATUS.md`。
+- [x] 当前协议 Codex 原创已由 5 章继续扩展到 15 章，逐章记录 work order/manifest/reviewed draft/gate SHA-256、显式 final 和 post-final apply；15 章报告 `complete=true`、`acceptance_passed=true`。
+- [~] 15 章受控生产尚缺 `novel-skill` 同条件效率对比，不能由单边运行推导相对优势。证据见 `docs/benchmarks/PHASE6_EXECUTION_STATUS.md`。
 
 ## 6A. Platform Quality Contract And Creative Choice
 
@@ -120,6 +126,8 @@ Humanizer v4、正文事实差分、读者收益验真、平台质量合同、�
 ## 8. Real Literary Evidence
 
 - [x] Codex + longform 已按当前 mandatory `book_ideation` 协议完成《照骨司夜录》5 章 smoke：五章显式 final、零 P0、零残留 canonical 污染、`acceptance_passed=true`，且 `production next` 正确指向第 6 章。
+- [x] 同一 Codex + longform 项目已新增第 6-15 章并完成 15 章受控生产：15 个显式 final、零 P0、零 canonical 污染、零最终 `need-human`，15 章 benchmark 验收通过，`production next` 正确指向第 16 章。
+- [~] 该 15 章运行是 Codex 同宿主自审的生产链证据，文学分数保持为空；尚不能替代匿名盲评或 `novel-skill` 对照。
 - [~] Claude Code + longform 完成同一设定 5 章 smoke。
 - [~] Codex + longform 与 Codex + novel-skill 完成同模型 10 章盲评。
 - [~] Claude Code + longform 与 Claude + novel-skill 完成同模型 10 章盲评。
@@ -158,5 +166,7 @@ Humanizer v4、正文事实差分、读者收益验真、平台质量合同、�
 - [~] 同人 5/10 章真实盲评与连续生产成本证据仍待执行。
 
 ## Definition Of Superiority
+
+章节关系、伏笔、角色记忆和产物精简的后续验收见 [`SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION_CHECKLIST.md`](SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION_CHECKLIST.md)。现有十五章未完成真实 Agent backfill 前，不得把统一语义协议的单元测试等同于既有运行数据迁移完成。
 
 只有第 1-7、9-10 节全部完成，并且第 8 节真实证据全部通过，才可称为“功能、效率与生成质量全面超越 `novel-skill`”。在此之前，准确表述是：longform 的任务隔离、显式状态变更、上下文契约和可复现质量门槛已经更强，文学效果仍在验证。

@@ -29,6 +29,8 @@ from longform_engine.intelligence import (
 from longform_engine.memory import character_validate, semantic_validate
 from longform_engine.orchestration import continue_write, open_book, submit_agent_draft
 from longform_engine.quality import reader_payoff_review_status, reader_payoff_task, reader_payoff_validate
+from longform_engine.semantic import semantic_task as chapter_semantic_task
+from longform_engine.semantic import semantic_validate as chapter_semantic_validate
 from longform_engine.storage import resolve_project_root
 
 
@@ -112,6 +114,7 @@ TASK_WORK_SCOPES = {
     "graph_extract": "Extract semantic graph updates as JSON only.",
     "memory_extract": "Extract semantic memory updates as JSON only.",
     "character_memory": "Extract character memory cards as JSON only.",
+    "chapter_semantic": "Extract one evidence-bound chapter semantic bundle for every canonical fact lane.",
     "editorial_review": "Write one structured editorial role review only.",
     "pacing_review": "Write one semantic pacing review JSON only.",
     "semantic_review": "Review high-risk chapter semantics with exact prose spans and canonical references.",
@@ -122,6 +125,12 @@ TASK_ROLE_BRIEFS = {
     "fanfiction_canon": "Canon archivist. Preserve source names, relationships, rules, voices, and timeline as cited paraphrased facts.",
     "fanfiction_design": "Fanfiction architect. Design continuity, divergence causality, voice contracts, original contribution, and crossover rules.",
     "book_design": "Book architect. Propose the reader contract, world, power system, characters, and relationships.",
+    "character_expression_design": (
+        "Character-performance architect. Define reusable perception, decision, speech, embodiment, mask, and contrast contracts."
+    ),
+    "character_expression_review": (
+        "Independent character-performance reviewer. Audit voice fit, swapability, embodied presence, and expository dialogue with exact spans."
+    ),
     "outline_design": "Longform outline architect. Build a coherent book, volume, chapter, and foreshadowing plan.",
     "chapter_direction": "Chapter story editor. Offer distinct causal directions without writing prose or changing the chapter card.",
     "outline_revision": "Continuity-aware outline editor. Revise the declared range and enumerate stale downstream artifacts.",
@@ -143,6 +152,10 @@ TASK_ROLE_BRIEFS = {
     "graph_extract": "Semantic graph extractor. Return evidence-backed graph update JSON only.",
     "memory_extract": "Semantic memory extractor. Return scene/chapter memory JSON only.",
     "character_memory": "Character memory curator. Return character state cards with evidence only.",
+    "chapter_semantic": (
+        "Chapter semantic archivist. Read the final chapter once and return exact-span facts for digest, scenes, "
+        "relationships, character state, foreshadowing, world state, timeline, and retrieval routing."
+    ),
     "editorial_review": "Editorial role reviewer. Return one role-specific structured review JSON only.",
     "pacing_review": "Semantic pacing reader. Judge reader pressure, escalation, tail hook, and reverse-brake risk.",
     "semantic_review": "Semantic continuity reviewer. Cite exact chapter spans and declared canonical state for every finding.",
@@ -152,7 +165,13 @@ TASK_OUTPUT_GUIDANCE = {
     "book_ideation": "Write JSON matching book_ideation_candidate_v1 with one explicit human selection.",
     "fanfiction_canon": "Write JSON matching fanfiction_source_canon_v1 with source hashes and evidence spans.",
     "fanfiction_design": "Write JSON matching fanfiction_design_candidate_v1, including a nested book_design_candidate_v1.",
-    "book_design": "Write JSON matching book_design_candidate_v1 at the declared intelligence candidate path.",
+    "book_design": "Write JSON matching book_design_candidate_v2 at the declared intelligence candidate path.",
+    "character_expression_design": (
+        "Write JSON matching character_expression_profile_v1 with one complete contract per declared character."
+    ),
+    "character_expression_review": (
+        "Write JSON matching character_expression_review_v1 with hash-bound evidence for every reviewed chapter and character."
+    ),
     "outline_design": "Write JSON matching outline_design_candidate_v1 at the declared intelligence candidate path.",
     "chapter_direction": "Write JSON matching chapter_direction_candidate_v1 with two or three directions and one human selection.",
     "outline_revision": "Write JSON matching outline_revision_candidate_v1, including impact and stale markers.",
@@ -165,6 +184,10 @@ TASK_OUTPUT_GUIDANCE = {
     "humanize_semantic_review": (
         "Write JSON matching humanizer_semantic_review_v1 with all seven preservation dimensions, "
         "chapter contract, voice checks, and exact source/candidate spans."
+    ),
+    "chapter_semantic": (
+        "Write chapter_semantic_bundle_v1 JSON only. Every scene and delta must contain exact start/end/excerpt "
+        "evidence, stable entity IDs, and complete changed-or-unchanged coverage."
     ),
     "reader_payoff_review": (
         "Write JSON matching reader_payoff_review_v1 with observed gain/cost, promise progress, "
@@ -222,6 +245,7 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
         or chapter_direction_action(config, root)
         or reader_payoff_action(config, root)
         or editorial_review_action(config, root)
+        or chapter_semantic_lifecycle_action(root)
         or first_active_agent_task(root)
         or first_gate_action(root)
         or first_draft_without_gate_action(root)
@@ -471,6 +495,12 @@ def loop_decision(root: Path, action: dict[str, Any], *, no_apply: bool) -> dict
             "action": "continue_write",
             "command": action.get("next_command"),
         }
+    if status == "ready_for_chapter_semantic_task":
+        return {
+            "kind": "execute",
+            "action": "chapter_semantic_task",
+            "command": action.get("next_command"),
+        }
     if status == "ready_for_reader_payoff_task":
         return {
             "kind": "execute",
@@ -528,6 +558,8 @@ def loop_decision(root: Path, action: dict[str, Any], *, no_apply: bool) -> dict
         return {"kind": "pause", "reason": "gate_failed"}
     if status == "awaiting_finalize":
         return {"kind": "pause", "reason": "human_finalize_required"}
+    if status == "awaiting_chapter_close":
+        return {"kind": "pause", "reason": "human_chapter_close_required"}
     if status == "need_human":
         return {"kind": "pause", "reason": "need_human"}
     return {"kind": "pause", "reason": f"unsupported_status:{status or 'unknown'}"}
@@ -543,6 +575,7 @@ LOOP_OUTPUT_VALIDATORS = {
     "graph_extract": "graph_semantic_validate",
     "memory_extract": "memory_semantic_validate",
     "character_memory": "character_memory_validate",
+    "chapter_semantic": "chapter_semantic_validate",
     "editorial_review": "editorial_submit_review",
     "pacing_review": "pacing_semantic_validate",
     "semantic_review": "gate_semantic_validate",
@@ -581,6 +614,8 @@ def execute_loop_decision(
         )
     if command == "continue_write":
         return serialize_loop_result(root, continue_write(config, chapter_number=chapter_number))
+    if command == "chapter_semantic_task":
+        return serialize_loop_result(root, chapter_semantic_task(config, chapter_number=chapter_number))
     if command == "reader_payoff_task":
         return serialize_loop_result(
             root,
@@ -635,6 +670,15 @@ def execute_loop_decision(
         return serialize_loop_result(root, semantic_validate(config, chapter_number=chapter_number, file_path=require_loop_output_path(output_path)))
     if command == "character_memory_validate":
         return serialize_loop_result(root, character_validate(config, chapter_number=chapter_number, file_path=require_loop_output_path(output_path)))
+    if command == "chapter_semantic_validate":
+        return serialize_loop_result(
+            root,
+            chapter_semantic_validate(
+                config,
+                chapter_number=chapter_number,
+                file_path=require_loop_output_path(output_path),
+            ),
+        )
     if command == "editorial_submit_review":
         source = require_loop_output_path(output_path)
         role = role_from_editorial_output(source)
@@ -1352,6 +1396,8 @@ def project_intelligence_task_command(task_type: str) -> str:
         return "longform-engine fanfiction canon-task project.yaml --input 50_workbench/fanfiction_sources/<source-file>"
     if task_type == "fanfiction_design":
         return "longform-engine fanfiction design-task project.yaml"
+    if task_type == "character_expression_design":
+        return "longform-engine character design-task project.yaml"
     return f"longform-engine intelligence task project.yaml --task-type {task_type}"
 
 
@@ -1457,6 +1503,12 @@ def first_active_agent_task(root: Path) -> dict[str, Any] | None:
     if not tasks:
         return None
     task = sorted(tasks, key=task_sort_key)[0]
+    return agent_task_action(root, task)
+
+
+def agent_task_action(root: Path, task: dict[str, Any]) -> dict[str, Any]:
+    """Render one indexed active task as a production action."""
+
     manifest = load_manifest(root, str(task.get("task_id") or task.get("manifest_file") or ""))
     status = str(task.get("status") or manifest.get("status") or "awaiting_agent")
     task_type = str(task.get("task_type") or manifest.get("task_type") or "agent_task")
@@ -1505,6 +1557,58 @@ def first_active_agent_task(root: Path) -> dict[str, Any] | None:
     if task_type == "editorial_review":
         action.update(editorial_next_work_order(root, task, manifest, chapter_number, status))
     return action
+
+
+def chapter_semantic_lifecycle_action(root: Path) -> dict[str, Any] | None:
+    """Require one semantic bundle and explicit close for every finalized chapter."""
+
+    final_dir = root / "40_manuscript" / FINAL_LANE
+    for final_file in sorted(final_dir.glob("ch*.md")):
+        chapter_number = chapter_from_name(final_file.name)
+        if chapter_number <= 0:
+            continue
+        ledger_file = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
+        closure_file = root / "30_state" / "chapter_closures" / f"ch{chapter_number:03d}.json"
+        if not ledger_file.exists():
+            active = [
+                task
+                for task in list_manifests(root, chapter_number=chapter_number)
+                if task.get("task_type") == "chapter_semantic"
+                and str(task.get("status") or "") in {"awaiting_agent", "submitted", "validated", "invalid"}
+            ]
+            if active:
+                return agent_task_action(root, sorted(active, key=task_sort_key)[0])
+            command = f"longform-engine chapter semantic-task project.yaml --chapter {chapter_number}"
+            return base_action(
+                status="ready_for_chapter_semantic_task",
+                chapter_number=chapter_number,
+                blocked_by="semantic_ledger_missing",
+                waiting_for="cli",
+                task_type="chapter_semantic",
+                output_schema="chapter_semantic_bundle_v1",
+                next_command=command,
+                failure_next_command=command,
+                human_summary=(
+                    f"ch{chapter_number:03d} is finalized but needs one unified evidence-bound semantic extraction."
+                ),
+                sources=[relative_path(root, final_file)],
+            )
+        if not closure_file.exists():
+            command = f"longform-engine chapter close project.yaml --chapter {chapter_number} --approved-by human"
+            return base_action(
+                status="awaiting_chapter_close",
+                chapter_number=chapter_number,
+                blocked_by="chapter_not_closed",
+                waiting_for="human_close",
+                task_type="chapter_semantic",
+                apply_command=command,
+                next_command=command,
+                human_summary=(
+                    f"ch{chapter_number:03d} semantic state is materialized and waits for explicit chapter close."
+                ),
+                sources=[relative_path(root, ledger_file)],
+            )
+    return None
 
 
 def reader_payoff_action(config: ConfigDocument, root: Path) -> dict[str, Any] | None:

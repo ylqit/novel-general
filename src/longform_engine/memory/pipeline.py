@@ -10,6 +10,7 @@ import json
 import re
 
 from longform_engine.agent_tasks import build_manifest, mark_tasks_for_output, write_manifest
+from longform_engine.character_expression import character_expression_diagnostics
 from longform_engine.config import ConfigDocument
 from longform_engine.db import sync_database
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
@@ -1964,6 +1965,7 @@ def style_fingerprint(text: str) -> dict[str, Any]:
     sentence_lengths = [len(re.sub(r"\s+", "", item)) for item in sentences]
     paragraph_lengths = [len(re.sub(r"\s+", "", item)) for item in paragraphs]
     dialogue_marks = compact.count('"') + compact.count("'") + compact.count("“") + compact.count("”") + compact.count("「") + compact.count("」")
+    expression = character_expression_diagnostics(compact)
     punctuation = sum(compact.count(mark) for mark in "，。！？；：,.!?;:")
     action_terms = ("走", "冲", "看", "打", "退", "握", "attack", "move", "turn", "run")
     interior_terms = ("想", "觉得", "意识到", "心", "fear", "realize", "remember", "wonder")
@@ -1975,7 +1977,9 @@ def style_fingerprint(text: str) -> dict[str, Any]:
         "paragraph_length_distribution": distribution(paragraph_lengths),
         "avg_sentence_chars": average(sentence_lengths),
         "avg_paragraph_chars": average(paragraph_lengths),
-        "dialogue_ratio": round(dialogue_marks / max(1, len(compact)), 6),
+        "dialogue_ratio": expression["dialogue_char_ratio"],
+        "dialogue_char_ratio": expression["dialogue_char_ratio"],
+        "dialogue_mark_density": round(dialogue_marks / max(1, len(compact)), 6),
         "punctuation_density": round(punctuation / max(1, len(compact)), 6),
         "repeated_phrases": repeated_phrases(compact),
         "perspective_stability": perspective_stability(compact),

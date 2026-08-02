@@ -2,7 +2,7 @@ import json
 
 from longform_engine.config import load_project_config
 from longform_engine.gates import GateError, gate_check, pacing_review, record_waiver, repair_plan
-from longform_engine.gates.pipeline import complete_core_reveal_detected
+from longform_engine.gates.pipeline import complete_core_reveal_detected, has_tail_suspense
 from longform_engine.orchestration import continue_write, open_book, plan_chapter
 from longform_engine.planning import infer_event_types_from_text
 from longform_engine.storage import init_project
@@ -27,6 +27,10 @@ def test_gate_check_writes_failed_schema_for_meta_pollution(tmp_path):
     assert payload["failures"][0]["code"] == "meta_pollution"
     assert "repair_chapter" in payload["allowed_actions"]
     assert (root / "50_workbench" / "gate_artifacts" / "ch001" / "repair_plan.md").exists()
+
+
+def test_tail_suspense_recognizes_chinese_deadline_pressure():
+    assert has_tail_suspense("午时封库，距离共同签验只剩两个时辰。") is True
 
 
 def test_gate_check_passes_reasonable_draft(tmp_path):

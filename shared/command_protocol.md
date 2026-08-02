@@ -29,7 +29,13 @@
 | `/工程推进` | `longform-engine production loop project.yaml --no-apply` | `project.yaml` | 确定性流程产物；不自动 apply/finalize | 推进确定性步骤，遇到 Agent 输出、人工确认或 canonical apply/finalize 时暂停。 |
 | `/工程创意工单` | `longform-engine intelligence task project.yaml --task-type book_ideation` | `project.yaml` | workbench 候选 | 每轮只处理一个创意维度，Agent 给 2-3 个带取舍的选项；必须记录用户明确选择。 |
 | `/工程章节方向` | `longform-engine intelligence task project.yaml --task-type chapter_direction --chapter N` | `--chapter N` | workbench 候选 | 仅在 production next 判定需要时生成 2-3 个方向；人工 apply 后由 CLI 更新章节卡。 |
-| `/工程质量合同` | `longform-engine quality contract project.yaml --chapter N` | `--chapter N` | 只读 | 编译 market + genre + phase + 人工批准基线 + 项目覆盖。 |
+| `/工程人物设计` | `longform-engine character design-task project.yaml` | `project.yaml` | workbench 候选 | 生成 `character_expression_profile_v1` 工单；旧 Book Design v1 会在写第一章前进入此补全步骤。 |
+| `/工程人物设计校验` | `longform-engine character design-validate project.yaml --file ...` | `--file` | validation 报告 | 校验叙事表达画像、人物覆盖、声音/行为/身体/面具/反差合同，不写 Bible。 |
+| `/工程人物设计应用` | `longform-engine character design-apply project.yaml --file ... --approved-by human` | `--file`、人工确认 | `10_bible/character_expression.json` | 事务应用人物表达合同；Agent 不能直接写 Bible。 |
+| `/工程人物审稿` | `longform-engine character audit-task project.yaml --from-chapter A --to-chapter B` | 章节范围 | workbench 候选 | 跨章检查声音适配、对白可交换性、工具人化、身体在场、旁白代讲和说明式对白。 |
+| `/工程人物审稿校验` | `longform-engine character audit-validate project.yaml --file ...` | `--file` | validation 报告 | 每章和每个被审人物都必须有当前 hash/span 证据，pass 也不能空审。 |
+| `/工程人物样本批准` | `longform-engine character samples-approve project.yaml --file ... --approved-by human` | 定稿 span、人工确认 | `10_bible/character_expression.json` | 只允许把 final 精确片段批准为有界正/反例；不复制整章，不由 Agent 自批。 |
+| `/工程质量合同` | `longform-engine quality contract project.yaml --chapter N --explain` | `--chapter N`；可选 `--compare-market fanqie_free` | 只读 | 编译起点主合同、题材、全局/平台阶段、人工批准基线和项目覆盖；番茄比较始终非阻断。 |
 | `/工程批准风格基线` | `longform-engine quality baseline-approve project.yaml --chapter N --approved-by NAME` | 已定稿章节、批准者 | `10_bible/style_profiles/approved_style_baseline.json` | 只保存 prose-free 结构指纹；不会自动扩充。 |
 
 生产体验入口规则：
@@ -80,7 +86,12 @@
 | `/工程语义节奏` | `longform-engine pacing-review project.yaml --chapter N --semantic-reader` | `--chapter N` | `50_workbench/gate_artifacts/` | 生成语义读者视角节奏检查。 |
 | `/工程修章` | `longform-engine repair-chapter project.yaml --chapter N --plan-only` | `--chapter N` | `50_workbench/gate_artifacts/`、`50_workbench/repair_plans/` | 生成修复计划。 |
 | `/工程候选修章` | `longform-engine repair-chapter project.yaml --chapter N --candidate-only --agent codex` | `--chapter N`、`--agent` | `50_workbench/repair_candidates/` | 生成候选修复稿，不直接进入 final。 |
-| `/工程定稿` | `longform-engine chapter finalize project.yaml --chapter N --approved-by human` | `--chapter N`、`--approved-by` | `40_manuscript/final/`、`60_rag/`、`30_state/`、SQLite | 将通过或有效放行的章节写入正式状态。 |
+| `/工程定稿` | `longform-engine chapter finalize project.yaml --chapter N --approved-by human` | `--chapter N`、`--approved-by` | `40_manuscript/final/`、收益与结构账本 | 将通过或有效放行的章节写入唯一正文证据层；不会根据正文开头伪造摘要，也不会提前更新图谱、TCS、RAG 或 SQLite。 |
+| `/工程章节语义任务` | `longform-engine chapter semantic-task project.yaml --chapter N` | `--chapter N` | `50_workbench/semantic_tasks/` | 让 Agent 只完整读取一次 final，输出统一章节语义包；旧项目回填时显式追加 `--backfill`。 |
+| `/工程章节语义校验` | `longform-engine chapter semantic-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation report | 校验 final hash、精确 span、实体 ID、关系旧状态、角色知识来源、伏笔 ID/窗口和完整性声明。 |
+| `/工程章节语义应用` | `longform-engine chapter semantic-apply project.yaml --chapter N --file ...` | `--chapter N`、`--file` | 语义账本、graph、角色当前视图、伏笔状态、TCS、RAG、SQLite | 显式、事务化物化全部章节知识；不同候选不得覆盖已落盘语义账本。 |
+| `/工程语义重建` | `longform-engine chapter semantic-rebuild project.yaml --through N --approved-by human` | `--through N`、`--approved-by` | graph、角色当前视图、伏笔状态、world、timeline、TCS、RAG、SQLite | 只从连续 canonical semantic ledgers 重建派生视图；用于回填完成后的迁移收口，不读取旧派生状态作为事实。 |
+| `/工程关闭章节` | `longform-engine chapter close project.yaml --chapter N --approved-by human` | `--chapter N`、`--approved-by` | 章节关闭记录、按章审计 ZIP | 验证语义与所有派生视图后关闭章节；保留最近两章活动工作区，才允许进入下一章。 |
 
 ## RAG / Semantic / Memory / Graph
 
@@ -117,6 +128,17 @@
 | `/工程语义图谱任务` | `longform-engine graph semantic-task project.yaml --chapter N` | `--chapter N` | `50_workbench/graph_updates/` | 生成语义图谱抽取任务。 |
 | `/工程语义图谱校验` | `longform-engine graph semantic-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | 只读 | 校验语义图谱更新 JSON。 |
 | `/工程语义图谱应用` | `longform-engine graph semantic-apply project.yaml --chapter N --file ...` | `--chapter N`、`--file` | `30_state/story_graph.json`、SQLite | 应用已校验的语义图谱更新。 |
+
+`memory semantic-*`、`memory character-*` 与 `graph semantic-*` 只为旧项目和旧任务兼容保留。新生产链由 `chapter semantic-*` 一次抽取并统一物化，不再为同一 final 创建三套重复 Agent 任务。
+
+## 产物归档
+
+| 中文指令 | CLI 命令 | 必填参数 | 写入边界 | 说明 |
+| --- | --- | --- | --- | --- |
+| `/工程产物状态` | `longform-engine artifacts status project.yaml` | `project.yaml` | 只读 | 统计 loose files、审计 ZIP 和遗留成功快照。 |
+| `/工程产物精简` | `longform-engine artifacts compact project.yaml --through N --dry-run` | `--through N` | dry-run 只读；显式去掉 `--dry-run` 后写审计 ZIP | 先预览后归档；final、语义账本、计划账本和当前状态视图永不归档。 |
+| `/工程产物校验` | `longform-engine artifacts verify project.yaml` | `project.yaml` | 只读 | 校验 ZIP、manifest 与每个条目的 SHA-256。 |
+| `/工程产物恢复` | `longform-engine artifacts restore project.yaml --chapter N` | `--chapter N` | 原工作路径 | 校验 hash 后恢复；拒绝覆盖内容不同的现有文件。 |
 
 ## 研究入库
 
@@ -197,4 +219,6 @@ Editorial review contract:
 2. Agent 只写 `50_workbench/agent_drafts/chNNN.codex.md` 或 `chNNN.claude.md`。
 3. `/工程提交稿` -> `draft submit` 把候选稿送入受控 draft。
 4. `/工程验稿` -> `gate-check` 检查节奏、反向刹车、风格、Humanizer、图谱、记忆和语义风险。
-5. `/工程定稿` -> `chapter finalize` 只在 gate 通过或有效放行后写入正式正文与长期记忆；失败则修章、润色、审稿、放行、重写分支或回滚。
+5. `/工程定稿` -> `chapter finalize` 只在 gate 通过或有效放行后写入正式正文、收益和结构观察；失败则修章、润色、审稿、放行、重写分支或回滚。
+6. `/工程章节语义任务` -> Agent 对 final 做一次证据化统一抽取，CLI validate 后由用户显式 `/工程章节语义应用`。
+7. `/工程关闭章节` -> 验证图谱、角色当前状态、伏笔、TCS 与派生索引完整后关闭；关闭前不得续写下一章。

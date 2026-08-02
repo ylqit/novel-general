@@ -6,7 +6,7 @@ from longform_engine.orchestration import continue_write
 from longform_engine.rag import query
 from longform_engine.research import add_research, impact_analyze, promote_research, search_research
 from longform_engine.storage import init_project
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import complete_unified_semantic_lifecycle, mark_project_ready
 
 
 def test_research_add_only_writes_inbox_and_does_not_pollute_rag(tmp_path):
@@ -34,6 +34,7 @@ def test_research_add_only_writes_inbox_and_does_not_pollute_rag(tmp_path):
     assert rag_result.hits == ()
 
     mark_project_ready(root, project_config, preserve_existing_characters=True)
+    complete_unified_semantic_lifecycle(root, project_config, 1)
     continue_write(project_config, chapter_number=2)
     task = (root / "50_workbench" / "writing_tasks" / "ch002.md").read_text(encoding="utf-8")
     assert "INBOX_ONLY_MARKER" not in task
@@ -120,6 +121,7 @@ def test_research_impact_promote_syncs_canon_rag_graph_and_sqlite(tmp_path):
     assert any(row["id"] == f"research:{item.item_id}" for row in events)
 
     mark_project_ready(root, project_config, preserve_existing_characters=True)
+    complete_unified_semantic_lifecycle(root, project_config, 1)
     continue_write(project_config, chapter_number=2, overwrite=True)
     task = (root / "50_workbench" / "writing_tasks" / "ch002.md").read_text(encoding="utf-8")
     assert "PROMOTED_CANON_MARKER" in task

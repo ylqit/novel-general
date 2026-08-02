@@ -35,6 +35,8 @@ HARD_BOUNDARIES = (
 
 CONTEXT_BUDGETS: dict[str, tuple[int, int]] = {
     "book_ideation": (5, 12_000),
+    "character_expression_design": (7, 20_000),
+    "character_expression_review": (24, 80_000),
     "chapter_direction": (6, 16_000),
     "chapter_write": (7, 20_000),
     "repair": (6, 16_000),
@@ -42,6 +44,7 @@ CONTEXT_BUDGETS: dict[str, tuple[int, int]] = {
     "humanize_semantic_review": (6, 28_000),
     "reader_payoff_review": (6, 20_000),
     "editorial_review": (6, 18_000),
+    "chapter_semantic": (7, 28_000),
 }
 DEFAULT_CONTEXT_BUDGET = (8, 20_000)
 DEFAULT_FORBIDDEN_CONTEXT = (
@@ -185,6 +188,14 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "apply_prefixes": ("longform-engine memory character-apply ",),
         "failure_prefixes": ("longform-engine memory character-task ",),
     },
+    "chapter_semantic": {
+        "scope_kinds": ("chapter",),
+        "schemas": ("chapter_semantic_bundle_v1",),
+        "output_prefixes": ("50_workbench/semantic_tasks/",),
+        "validate_prefixes": ("longform-engine chapter semantic-validate ",),
+        "apply_prefixes": ("longform-engine chapter semantic-apply ",),
+        "failure_prefixes": ("longform-engine chapter semantic-task ",),
+    },
     "editorial_review": {
         "scope_kinds": ("chapter",),
         "schemas": ("editorial_role_review_v1", "editorial_role_review_v2"),
@@ -211,11 +222,45 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "book_design": {
         "scope_kinds": ("project",),
-        "schemas": ("book_design_candidate_v1",),
+        "schemas": ("book_design_candidate_v1", "book_design_candidate_v2"),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
         "failure_prefixes": ("longform-engine intelligence task ",),
+    },
+    "character_expression_design": {
+        "scope_kinds": ("project",),
+        "schemas": ("character_expression_profile_v1",),
+        "output_prefixes": ("50_workbench/intelligence_candidates/",),
+        "validate_prefixes": (
+            "longform-engine character design-validate ",
+            "longform-engine intelligence validate ",
+        ),
+        "apply_prefixes": (
+            "longform-engine character design-apply ",
+            "longform-engine intelligence apply ",
+        ),
+        "failure_prefixes": (
+            "longform-engine character design-task ",
+            "longform-engine intelligence task ",
+        ),
+    },
+    "character_expression_review": {
+        "scope_kinds": ("range",),
+        "schemas": ("character_expression_review_v1",),
+        "output_prefixes": ("50_workbench/intelligence_candidates/",),
+        "validate_prefixes": (
+            "longform-engine character audit-validate ",
+            "longform-engine intelligence validate ",
+        ),
+        "apply_prefixes": (
+            "longform-engine character audit-apply ",
+            "longform-engine intelligence apply ",
+        ),
+        "failure_prefixes": (
+            "longform-engine character audit-task ",
+            "longform-engine intelligence task ",
+        ),
     },
     "outline_design": {
         "scope_kinds": ("project",),

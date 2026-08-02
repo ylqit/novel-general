@@ -17,6 +17,14 @@ from longform_engine.agent_tasks import (
     mark_tasks_for_chapter_type,
     write_manifest,
 )
+from longform_engine.character_expression import (
+    CHARACTER_EXPRESSION_SCHEMA,
+    CHARACTER_REVIEW_SCHEMA,
+    character_expression_readiness,
+    validate_character_expression_profile,
+    validate_character_expression_review,
+    write_character_expression_profile,
+)
 from longform_engine.config import ConfigDocument
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 
@@ -26,6 +34,8 @@ INTELLIGENCE_TASK_TYPES = (
     "fanfiction_design",
     "book_ideation",
     "book_design",
+    "character_expression_design",
+    "character_expression_review",
     "outline_design",
     "chapter_direction",
     "outline_revision",
@@ -71,6 +81,7 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
             "10_bible/power_system.md",
             "10_bible/characters.json",
             "10_bible/relationships.json",
+            "10_bible/character_expression.json",
             "30_state/novel_state.json",
             "70_runtime/provenance/creation_events.jsonl",
         ),
@@ -82,7 +93,8 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
         ),
     },
     "book_design": {
-        "schema": "book_design_candidate_v1",
+        "schema": "book_design_candidate_v2",
+        "accepted_schemas": ("book_design_candidate_v1", "book_design_candidate_v2"),
         "scope": "project",
         "human": True,
         "targets": (
@@ -91,12 +103,39 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
             "10_bible/power_system.md",
             "10_bible/characters.json",
             "10_bible/relationships.json",
+            "10_bible/character_expression.json",
             "30_state/novel_state.json",
         ),
         "defaults": (
             "project.yaml",
             "00_governance/idea_seed.md",
             "00_governance/reader_contract.md",
+        ),
+    },
+    "character_expression_design": {
+        "schema": CHARACTER_EXPRESSION_SCHEMA,
+        "scope": "project",
+        "human": True,
+        "targets": (
+            "10_bible/character_expression.json",
+            "30_state/novel_state.json",
+        ),
+        "defaults": (
+            "project.yaml",
+            "10_bible/creative_brief.json",
+            "10_bible/characters.json",
+            "10_bible/relationships.json",
+        ),
+    },
+    "character_expression_review": {
+        "schema": CHARACTER_REVIEW_SCHEMA,
+        "scope": "range",
+        "human": False,
+        "targets": (),
+        "defaults": (
+            "10_bible/characters.json",
+            "10_bible/relationships.json",
+            "10_bible/character_expression.json",
         ),
     },
     "outline_design": {
@@ -304,8 +343,18 @@ def create_intelligence_task(
             "optional_files": inputs,
             "compiled_brief": instruction,
             "selection_report": instruction,
-            "max_files": 5 if task_type == "book_ideation" else 6 if task_type == "chapter_direction" else 7,
-            "max_chars": 12_000 if task_type == "book_ideation" else 16_000 if task_type == "chapter_direction" else 20_000,
+            "max_files": (
+                5 if task_type == "book_ideation"
+                else 6 if task_type == "chapter_direction"
+                else max(7, len(input_rel)) if task_type == "character_expression_review"
+                else 7
+            ),
+            "max_chars": (
+                12_000 if task_type == "book_ideation"
+                else 16_000 if task_type == "chapter_direction"
+                else 80_000 if task_type == "character_expression_review"
+                else 20_000
+            ),
         },
         task_id=(
             f"book_ideation:project:round{round_number:02d}:v1"
@@ -523,6 +572,16 @@ def assess_project_readiness(config: ConfigDocument) -> ProjectReadinessResult:
     validate_outline_design(config, outline_payload, outline_errors)
     if outline_errors:
         return ProjectReadinessResult(False, "outline_design", "outline_design", tuple(outline_errors))
+    expression_marker = markers.get("character_expression_design")
+    expression_path = root / "10_bible" / "character_expression.json"
+    expression_ready, expression_errors = character_expression_readiness(root)
+    if (isinstance(expression_marker, dict) or expression_path.is_file()) and not expression_ready:
+        return ProjectReadinessResult(
+            False,
+            "character_expression_design",
+            "character_expression_design",
+            tuple(expression_errors),
+        )
     return ProjectReadinessResult(True, "ready", "", ())
 
 
@@ -541,7 +600,7 @@ def task_scope(
         return {"kind": "chapter", "chapter_number": chapter_number}
     if spec["scope"] == "range":
         if from_chapter is None or to_chapter is None or from_chapter <= 0 or to_chapter < from_chapter:
-            raise ValueError("outline_revision requires --from-chapter N --to-chapter M with N <= M.")
+            raise ValueError(f"{spec['scope']} task requires --from-chapter N --to-chapter M with N <= M.")
         return {"kind": "range", "from_chapter": from_chapter, "to_chapter": to_chapter}
     if chapter_number is not None:
         raise ValueError(f"{spec['scope']} scope does not accept --chapter.")
@@ -577,6 +636,21 @@ def intelligence_default_inputs(
     candidates = [root / str(item) for item in spec["defaults"]]
     if task_type in {"book_design", "fanfiction_design"}:
         candidates.append(root / "10_bible" / "creative_decisions.json")
+    if task_type == "character_expression_design":
+        style_profile = root / "10_bible" / "style_profiles" / "current_style_profile.json"
+        if style_profile.is_file():
+            candidates.append(style_profile)
+    if task_type == "character_expression_review":
+        for chapter_number in range(int(scope["from_chapter"]), int(scope["to_chapter"]) + 1):
+            final = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
+            draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+            source = final if final.is_file() else draft
+            if not source.is_file():
+                raise ValueError(
+                    "character_expression_review requires a final or draft source for "
+                    f"chapter {chapter_number}."
+                )
+            candidates.append(source)
     if task_type == "book_ideation":
         candidates.append(root / "10_bible" / "creative_decisions.json")
     if task_type == "chapter_direction":
@@ -783,13 +857,27 @@ def validate_payload(
     manifest: dict[str, Any] | None,
     errors: list[str],
 ) -> None:
-    if payload.get("schema") != spec["schema"]:
-        errors.append(f"schema must be {spec['schema']}.")
+    accepted_schemas = tuple(spec.get("accepted_schemas") or (spec["schema"],))
+    if payload.get("schema") not in accepted_schemas:
+        errors.append(f"schema must be one of: {', '.join(accepted_schemas)}.")
     validators = {
         "book_ideation": lambda value, target: validate_book_ideation(root, value, target),
         "fanfiction_canon": lambda value, target: validate_fanfiction_canon(config, value, target),
         "fanfiction_design": lambda value, target: validate_fanfiction_design(config, root, value, target),
         "book_design": lambda value, target: validate_book_design(value, target),
+        "character_expression_design": lambda value, target: target.extend(
+            validate_character_expression_profile(
+                value,
+                character_ids=character_ids_from_root(root),
+            )
+        ),
+        "character_expression_review": lambda value, target: target.extend(
+            validate_character_expression_review(
+                root,
+                value,
+                manifest_inputs=(manifest or {}).get("input_files", []),
+            )
+        ),
         "outline_design": lambda value, target: validate_outline_design(config, value, target),
         "chapter_direction": lambda value, target: validate_chapter_direction(config, root, value, manifest, target),
         "outline_revision": lambda value, target: validate_outline_revision(config, root, value, target),
@@ -960,7 +1048,10 @@ def validate_chapter_direction(
 
 def validate_book_design(payload: dict[str, Any], errors: list[str]) -> None:
     required = {"schema", "creative_brief", "world_markdown", "power_system_markdown", "characters", "relationships"}
-    allowed = required | {"factions", "locations"}
+    expression_fields = {"narrative_expression_profile", "character_expression_contracts"}
+    if payload.get("schema") == "book_design_candidate_v2":
+        required |= expression_fields
+    allowed = required | expression_fields | {"factions", "locations"}
     require_keys(payload, required, allowed, errors)
     brief = payload.get("creative_brief")
     if not isinstance(brief, dict):
@@ -1065,6 +1156,18 @@ def validate_book_design(payload: dict[str, Any], errors: list[str]) -> None:
             if record_id in seen:
                 errors.append(f"{key}[{index}].id is duplicated: {record_id}.")
             seen.add(record_id)
+    if payload.get("schema") == "book_design_candidate_v2":
+        expression_payload = {
+            "schema": CHARACTER_EXPRESSION_SCHEMA,
+            "narrative_expression_profile": payload.get("narrative_expression_profile"),
+            "character_expression_contracts": payload.get("character_expression_contracts"),
+        }
+        errors.extend(
+            validate_character_expression_profile(
+                expression_payload,
+                character_ids=character_ids,
+            )
+        )
 
 
 def validate_outline_design(config: ConfigDocument, payload: dict[str, Any], errors: list[str]) -> None:
@@ -1907,6 +2010,8 @@ def apply_targets(root: Path, task_type: str, payload: dict[str, Any]) -> list[P
         for optional in ("factions", "locations"):
             if optional in payload:
                 targets.append(root / "10_bible" / f"{optional}.json")
+    if task_type == "character_expression_review":
+        targets.append(root / "50_workbench" / "character_reviews" / character_review_report_name(payload))
     if task_type == "fanfiction_design":
         book_design = payload.get("book_design") if isinstance(payload.get("book_design"), dict) else {}
         for optional in ("factions", "locations"):
@@ -1924,6 +2029,17 @@ def write_targets(root: Path, task_type: str, payload: dict[str, Any]) -> None:
     if task_type == "book_design":
         write_book_design_targets(root, payload)
         mark_project_intelligence_applied(root, "book_design", payload)
+        if payload.get("schema") == "book_design_candidate_v2":
+            mark_project_intelligence_applied(root, "character_expression_design", payload)
+        else:
+            mark_character_expression_enrichment_required(root)
+        return
+    if task_type == "character_expression_design":
+        write_character_expression_profile(root, payload)
+        mark_project_intelligence_applied(root, "character_expression_design", payload)
+        return
+    if task_type == "character_expression_review":
+        write_json(root / "50_workbench" / "character_reviews" / character_review_report_name(payload), payload)
         return
     if task_type == "fanfiction_canon":
         canonical = dict(payload)
@@ -1943,6 +2059,10 @@ def write_targets(root: Path, task_type: str, payload: dict[str, Any]) -> None:
         write_book_design_targets(root, payload["book_design"])
         mark_project_intelligence_applied(root, "fanfiction_design", payload)
         mark_project_intelligence_applied(root, "book_design", payload["book_design"])
+        if payload["book_design"].get("schema") == "book_design_candidate_v2":
+            mark_project_intelligence_applied(root, "character_expression_design", payload["book_design"])
+        else:
+            mark_character_expression_enrichment_required(root)
         append_creation_event(root, "fanfiction_design_applied", payload)
         return
     if task_type == "outline_design":
@@ -2011,6 +2131,15 @@ def write_book_design_targets(root: Path, payload: dict[str, Any]) -> None:
     atomic_write_text(root / "10_bible" / "power_system.md", payload["power_system_markdown"].rstrip() + "\n")
     write_json(root / "10_bible" / "characters.json", payload["characters"])
     write_json(root / "10_bible" / "relationships.json", payload["relationships"])
+    if payload.get("schema") == "book_design_candidate_v2":
+        write_character_expression_profile(
+            root,
+            {
+                "schema": CHARACTER_EXPRESSION_SCHEMA,
+                "narrative_expression_profile": payload["narrative_expression_profile"],
+                "character_expression_contracts": payload["character_expression_contracts"],
+            },
+        )
     for optional in ("factions", "locations"):
         if optional in payload:
             write_json(root / "10_bible" / f"{optional}.json", payload[optional])
@@ -2056,8 +2185,30 @@ def mark_project_intelligence_applied(root: Path, task_type: str, payload: dict[
         "candidate_hash": sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest(),
     }
     state["project_intelligence"] = project_intelligence
-    if task_type == "outline_design":
+    outline_marker = project_intelligence.get("outline_design")
+    expression_ready, _expression_errors = character_expression_readiness(root)
+    if (
+        isinstance(outline_marker, dict)
+        and outline_marker.get("status") == "applied"
+        and expression_ready
+    ):
         state["status"] = "project_ready"
+    elif task_type == "outline_design":
+        state["status"] = "project_designed"
+    write_json(state_path, state)
+
+
+def mark_character_expression_enrichment_required(root: Path) -> None:
+    state_path = root / "30_state" / "novel_state.json"
+    state = read_json(state_path, {})
+    state = state if isinstance(state, dict) else {}
+    markers = state.get("project_intelligence")
+    markers = dict(markers) if isinstance(markers, dict) else {}
+    markers["character_expression_design"] = {
+        "status": "required",
+        "reason": "book_design_candidate_v1_needs_character_expression_enrichment",
+    }
+    state["project_intelligence"] = markers
     write_json(state_path, state)
 
 
@@ -2175,6 +2326,11 @@ def revision_report_name(payload: dict[str, Any]) -> str:
     return f"agent_revision_ch{int(payload['from_chapter']):03d}-ch{int(payload['to_chapter']):03d}.json"
 
 
+def character_review_report_name(payload: dict[str, Any]) -> str:
+    scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+    return f"review_ch{int(scope.get('from_chapter') or 0):03d}-ch{int(scope.get('to_chapter') or 0):03d}.json"
+
+
 def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, Any], inputs: list[str], output: str) -> str:
     requirements = {
         "book_ideation": (
@@ -2195,7 +2351,18 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
         "book_design": (
             "creative_brief.design_decisions must define core_hook, world_rule, protagonist_desire, "
             "long_conflict, volume_escalation, and ending_boundary. Every character needs stable id, name, "
-            "goal, flaw, and at least three arc_stages. Relationships need stable ids and valid character references."
+            "goal, flaw, and at least three arc_stages. Return book_design_candidate_v2 with the narrative "
+            "expression profile and a complete character expression contract for every character."
+        ),
+        "character_expression_design": (
+            "Define a genre-neutral narrative expression profile and one complete contract per declared character. "
+            "Differentiate perception, decisions, speech register, conversation tactics, emotional leakage, physical "
+            "presence, masks, private wants, contradictions, and contrasts. Examples are evidence, not phrases to copy."
+        ),
+        "character_expression_review": (
+            "Review every chapter in the declared range for voice fit, dialogue swapability, character-as-function, "
+            "embodied presence, narrator over-explanation, and dialogue-as-exposition. Cite at least one exact hash-bound "
+            "source span for every chapter and every reviewed character, including pass verdicts."
         ),
         "outline_design": (
             "Read project.yaml length settings. Volumes must continuously cover the configured book; chapter_plan "
@@ -2259,6 +2426,18 @@ def intelligence_commands(
             f"longform-engine fanfiction design-apply project.yaml --file {candidate} --approved-by human",
             "longform-engine fanfiction design-task project.yaml",
         )
+    if task_type == "character_expression_design":
+        return (
+            f"longform-engine character design-validate project.yaml --file {candidate}",
+            f"longform-engine character design-apply project.yaml --file {candidate} --approved-by human",
+            "longform-engine character design-task project.yaml",
+        )
+    if task_type == "character_expression_review":
+        return (
+            f"longform-engine character audit-validate project.yaml --file {candidate}",
+            f"longform-engine character audit-apply project.yaml --file {candidate}",
+            f"longform-engine character audit-task project.yaml{range_args}",
+        )
     approval = " --approved-by human" if requires_human else ""
     return (
         f"longform-engine intelligence validate project.yaml --task-type {task_type} --file {candidate}",
@@ -2301,6 +2480,17 @@ def fanfiction_status(config: ConfigDocument) -> dict[str, Any]:
 
 def write_json(path: Path, payload: Any) -> None:
     atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
+def character_ids_from_root(root: Path) -> list[str]:
+    characters = read_json(root / "10_bible" / "characters.json", [])
+    if not isinstance(characters, list):
+        return []
+    return [
+        str(item.get("id"))
+        for item in characters
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
 
 
 def read_json(path: Path, default: Any) -> Any:

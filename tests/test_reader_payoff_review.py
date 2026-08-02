@@ -44,7 +44,17 @@ def test_production_schedules_strict_bounded_reader_payoff_task(tmp_path):
     assert context["selection"]["full_ledgers_excluded"] is True
     assert context["selection"]["previous_reward_limit"] == 1
     assert context["selection"]["related_promise_limit"] == 8
+    assert context["quality_contract"]["primary_market"] == "qidian_male"
+    assert context["quality_contract"]["contract"]["platform_promise"]
+    assert len(context["quality_contract"]["compatibility_observations"]) <= 3
+    assert all(
+        item["severity"] == "P2" and item["blocking"] is False
+        for item in context["quality_contract"]["compatibility_observations"]
+    )
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() in Path(result.task_file).read_text(encoding="utf-8")
+    assert "Compatibility-market observations are non-blocking P2 advice" in Path(result.task_file).read_text(
+        encoding="utf-8"
+    )
     waiting = production_next(config)
     assert waiting["status"] == "agent_task_awaiting_agent"
     assert waiting["task_type"] == "reader_payoff_review"
@@ -118,7 +128,9 @@ def test_payoff_finalize_records_observed_reward_and_structure_atomically(tmp_pa
     assert structures[0]["language_metrics"]["ngram_signature"]
     assert "text" not in json.dumps(rewards[0]["evidence_spans"], ensure_ascii=False)
     assert reader_payoff_review_status(config, chapter_number=1)["passed"] is True
-    assert production_next(config)["status"] == "ready_for_continue_write"
+    next_action = production_next(config)
+    assert next_action["status"] == "ready_for_chapter_semantic_task"
+    assert next_action["task_type"] == "chapter_semantic"
 
 
 def test_p1_fake_payoff_cannot_be_overridden_by_pass_verdict(tmp_path):
@@ -179,10 +191,10 @@ def test_finalize_failure_rolls_back_reward_and_structure_history(tmp_path, monk
     write_json(output, valid_review_payload(root, chapter_number=1))
     assert reader_payoff_validate(config, chapter_number=1, file_path=output).passed is True
 
-    def fail_build_chunks(*args, **kwargs):
+    def fail_quality_history(*args, **kwargs):
         raise RuntimeError("simulated quality transaction failure")
 
-    monkeypatch.setattr("longform_engine.orchestration.pipeline.build_chunks", fail_build_chunks)
+    monkeypatch.setattr("longform_engine.orchestration.pipeline.record_quality_history", fail_quality_history)
     with pytest.raises(RuntimeError, match="quality transaction"):
         finalize_chapter(config, chapter_number=1, approved_by="human")
 

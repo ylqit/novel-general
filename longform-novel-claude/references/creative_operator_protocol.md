@@ -19,7 +19,7 @@ Agents must not directly edit:
 - `30_state/tcs/`
 - `70_runtime/db/`
 
-Canonical state changes must go through CLI commands: `draft submit`, `chapter finalize`, `memory ... apply`, `graph ... apply`, `research promote`, `revision rollback`, or `db rebuild`.
+Canonical state changes must go through CLI commands: `draft submit`, `chapter finalize`, `chapter semantic-apply`, `chapter close`, `research promote`, `revision rollback`, or `db rebuild`. Legacy `memory ... apply` and `graph ... apply` remain compatibility commands, not the default new-chapter path.
 
 ## Creative Decisions And Quality Contract
 
@@ -48,23 +48,27 @@ Required five-step closed loop:
 2. Agent writes only to `50_workbench/agent_drafts/chNNN.codex.md` or `chNNN.claude.md`.
 3. Submit the candidate with `draft submit`.
 4. Run or inspect `gate-check`, including pacing, reverse brake, style, humanizer, graph, memory, and semantic checks when enabled.
-5. Finalize only through `chapter finalize`; failed or conditional chapters go to repair, waiver, branch, or rollback instead of next-chapter writing.
+5. Finalize only through `chapter finalize`; failed or conditional chapters go to repair, waiver, branch, or rollback instead of semantic extraction.
+6. After finalize, complete exactly one `chapter_semantic_bundle_v1`, validate it, explicitly apply it, and run `chapter close`. Do not start the next chapter before close succeeds.
 
 ## Write One Chapter
 
 1. Run or read the latest `continue-write` task package.
 2. Read `50_workbench/writing_tasks/chNNN.md` and the paired JSON.
 3. Apply the `/工程续章` Pre-Write Guide, including user preference, automatic fallback, pacing precheck, tail-hook declaration, forbidden reveal confirmation, and failure repair path.
-4. Confirm the task includes Creative Brief, Writer Craft Brief, RAG, Graph, TCS, Character Memory, Style Memory, Event Matrix, Reverse Brake, gate history, and Humanizer v3 rules.
+4. Confirm the task includes the Character Performance Packet, Creative Brief, Writer Craft Brief, RAG, Graph, TCS, Character Memory, Style Memory, Event Matrix, Reverse Brake, gate history, and Humanizer v4 rules.
 5. Write the draft only to `50_workbench/agent_drafts/chNNN.codex.md` or `chNNN.claude.md`.
-6. Before submit, run the Humanizer v3 self-check mentally:
+6. Before submit, run the Humanizer v4 two-pass self-check mentally:
    - Pass 1 removes meta residue, AI templates, generic significance language, summary lecture, and same-shape paragraphs.
-   - Pass 2 strengthens dialogue difference, action-carried psychology, paragraph rhythm, sensory anchors, and ending hook.
+   - Pass 2 preserves each declared perception/decision bias and social mask while strengthening opposing wants, subtext, embodied presence, relationship movement, and emotional aftereffect.
+   - Do not manufacture difference with a universal dialogue quota, catchphrases, forced dialect, or fixed appearance paragraphs.
    - Preserve numeric facts, named characters, chapter duty, reader gain, cost, promise payoff, and declared canon/divergence constraints.
    - Do not force every platform into short sentences, dense dialogue, fast pacing, or a cliffhanger; follow the task's market profile.
 7. Submit with `longform-engine draft submit project.yaml --chapter N --file 50_workbench/agent_drafts/chNNN.codex.md --agent codex`.
 8. If the gate passes, finalize only with `longform-engine chapter finalize project.yaml --chapter N --approved-by human`.
-9. If the gate fails, stop the next-chapter flow and repair the current chapter.
+9. Follow `production next` into `chapter semantic-task`; read the final once, write only the declared semantic JSON, then run validate and wait for explicit apply.
+10. Close the chapter only with `longform-engine chapter close project.yaml --chapter N --approved-by human` after all materialized views verify.
+11. If the gate or semantic validation fails, stop the next-chapter flow and repair the current chapter or semantic candidate.
 
 ## Repair A Failed Chapter
 
@@ -75,7 +79,7 @@ Required five-step closed loop:
    - delete or reduce failed material,
    - add evidence spans for motivation, relationship, ability, and foreshadow changes,
    - align Character Memory and TCS,
-   - apply Humanizer v3.
+   - apply Humanizer v4 and the current Character Performance Packet.
 4. For a candidate task, run `longform-engine repair-chapter project.yaml --chapter N --candidate-only --agent codex`.
 5. Write only to the candidate path named by the task.
 6. Re-submit through `draft submit`; never copy the repair candidate into final.

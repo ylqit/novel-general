@@ -19,7 +19,7 @@ description: Claude Code 中文长篇小说生产 Skill；用户说“/工程下
 
 开书阶段按 `book_ideation -> book_design -> outline_design` 推进。`book_ideation` 每轮只问一个问题，必须先取得用户明确选择再写候选 JSON；不得替用户默选。章节出现 `chapter_direction` 时同样先给 2-3 个因果方向并记录人工选择。写正文时遵守工作单内的 `effective_quality_contract_v1`，但不能把平台画像机械化为统一短句、对白率、快节奏或悬崖结尾。
 
-同人项目允许使用 manifest 声明来源中的角色名、关系、世界观、能力和时间线。先完成 `fanfiction canon-task` 与 `fanfiction design-task`，再进入纲要和章节；不得扫描未声明原作，也不得在 canon JSON 或正文中搬运、拆分重构连续 `source prose`。`rights status` 只记录和提示，不由 Agent 擅自阻断工作流。正文与修章遵守 `Humanizer v3`；润色触发 `humanize_semantic_review` 时，必须由独立审稿角色比较来源稿与候选稿并通过 CLI 校验，不能由润色写作者自审放行。gate 通过后若出现 `reader_payoff_review`，必须按 span 证明实际收益与代价，再等待显式 finalize。
+同人项目允许使用 manifest 声明来源中的角色名、关系、世界观、能力和时间线。先完成 `fanfiction canon-task` 与 `fanfiction design-task`，再进入纲要和章节；不得扫描未声明原作，也不得在 canon JSON 或正文中搬运、拆分重构连续 `source prose`。`rights status` 只记录和提示，不由 Agent 擅自阻断工作流。正文与修章遵守 `Humanizer v4` 和 `character_expression_packet_v1`；人物差异来自感知、决策、欲望、面具、身体和关系压力，不得强制统一对白或外貌配额。润色触发 `humanize_semantic_review` 时，必须由独立审稿角色比较来源稿与候选稿并通过 CLI 校验，不能由润色写作者自审放行。gate 通过后若出现 `reader_payoff_review`，必须按 span 证明实际收益与代价，再等待显式 finalize。
 
 ## 写入边界
 
@@ -42,6 +42,8 @@ production next
 -> Claude Code output
 -> validate / draft submit
 -> explicit apply or chapter finalize --approved-by human
+-> chapter semantic-task / Agent unified JSON / semantic-validate
+-> explicit semantic-apply / chapter close --approved-by human
 ```
 
 章节提交示例：
@@ -49,6 +51,10 @@ production next
 ```text
 longform-engine draft submit project.yaml --chapter N --file 50_workbench/agent_drafts/chNNN.claude.md --agent claude
 longform-engine chapter finalize project.yaml --chapter N --approved-by human
+longform-engine chapter semantic-task project.yaml --chapter N
+longform-engine chapter close project.yaml --chapter N --approved-by human
 ```
+
+定稿后不要再分别创建 graph、memory 和 character-memory 抽取任务。按 `production next` 只完整读取 final 一次并输出 `chapter_semantic_bundle_v1`；CLI 校验证据后统一物化图谱、角色当前状态、伏笔、TCS、RAG 与 SQLite，关闭章节后才能续写。
 
 遵守 `references/iron_laws.md`。最终回复按 `references/artifact_reporting.md` 报告产物、校验状态、阻断原因和下一条安全命令，不粘贴无关命令噪声。

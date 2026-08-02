@@ -112,9 +112,15 @@ class ApplyTransaction:
         payload = self._payload(
             status="applied",
             report_type="canonical_write_transaction_report",
-            extra={"snapshot_dir": project_relative_path(self.root, self.snapshot_dir), "snapshots": self._snapshots},
+            extra={
+                "snapshot_dir": project_relative_path(self.root, self.snapshot_dir),
+                "snapshots": self._snapshots,
+                "snapshots_retained": False,
+            },
         )
         atomic_write_text(self.report_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        if self.snapshot_dir.exists():
+            shutil.rmtree(self.snapshot_dir)
         self._finished = True
         return TransactionReportResult(report_file=self.report_file)
 
@@ -428,14 +434,20 @@ def project_relative_path(root: Path, path: str | Path) -> str:
 
 
 def dedupe_project_paths(root: Path, paths: tuple[str | Path, ...] | list[str | Path]) -> list[Path]:
-    result: list[Path] = []
+    resolved: list[Path] = []
     seen: set[str] = set()
     for raw in paths:
         path = resolve_project_transaction_path(root, raw)
         key = path.as_posix().lower()
-        if key in seen:
+        if key not in seen:
+            seen.add(key)
+            resolved.append(path)
+
+    # A parent directory snapshot already owns rollback for every child path.
+    result: list[Path] = []
+    for path in sorted(resolved, key=lambda item: len(item.parts)):
+        if any(path == parent or parent in path.parents for parent in result):
             continue
-        seen.add(key)
         result.append(path)
     return result
 

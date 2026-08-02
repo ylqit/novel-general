@@ -252,6 +252,50 @@ def valid_design() -> dict:
     }
 
 
+def valid_character_expression() -> dict:
+    return {
+        "schema": "character_expression_profile_v1",
+        "narrative_expression_profile": {
+            "narrative_distance": "close",
+            "expression_mode": "balanced",
+            "description_density": "selective",
+            "dialogue_mode": "balanced",
+            "voice_separation": "clear",
+            "ensemble_mode": "dual",
+        },
+        "character_expression_contracts": [
+            {
+                "character_id": "classic:lin_zhou",
+                "perception_bias": "Notices changed rules before accepting stated motives.",
+                "decision_bias": "Tests a boundary while preserving one route of retreat.",
+                "speech_register": "Brief skeptical questions grounded in visible evidence.",
+                "conversation_tactics": ["narrows the claim", "withholds one inference"],
+                "emotional_leaks": ["turns the star key inside his sleeve when cornered"],
+                "physical_presence": "Economical movement with attention fixed on thresholds.",
+                "social_masks": ["unimpressed traveler"],
+                "private_wants": "Wants agency without abandoning the people behind the gate.",
+                "contradictions": "Distrusts ritual authority but protects its vulnerable keepers.",
+                "voice_examples": [],
+                "contrast_with": ["classic:gatekeeper"],
+            },
+            {
+                "character_id": "classic:gatekeeper",
+                "perception_bias": "Reads every choice as a change to threshold risk.",
+                "decision_bias": "Reveals only the rule needed to prevent the next breach.",
+                "speech_register": "Indirect ritual clauses that conceal personal stakes.",
+                "conversation_tactics": ["answers with a condition", "tests declared intent"],
+                "emotional_leaks": ["touches the door seam before admitting uncertainty"],
+                "physical_presence": "Measured posture that keeps one hand near the gate.",
+                "social_masks": ["impersonal keeper of rules"],
+                "private_wants": "Wants the gate protected without becoming its last sacrifice.",
+                "contradictions": "Claims rules are impersonal while bending them to protect Lin Zhou.",
+                "voice_examples": [],
+                "contrast_with": ["classic:lin_zhou"],
+            },
+        ],
+    }
+
+
 def valid_outline() -> dict:
     return {
         "schema": "outline_design_candidate_v1",
@@ -427,6 +471,26 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
         config,
         task_type="outline_design",
         file_path=outline_candidate,
+        approved_by="human",
+    )
+
+    readiness = assess_project_readiness(config)
+    assert readiness.stage == "character_expression_design"
+    character_task = create_intelligence_task(config, task_type="character_expression_design")
+    character_candidate = root / character_task.candidate_file
+    character_candidate.write_text(
+        json.dumps(valid_character_expression(), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    assert validate_intelligence_candidate(
+        config,
+        task_type="character_expression_design",
+        file_path=character_candidate,
+    ).ok
+    apply_intelligence_candidate(
+        config,
+        task_type="character_expression_design",
+        file_path=character_candidate,
         approved_by="human",
     )
 

@@ -96,10 +96,12 @@ templates/qidian-longform/project.yaml
 - `revision.snapshot_before_rollback`: 回滚前创建轻量 snapshot。
 - `codex.default_workflow`: 默认 `command_driven`。
 - `quality.profile.market`: `qidian_male|fanqie_free|jinjiang_female|general_cn`；旧配置的 `quality.market_profile` 仍兼容。
+- `quality.profile.compatibility_markets`: 非阻断平台比较列表；`qidian-longform` 默认仅包含 `fanqie_free`。
 - `quality.profile.genre`: `xuanhuan|urban|suspense|romance|history`；旧配置的 `quality.genre_profile` 仍兼容。
 - `quality.profile.phase`: `auto|opening|early_serial|stable_serial|volume_climax|aftermath`。
 - `quality.profile.strictness`: `light|balanced|strict`。
 - `quality.profile.overrides`: 项目级深合并覆盖；不得用于制造统一短句、统一高对白或统一悬崖模板。
+- `quality.profile.overrides.platform_policy.primary_deviation`: 默认 `P2_advisory`；只有用户显式设置为 `P1_blocking` 时，主平台偏离才可阻断。兼容平台观察始终不阻断。
 - `quality.approved_style_baseline.chapters`: 预留的批准章节列表；运行时正式基线只通过 `quality baseline-approve` 显式更新。
 - `quality.approved_style_baseline.update_requires_human`: 必须为 `true`；引擎不会自动扩充基线。
 - `quality.creative_guidance.mode`: `automatic|guided|off`；`automatic` 只在抽象纲要、卷边界、重大转折、连续返修或多合法剧情线时触发 `chapter_direction`。
@@ -171,6 +173,7 @@ quality:
   assurance_mode: balanced
   profile:
     market: jinjiang_female
+    compatibility_markets: [fanqie_free]
     genre: romance
     phase: auto
     strictness: balanced
@@ -195,7 +198,7 @@ quality:
 
 项目由 `production next` 编排逐轮 `book_ideation -> human apply`；原创随后进入 `book_design`，同人则在 `fanfiction_canon` 后完成 ideation，再进入 `fanfiction_design`。Agent 只能读取 manifest 声明文件；所有 Bible/outline 变更仍由 CLI 显式事务 apply。
 
-质量画像来自 wheel 内置 `config/quality_profiles/`，按 market、genre、phase 深合并。`quality contract --chapter N` 只读编译结果；`quality baseline-approve --chapter N --approved-by NAME` 仅保存已定稿章节的 prose-free 结构观察，不保存正文。
+质量画像来自 wheel 内置 `config/quality_profiles/`，按 `market -> genre -> global phase -> market phase -> human-approved baseline -> project overrides` 合并；标量后层覆盖，列表整体替换。`quality contract --chapter N --explain` 只读输出来源与覆盖轨迹，`--compare-market fanqie_free` 输出最多三条非阻断兼容观察。`quality baseline-approve --chapter N --approved-by NAME` 仅保存已定稿章节的 prose-free 结构观察，不保存正文。
 
 ## 写作模式与 API key
 

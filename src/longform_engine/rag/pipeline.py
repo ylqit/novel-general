@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 import hashlib
 import json
 import re
@@ -88,8 +88,10 @@ def build_chunks(
     max_chars: int | None = None,
     overlap_chars: int | None = None,
     with_embeddings: bool = False,
+    chapter_numbers: Iterable[int] | None = None,
+    sync_index: bool = True,
 ) -> RagBuildStats:
-    """Build paragraph-aware RAG chunks from finalized manuscript files."""
+    """Build paragraph-aware RAG chunks from all or selected finalized chapters."""
 
     root = resolve_project_root(config)
     final_dir = root / "40_manuscript" / "final"
@@ -104,7 +106,13 @@ def build_chunks(
     chapter_count = 0
     chunk_count = 0
     active_final_chapters: set[int] = set()
-    final_paths = sorted([*final_dir.glob("*.md"), *final_dir.glob("*.txt")])
+    all_final_paths = sorted([*final_dir.glob("*.md"), *final_dir.glob("*.txt")])
+    selected_chapters = {int(value) for value in chapter_numbers} if chapter_numbers is not None else None
+    final_paths = [
+        path
+        for path in all_final_paths
+        if selected_chapters is None or parse_chapter_number(path) in selected_chapters
+    ]
     for path in final_paths:
         chapter_number = parse_chapter_number(path) or chapter_count + 1
         active_final_chapters.add(chapter_number)
@@ -148,8 +156,15 @@ def build_chunks(
             atomic_write_text(chunks_dir / f"ch{chapter_number:03d}.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
             chapter_count += 1
 
-    remove_stale_final_chunks(chunks_dir, active_final_chapters)
-    sync_database(config)
+    if selected_chapters is None:
+        active_final_chapters = {
+            number
+            for path in all_final_paths
+            if (number := parse_chapter_number(path)) is not None
+        }
+        remove_stale_final_chunks(chunks_dir, active_final_chapters)
+    if sync_index:
+        sync_database(config)
     embedding_count = 0
     if with_embeddings:
         embedding_count = build_embeddings(config)
@@ -170,7 +185,8 @@ def query(
     if not query_text.strip():
         raise ValueError("RAG query cannot be empty.")
 
-    sync_database(config)
+    if not database_path(config).exists():
+        sync_database(config)
     rag_config = config.data.get("rag", {})
     top_k = top_k or int(rag_config.get("top_k", 12))
     candidate_pool = candidate_pool or int(rag_config.get("candidate_pool_size", 40))
@@ -313,6 +329,8 @@ def retrieve_hits(
         and semantic_status.profile != "local-hash"
     )
     query_vector = embed_text_with_provider(config, query_text) if semantic else []
+    root = resolve_project_root(config)
+    ledger_scores = semantic_ledger_route_scores(root, query_text, chapter_number=chapter_number)
     vector_hits = (
         query_vector_store(
             config,
@@ -332,6 +350,7 @@ def retrieve_hits(
         vector_owner_ids={
             hit.owner_id for hit in vector_hits if hit.owner_type == "chapter_chunk"
         },
+        ledger_chapters=set(ledger_scores),
         candidate_pool=candidate_pool,
         semantic=semantic,
         chapter_number=chapter_number,
@@ -372,6 +391,9 @@ def retrieve_hits(
         semantic_coarse = chapter_vector_scores.get(str(row["id"]), 0.0) if semantic else 0.0
         if semantic and semantic_coarse > 0:
             coarse += semantic_coarse * 2.0
+        ledger_score = ledger_scores.get(int(row["chapter_number"] or 0), 0.0)
+        if ledger_score > 0:
+            coarse += ledger_score * 2.4
         if coarse <= 0:
             continue
         coarse_scored.append((coarse, semantic_coarse, row, metadata, keywords, haystack))
@@ -426,6 +448,8 @@ def retrieve_hits(
         )
         if semantic and semantic_score > 0:
             reasons.append("semantic vector similarity")
+        if ledger_scores.get(int(row["chapter_number"] or 0), 0.0) > 0:
+            reasons.append("semantic ledger routed chapter")
         if lexical_fallback_active:
             reasons.append("warning: explicit lexical fallback; vector candidates unavailable")
         if embedding_only_rerank:
@@ -478,6 +502,7 @@ def load_chunk_candidates(
     *,
     terms: list[str],
     vector_owner_ids: set[str],
+    ledger_chapters: set[int],
     candidate_pool: int,
     semantic: bool,
     chapter_number: int | None,
@@ -488,30 +513,39 @@ def load_chunk_candidates(
         "id, chapter_number, chunk_index, text, keywords_json, "
         "source_path, metadata_json"
     )
-    if not semantic or not vector_owner_ids:
-        with connect(db_path) as conn:
-            return conn.execute(
+    rows_by_id: dict[str, Any] = {}
+    vector_ids = sorted(vector_owner_ids)
+    max_chapter = chapter_number - 1 if chapter_number and chapter_number > 1 else None
+    with connect(db_path) as conn:
+        if vector_ids:
+            placeholders = ",".join("?" for _ in vector_ids)
+            for row in conn.execute(
                 f"""
                 SELECT {columns}
                 FROM chapter_chunks
-                ORDER BY COALESCE(chapter_number, 0) DESC, chunk_index ASC
-                """
-            ).fetchall()
+                WHERE id IN ({placeholders})
+                """,
+                vector_ids,
+            ).fetchall():
+                rows_by_id[str(row["id"])] = row
 
-    rows_by_id: dict[str, Any] = {}
-    vector_ids = sorted(vector_owner_ids)
-    placeholders = ",".join("?" for _ in vector_ids)
-    max_chapter = chapter_number - 1 if chapter_number and chapter_number > 1 else None
-    with connect(db_path) as conn:
-        for row in conn.execute(
-            f"""
-            SELECT {columns}
-            FROM chapter_chunks
-            WHERE id IN ({placeholders})
-            """,
-            vector_ids,
-        ).fetchall():
-            rows_by_id[str(row["id"])] = row
+        routed_chapters = sorted(
+            chapter
+            for chapter in ledger_chapters
+            if max_chapter is None or chapter <= max_chapter
+        )
+        if routed_chapters:
+            placeholders = ",".join("?" for _ in routed_chapters)
+            for row in conn.execute(
+                f"""
+                SELECT {columns}
+                FROM chapter_chunks
+                WHERE chapter_number IN ({placeholders})
+                ORDER BY chapter_number DESC, chunk_index ASC
+                """,
+                routed_chapters,
+            ).fetchall():
+                rows_by_id[str(row["id"])] = row
 
         recent_params: list[Any] = []
         recent_where = ""
@@ -989,7 +1023,6 @@ def write_query_cache(config: ConfigDocument, query_text: str, hits: list[RagHit
         "updated_at": utc_now(),
     }
     atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-    sync_database(config)
     return path
 
 
@@ -1147,20 +1180,88 @@ def format_forbidden_repeats(config: ConfigDocument, hits: tuple[RagHit, ...]) -
 
 
 def build_chapter_metadata(root: Path, chapter_number: int, text: str, title: str) -> dict[str, Any]:
-    summary = read_summary_text(root, chapter_number) or trim_text(strip_markdown_heading(text), 240)
+    ledger_path = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
+    ledger = read_json(ledger_path, default={}) if ledger_path.exists() else None
+    digest = ledger.get("chapter_digest") if isinstance(ledger, dict) and isinstance(ledger.get("chapter_digest"), dict) else {}
+    summary_file_text = read_summary_text(root, chapter_number)
+    pending_semantic_summary = summary_file_text.startswith("Pending unified semantic extraction")
+    summary = str(digest.get("summary") or "").strip() or summary_file_text
+    if pending_semantic_summary:
+        summary = ""
+    if not summary and ledger is None and not pending_semantic_summary:
+        summary = trim_text(strip_markdown_heading(text), 240)
     graph = read_json(root / "30_state" / "story_graph.json", default={})
     entities, locations = extract_graph_entities_for_text(graph, text)
     events = extract_graph_events_for_chapter(graph, chapter_number, text, title)
     foreshadow_refs = extract_foreshadow_refs(graph, chapter_number, text)
+    if isinstance(ledger, dict):
+        retrieval = ledger.get("retrieval") if isinstance(ledger.get("retrieval"), dict) else {}
+        foreshadow_refs = dedupe_lines(
+            [
+                *foreshadow_refs,
+                *[
+                    str(item.get("thread_id"))
+                    for item in normalize_records(ledger.get("foreshadow_deltas"))
+                    if str(item.get("thread_id") or "")
+                ],
+            ]
+        )
+    else:
+        retrieval = {}
     return {
         "title": title,
         "summary": summary,
         "entities": entities,
+        "entity_ids": normalize_strings(retrieval.get("entity_ids")),
         "events": events,
         "locations": locations,
         "foreshadow_refs": foreshadow_refs,
+        "semantic_tags": normalize_strings(retrieval.get("tags")),
+        "semantic_focus": normalize_strings(retrieval.get("focus")),
+        "semantic_ledger": f"30_state/semantic_ledger/ch{chapter_number:03d}.json" if isinstance(ledger, dict) else "",
         "conflict_level": detect_conflict_level(text),
     }
+
+
+def semantic_ledger_route_scores(
+    root: Path,
+    query_text: str,
+    *,
+    chapter_number: int | None,
+) -> dict[int, float]:
+    """Route a query to chapters from compact semantics before hydrating final chunks."""
+
+    terms = extract_query_terms(query_text)
+    lower_query = query_text.lower().strip()
+    if not terms and not lower_query:
+        return {}
+    max_chapter = chapter_number - 1 if chapter_number and chapter_number > 1 else None
+    scores: dict[int, float] = {}
+    ledger_dir = root / "30_state" / "semantic_ledger"
+    for path in sorted(ledger_dir.glob("ch*.json")) if ledger_dir.exists() else []:
+        candidate_chapter = parse_chapter_number(path)
+        if not candidate_chapter or (max_chapter is not None and candidate_chapter > max_chapter):
+            continue
+        payload = read_json(path, default={})
+        if not isinstance(payload, dict) or payload.get("canonical") is not True:
+            continue
+        routing_payload = {
+            "chapter_digest": payload.get("chapter_digest"),
+            "events": payload.get("events"),
+            "relationship_deltas": payload.get("relationship_deltas"),
+            "character_deltas": payload.get("character_deltas"),
+            "foreshadow_deltas": payload.get("foreshadow_deltas"),
+            "world_deltas": payload.get("world_deltas"),
+            "timeline_deltas": payload.get("timeline_deltas"),
+            "retrieval": payload.get("retrieval"),
+        }
+        haystack = json.dumps(routing_payload, ensure_ascii=False).lower()
+        exact = 1.0 if lower_query and lower_query in haystack else 0.0
+        overlap = score_term_overlap(terms, haystack)
+        score = exact * 1.5 + overlap
+        if score > 0:
+            scores[candidate_chapter] = score
+    return dict(sorted(scores.items(), key=lambda item: (-item[1], -item[0])))
 
 
 def read_summary_text(root: Path, chapter_number: int) -> str:

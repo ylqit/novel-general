@@ -377,6 +377,20 @@ def test_semantic_reader_pacing_review_writes_reader_experience_artifact(tmp_pat
     assert (root / "50_workbench" / "gate_artifacts" / "ch001" / "reader_experience_review.md").exists()
 
 
+def test_semantic_reader_recognizes_chinese_deadline_as_concrete_tail_pressure(tmp_path):
+    project_config = seed_project(tmp_path)
+    root = tmp_path / "novel"
+    draft = root / "40_manuscript" / "draft" / "ch001.md"
+    draft.write_text(
+        "# 第一章\n\n他选择把旧卷列入公开追索。午时封库，距离共同签验只剩两个时辰。",
+        encoding="utf-8",
+    )
+
+    result = pacing_review(project_config, chapter_number=1, semantic_reader=True)
+
+    assert not any("ending hook" in issue for issue in result.issues)
+
+
 def test_repair_plan_contains_creative_rewrite_brief(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"

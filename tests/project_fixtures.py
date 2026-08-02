@@ -1,7 +1,11 @@
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import yaml
+
+from longform_engine.semantic import chapter_close, semantic_apply, semantic_task
+from longform_engine.semantic.pipeline import active_planned_thread_ids, foreshadow_state_threads, planned_threads
 
 
 def mark_project_ready(root: Path, config, *, preserve_existing_characters: bool = False) -> None:
@@ -199,3 +203,74 @@ def mark_project_ready(root: Path, config, *, preserve_existing_characters: bool
 def write_json(path: Path, payload) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def prepare_unified_semantic_bundle(root: Path, config, chapter_number: int) -> Path:
+    """Write a minimal valid Agent result for tests that exercise post-finalize plumbing."""
+
+    task = semantic_task(config, chapter_number=chapter_number)
+    final = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
+    text = final.read_text(encoding="utf-8")
+    start = next((index for index, character in enumerate(text) if not character.isspace()), 0)
+    end = min(len(text), max(start + 1, start + 24))
+    evidence = {"start": start, "end": end, "excerpt": text[start:end]}
+    active_threads = sorted(
+        active_planned_thread_ids(
+            planned_threads(root),
+            foreshadow_state_threads(root),
+            chapter_number,
+        )
+    )
+    output = Path(task.output_file)
+    write_json(
+        output,
+        {
+            "schema": "chapter_semantic_bundle_v1",
+            "chapter_number": chapter_number,
+            "source": {
+                "path": f"40_manuscript/final/ch{chapter_number:03d}.md",
+                "sha256": sha256(final.read_bytes()).hexdigest(),
+            },
+            "chapter_digest": {
+                "summary": "The chapter advances the immediate conflict through a concrete choice.",
+                "causal_change": "The protagonist's action changes the next available decision.",
+                "reader_payoff": "The immediate chapter question receives a concrete answer.",
+                "cost": "The action narrows the protagonist's safe options.",
+            },
+            "scenes": [
+                {
+                    "scene_id": f"ch{chapter_number:03d}:scene:1",
+                    **evidence,
+                    "participants": [],
+                    "location_id": "",
+                    "goal": "Advance the immediate chapter conflict.",
+                    "outcome": "The next decision becomes unavoidable.",
+                }
+            ],
+            "events": [],
+            "relationship_deltas": [],
+            "character_deltas": [],
+            "foreshadow_deltas": [],
+            "world_deltas": [],
+            "timeline_deltas": [],
+            "retrieval": {"tags": ["chapter progression"], "entity_ids": [], "focus": ["causal change"]},
+            "coverage": {
+                "featured_character_ids": [],
+                "unchanged_character_ids": [],
+                "active_thread_ids": active_threads,
+                "unchanged_thread_ids": active_threads,
+            },
+        },
+    )
+    return output
+
+
+def complete_unified_semantic_lifecycle(root: Path, config, chapter_number: int, *, approved_by: str = "human") -> None:
+    ledger = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
+    if not ledger.exists():
+        output = prepare_unified_semantic_bundle(root, config, chapter_number)
+        semantic_apply(config, chapter_number=chapter_number, file_path=output)
+    gate = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
+    if not gate.exists():
+        write_json(gate, {"chapter_number": chapter_number, "passed": True, "severity_counts": {"P0": 0, "P1": 0}})
+    chapter_close(config, chapter_number=chapter_number, approved_by=approved_by)

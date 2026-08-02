@@ -1,9 +1,13 @@
 import json
 import sqlite3
+from hashlib import sha256
+from pathlib import Path
 
 from longform_engine.config import load_project_config
 from longform_engine.db import database_path, init_database, query_table, rebuild_database, status, sync_database
 from longform_engine.orchestration import continue_write, finalize_chapter, open_book, submit_agent_draft
+from longform_engine.semantic import semantic_apply, semantic_task
+from longform_engine.semantic.pipeline import active_planned_thread_ids, foreshadow_state_threads, planned_threads
 from longform_engine.storage import init_project
 from tests.project_fixtures import mark_project_ready
 
@@ -88,6 +92,72 @@ def test_db_rebuild_recovers_agent_skill_state(tmp_path):
     agent_draft.write_text(draft_text, encoding="utf-8")
     submit_agent_draft(project_config, chapter_number=1, file_path=agent_draft, agent="codex")
     finalize_chapter(project_config, chapter_number=1, approved_by="human")
+    final = root / "40_manuscript" / "final" / "ch001.md"
+    final_text = final.read_text(encoding="utf-8")
+    start = final_text.index("Ari")
+    end = min(len(final_text), start + 80)
+    evidence = {"start": start, "end": end, "excerpt": final_text[start:end]}
+    task = semantic_task(project_config, chapter_number=1)
+    active_threads = sorted(active_planned_thread_ids(planned_threads(root), foreshadow_state_threads(root), 1))
+    Path(task.output_file).write_text(
+        json.dumps(
+            {
+                "schema": "chapter_semantic_bundle_v1",
+                "chapter_number": 1,
+                "source": {
+                    "path": "40_manuscript/final/ch001.md",
+                    "sha256": sha256(final_text.encode("utf-8")).hexdigest(),
+                },
+                "chapter_digest": {
+                    "summary": "Ari protects a witness and commits to the next investigation step.",
+                    "causal_change": "Protecting the witness opens a new investigation route.",
+                    "reader_payoff": "The witness survives and the immediate threat is answered.",
+                    "cost": "Ari becomes visible to the opposing force.",
+                },
+                "scenes": [
+                    {
+                        "scene_id": "ch001:scene:1",
+                        **evidence,
+                        "participants": ["character:lin"],
+                        "location_id": "",
+                        "goal": "Protect the witness.",
+                        "outcome": "The witness survives.",
+                    }
+                ],
+                "events": [
+                    {
+                        "event_id": "event:ch001:witness",
+                        "title": "Ari protects the witness",
+                        "participants": ["character:lin"],
+                        "locations": [],
+                        "consequences": "The investigation continues with Ari exposed.",
+                        "evidence": evidence,
+                    }
+                ],
+                "relationship_deltas": [],
+                "character_deltas": [],
+                "foreshadow_deltas": [],
+                "world_deltas": [],
+                "timeline_deltas": [],
+                "retrieval": {
+                    "tags": ["witness", "investigation"],
+                    "entity_ids": ["character:lin"],
+                    "focus": ["Ari protects the witness"],
+                },
+                "coverage": {
+                    "featured_character_ids": ["character:lin"],
+                    "unchanged_character_ids": ["character:lin"],
+                    "active_thread_ids": active_threads,
+                    "unchanged_thread_ids": active_threads,
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    semantic_apply(project_config, chapter_number=1, file_path=task.output_file)
 
     db_path = database_path(project_config)
     for path in (db_path, db_path.with_name(f"{db_path.name}-wal"), db_path.with_name(f"{db_path.name}-shm")):

@@ -1,7 +1,14 @@
 schema: quality_profile_v1
 kind: market
 id: qidian_male
+updated_at: "2026-08-02"
+evidence_level: "public_platform_signals_plus_editorial_heuristic"
+source_refs:
+  - "https://www.qidian.com/"
+  - "https://book.qidian.com/honor/1044762088"
+heuristic_notes: "用于起点男频写作适配，不反推推荐算法，不把追读经验变成统一短句、对白率或悬崖门禁。"
 contract:
+  platform_policy: {primary_deviation: P2_advisory, fixed_sentence_template: false, fixed_dialogue_ratio: false, mandatory_cliffhanger: false}
   opening_promise_window: {chapters: 3, requirement: "用具体处境、能力边界或主线异常兑现核心卖点，不用设定说明代替事件。"}
   chapter_duty_distribution: [investigation, conflict, growth_cost, relationship, reveal, aftermath, payoff]
   payoff_cadence: {information: "每1-2章", ability: "以代价换取", status: "阶段性", relationship: "因事件变化", emotion: "允许延迟兑现"}
@@ -13,3 +20,22 @@ contract:
   foreshadow_release: {mode: layered, preserve_core_answer: true}
   ending_distribution: [changed_problem, partial_payoff, closed_scene, reversal, aftermath]
   slow_chapter_policy: {allowed: true, requires_state_change: true}
+phase_overrides:
+  opening:
+    platform_promise: "前三章用事件证明主角处境、核心能力边界和不可轻易解除的长期矛盾。"
+    phase_focus: ["建立主角当下困境", "验证核心卖点的一次真实作用", "形成可持续的长期压力"]
+    opening_promise_window: {chapters: 3, active: true, requirement: "卖点必须进入行动、选择和后果，不以旁白口号或设定清单代替。"}
+  early_serial:
+    platform_promise: "第4-30章验证核心卖点能够重复发展，并建立人物关系杠杆与首个中期承诺。"
+    phase_focus: ["验证开篇承诺可持续", "建立人物关系杠杆", "让局部兑现推动中期矛盾"]
+    payoff_cadence: {information: "稳定小兑现", ability: "收益伴随边界与代价", relationship: "形成可追踪变化", status: "给出首个阶段反馈"}
+  stable_serial:
+    platform_promise: "轮换调查、冲突、成长代价、关系、探索、兑现与余波，保持长线升级而不复制章节模板。"
+    chapter_duty_distribution: [investigation, conflict, growth_cost, relationship, exploration, reveal, payoff, aftermath]
+    ending_distribution: [changed_problem, partial_payoff, closed_scene, reversal, aftermath, quiet_shift]
+  volume_climax:
+    platform_promise: "兑现卷级承诺并留下由既有因果产生的新问题，不用突发外挂替代积累。"
+    phase_focus: ["兑现卷级承诺", "使关键代价不可撤销", "让下一卷问题从本卷结果中生长"]
+  aftermath:
+    platform_promise: "允许完整余波和慢章，但必须改变人物状态、关系、目标或读者认知。"
+    slow_chapter_policy: {allowed: true, requires_state_change: true, valid_changes: [character_state, relationship, goal, reader_knowledge]}

@@ -1,8 +1,0 @@
-{
-  "engine_version": "0.3.0",
-  "schema": "longform_skill_install_v1",
-  "skill_name": "longform-novel-claude",
-  "source": "bundled-wheel-resource",
-  "tool": "claude-code",
-  "tree_hash": "3f17888ad11afa1289c2ebfda2b017de8d9b9a6001119d2a9eb73cb1459ff5c4"
-}

@@ -2,6 +2,10 @@
 
 本文档是 `longform-novel-engine` 对中文网络小说质量、Humanizer 和一等同人工作流的验收标准。`[x]` 表示已有代码与自动测试，`[~]` 表示工具链已具备但仍缺真实章节证据，`[ ]` 表示尚未完成。
 
+通用人物表现与场景化叙事的实现和真实生产证据状态见 [`CHARACTER_EXPRESSION_AND_SCENE_NARRATIVE_CHECKLIST.md`](CHARACTER_EXPRESSION_AND_SCENE_NARRATIVE_CHECKLIST.md)。
+
+章节关系、伏笔、角色记忆、语义摘要与产物精简的统一架构和迁移状态见 [`SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION_CHECKLIST.md`](SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION_CHECKLIST.md)。该清单中十五章回填未完成前，不得把旧项目描述为已经完成统一语义迁移。
+
 下一阶段 Humanizer v4、读者收益验真、平台质量合同、反公式化、编辑独立性、feedback 生命周期与 RAG 规模优化的设计源见 [`CHINESE_WEBNOVEL_QUALITY_OPTIMIZATION_ARCHITECTURE.md`](CHINESE_WEBNOVEL_QUALITY_OPTIMIZATION_ARCHITECTURE.md)。该文档中的设计项在实现和测试完成前不得标记为本 checklist 的已有能力。
 
 产品政策：角色、关系、世界观、力量体系、时间线、续写、前传、AU、原作分歧和 crossover 都允许进入正式创作。权利状态和商业意图只提示、记录和进入 provenance，不阻断任务、校验、定稿或导出。允许同人不等于允许连续来源正文搬运。
@@ -161,6 +165,8 @@
 - [x] `source-attach`、随机盲包、私有映射、独立提交和中位数聚合已实现；公开 manifest 不暴露 run ID。
 - [x] 正式聚合只接受至少三名人工评审，要求不同 reviewer instance/session 并复验来源正文 hash；Agent 自动评分只能诊断。
 - [x] 正式 claim gate 拒绝 diagnostic/self-review、身份泄漏、来源漂移、宿主/场景/模型不一致和缺失 production-model RAG。
+- [x] Codex 原创当前协议已完成 15 章受控生产，其中第 6-15 章为本轮新增；工程记录为零 P0、零 canonical 污染、零最终 `need-human`，并保持文学评分为空。
+- [~] 上述 15 章只证明连续生产、反馈回流和状态边界，没有独立盲评，不能计入正式原创质量胜出证据。
 - [~] 使用公版、用户自有或明确授权样本完成 Codex 5 章同人 smoke。
 - [~] 使用同一设定完成 Claude Code 5 章同人 smoke。
 - [~] 完成 10 章原创质量、同人还原度、AI 味与连续生产成本盲评。

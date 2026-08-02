@@ -163,6 +163,13 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("intelligence", "task", "project.yaml", "--task-type", "book_design"),
         ("intelligence", "validate", "project.yaml", "--task-type", "book_design", "--file", "50_workbench/intelligence_candidates/book_design.project.candidate.json"),
         ("intelligence", "apply", "project.yaml", "--task-type", "book_design", "--file", "50_workbench/intelligence_candidates/book_design.project.candidate.json", "--approved-by", "human"),
+        ("character", "design-task", "project.yaml"),
+        ("character", "design-validate", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_design.project.candidate.json"),
+        ("character", "design-apply", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_design.project.candidate.json", "--approved-by", "human"),
+        ("character", "audit-task", "project.yaml", "--from-chapter", "1", "--to-chapter", "15"),
+        ("character", "audit-validate", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_review.ch001-ch015.candidate.json"),
+        ("character", "audit-apply", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_review.ch001-ch015.candidate.json"),
+        ("character", "samples-approve", "project.yaml", "--file", "50_workbench/character_reviews/voice_samples.json", "--approved-by", "human"),
         ("benchmark", "init", "project.yaml", "--run-id", "smoke-5", "--agent-product", "codex", "--chapters", "5"),
         ("benchmark", "record", "project.yaml", "--run-id", "smoke-5", "--chapter", "1", "--continuity", "4", "--character-consistency", "4", "--foreshadowing-control", "4", "--pacing", "4", "--reader-payoff", "4", "--ai-taste", "2", "--gate-passed", "--context-file-count", "6", "--context-character-count", "18000"),
         ("benchmark", "technical-record", "project.yaml", "--run-id", "formal-10", "--chapter", "1", "--gate-passed", "--context-file-count", "6", "--context-character-count", "18000"),
@@ -518,11 +525,11 @@ def test_cli_chapter_finalize_agent_draft(tmp_path):
     assert submit.returncode == 0, submit.stderr
     assert finalize.returncode == 0, finalize.stderr
     assert "OK: chapter finalized" in finalize.stdout
-    assert "Next command: continue-write --chapter 2" in finalize.stdout
+    assert "Next command: longform-engine chapter semantic-task project.yaml --chapter 1" in finalize.stdout
     assert (tmp_path / "novel" / "40_manuscript" / "final" / "ch001.md").exists()
     assert (tmp_path / "novel" / "40_manuscript" / "final" / "ch001.finalization.json").exists()
     assert (tmp_path / "novel" / "40_manuscript" / "summaries" / "ch001.md").exists()
-    assert (tmp_path / "novel" / "60_rag" / "chunks" / "ch001.json").exists()
+    assert not (tmp_path / "novel" / "60_rag" / "chunks" / "ch001.json").exists()
     assert (tmp_path / "novel" / "60_rag" / "context" / "next_plot_context.md").exists()
 
 
@@ -750,6 +757,28 @@ def test_cli_revision_branch_rollback_and_impact(tmp_path):
     assert payload["current_chapter"] == 1
     assert "rag_chunks" in payload["stale"]
     assert any(item["chapter_number"] == 2 and item["status"] == "detached" for item in payload["chapter_states"])
+
+
+def test_quality_contract_cli_explains_primary_and_compatibility_markets():
+    config = ROOT / "templates" / "qidian-longform" / "project.yaml"
+
+    result = run_cli(
+        "quality",
+        "contract",
+        str(config),
+        "--chapter",
+        "1",
+        "--compare-market",
+        "fanqie_free",
+        "--explain",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Profile: qidian_male + xuanhuan + opening" in result.stdout
+    assert "Merge trace:" in result.stdout
+    assert "market_phase" in result.stdout
+    assert "fanqie_free" in result.stdout
+    assert "non-blocking" in result.stdout
 
 
 def passing_draft_text() -> str:

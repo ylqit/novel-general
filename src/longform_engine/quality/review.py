@@ -13,6 +13,7 @@ from longform_engine.agent_tasks import build_manifest, mark_tasks_for_output, w
 from longform_engine.config import ConfigDocument
 from longform_engine.storage import atomic_write_text, resolve_project_root
 
+from .contracts import compact_effective_quality_contract, compile_effective_quality_contract
 from .history import analyze_structure_pattern, build_structure_observation
 
 
@@ -116,10 +117,13 @@ def reader_payoff_task(
     context_file = task_dir / f"ch{chapter_number:03d}.reader_payoff.context.json"
     card = load_json(card_path, default={})
     text = draft.read_text(encoding="utf-8")
-    write_json(
-        context_file,
-        build_payoff_context(config, root=root, chapter_number=chapter_number, card=card),
+    payoff_context = build_payoff_context(
+        config,
+        root=root,
+        chapter_number=chapter_number,
+        card=card,
     )
+    write_json(context_file, payoff_context)
     schema = payoff_output_template(root, chapter_number, draft, text, card)
     validate_command = (
         f"longform-engine quality payoff-validate project.yaml --chapter {chapter_number} "
@@ -154,9 +158,11 @@ def reader_payoff_task(
                 "## Review Rules",
                 "",
                 "- Cite exact draft spans for duty, reader gain, cost, promise progress, and ending.",
+                "- Check whether the primary platform promise is advanced sustainably; the chapter card is a plan, not proof.",
                 "- Flag fake payoff: restated plans, unearned praise, cost-free victory, information without changed choice, or a generic hook.",
                 "- Describe observed opening, topology, scene type, dialogue acts, emotional curve, payoff position, and ending.",
                 "- Do not demand a battle, reversal, cliffhanger, short sentences, or any fixed chapter template.",
+                "- Compatibility-market observations are non-blocking P2 advice and cannot alone produce repair or need-human.",
                 "",
                 "## Output And Boundaries",
                 "",
@@ -463,18 +469,14 @@ def build_payoff_context(
         )
         if len(related) >= 8:
             break
-    quality = config.data.get("quality", {}) if isinstance(config.data.get("quality"), dict) else {}
-    profile = quality.get("profile") if isinstance(quality.get("profile"), dict) else {}
     return {
         "schema": "reader_payoff_context_v1",
         "chapter_number": chapter_number,
         "previous_reward": compact_previous_reward(previous),
         "related_promises": related,
-        "quality_contract": {
-            "market_profile": str(profile.get("market") or quality.get("market_profile") or ""),
-            "genre_profile": str(profile.get("genre") or quality.get("genre_profile") or ""),
-            "assurance_mode": str(quality.get("assurance_mode") or ""),
-        },
+        "quality_contract": compact_effective_quality_contract(
+            compile_effective_quality_contract(config, chapter_number=chapter_number)
+        ),
         "selection": {
             "previous_reward_limit": 1,
             "related_promise_limit": 8,

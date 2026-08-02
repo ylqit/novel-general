@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.idea/
 .venv/
 venv/
 build/
@@ -20,6 +21,7 @@ novels/
 70_runtime/db/*.sqlite-*
 70_runtime/models/
 70_runtime/benchmarks/
+70_runtime/release/
 novels/*/05_rag/vector_index/
 novels/*/06_runtime/cache/
 novels/*/06_runtime/locks/

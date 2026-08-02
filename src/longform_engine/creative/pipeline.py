@@ -18,7 +18,12 @@ from longform_engine.agent_tasks import (
     mark_tasks_for_output,
     write_manifest,
 )
+from longform_engine.character_expression import character_expression_diagnostics
 from longform_engine.config import ConfigDocument
+from longform_engine.quality import (
+    compact_effective_quality_contract,
+    compile_effective_quality_contract,
+)
 from longform_engine.storage import atomic_write_text, resolve_project_root
 
 
@@ -391,10 +396,8 @@ def style_profile(config: ConfigDocument, *, genre: str, target_audience: str) -
     normalized_genre = normalize_key(genre or "general")
     normalized_audience = normalize_key(target_audience or "general")
     selected = profile_for_genre(genre, target_audience)
-    quality = config.data.get("quality") if isinstance(config.data.get("quality"), dict) else {}
-    profile = quality.get("profile") if isinstance(quality.get("profile"), dict) else {}
-    selected["market_contract"] = market_profile_contract(
-        str(profile.get("market") or quality.get("market_profile") or "general_cn")
+    selected["market_contract"] = compact_effective_quality_contract(
+        compile_effective_quality_contract(config, chapter_number=1)
     )
     matrix = {
         "schema_version": 1,
@@ -567,28 +570,6 @@ def profile_for_genre(genre: str, target_audience: str) -> dict[str, Any]:
     return profile
 
 
-def market_profile_contract(profile: str) -> dict[str, Any]:
-    contracts = {
-        "qidian_male": {
-            "priority": ["causal progression", "earned advantage", "power cost", "longline escalation"],
-            "avoid_universal_rules": ["not every chapter needs a cliffhanger", "combat does not replace consequence"],
-        },
-        "fanqie_free": {
-            "priority": ["early clarity", "frequent concrete gain", "low-friction scene entry", "visible conflict"],
-            "avoid_universal_rules": ["short sentences are not mandatory", "fast pacing must still preserve causality"],
-        },
-        "jinjiang_female": {
-            "priority": ["relationship causality", "voice distinction", "emotional evidence", "agency balance"],
-            "avoid_universal_rules": ["high dialogue ratio is not mandatory", "misunderstanding cannot replace motive"],
-        },
-        "general_cn": {
-            "priority": ["scene change", "character agency", "reader gain", "causal continuity"],
-            "avoid_universal_rules": ["do not force one platform rhythm onto every genre"],
-        },
-    }
-    return contracts.get(profile, contracts["general_cn"])
-
-
 def build_sample_style_profile(text: str) -> dict[str, Any]:
     fingerprint = extracted_style_fingerprint(text)
     return {
@@ -675,13 +656,16 @@ def extracted_style_fingerprint(text: str) -> dict[str, Any]:
     punctuation = sum(text.count(mark) for mark in ",.!?;:\u3002\uff0c\uff01\uff1f\uff1b\uff1a\u3001")
     pov = detect_pov(text)
     action = action_preference(text, total_chars)
+    expression = character_expression_diagnostics(text)
     fingerprint = {
         "paragraph_count": len(paragraphs),
         "sentence_count": len(sentences),
         "avg_sentence_chars": round(mean(sentence_lengths), 2),
         "avg_paragraph_chars": round(mean(paragraph_lengths), 2),
         "paragraph_variance": round(mean_absolute_deviation(paragraph_lengths), 2),
-        "dialogue_ratio": round(dialogue_marks / total_chars, 4),
+        "dialogue_ratio": expression["dialogue_char_ratio"],
+        "dialogue_char_ratio": expression["dialogue_char_ratio"],
+        "dialogue_mark_density": round(dialogue_marks / total_chars, 4),
         "dialogue_paragraph_ratio": round(len(dialogue_paragraphs) / max(1, len(paragraphs)), 4),
         "punctuation_density": round(punctuation / total_chars, 4),
         "sentence_length": length_stats(sentence_lengths),
@@ -884,7 +868,7 @@ def writer_craft_brief(
 
 def humanizer_rules() -> dict[str, Any]:
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "two_pass_workflow": {
             "pass_1_remove_ai_templates": [
                 "删除 TODO、写作说明、作者按、角色定位、prompt 残留和 AI 自述。",
@@ -900,6 +884,9 @@ def humanizer_rules() -> dict[str, Any]:
                 "调整句长节奏：紧张处短句切开，解释处合并，避免等长句排队。",
                 "增强对白差异：每个说话人带不同目的、遮掩、身份压力或关系变化。",
                 "把章末落点改成具体发现、决定、威胁或误解，而不是抽象展望。",
+                "保留人物包声明的感知偏向、决策偏向、话语层级、社交面具和情绪泄漏。",
+                "强化场景中的相反欲望、隐藏议程、不可逆行动和情绪余波，但不得改动 canonical 事实。",
+                "不得用通用口头禅、强加方言、固定外貌段落或统一对白配额来伪造人物差异。",
             ],
         },
         "chinese_issue_catalog": [
@@ -916,6 +903,7 @@ def humanizer_rules() -> dict[str, Any]:
             "humanizer output is a candidate only",
             "candidate must be submitted with draft submit",
             "candidate cannot write final/RAG/graph/memory/db directly",
+            "platform guidance is not a sentence-length, dialogue-ratio, payoff, or cliffhanger quota",
         ],
     }
 
@@ -1157,6 +1145,15 @@ def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = 
         f"longform-engine creative humanize-check project.yaml --chapter {chapter_number} "
         f"--file {relative_path(root, candidate_file)}"
     )
+    quality_contract = compact_effective_quality_contract(
+        compile_effective_quality_contract(config, chapter_number=chapter_number)
+    )
+    contract_body = (
+        quality_contract.get("contract")
+        if isinstance(quality_contract.get("contract"), dict)
+        else {}
+    )
+    compatibility = quality_contract.get("compatibility_observations", [])
     atomic_write_text(
         task_file,
         "\n".join(
@@ -1168,6 +1165,20 @@ def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = 
                 f"- Next command: `{next_command}`",
                 "",
                 "Write a repair/humanized candidate only. Do not edit final manuscripts, RAG, graph, memory, or SQLite.",
+                "",
+                "## Platform Writing Boundary",
+                "",
+                f"- Primary market: {quality_contract.get('primary_market', '')}",
+                f"- Story phase: {quality_contract.get('phase', '')}",
+                f"- Platform promise: {contract_body.get('platform_promise', '')}",
+                f"- Blocking policy: {json.dumps(quality_contract.get('blocking_policy', {}), ensure_ascii=False)}",
+                "- Platform guidance may improve expression and scene entry, but cannot change canon, causality, or character intent.",
+                "- Do not optimize sentence length, dialogue ratio, payoff count, or cliffhanger endings as fixed platform quotas.",
+                *[
+                    f"- Advisory only [{item.get('market', '')}/{item.get('code', '')}]: {item.get('message', '')}"
+                    for item in compatibility[:3]
+                    if isinstance(item, dict)
+                ],
                 "",
                 "## Pass 1: 中文 AI 痕迹清理",
                 "",
@@ -2418,7 +2429,25 @@ def reader_experience_review(
     warnings: list[str] = []
     lower = text.lower()
     payoff_markers = ("payoff", "won", "choice", "cost", "clue", "truth", "发现", "选择", "代价", "线索", "收获")
-    hook_markers = ("?", "？", "but", "however", "suddenly", "忽然", "可是", "然而", "门外", "下一刻")
+    hook_markers = (
+        "?",
+        "？",
+        "but",
+        "however",
+        "suddenly",
+        "忽然",
+        "可是",
+        "然而",
+        "门外",
+        "下一刻",
+        "只剩",
+        "来不及",
+        "截止",
+        "期限",
+        "封库",
+        "必须在",
+        "赶在",
+    )
     if tier == "fast" and len(re.findall(r"(fight|kill|explode|truth|reveal|决战|爆发|真相|揭露|杀)", lower)) >= 4:
         warnings.append("continuous high-intensity beats need a buffer or cost beat")
     if not any(marker in lower for marker in payoff_markers):

@@ -117,8 +117,9 @@ def test_finalize_applies_submitted_candidate_and_supersedes_unused_repair(tmp_p
     assert manifests["chapter_write:ch001:v1"]["status"] == "applied"
     assert manifests["repair:ch001:unused"]["status"] == "superseded"
     next_action = production_next(config)
-    assert next_action["status"] == "ready_for_continue_write"
-    assert next_action["chapter_number"] == 2
+    assert next_action["status"] == "ready_for_chapter_semantic_task"
+    assert next_action["chapter_number"] == 1
+    assert next_action["task_type"] == "chapter_semantic"
 
 
 def test_agent_task_manifests_for_repair_humanizer_graph_and_character_memory(tmp_path):
@@ -398,7 +399,7 @@ def test_semantic_pacing_apply_updates_gate_only_and_blocks_on_p1(tmp_path):
     assert any(item["code"] == "semantic_pacing:tail_hook_collapses" for item in gate["failures"])
     reports = transaction_payloads(root, "pacing semantic-apply")
     assert reports
-    assert "50_workbench/gate_artifacts/ch001/gate_result.json" in reports[-1]["touched_paths"]
+    assert "50_workbench/gate_artifacts/ch001" in reports[-1]["touched_paths"]
     assert reports[-1]["metadata"]["gate_artifact_only"] is True
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
     assert not any(json.loads((root / "30_state" / "story_graph.json").read_text(encoding="utf-8")).get(key) for key in ("entities", "events"))

@@ -12,6 +12,7 @@ import re
 
 from longform_engine.agent_tasks import build_manifest, mark_tasks_for_output, write_manifest
 from longform_engine.config import ConfigDocument
+from longform_engine.character_expression import character_expression_diagnostics
 from longform_engine.creative import creative_repair_guidance, detect_humanizer_v2_issues, reader_experience_review
 from longform_engine.db import sync_database
 from longform_engine.graph import check_graph
@@ -1393,6 +1394,13 @@ def has_tail_suspense(text: str) -> bool:
         "秘密",
         "线索",
         "没有结束",
+        "只剩",
+        "来不及",
+        "截止",
+        "期限",
+        "封库",
+        "必须在",
+        "赶在",
     )
     return any(marker in tail for marker in markers)
 
@@ -1400,6 +1408,14 @@ def has_tail_suspense(text: str) -> bool:
 def check_style_and_humanizer(config: ConfigDocument, text: str) -> tuple[list[dict[str, Any]], list[str]]:
     metrics = style_fingerprint(text)
     humanize = humanizer_metrics(text)
+    root = resolve_project_root(config)
+    characters = load_json(root / "10_bible" / "characters.json", default=[])
+    character_names = [
+        str(item.get("name"))
+        for item in characters
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    ] if isinstance(characters, list) else []
+    expression_diagnostics = character_expression_diagnostics(text, character_names=character_names)
     humanizer_issues, humanizer_warnings = detect_humanizer_v2_issues(text)
     failures: list[dict[str, Any]] = []
     warnings: list[str] = list(humanizer_warnings)
@@ -1425,8 +1441,17 @@ def check_style_and_humanizer(config: ConfigDocument, text: str) -> tuple[list[d
         warnings.append(f"summary-heavy prose ratio is high: {humanize['summary_heavy_ratio']:.2f}")
     if humanize["template_repetition_score"] >= 0.35:
         warnings.append(f"repeated sentence/template score is high: {humanize['template_repetition_score']:.2f}")
-    if metrics["dialogue_ratio"] < 0.01:
+    expression_profile = load_json(root / "10_bible" / "character_expression.json", default={})
+    narrative_profile = (
+        expression_profile.get("narrative_expression_profile")
+        if isinstance(expression_profile, dict)
+        and isinstance(expression_profile.get("narrative_expression_profile"), dict)
+        else {}
+    )
+    if metrics["dialogue_char_ratio"] < 0.01 and narrative_profile.get("dialogue_mode") != "sparse":
         warnings.append("dialogue ratio is very low; verify scene dramatization.")
+    for risk in expression_diagnostics["risks"]:
+        warnings.append(f"{risk['code']}: {risk['message']}")
     if metrics["punctuation_density"] > 0.18:
         warnings.append("punctuation density is high; verify rhythm and readability.")
     if metrics["paragraph_variance"] < 8 and metrics["paragraph_count"] >= 5:
@@ -1527,13 +1552,16 @@ def style_fingerprint(text: str) -> dict[str, Any]:
     punctuation = sum(text.count(mark) for mark in "，。！？；：,.!?;:")
     total_chars = max(1, len(re.sub(r"\s+", "", text)))
     repeated_phrases = repeated_ngram_count(text)
+    expression = character_expression_diagnostics(text)
     return {
         "paragraph_count": len(paragraphs),
         "sentence_count": len(sentences),
         "avg_sentence_chars": round(avg_sentence, 2),
         "avg_paragraph_chars": round(avg_paragraph, 2),
         "paragraph_variance": round(variance, 2),
-        "dialogue_ratio": round(dialogue_marks / total_chars, 4),
+        "dialogue_ratio": expression["dialogue_char_ratio"],
+        "dialogue_char_ratio": expression["dialogue_char_ratio"],
+        "dialogue_mark_density": round(dialogue_marks / total_chars, 4),
         "punctuation_density": round(punctuation / total_chars, 4),
         "repeated_phrase_count": repeated_phrases,
     }
@@ -1737,6 +1765,14 @@ def write_artifact_reports(
     active_style = load_active_style_profile(artifact_dir.parents[2]) if len(artifact_dir.parents) >= 3 else {}
     style_issues = [failure for failure in failures if failure.get("code") == "style_drift"]
     humanize = humanizer_metrics(text)
+    characters = load_json(artifact_dir.parents[2] / "10_bible" / "characters.json", default={}) if len(artifact_dir.parents) >= 3 else []
+    character_names = [
+        str(item.get("name"))
+        for item in characters
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    ] if isinstance(characters, list) else []
+    expression_diagnostics = character_expression_diagnostics(text, character_names=character_names)
+    humanize["character_expression"] = expression_diagnostics
     humanizer_issues, humanizer_warnings = detect_humanizer_v2_issues(text)
     humanize["issues"] = humanizer_issues
     humanize["warnings"] = humanizer_warnings
@@ -1810,7 +1846,11 @@ def write_artifact_reports(
                 "- repeated templates",
                 "- summary-heavy prose",
                 "- duplicate paragraph ratio",
-                "- dialogue sameness risk",
+                f"- dialogue sameness risk: {expression_diagnostics['swapability_risk']}",
+                f"- dialogue attribution coverage: {expression_diagnostics['attribution_coverage']}",
+                f"- dialogue exposition ratio: {expression_diagnostics['dialogue_exposition_ratio']}",
+                f"- embodied presence density: {expression_diagnostics['embodiment_term_density']}",
+                f"- interiority density: {expression_diagnostics['interiority_term_density']}",
                 "",
             ]
         ),

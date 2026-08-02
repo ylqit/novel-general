@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+from hashlib import sha256
 from pathlib import Path
 
 from longform_engine.config import load_project_config
@@ -79,6 +80,7 @@ def test_e2e_agent_skill_no_api_key_full_chapter_lifecycle(tmp_path):
         "codex",
     )
     finalize = run_cli("chapter", "finalize", str(project_yaml), "--chapter", "1", "--approved-by", "human")
+    semantic = complete_unified_semantic_lifecycle(project_dir, project_yaml, "AGENTSKILLFINALMARKER")
     rebuild = run_cli("db", "rebuild", str(project_yaml))
     db_status = run_cli("db", "status", str(project_yaml), "--json")
     chapters = run_cli("db", "query", str(project_yaml), "chapters", "--json")
@@ -103,7 +105,9 @@ def test_e2e_agent_skill_no_api_key_full_chapter_lifecycle(tmp_path):
     assert "Passed: True" in submit.stdout
     assert finalize.returncode == 0, finalize.stderr
     assert "OK: chapter finalized" in finalize.stdout
-    assert "Next command: continue-write --chapter 2" in finalize.stdout
+    assert "Next command: longform-engine chapter semantic-task project.yaml --chapter 1" in finalize.stdout
+    assert semantic["close"].returncode == 0, semantic["close"].stderr
+    assert "Next command: longform-engine continue-write project.yaml --chapter 2" in semantic["close"].stdout
     assert rebuild.returncode == 0, rebuild.stderr
     assert "OK: database rebuilt" in rebuild.stdout
 
@@ -114,7 +118,7 @@ def test_e2e_agent_skill_no_api_key_full_chapter_lifecycle(tmp_path):
     assert (project_dir / "40_manuscript" / "final" / "ch001.finalization.json").exists()
     assert (project_dir / "60_rag" / "chunks" / "ch001.json").exists()
     assert context_file.exists()
-    assert "AGENTSKILLFINALMARKER" in context_file.read_text(encoding="utf-8")
+    assert "Ari protects the North Gate witness" in context_file.read_text(encoding="utf-8")
 
     graph = json.loads(graph_file.read_text(encoding="utf-8"))
     assert any(event.get("chapter_number") == 1 for event in graph["events"])
@@ -483,7 +487,111 @@ def finalized_agent_skill_project(tmp_path, name: str, marker: str) -> tuple[Pat
     assert submit.returncode == 0, submit.stdout + submit.stderr
     assert finalize.returncode == 0, finalize.stderr
     assert (project_dir / "40_manuscript" / "final" / "ch001.md").exists()
+    semantic = complete_unified_semantic_lifecycle(project_dir, project_yaml, marker)
+    assert semantic["apply"].returncode == 0, semantic["apply"].stdout + semantic["apply"].stderr
+    assert semantic["close"].returncode == 0, semantic["close"].stdout + semantic["close"].stderr
     return project_dir, project_yaml
+
+
+def complete_unified_semantic_lifecycle(project_dir: Path, project_yaml: Path, marker: str) -> dict[str, subprocess.CompletedProcess[str]]:
+    task = run_cli("chapter", "semantic-task", str(project_yaml), "--chapter", "1")
+    final = project_dir / "40_manuscript" / "final" / "ch001.md"
+    text = final.read_text(encoding="utf-8")
+    start = text.index(marker)
+    sentence_end = text.find(".", start)
+    end = sentence_end + 1 if sentence_end >= start else min(len(text), start + len(marker))
+    evidence = {"start": start, "end": end, "excerpt": text[start:end]}
+    planned_threads = json.loads((project_dir / "20_outline" / "foreshadowing_ledger.json").read_text(encoding="utf-8"))
+    active_thread_ids = [
+        str(item.get("thread_id") or item.get("id"))
+        for item in planned_threads
+        if isinstance(item, dict)
+        and int(item.get("plant_chapter") or 1) <= 1
+        and str(item.get("thread_id") or item.get("id") or "")
+    ]
+    output = project_dir / "50_workbench" / "semantic_tasks" / "ch001.semantic.json"
+    output.write_text(
+        json.dumps(
+            {
+                "schema": "chapter_semantic_bundle_v1",
+                "chapter_number": 1,
+                "source": {
+                    "path": "40_manuscript/final/ch001.md",
+                    "sha256": sha256(text.encode("utf-8")).hexdigest(),
+                },
+                "chapter_digest": {
+                    "summary": "Ari protects the North Gate witness and keeps the unresolved gate pressure alive.",
+                    "causal_change": "Ari's choice turns witness protection into an active obligation.",
+                    "reader_payoff": "The witness survives and the sealed gate opens from inside.",
+                    "cost": "Ari accepts the harder road and remains exposed at North Gate.",
+                },
+                "scenes": [
+                    {
+                        "scene_id": "ch001:scene:1",
+                        **evidence,
+                        "participants": ["character:ari"],
+                        "location_id": "location:north_gate",
+                        "goal": "protect the witness",
+                        "outcome": "the witness survives while the gate threat remains",
+                    }
+                ],
+                "events": [
+                    {
+                        "event_id": "event:ari_protects_witness",
+                        "title": "Ari protects the North Gate witness",
+                        "participants": ["character:ari"],
+                        "locations": ["location:north_gate"],
+                        "consequences": "The witness survives and the sealed gate becomes the next pressure.",
+                        "evidence": evidence,
+                    }
+                ],
+                "relationship_deltas": [],
+                "character_deltas": [
+                    {
+                        "character_id": "character:ari",
+                        "status": "active",
+                        "goal": "protect the witness",
+                        "emotion": "resolved under pressure",
+                        "beliefs_added": ["The witness must survive before the larger conflict can move."],
+                        "beliefs_removed": [],
+                        "knowledge_gained": [
+                            {"fact": "The sealed gate can open from inside.", "route": "observed", "evidence": evidence}
+                        ],
+                        "knowledge_removed": [],
+                        "commitments_added": ["protect the witness"],
+                        "commitments_removed": [],
+                        "abilities_added": [],
+                        "abilities_removed": [],
+                        "inventory_added": [],
+                        "inventory_removed": [],
+                        "evidence": evidence,
+                    }
+                ],
+                "foreshadow_deltas": [],
+                "world_deltas": [],
+                "timeline_deltas": [],
+                "retrieval": {
+                    "tags": ["North Gate", "witness"],
+                    "entity_ids": ["character:ari", "location:north_gate"],
+                    "focus": ["witness protection", "sealed gate"],
+                },
+                "coverage": {
+                    "featured_character_ids": ["character:ari"],
+                    "unchanged_character_ids": [],
+                    "active_thread_ids": active_thread_ids,
+                    "unchanged_thread_ids": active_thread_ids,
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    validate = run_cli("chapter", "semantic-validate", str(project_yaml), "--chapter", "1", "--file", str(output))
+    apply = run_cli("chapter", "semantic-apply", str(project_yaml), "--chapter", "1", "--file", str(output))
+    close = run_cli("chapter", "close", str(project_yaml), "--chapter", "1", "--approved-by", "human")
+    return {"task": task, "validate": validate, "apply": apply, "close": close}
 
 
 def semantic_graph_event_payload(evidence: str) -> dict:

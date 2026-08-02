@@ -1,7 +1,14 @@
 schema: quality_profile_v1
 kind: market
 id: fanqie_free
+updated_at: "2026-08-02"
+evidence_level: "public_platform_guidance_plus_editorial_heuristic"
+source_refs:
+  - "https://fanqienovel.com/writer/zone/article/7659317147297923134"
+  - "https://fanqienovel.com/writer/zone/article/7602553801446260761"
+heuristic_notes: "用于免费阅读写作适配与非阻断兼容观察，不模拟或反推推荐验证算法。"
 contract:
+  platform_policy: {primary_deviation: P2_advisory, fixed_sentence_template: false, fixed_dialogue_ratio: false, mandatory_cliffhanger: false}
   opening_promise_window: {chapters: 2, requirement: "尽早给出可识别困境和阅读收益，但不靠空泛强刺激。"}
   chapter_duty_distribution: [conflict, information, relationship, payoff, reversal, aftermath]
   payoff_cadence: {information: "高频小兑现", ability: "短周期见效且保留代价", status: "清晰可感", relationship: "持续推进", emotion: "场景内可感"}
@@ -13,3 +20,31 @@ contract:
   foreshadow_release: {mode: frequent_partial, preserve_core_answer: true}
   ending_distribution: [changed_problem, immediate_question, partial_payoff, closed_scene]
   slow_chapter_policy: {allowed: true, requires_state_change: true, max_consecutive: 2}
+phase_overrides:
+  opening:
+    platform_promise: "前两章让读者识别主角困境、阅读收益和下一步压力，不依赖空泛刺激。"
+    opening_promise_window: {chapters: 2, active: true, requirement: "低摩擦进入当下事件，并在场景内提供可识别收益。"}
+  early_serial:
+    platform_promise: "用高频小兑现证明核心卖点可持续，同时保留因果、代价和人物主体性。"
+    payoff_cadence: {information: "高频小兑现", ability: "短周期见效且保留代价", relationship: "持续但有触发地推进", status: "清晰可感"}
+  stable_serial:
+    platform_promise: "维持具体冲突与清晰收益，轮换职责，避免连续复制同一种强刺激。"
+  volume_climax:
+    platform_promise: "集中兑现阶段承诺，同时保留下一阶段可理解的具体问题。"
+  aftermath:
+    platform_promise: "余波章仍需产生可感状态变化，不用总结替代人物反应。"
+compatibility_guidance:
+  - field: opening_promise_window
+    code: fanqie_opening_clarity
+    phases: [opening]
+    message: "番茄兼容观察：检查开篇能否更早识别主角困境、阅读收益和下一步压力；这只是P2提示。"
+  - field: payoff_cadence
+    code: fanqie_concrete_payoff
+    message: "番茄兼容观察：检查本章收益是否具体可感并改变后续选择；不得用无代价碾压替代。"
+  - field: scene_entry_friction
+    code: fanqie_scene_entry_friction
+    message: "番茄兼容观察：检查场景进入是否被回顾、设定说明或静态铺垫拖慢；不强制短句。"
+  - field: slow_chapter_policy
+    code: fanqie_slow_chapter_state_change
+    phases: [early_serial, stable_serial, aftermath]
+    message: "番茄兼容观察：连续慢章仍需改变人物状态、关系或读者认知；不要求每章悬崖。"

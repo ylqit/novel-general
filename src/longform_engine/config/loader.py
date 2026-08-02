@@ -85,9 +85,15 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
         },
     },
     "quality": {
-        "market_profile": "qidian_male",
-        "genre_profile": "xuanhuan",
         "assurance_mode": "balanced",
+        "profile": {
+            "market": "qidian_male",
+            "compatibility_markets": ["fanqie_free"],
+            "genre": "xuanhuan",
+            "phase": "auto",
+            "strictness": "balanced",
+            "overrides": {},
+        },
         "semantic_review_milestones": [1, 3, 10, 30],
         "semantic_review_boundaries": True,
         "reader_payoff": {
@@ -343,6 +349,15 @@ def validate_config(data: dict[str, Any]) -> None:
     market_profile = str(profile.get("market") or quality.get("market_profile") or "").strip()
     if market_profile not in MARKET_PROFILES:
         raise ConfigError(f"quality.profile.market must be one of: {', '.join(sorted(MARKET_PROFILES))}")
+    compatibility_markets = profile.get("compatibility_markets", [])
+    if not isinstance(compatibility_markets, list):
+        raise ConfigError("quality.profile.compatibility_markets must be a list")
+    for item in compatibility_markets:
+        compatibility_market = str(item).strip() if isinstance(item, str) else ""
+        if compatibility_market not in MARKET_PROFILES:
+            raise ConfigError(
+                f"quality.profile.compatibility_markets must contain only: {', '.join(sorted(MARKET_PROFILES))}"
+            )
     genre_profile = str(profile.get("genre") or quality.get("genre_profile") or "").strip()
     if genre_profile not in GENRE_PROFILES:
         raise ConfigError(f"quality.profile.genre must be one of: {', '.join(sorted(GENRE_PROFILES))}")
@@ -355,6 +370,15 @@ def validate_config(data: dict[str, Any]) -> None:
     overrides = profile.get("overrides", {})
     if not isinstance(overrides, dict):
         raise ConfigError("quality.profile.overrides must be a mapping")
+    platform_policy = overrides.get("platform_policy", {})
+    if platform_policy is not None and not isinstance(platform_policy, dict):
+        raise ConfigError("quality.profile.overrides.platform_policy must be a mapping")
+    primary_deviation = str(platform_policy.get("primary_deviation") or "P2_advisory")
+    if primary_deviation not in {"P2_advisory", "P1_blocking"}:
+        raise ConfigError(
+            "quality.profile.overrides.platform_policy.primary_deviation must be one of: "
+            "P2_advisory, P1_blocking"
+        )
     assurance_mode = str(quality.get("assurance_mode") or "").strip()
     if assurance_mode not in {"light", "balanced", "strict"}:
         raise ConfigError("quality.assurance_mode must be one of: light, balanced, strict")

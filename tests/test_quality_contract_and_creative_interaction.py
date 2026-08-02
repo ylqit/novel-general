@@ -87,7 +87,8 @@ def test_effective_quality_contract_merges_resource_layers_and_project_override(
                         "slow_chapter_policy": {
                             "allowed": True,
                             "project_reason": "A quiet witness chapter is intentional.",
-                        }
+                        },
+                        "ending_distribution": ["quiet_shift"],
                     },
                 }
             },
@@ -105,8 +106,16 @@ def test_effective_quality_contract_merges_resource_layers_and_project_override(
     assert contract["strictness"] == "strict"
     assert contract["contract"]["foreshadow_release"]["preserve_core_answer"] is True
     assert contract["contract"]["slow_chapter_policy"]["project_reason"].startswith("A quiet")
-    assert [item["kind"] for item in contract["sources"]] == ["market", "genre", "phase"]
+    assert [item["kind"] for item in contract["sources"]] == [
+        "market",
+        "genre",
+        "phase",
+        "market_phase",
+    ]
     assert all(len(item["sha256"]) == 64 for item in contract["sources"])
+    assert contract["contract"]["ending_distribution"] == ["quiet_shift"]
+    assert "ending_distribution" in contract["overridden_fields"]
+    assert [item["layer"] for item in contract["merge_trace"]] == contract["merge_order"]
     assert contract["approved_style_baseline"]["auto_expand"] is False
 
 

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from longform_engine import __version__
+from longform_engine.artifacts import artifact_status, compact_artifacts, restore_artifacts, verify_artifacts
 from longform_engine.benchmark import (
     compare_benchmarks,
     init_benchmark,
@@ -25,6 +26,7 @@ from longform_engine.blind_review import (
     create_blind_review_template,
     submit_blind_review,
 )
+from longform_engine.character_expression import approve_voice_samples
 
 from longform_engine.agent_tasks import (
     build_manifest,
@@ -159,6 +161,10 @@ from longform_engine.revision import (
     rollback_impact,
 )
 from longform_engine.storage import atomic_write_text, acquire_project_lock, init_project, resolve_project_root, snapshot_project
+from longform_engine.semantic import chapter_close, semantic_apply as chapter_semantic_apply
+from longform_engine.semantic import semantic_rebuild as chapter_semantic_rebuild
+from longform_engine.semantic import semantic_task as chapter_semantic_task
+from longform_engine.semantic import semantic_validate as chapter_semantic_validate
 from longform_engine.vectorstore import healthcheck as vector_healthcheck, rebuild_from_files as vector_rebuild
 
 
@@ -556,6 +562,79 @@ def build_parser() -> argparse.ArgumentParser:
     intelligence_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     intelligence_apply.set_defaults(func=cmd_intelligence_apply)
 
+    character_expression = subparsers.add_parser(
+        "character",
+        help="Design and audit project-level character expression contracts.",
+    )
+    character_expression_subparsers = character_expression.add_subparsers(
+        dest="character_expression_command",
+        required=True,
+    )
+    character_design_task = character_expression_subparsers.add_parser(
+        "design-task",
+        help="Create a character_expression_profile_v1 Agent task.",
+    )
+    character_design_task.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    character_design_task.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    character_design_task.set_defaults(func=cmd_character_design_task)
+
+    character_design_validate = character_expression_subparsers.add_parser(
+        "design-validate",
+        help="Validate a character expression profile without Bible writes.",
+    )
+    character_design_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    character_design_validate.add_argument("--file", required=True, help="character_expression_profile_v1 candidate JSON.")
+    character_design_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    character_design_validate.set_defaults(func=cmd_character_design_validate)
+
+    character_design_apply = character_expression_subparsers.add_parser(
+        "design-apply",
+        help="Apply a validated character expression profile with explicit human approval.",
+    )
+    character_design_apply.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    character_design_apply.add_argument("--file", required=True, help="Validated character expression candidate JSON.")
+    character_design_apply.add_argument("--approved-by", required=True, choices=["human"])
+    character_design_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    character_design_apply.set_defaults(func=cmd_character_design_apply)
+
+    character_audit_task = character_expression_subparsers.add_parser(
+        "audit-task",
+        help="Create an evidence-bound cross-chapter character performance review task.",
+    )
+    character_audit_task.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    character_audit_task.add_argument("--from-chapter", type=positive_int_arg, required=True)
+    character_audit_task.add_argument("--to-chapter", type=positive_int_arg, required=True)
+    character_audit_task.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    character_audit_task.set_defaults(func=cmd_character_audit_task)
+
+    character_audit_validate = character_expression_subparsers.add_parser(
+        "audit-validate",
+        help="Validate review coverage, current hashes, and every cited source span.",
+    )
+    character_audit_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    character_audit_validate.add_argument("--file", required=True, help="character_expression_review_v1 candidate JSON.")
+    character_audit_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    character_audit_validate.set_defaults(func=cmd_character_audit_validate)
+
+    character_audit_apply = character_expression_subparsers.add_parser(
+        "audit-apply",
+        help="Archive a validated review under workbench without canonical story writes.",
+    )
+    character_audit_apply.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    character_audit_apply.add_argument("--file", required=True, help="Validated character expression review JSON.")
+    character_audit_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    character_audit_apply.set_defaults(func=cmd_character_audit_apply)
+
+    character_samples_approve = character_expression_subparsers.add_parser(
+        "samples-approve",
+        help="Approve exact final-chapter spans as bounded positive/negative voice examples.",
+    )
+    character_samples_approve.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    character_samples_approve.add_argument("--file", required=True, help="character_voice_sample_approval_v1 JSON.")
+    character_samples_approve.add_argument("--approved-by", required=True, choices=["human"])
+    character_samples_approve.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    character_samples_approve.set_defaults(func=cmd_character_samples_approve)
+
     fanfiction = subparsers.add_parser("fanfiction", help="Manage first-class canon-aware fanfiction workflows.")
     fanfiction_subparsers = fanfiction.add_subparsers(dest="fanfiction_command", required=True)
 
@@ -809,6 +888,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     quality_contract_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     quality_contract_cmd.add_argument("--chapter", type=positive_int_arg, required=True)
+    quality_contract_cmd.add_argument(
+        "--compare-market",
+        action="append",
+        default=[],
+        help="Add a non-blocking compatibility market view. Repeat for multiple markets.",
+    )
+    quality_contract_cmd.add_argument(
+        "--explain",
+        action="store_true",
+        help="Print merge precedence, overridden fields, compatibility observations, and blocking policy.",
+    )
     quality_contract_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     quality_contract_cmd.set_defaults(func=cmd_quality_contract)
 
@@ -1117,6 +1207,81 @@ def build_parser() -> argparse.ArgumentParser:
     chapter_finalize.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     chapter_finalize.set_defaults(func=cmd_chapter_finalize)
 
+    chapter_semantic_task_cmd = chapter_subparsers.add_parser(
+        "semantic-task",
+        help="Create one unified evidence-bound semantic task for a finalized chapter.",
+    )
+    chapter_semantic_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    chapter_semantic_task_cmd.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
+    chapter_semantic_task_cmd.add_argument("--backfill", action="store_true", help="Create a compatibility backfill task.")
+    chapter_semantic_task_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    chapter_semantic_task_cmd.set_defaults(func=cmd_chapter_semantic_task)
+
+    chapter_semantic_validate_cmd = chapter_subparsers.add_parser(
+        "semantic-validate",
+        help="Validate chapter_semantic_bundle_v1 against final prose and current state.",
+    )
+    chapter_semantic_validate_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    chapter_semantic_validate_cmd.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
+    chapter_semantic_validate_cmd.add_argument("--file", required=True, help="Agent semantic JSON under 50_workbench/.")
+    chapter_semantic_validate_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    chapter_semantic_validate_cmd.set_defaults(func=cmd_chapter_semantic_validate)
+
+    chapter_semantic_apply_cmd = chapter_subparsers.add_parser(
+        "semantic-apply",
+        help="Apply a validated semantic bundle and rebuild materialized views.",
+    )
+    chapter_semantic_apply_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    chapter_semantic_apply_cmd.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
+    chapter_semantic_apply_cmd.add_argument("--file", required=True, help="Validated semantic JSON under 50_workbench/.")
+    chapter_semantic_apply_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    chapter_semantic_apply_cmd.set_defaults(func=cmd_chapter_semantic_apply)
+
+    chapter_semantic_rebuild_cmd = chapter_subparsers.add_parser(
+        "semantic-rebuild",
+        help="Rebuild graph, current views, TCS, RAG, and SQLite from canonical semantic ledgers.",
+    )
+    chapter_semantic_rebuild_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    chapter_semantic_rebuild_cmd.add_argument("--through", type=int, required=True, help="Last continuous ledger chapter.")
+    chapter_semantic_rebuild_cmd.add_argument("--approved-by", required=True, help="Reviewer approving materialized-view rebuild.")
+    chapter_semantic_rebuild_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    chapter_semantic_rebuild_cmd.set_defaults(func=cmd_chapter_semantic_rebuild)
+
+    chapter_close_cmd = chapter_subparsers.add_parser(
+        "close",
+        help="Close a materialized chapter and archive artifacts outside the active buffer.",
+    )
+    chapter_close_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    chapter_close_cmd.add_argument("--chapter", type=int, required=True, help="Chapter number.")
+    chapter_close_cmd.add_argument("--approved-by", required=True, help="Reviewer identity approving close.")
+    chapter_close_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    chapter_close_cmd.set_defaults(func=cmd_chapter_close)
+
+    artifacts = subparsers.add_parser("artifacts", help="Inspect, compact, verify, and restore chapter audit artifacts.")
+    artifacts_subparsers = artifacts.add_subparsers(dest="artifacts_command", required=True)
+    artifacts_status_cmd = artifacts_subparsers.add_parser("status", help="Report loose files, archives, and committed snapshots.")
+    artifacts_status_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    artifacts_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    artifacts_status_cmd.set_defaults(func=cmd_artifacts_status)
+
+    artifacts_compact_cmd = artifacts_subparsers.add_parser("compact", help="Archive chapter workbench artifacts and clean committed snapshots.")
+    artifacts_compact_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    artifacts_compact_cmd.add_argument("--through", type=int, required=True, help="Archive chapters through this number.")
+    artifacts_compact_cmd.add_argument("--dry-run", action="store_true", help="Only report candidates; do not write or delete.")
+    artifacts_compact_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    artifacts_compact_cmd.set_defaults(func=cmd_artifacts_compact)
+
+    artifacts_verify_cmd = artifacts_subparsers.add_parser("verify", help="Verify archive and entry hashes.")
+    artifacts_verify_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    artifacts_verify_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    artifacts_verify_cmd.set_defaults(func=cmd_artifacts_verify)
+
+    artifacts_restore_cmd = artifacts_subparsers.add_parser("restore", help="Restore one chapter archive without overwriting changed files.")
+    artifacts_restore_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    artifacts_restore_cmd.add_argument("--chapter", type=int, required=True, help="Archived chapter number.")
+    artifacts_restore_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    artifacts_restore_cmd.set_defaults(func=cmd_artifacts_restore)
+
     gate = subparsers.add_parser("gate-check", help="Run deterministic chapter gates.")
     gate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     gate.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
@@ -1356,6 +1521,13 @@ def build_parser() -> argparse.ArgumentParser:
         auto_report,
         draft_submit,
         chapter_finalize,
+        chapter_semantic_task_cmd,
+        chapter_semantic_validate_cmd,
+        chapter_semantic_apply_cmd,
+        chapter_semantic_rebuild_cmd,
+        chapter_close_cmd,
+        artifacts_compact_cmd,
+        artifacts_restore_cmd,
         gate,
         semantic_gate_task_cmd,
         semantic_gate_validate_cmd,
@@ -1385,6 +1557,13 @@ def build_parser() -> argparse.ArgumentParser:
         intelligence_task,
         intelligence_validate,
         intelligence_apply,
+        character_design_task,
+        character_design_validate,
+        character_design_apply,
+        character_audit_task,
+        character_audit_validate,
+        character_audit_apply,
+        character_samples_approve,
         baseline_approve_cmd,
         feedback_status_cmd,
         feedback_resolve_cmd,
@@ -2443,6 +2622,61 @@ def cmd_intelligence_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_character_design_task(args: argparse.Namespace) -> int:
+    args.task_type = "character_expression_design"
+    args.input_files = []
+    args.chapter = None
+    args.from_chapter = None
+    args.to_chapter = None
+    return cmd_intelligence_task(args)
+
+
+def cmd_character_design_validate(args: argparse.Namespace) -> int:
+    args.task_type = "character_expression_design"
+    return cmd_intelligence_validate(args)
+
+
+def cmd_character_design_apply(args: argparse.Namespace) -> int:
+    args.task_type = "character_expression_design"
+    return cmd_intelligence_apply(args)
+
+
+def cmd_character_audit_task(args: argparse.Namespace) -> int:
+    args.task_type = "character_expression_review"
+    args.input_files = []
+    args.chapter = None
+    return cmd_intelligence_task(args)
+
+
+def cmd_character_audit_validate(args: argparse.Namespace) -> int:
+    args.task_type = "character_expression_review"
+    return cmd_intelligence_validate(args)
+
+
+def cmd_character_audit_apply(args: argparse.Namespace) -> int:
+    args.task_type = "character_expression_review"
+    args.approved_by = None
+    return cmd_intelligence_apply(args)
+
+
+def cmd_character_samples_approve(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = approve_voice_samples(
+        resolve_project_root(config),
+        file_path=args.file,
+        approved_by=args.approved_by,
+    )
+    payload = asdict(result)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: character voice samples approved")
+        print(f"Samples: {result.sample_count}")
+        print(f"Profile: {result.profile_file}")
+        print(f"Transaction: {result.transaction_report}")
+    return 0
+
+
 def cmd_fanfiction_canon_task(args: argparse.Namespace) -> int:
     args.task_type = "fanfiction_canon"
     args.from_chapter = None
@@ -2804,20 +3038,42 @@ def cmd_quality_payoff_task(args: argparse.Namespace) -> int:
 
 def cmd_quality_contract(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    payload = compile_effective_quality_contract(config, chapter_number=args.chapter)
+    payload = compile_effective_quality_contract(
+        config,
+        chapter_number=args.chapter,
+        compare_markets=getattr(args, "compare_market", []),
+    )
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print("OK: effective quality contract compiled")
         print(f"Chapter: {args.chapter}")
         print(
-            f"Profile: {payload['market']} + {payload['genre']} + {payload['phase']} "
+            f"Profile: {payload['primary_market']} + {payload['genre']} + {payload['phase']} "
             f"[{payload['strictness']}]"
         )
+        print(
+            "Platform deviations: "
+            f"{payload['blocking_policy']['primary_deviation']} "
+            f"(can block: {str(payload['blocking_policy']['primary_can_block']).lower()})"
+        )
+        print(f"Compatibility observations: {len(payload['compatibility_observations'])} (always advisory)")
         print(
             "Approved baseline chapters: "
             + ", ".join(str(item) for item in payload["approved_style_baseline"]["approved_chapters"])
         )
+        if getattr(args, "explain", False):
+            print("Merge trace:")
+            for item in payload["merge_trace"]:
+                changed = ", ".join(item.get("changed_fields", [])) or "none"
+                overridden = ", ".join(item.get("overridden_fields", [])) or "none"
+                print(f"- {item['layer']}: changed={changed}; overridden={overridden}; source={item['source']}")
+            print("Overridden fields: " + (", ".join(payload["overridden_fields"]) or "none"))
+            for observation in payload["compatibility_observations"]:
+                print(
+                    f"- [{observation['severity']}] {observation['market']} "
+                    f"{observation['code']}: {observation['message']} (non-blocking)"
+                )
     return 0
 
 
@@ -3537,6 +3793,145 @@ def cmd_chapter_finalize(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chapter_semantic_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = chapter_semantic_task(config, chapter_number=args.chapter, backfill=args.backfill)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: unified chapter semantic task written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Backfill: {result.backfill}")
+        print(f"Task: {result.task_file}")
+        print(f"Manifest: {result.manifest_file}")
+        print(f"Output: {result.output_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_chapter_semantic_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = chapter_semantic_validate(config, chapter_number=args.chapter, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: chapter semantic bundle validated" if result.ok else "BLOCKED: chapter semantic bundle is invalid")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Need human: {result.need_human}")
+        print(f"Errors: {len(result.errors)}")
+        print(f"Warnings: {len(result.warnings)}")
+        print(f"Validation: {result.report_file}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.ok else 1
+
+
+def cmd_chapter_semantic_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = chapter_semantic_apply(config, chapter_number=args.chapter, file_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: chapter semantic bundle applied")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Ledger: {result.ledger_file}")
+        print(f"Graph: {result.graph_file}")
+        print(f"Foreshadow state: {result.foreshadow_state_file}")
+        print(f"TCS: {result.tcs_file}")
+        print(f"Character views: {len(result.character_files)}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_chapter_semantic_rebuild(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = chapter_semantic_rebuild(config, through=args.through, approved_by=args.approved_by)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: semantic materialized views rebuilt")
+        print(f"Through: {result.through}")
+        print(f"Approved by: {result.approved_by}")
+        print(f"Ledgers: {len(result.ledger_files)}")
+        print(f"Character views: {result.character_files}")
+        print(f"TCS files: {result.tcs_files}")
+        print(f"RAG chapters: {result.rag_chapters}")
+        print(f"Transaction: {result.transaction_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_chapter_close(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = chapter_close(config, chapter_number=args.chapter, approved_by=args.approved_by)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: chapter closed")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Approved by: {result.approved_by}")
+        print(f"Closure: {result.closure_file}")
+        print(f"Archived through: {result.archived_through}")
+        print(f"Archives: {len(result.archive_files)}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_artifacts_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = artifact_status(config)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: artifact status inspected")
+        print(f"Loose files: {result.loose_files} ({result.loose_bytes} bytes)")
+        print(f"Archives: {result.archive_files} ({result.archive_bytes} bytes)")
+        print(f"Committed snapshots: {result.committed_snapshot_dirs} ({result.committed_snapshot_bytes} bytes)")
+    return 0
+
+
+def cmd_artifacts_compact(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = compact_artifacts(config, through=args.through, dry_run=args.dry_run)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: artifact compaction dry-run" if result.dry_run else "OK: artifacts compacted")
+        print(f"Through chapter: {result.through}")
+        print(f"Candidates: {result.candidate_files} ({result.candidate_bytes} bytes)")
+        print(f"Removed: {result.removed_files} ({result.removed_bytes} bytes)")
+        print(f"Committed snapshots: {result.committed_snapshots} ({result.committed_snapshot_bytes} bytes)")
+        print(f"Archives: {len(result.archive_files)}")
+    return 0
+
+
+def cmd_artifacts_verify(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = verify_artifacts(config)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: artifact archives verified" if result.ok else "ERROR: artifact archive verification failed")
+        print(f"Archives: {result.archives}")
+        print(f"Entries: {result.entries}")
+        for error in result.errors:
+            print(f"- {error}")
+    return 0 if result.ok else 1
+
+
+def cmd_artifacts_restore(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = restore_artifacts(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: chapter artifacts restored")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Archive: {result.archive_file}")
+        print(f"Restored: {len(result.restored_files)}")
+        print(f"Skipped identical: {len(result.skipped_files)}")
+    return 0
+
+
 def cmd_gate_check(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
     result = gate_check(config, chapter_number=args.chapter, source=args.source, semantic=args.semantic)
@@ -4145,6 +4540,7 @@ def _command_label(args: argparse.Namespace) -> str:
         "auto_command",
         "draft_command",
         "chapter_command",
+        "artifacts_command",
         "research_command",
         "revision_command",
         "editorial_command",

@@ -28,7 +28,9 @@ ALLOW_LEGACY = {
 # AgentTaskManifest validation; it must not become an apply/finalize writer.
 ALLOW_FINAL_WRITES = {
     "src/longform_engine/agent_tasks.py",
+    "src/longform_engine/character_expression.py",
     "src/longform_engine/orchestration/pipeline.py",
+    "src/longform_engine/intelligence/pipeline.py",
     "src/longform_engine/revision/pipeline.py",
     "src/longform_engine/rag/pipeline.py",
     "src/longform_engine/memory/pipeline.py",
@@ -36,6 +38,7 @@ ALLOW_FINAL_WRITES = {
     "src/longform_engine/graph/pipeline.py",
     "src/longform_engine/research/pipeline.py",
     "src/longform_engine/gates/pipeline.py",
+    "src/longform_engine/semantic/pipeline.py",
     "src/longform_engine/storage/layout.py",
     "src/longform_engine/publication.py",
 }
@@ -44,6 +47,7 @@ ALLOW_GRAPH_WRITES = {
     "src/longform_engine/agent_tasks.py",
     "src/longform_engine/graph/pipeline.py",
     "src/longform_engine/research/pipeline.py",
+    "src/longform_engine/semantic/pipeline.py",
     "src/longform_engine/storage/layout.py",
 }
 
@@ -60,6 +64,7 @@ ALLOW_AGENT_TO_CANON = {
     "src/longform_engine/vectorstore/pipeline.py",
     "src/longform_engine/cli.py",
     "src/longform_engine/intelligence/pipeline.py",
+    "src/longform_engine/semantic/pipeline.py",
 }
 
 DIRECT_LLM_PATTERNS = (
@@ -207,6 +212,44 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
             "test_production_loop_no_pollution_pause_path",
             "PRODUCTIONLOOP_NOPOLLUTION",
             "query_table",
+        ),
+    ),
+    (
+        "src/longform_engine/semantic/pipeline.py",
+        (
+            'SCHEMA = "chapter_semantic_bundle_v1"',
+            "apply_transaction",
+            "candidate_sha256",
+            "Cannot replace canonical semantic ledger",
+            "def semantic_rebuild",
+            "source_of_truth\": \"semantic_ledger",
+            "chapter close",
+        ),
+    ),
+    (
+        "tests/test_semantic_knowledge.py",
+        (
+            "test_unified_semantic_bundle_materializes_evidence_bound_views",
+            "test_semantic_validation_rejects_hash_and_evidence_mismatch",
+            "semantic ledger routed chapter",
+            "event:stale-derived-fact",
+        ),
+    ),
+    (
+        "src/longform_engine/artifacts.py",
+        (
+            "ensure_compaction_boundary",
+            "failed verification before compaction",
+            "contains an older version of loose artifact",
+        ),
+    ),
+    (
+        "docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION_CHECKLIST.md",
+        (
+            "chapter_semantic_bundle_v1",
+            "invalid bundle",
+            "SQLite",
+            "Definition Of Done",
         ),
     ),
 )

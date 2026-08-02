@@ -1,4 +1,0 @@
-interface:
-  display_name: "Longform Novel ClaudeCode"
-  short_description: "Slash-command novel workflow wrapper"
-  default_prompt: "Use $longform-novel-claude to map Chinese slash commands to longform-engine CLI workflows."

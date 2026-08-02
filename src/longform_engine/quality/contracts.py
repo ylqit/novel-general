@@ -8,7 +8,7 @@ from hashlib import sha256
 import copy
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import yaml
 
@@ -22,6 +22,23 @@ GENRE_PROFILE_IDS = ("xuanhuan", "urban", "suspense", "romance", "history")
 STORY_PHASE_IDS = ("opening", "early_serial", "stable_serial", "volume_climax", "aftermath")
 QUALITY_STRICTNESS = ("light", "balanced", "strict")
 APPROVED_BASELINE_PATH = "10_bible/style_profiles/approved_style_baseline.json"
+PLATFORM_DEVIATION_POLICIES = ("P2_advisory", "P1_blocking")
+COMPACT_CONTRACT_FIELDS = (
+    "platform_promise",
+    "phase_focus",
+    "opening_promise_window",
+    "chapter_duty_distribution",
+    "payoff_cadence",
+    "upgrade_cost",
+    "scene_entry_friction",
+    "exposition_density",
+    "dialogue",
+    "relationship_change_cadence",
+    "foreshadow_release",
+    "ending_distribution",
+    "slow_chapter_policy",
+    "platform_policy",
+)
 
 
 @dataclass(frozen=True)
@@ -37,6 +54,7 @@ def compile_effective_quality_contract(
     config: ConfigDocument,
     *,
     chapter_number: int,
+    compare_markets: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Return the deterministic quality contract for one chapter."""
 
@@ -64,21 +82,49 @@ def compile_effective_quality_contract(
     if phase not in STORY_PHASE_IDS:
         raise ValueError(f"Unknown quality story phase: {phase}")
 
-    sources = [
-        load_quality_profile("markets", market),
-        load_quality_profile("genres", genre),
-        load_quality_profile("phases", phase),
-    ]
+    market_source = load_quality_profile("markets", market)
+    genre_source = load_quality_profile("genres", genre)
+    phase_source = load_quality_profile("phases", phase)
+    sources = [market_source, genre_source, phase_source]
     contract: dict[str, Any] = {}
-    source_records: list[dict[str, str]] = []
+    source_records: list[dict[str, Any]] = []
+    merge_trace: list[dict[str, Any]] = []
+    overridden_fields: list[str] = []
     for payload, path, digest in sources:
-        deep_merge(contract, payload["contract"])
+        merge_contract_layer(
+            contract,
+            payload["contract"],
+            layer=str(payload["kind"]),
+            source=path,
+            digest=digest,
+            merge_trace=merge_trace,
+            overridden_fields=overridden_fields,
+        )
+        source_records.append(profile_source_record(payload, path, digest))
+
+    market_phase_contract = market_source[0].get("phase_overrides", {}).get(phase, {})
+    market_phase_record = {
+        "id": f"{market}:{phase}",
+        "applied": bool(market_phase_contract),
+        "source": market_source[1],
+        "sha256": market_source[2],
+    }
+    if market_phase_contract:
+        merge_contract_layer(
+            contract,
+            market_phase_contract,
+            layer="market_phase",
+            source=market_source[1],
+            digest=market_source[2],
+            merge_trace=merge_trace,
+            overridden_fields=overridden_fields,
+        )
         source_records.append(
             {
-                "kind": str(payload["kind"]),
-                "id": str(payload["id"]),
-                "path": path,
-                "sha256": digest,
+                "kind": "market_phase",
+                "id": f"{market}:{phase}",
+                "path": market_source[1],
+                "sha256": market_source[2],
             }
         )
 
@@ -86,19 +132,55 @@ def compile_effective_quality_contract(
     baseline = load_approved_style_baseline(root)
     baseline_contract = baseline.get("contract_overrides")
     if isinstance(baseline_contract, dict):
-        deep_merge(contract, baseline_contract)
+        baseline_path = root / APPROVED_BASELINE_PATH
+        merge_contract_layer(
+            contract,
+            baseline_contract,
+            layer="user_approved_style_baseline",
+            source=APPROVED_BASELINE_PATH,
+            digest=file_sha256(baseline_path),
+            merge_trace=merge_trace,
+            overridden_fields=overridden_fields,
+        )
     project_overrides = profile.get("overrides")
     if isinstance(project_overrides, dict):
-        deep_merge(contract, project_overrides)
+        merge_contract_layer(
+            contract,
+            project_overrides,
+            layer="project_overrides",
+            source="project.yaml#quality.profile.overrides",
+            digest=json_sha256(project_overrides),
+            merge_trace=merge_trace,
+            overridden_fields=overridden_fields,
+        )
+
+    blocking_policy = resolve_blocking_policy(contract)
+    requested_compatibility = normalize_compatibility_markets(
+        profile.get("compatibility_markets"),
+        compare_markets,
+        primary_market=market,
+    )
+    compatibility_observations = build_compatibility_observations(
+        market=market,
+        target_markets=requested_compatibility,
+        genre_source=genre_source,
+        phase_source=phase_source,
+        phase=phase,
+        primary_contract=contract,
+        baseline_contract=baseline_contract if isinstance(baseline_contract, dict) else {},
+        project_overrides=project_overrides if isinstance(project_overrides, dict) else {},
+    )
 
     approved_records = baseline.get("approved_chapters")
     approved_records = approved_records if isinstance(approved_records, list) else []
     return {
         "schema": "effective_quality_contract_v1",
         "chapter_number": chapter_number,
+        "primary_market": market,
         "market": market,
         "genre": genre,
         "phase": phase,
+        "market_phase": market_phase_record,
         "strictness": strictness,
         "contract": contract,
         "approved_style_baseline": {
@@ -113,13 +195,54 @@ def compile_effective_quality_contract(
             "auto_expand": False,
         },
         "sources": source_records,
+        "merge_trace": merge_trace,
+        "overridden_fields": list(dict.fromkeys(overridden_fields)),
+        "compatibility_observations": compatibility_observations[:3],
+        "blocking_policy": blocking_policy,
         "merge_order": [
             "market",
             "genre",
             "phase",
+            "market_phase",
             "user_approved_style_baseline",
             "project_overrides",
         ],
+    }
+
+
+def compact_effective_quality_contract(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the bounded contract view embedded in Agent-facing work orders."""
+
+    contract = payload.get("contract") if isinstance(payload.get("contract"), dict) else {}
+    approved = (
+        payload.get("approved_style_baseline")
+        if isinstance(payload.get("approved_style_baseline"), dict)
+        else {}
+    )
+    return {
+        "schema": str(payload.get("schema") or "effective_quality_contract_v1"),
+        "chapter_number": int(payload.get("chapter_number") or 0),
+        "primary_market": str(payload.get("primary_market") or payload.get("market") or ""),
+        "market": str(payload.get("market") or ""),
+        "genre": str(payload.get("genre") or ""),
+        "phase": str(payload.get("phase") or ""),
+        "market_phase": copy.deepcopy(payload.get("market_phase") or {}),
+        "strictness": str(payload.get("strictness") or ""),
+        "contract": {
+            key: copy.deepcopy(contract[key])
+            for key in COMPACT_CONTRACT_FIELDS
+            if key in contract
+        },
+        "approved_style_baseline": {
+            "approved_chapter_count": int(approved.get("approved_chapter_count") or 0),
+            "approved_chapters": list(approved.get("approved_chapters") or [])[-8:],
+            "observations": copy.deepcopy(list(approved.get("observations") or [])[-4:]),
+            "auto_expand": False,
+        },
+        "compatibility_observations": copy.deepcopy(
+            list(payload.get("compatibility_observations") or [])[:3]
+        ),
+        "blocking_policy": copy.deepcopy(payload.get("blocking_policy") or {}),
     }
 
 
@@ -227,7 +350,240 @@ def load_quality_profile(kind: str, profile_id: str) -> tuple[dict[str, Any], st
         or not isinstance(payload.get("contract"), dict)
     ):
         raise ValueError(f"Invalid quality profile resource: {path}")
+    validate_profile_extensions(payload, path)
     return payload, f"config/quality_profiles/{kind}/{profile_id}.yaml", sha256(raw).hexdigest()
+
+
+def validate_profile_extensions(payload: dict[str, Any], path: Path) -> None:
+    """Validate optional provenance, phase, and compatibility metadata."""
+
+    for field in ("updated_at", "evidence_level", "heuristic_notes"):
+        if field in payload and not isinstance(payload[field], str):
+            raise ValueError(f"Invalid quality profile resource: {path} ({field} must be a string)")
+    source_refs = payload.get("source_refs")
+    if source_refs is not None and (
+        not isinstance(source_refs, list)
+        or any(not isinstance(item, str) or not item.strip() for item in source_refs)
+    ):
+        raise ValueError(f"Invalid quality profile resource: {path} (source_refs must be non-empty strings)")
+    phase_overrides = payload.get("phase_overrides")
+    if phase_overrides is not None:
+        if not isinstance(phase_overrides, dict):
+            raise ValueError(f"Invalid quality profile resource: {path} (phase_overrides must be an object)")
+        for phase, contract in phase_overrides.items():
+            if phase not in STORY_PHASE_IDS or not isinstance(contract, dict):
+                raise ValueError(f"Invalid quality profile resource: {path} (invalid phase override {phase})")
+    guidance = payload.get("compatibility_guidance")
+    if guidance is not None:
+        if not isinstance(guidance, list):
+            raise ValueError(f"Invalid quality profile resource: {path} (compatibility_guidance must be a list)")
+        required = {"field", "code", "message"}
+        for index, item in enumerate(guidance):
+            if not isinstance(item, dict) or not required.issubset(item):
+                raise ValueError(
+                    f"Invalid quality profile resource: {path} "
+                    f"(compatibility_guidance[{index}] missing required fields)"
+                )
+            if any(not isinstance(item[field], str) or not item[field].strip() for field in required):
+                raise ValueError(
+                    f"Invalid quality profile resource: {path} "
+                    f"(compatibility_guidance[{index}] fields must be strings)"
+                )
+            phases = item.get("phases")
+            if phases is not None and (
+                not isinstance(phases, list)
+                or any(phase not in STORY_PHASE_IDS for phase in phases)
+            ):
+                raise ValueError(
+                    f"Invalid quality profile resource: {path} "
+                    f"(compatibility_guidance[{index}].phases is invalid)"
+                )
+
+
+def profile_source_record(payload: dict[str, Any], path: str, digest: str) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "kind": str(payload["kind"]),
+        "id": str(payload["id"]),
+        "path": path,
+        "sha256": digest,
+    }
+    for field in ("updated_at", "evidence_level", "source_refs", "heuristic_notes"):
+        if field in payload:
+            record[field] = copy.deepcopy(payload[field])
+    return record
+
+
+def merge_contract_layer(
+    contract: dict[str, Any],
+    override: dict[str, Any],
+    *,
+    layer: str,
+    source: str,
+    digest: str,
+    merge_trace: list[dict[str, Any]],
+    overridden_fields: list[str],
+) -> None:
+    changed: list[str] = []
+    overridden: list[str] = []
+    merge_with_audit(contract, override, changed=changed, overridden=overridden)
+    overridden_fields.extend(overridden)
+    merge_trace.append(
+        {
+            "layer": layer,
+            "source": source,
+            "sha256": digest,
+            "changed_fields": list(dict.fromkeys(changed)),
+            "overridden_fields": list(dict.fromkeys(overridden)),
+        }
+    )
+
+
+def merge_with_audit(
+    base: dict[str, Any],
+    override: dict[str, Any],
+    *,
+    changed: list[str],
+    overridden: list[str],
+    prefix: str = "",
+) -> None:
+    for key, value in override.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            merge_with_audit(
+                base[key],
+                value,
+                changed=changed,
+                overridden=overridden,
+                prefix=path,
+            )
+            continue
+        if key not in base:
+            changed.extend(leaf_paths(value, path))
+            base[key] = copy.deepcopy(value)
+            continue
+        if base[key] != value:
+            changed.extend(leaf_paths(value, path))
+            overridden.extend(leaf_paths(value, path))
+            base[key] = copy.deepcopy(value)
+
+
+def leaf_paths(value: Any, prefix: str) -> list[str]:
+    if isinstance(value, dict) and value:
+        result: list[str] = []
+        for key, child in value.items():
+            result.extend(leaf_paths(child, f"{prefix}.{key}"))
+        return result
+    return [prefix]
+
+
+def normalize_compatibility_markets(
+    configured: Any,
+    requested: Iterable[str] | None,
+    *,
+    primary_market: str,
+) -> list[str]:
+    values: list[str] = []
+    if isinstance(configured, list):
+        values.extend(str(item).strip() for item in configured)
+    if requested is not None:
+        values.extend(str(item).strip() for item in requested)
+    result: list[str] = []
+    for market in values:
+        if not market or market == primary_market or market in result:
+            continue
+        if market not in MARKET_PROFILE_IDS:
+            raise ValueError(f"Unknown compatibility market profile: {market}")
+        result.append(market)
+    return result
+
+
+def build_compatibility_observations(
+    *,
+    market: str,
+    target_markets: list[str],
+    genre_source: tuple[dict[str, Any], str, str],
+    phase_source: tuple[dict[str, Any], str, str],
+    phase: str,
+    primary_contract: dict[str, Any],
+    baseline_contract: dict[str, Any],
+    project_overrides: dict[str, Any],
+) -> list[dict[str, Any]]:
+    observations: list[dict[str, Any]] = []
+    for target_market in target_markets:
+        target_source = load_quality_profile("markets", target_market)
+        target_contract: dict[str, Any] = {}
+        for layer in (target_source[0]["contract"], genre_source[0]["contract"], phase_source[0]["contract"]):
+            deep_merge(target_contract, layer)
+        target_phase = target_source[0].get("phase_overrides", {}).get(phase, {})
+        if isinstance(target_phase, dict):
+            deep_merge(target_contract, target_phase)
+        deep_merge(target_contract, baseline_contract)
+        deep_merge(target_contract, project_overrides)
+        for guidance in target_source[0].get("compatibility_guidance", []):
+            phases = guidance.get("phases")
+            if isinstance(phases, list) and phase not in phases:
+                continue
+            field = str(guidance["field"])
+            primary_value = dotted_get(primary_contract, field)
+            comparison_value = dotted_get(target_contract, field)
+            if primary_value == comparison_value:
+                continue
+            observations.append(
+                {
+                    "market": target_market,
+                    "compared_from": market,
+                    "field": field,
+                    "code": str(guidance["code"]),
+                    "severity": "P2",
+                    "blocking": False,
+                    "message": str(guidance["message"]),
+                    "primary_value": copy.deepcopy(primary_value),
+                    "comparison_value": copy.deepcopy(comparison_value),
+                    "source": target_source[1],
+                    "sha256": target_source[2],
+                }
+            )
+            if len(observations) >= 3:
+                return observations
+    return observations
+
+
+def dotted_get(value: dict[str, Any], path: str) -> Any:
+    current: Any = value
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def resolve_blocking_policy(contract: dict[str, Any]) -> dict[str, Any]:
+    policy = contract.get("platform_policy") if isinstance(contract.get("platform_policy"), dict) else {}
+    primary = str(policy.get("primary_deviation") or "P2_advisory")
+    if primary not in PLATFORM_DEVIATION_POLICIES:
+        raise ValueError(
+            "quality.profile.overrides.platform_policy.primary_deviation must be "
+            f"one of: {', '.join(PLATFORM_DEVIATION_POLICIES)}"
+        )
+    return {
+        "primary_deviation": primary,
+        "primary_can_block": primary == "P1_blocking",
+        "compatibility_deviation": "P2_advisory",
+        "compatibility_can_block": False,
+        "deterministic_P0_P1_unchanged": True,
+    }
+
+
+def json_sha256(value: Any) -> str:
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return sha256(raw).hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    try:
+        return sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def load_approved_style_baseline(root: Path) -> dict[str, Any]:

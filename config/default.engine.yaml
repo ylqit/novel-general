@@ -71,9 +71,14 @@ writing:
     enabled: false
 
 quality:
-  market_profile: "qidian_male"
-  genre_profile: "xuanhuan"
   assurance_mode: "balanced"
+  profile:
+    market: "qidian_male"
+    compatibility_markets: ["fanqie_free"]
+    genre: "xuanhuan"
+    phase: "auto"
+    strictness: "balanced"
+    overrides: {}
   approved_style_baseline:
     chapters: []
     update_requires_human: true

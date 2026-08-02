@@ -2,8 +2,8 @@
   "assets": [
     {
       "path": "config/default.engine.yaml",
-      "sha256": "356b366a199b9f54b8b0360e83382f7b0de84fbfb4e3c0264772ebb9acfb96d6",
-      "size": 5511
+      "sha256": "03e2b72b18d04ed9858918400a2d757a4ce2ecdf2b7eb28a58c2661b44a9b7d5",
+      "size": 5616
     },
     {
       "path": "config/quality_profiles/genres/history.yaml",
@@ -32,8 +32,8 @@
     },
     {
       "path": "config/quality_profiles/markets/fanqie_free.yaml",
-      "sha256": "b7b95562d32450294bd352ef69951dc3c8159ac6c0ac8ac07e380f3dc4e7254f",
-      "size": 1178
+      "sha256": "25b29bebc7081fc2f8d1ae1f268abac298a2faed876c756cc5db7e076f3b6b4b",
+      "size": 3526
     },
     {
       "path": "config/quality_profiles/markets/general_cn.yaml",
@@ -47,8 +47,8 @@
     },
     {
       "path": "config/quality_profiles/markets/qidian_male.yaml",
-      "sha256": "d047ba5658a623ad37bffde9e9200d2c9ed3887b270106d4f756b22f87dec605",
-      "size": 1202
+      "sha256": "a3bf4a0d45a502284b927ca1bf1816952725025947509eb85c2d25c36778b7e0",
+      "size": 3446
     },
     {
       "path": "config/quality_profiles/phases/aftermath.yaml",
@@ -77,8 +77,8 @@
     },
     {
       "path": "templates/qidian-longform/project.yaml",
-      "sha256": "2aab47f891cb1a84001366b99f6d185f64d4c4edfc4871b60f753d81a5945545",
-      "size": 3721
+      "sha256": "3676b5963b58efe931e0bbe786df75436aa98dd35c69e9422461ec6755624ddf",
+      "size": 3764
     },
     {
       "path": "longform-novel-codex/agents/openai.yaml",
@@ -92,28 +92,28 @@
     },
     {
       "path": "longform-novel-codex/references/command_protocol.md",
-      "sha256": "eca07babfefcca64df2ffffa4717878578a56873732e9cbb9b065eb7778ff1c5",
-      "size": 25401
+      "sha256": "26c760633020dcabb6e3102cc1461e47dba79cd95b2ebe425bf5539568053677",
+      "size": 30059
     },
     {
       "path": "longform-novel-codex/references/creative_operator_protocol.md",
-      "sha256": "13731bda575004b2ef8b5a5b9b71870a00112ed4e526cd7ca85adecf5e766cda",
-      "size": 9089
+      "sha256": "16bee52e5b6de65d1fc72df9cbcf6cb2a0924cafb3b6aa455188dfba94edd41d",
+      "size": 10029
     },
     {
       "path": "longform-novel-codex/references/iron_laws.md",
-      "sha256": "633d2668144c15e0f0f3034a937bbf9722b1cab997c96448de164e30c58410c7",
-      "size": 5092
+      "sha256": "f8382f57e7babb59131e93373231202da7212db2d1fb3ac8f78393d3cbabd59b",
+      "size": 6110
     },
     {
       "path": "longform-novel-codex/references/workflow_mapping.md",
-      "sha256": "1e94b6b772fada44c44f397795ec50d183b1514b9de74fc736754b50d231cdee",
-      "size": 4565
+      "sha256": "cd49b37a0b254f1c49c512013d3ddb32877b90813fd630843b2734b3b61bb157",
+      "size": 6233
     },
     {
       "path": "longform-novel-codex/SKILL.md",
-      "sha256": "b2f4292384a3404e3b22a665c8e77c18976e458298cfb18dbd222103220f4297",
-      "size": 3594
+      "sha256": "7a0c17159709401cb8f4a859d57f38f873ff205f147336e0b13dab1c9fcac390",
+      "size": 4316
     },
     {
       "path": "longform-novel-claude/agents/openai.yaml",
@@ -127,28 +127,28 @@
     },
     {
       "path": "longform-novel-claude/references/command_protocol.md",
-      "sha256": "eca07babfefcca64df2ffffa4717878578a56873732e9cbb9b065eb7778ff1c5",
-      "size": 25401
+      "sha256": "26c760633020dcabb6e3102cc1461e47dba79cd95b2ebe425bf5539568053677",
+      "size": 30059
     },
     {
       "path": "longform-novel-claude/references/creative_operator_protocol.md",
-      "sha256": "13731bda575004b2ef8b5a5b9b71870a00112ed4e526cd7ca85adecf5e766cda",
-      "size": 9089
+      "sha256": "16bee52e5b6de65d1fc72df9cbcf6cb2a0924cafb3b6aa455188dfba94edd41d",
+      "size": 10029
     },
     {
       "path": "longform-novel-claude/references/iron_laws.md",
-      "sha256": "633d2668144c15e0f0f3034a937bbf9722b1cab997c96448de164e30c58410c7",
-      "size": 5092
+      "sha256": "f8382f57e7babb59131e93373231202da7212db2d1fb3ac8f78393d3cbabd59b",
+      "size": 6110
     },
     {
       "path": "longform-novel-claude/references/workflow_mapping.md",
-      "sha256": "1e94b6b772fada44c44f397795ec50d183b1514b9de74fc736754b50d231cdee",
-      "size": 4565
+      "sha256": "cd49b37a0b254f1c49c512013d3ddb32877b90813fd630843b2734b3b61bb157",
+      "size": 6233
     },
     {
       "path": "longform-novel-claude/SKILL.md",
-      "sha256": "f7d367de1be377c113a80a085085b493edfba256841d9bc9cc4176011d1b1bc5",
-      "size": 3600
+      "sha256": "0c69edfd45690d1967ed92b46a6d2be5854859c773222585d224369cfed856f1",
+      "size": 4322
     },
     {
       "path": "shared/artifact_reporting.md",
@@ -157,23 +157,23 @@
     },
     {
       "path": "shared/command_protocol.md",
-      "sha256": "eca07babfefcca64df2ffffa4717878578a56873732e9cbb9b065eb7778ff1c5",
-      "size": 25401
+      "sha256": "26c760633020dcabb6e3102cc1461e47dba79cd95b2ebe425bf5539568053677",
+      "size": 30059
     },
     {
       "path": "shared/creative_operator_protocol.md",
-      "sha256": "13731bda575004b2ef8b5a5b9b71870a00112ed4e526cd7ca85adecf5e766cda",
-      "size": 9089
+      "sha256": "16bee52e5b6de65d1fc72df9cbcf6cb2a0924cafb3b6aa455188dfba94edd41d",
+      "size": 10029
     },
     {
       "path": "shared/iron_laws.md",
-      "sha256": "633d2668144c15e0f0f3034a937bbf9722b1cab997c96448de164e30c58410c7",
-      "size": 5092
+      "sha256": "f8382f57e7babb59131e93373231202da7212db2d1fb3ac8f78393d3cbabd59b",
+      "size": 6110
     },
     {
       "path": "shared/workflow_mapping.md",
-      "sha256": "1e94b6b772fada44c44f397795ec50d183b1514b9de74fc736754b50d231cdee",
-      "size": 4565
+      "sha256": "cd49b37a0b254f1c49c512013d3ddb32877b90813fd630843b2734b3b61bb157",
+      "size": 6233
     }
   ],
   "engine_version": "0.3.0",

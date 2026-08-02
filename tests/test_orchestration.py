@@ -19,8 +19,13 @@ from longform_engine.orchestration import (
 )
 from longform_engine.db import query_table
 from longform_engine.production import production_next
+from longform_engine.semantic import semantic_apply
 from longform_engine.storage import init_project
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import (
+    complete_unified_semantic_lifecycle,
+    mark_project_ready,
+    prepare_unified_semantic_bundle,
+)
 
 
 def open_book(config):
@@ -205,10 +210,14 @@ def test_auto_write_resume_after_finalize_schedules_next_chapter(tmp_path):
     submit_agent_draft(project_config, chapter_number=1, file_path=agent_draft, agent="codex")
     finalize_chapter(project_config, chapter_number=1, approved_by="human")
     second = auto_write_run(project_config)
+    complete_unified_semantic_lifecycle(root, project_config, 1)
+    third = auto_write_run(project_config)
     state = json.loads((root / "70_runtime" / "auto_write_state.json").read_text(encoding="utf-8"))
 
     assert first.status == "awaiting_agent_draft"
-    assert second.status == "awaiting_agent_draft"
+    assert second.status == "blocked"
+    assert "semantic" in second.next_command
+    assert third.status == "awaiting_agent_draft"
     assert state["last_finalized_chapter"] == 1
     assert state["current_chapter"] == 2
     assert "ch002.codex.md" in state["next_command"]
@@ -423,6 +432,16 @@ def test_finalize_chapter_requires_gate_and_refreshes_memory(tmp_path):
 
     result = finalize_chapter(project_config, chapter_number=1, approved_by="human")
     finalize_chapter(project_config, chapter_number=1, approved_by="human", overwrite=True)
+    semantic_ledger = root / "30_state" / "semantic_ledger" / "ch001.json"
+    semantic_ledger.parent.mkdir(parents=True, exist_ok=True)
+    semantic_ledger.write_text('{"canonical": true}\n', encoding="utf-8")
+    try:
+        finalize_chapter(project_config, chapter_number=1, approved_by="human", overwrite=True)
+    except WorkflowError as exc:
+        assert "immutable after semantic apply" in str(exc)
+    else:
+        raise AssertionError("Expected semantic evidence immutability to block final overwrite")
+    semantic_ledger.unlink()
 
     final_path = root / "40_manuscript" / "final" / "ch001.md"
     finalization_path = root / "40_manuscript" / "final" / "ch001.finalization.json"
@@ -437,19 +456,19 @@ def test_finalize_chapter_requires_gate_and_refreshes_memory(tmp_path):
         if line.strip()
     ]
 
-    assert result.next_command == "continue-write --chapter 2"
+    assert result.next_command == "longform-engine chapter semantic-task project.yaml --chapter 1"
     assert final_path.exists()
     assert finalization_path.exists()
     assert summary_path.exists()
-    assert (root / "60_rag" / "chunks" / "ch001.json").exists()
+    assert not (root / "60_rag" / "chunks" / "ch001.json").exists()
     assert (root / "60_rag" / "context" / "next_plot_context.md").exists()
-    assert any(event.get("chapter_number") == 1 for event in story_graph["events"])
-    assert any(entity.get("id") == "character:lin" and entity.get("mentions") for entity in story_graph["entities"])
-    assert state["status"] == "chapter_finalized"
+    assert not any(event.get("chapter_number") == 1 for event in story_graph["events"])
+    assert state["status"] == "chapter_finalized_pending_semantics"
     assert state["last_finalized_chapter"] == 1
     assert "pending_semantic_review_chapter" not in state
-    assert any(row["chapter_number"] == 1 and row["status"] == "final" for row in chapters)
-    assert any(row["chapter_number"] == 1 for row in chunks)
+    assert state["pending_semantic_chapter"] == 1
+    assert not any(row["chapter_number"] == 1 and row["status"] == "final" for row in chapters)
+    assert not any(row["chapter_number"] == 1 for row in chunks)
     assert reward_entries[-1]["schema"] == "reader_reward_entry_v2"
     assert reward_entries[-1]["chapter_number"] == 1
     assert reward_entries[-1]["chapter_duty"]
@@ -462,13 +481,13 @@ def test_finalize_chapter_requires_gate_and_refreshes_memory(tmp_path):
     transaction = json.loads(transaction_reports[-1].read_text(encoding="utf-8"))
     assert transaction["command"] == "chapter finalize"
     assert "40_manuscript/final/ch001.md" in transaction["touched_paths"]
-    assert "RAG rebuild/sync" in transaction["metadata"]["rebuild_boundaries"]
+    assert "chapter semantic-apply" in transaction["metadata"]["rebuild_boundaries"]
     assert "SQLite sync" in transaction["metadata"]["rebuild_boundaries"]
     assert transaction["boundary"]["agent_outputs_directly_applied"] is False
     assert transaction["boundary"]["rollback_restores_touched_paths"] is True
 
 
-def test_finalize_chapter_rolls_back_touched_paths_on_apply_failure(tmp_path, monkeypatch):
+def test_semantic_apply_rolls_back_touched_paths_on_index_failure(tmp_path, monkeypatch):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
     open_book(project_config)
@@ -476,29 +495,31 @@ def test_finalize_chapter_rolls_back_touched_paths_on_apply_failure(tmp_path, mo
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(passing_draft_text(), encoding="utf-8")
     submit_agent_draft(project_config, chapter_number=1, file_path=agent_draft, agent="codex")
+    finalize_chapter(project_config, chapter_number=1, approved_by="human")
+    semantic_output = prepare_unified_semantic_bundle(root, project_config, 1)
     graph_before = (root / "30_state" / "story_graph.json").read_text(encoding="utf-8")
     state_before = (root / "30_state" / "novel_state.json").read_text(encoding="utf-8")
 
     def fail_build_chunks(*args, **kwargs):
         raise RuntimeError("simulated rag rebuild failure")
 
-    monkeypatch.setattr("longform_engine.orchestration.pipeline.build_chunks", fail_build_chunks)
+    monkeypatch.setattr("longform_engine.semantic.pipeline.build_chunks", fail_build_chunks)
 
     try:
-        finalize_chapter(project_config, chapter_number=1, approved_by="human")
+        semantic_apply(project_config, chapter_number=1, file_path=semantic_output)
     except RuntimeError as exc:
         assert "simulated rag rebuild failure" in str(exc)
     else:
         raise AssertionError("Expected RuntimeError")
 
-    rollback_reports = list((root / "70_runtime" / "transactions").glob("*chapter_finalize_ch001.rollback.json"))
+    rollback_reports = list((root / "70_runtime" / "transactions").glob("*chapter_semantic_apply*rollback.json"))
     assert rollback_reports
     rollback = json.loads(rollback_reports[-1].read_text(encoding="utf-8"))
     assert rollback["status"] == "rolled_back"
     assert rollback["error"]["message"] == "simulated rag rebuild failure"
-    assert "40_manuscript/final/ch001.md" in rollback["touched_paths"]
-    assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
-    assert not (root / "40_manuscript" / "summaries" / "ch001.md").exists()
+    assert "30_state/semantic_ledger/ch001.json" in rollback["touched_paths"]
+    assert (root / "40_manuscript" / "final" / "ch001.md").exists()
+    assert not (root / "30_state" / "semantic_ledger" / "ch001.json").exists()
     assert (root / "30_state" / "story_graph.json").read_text(encoding="utf-8") == graph_before
     assert (root / "30_state" / "novel_state.json").read_text(encoding="utf-8") == state_before
     assert not query_table(project_config, "chapter_chunks", limit=20)
@@ -576,17 +597,19 @@ def test_continue_write_carries_previous_controlled_feedback_forward(tmp_path):
             {
                 "schema_version": 1,
                 "chapter_number": 1,
-                "need_human": True,
-                "severity_counts": {"P0": 0, "P1": 1, "P2": 0},
-                "unresolved_items": [{"code": "motive_gap", "severity": "P1", "message": "motive needs evidence"}],
-                "need_human_reasons": ["unresolved_P1"],
-                "next_command": "longform-engine editorial need-human project.yaml --chapter 1 --reason unresolved_P1",
+                "need_human": False,
+                "severity_counts": {"P0": 0, "P1": 0, "P2": 1},
+                "unresolved_items": [{"code": "motive_gap", "severity": "P2", "message": "motive could use more evidence"}],
+                "need_human_reasons": [],
+                "next_command": "longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
             },
             ensure_ascii=False,
             indent=2,
         ),
         encoding="utf-8",
     )
+
+    complete_unified_semantic_lifecycle(root, project_config, 1)
 
     result = continue_write(project_config, chapter_number=2)
 

@@ -55,6 +55,7 @@ quality:
   assurance_mode: "balanced"
   profile:
     market: "qidian_male"
+    compatibility_markets: ["fanqie_free"]
     genre: "xuanhuan"
     phase: "auto"
     strictness: "balanced"

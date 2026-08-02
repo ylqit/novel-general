@@ -28,6 +28,7 @@ jobs:
       - run: longform-engine release check --repository . --tag "$GITHUB_REF_NAME" --check-remote --skip-contracts --json
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: docs/releases/v0.3.0.md
           files: |
             dist/*.whl
             dist/*.tar.gz

@@ -11,6 +11,7 @@ import json
 import re
 
 from longform_engine.agent_tasks import build_manifest, mark_tasks_for_chapter_type, mark_tasks_for_output, write_manifest
+from longform_engine.character_expression import character_expression_diagnostics
 from longform_engine.config import ConfigDocument
 from longform_engine.quality import refresh_feedback_registry
 from longform_engine.storage import atomic_write_text, resolve_project_root
@@ -26,6 +27,11 @@ DEFAULT_EDITORIAL_TEAM: tuple[dict[str, str], ...] = (
         "id": "writing_agent",
         "display_name": "写作特工",
         "focus": "scene execution, dialogue force, emotional evidence, action texture",
+    },
+    {
+        "id": "character_editor",
+        "display_name": "人物表现编辑",
+        "focus": "voice fit, dialogue swapability, private wants, social masks, embodied presence, relationship movement",
     },
     {
         "id": "anti_ai_editor",
@@ -151,7 +157,7 @@ def editorial_review(config: ConfigDocument, *, chapter_number: int) -> Editoria
     previous_payload = load_json(review_file, default={})
     previous_round = int(previous_payload.get("review_round") or 0) if isinstance(previous_payload, dict) else 0
 
-    status, items = deterministic_editorial_items(text)
+    status, items = deterministic_editorial_items(text, character_names=project_character_names(root))
     counts = severity_counts(items)
     unresolved = unresolved_items(items)
     risk_signals = editorial_risk_signals(
@@ -578,7 +584,11 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
     )
 
 
-def deterministic_editorial_items(text: str) -> tuple[str, list[dict[str, Any]]]:
+def deterministic_editorial_items(
+    text: str,
+    *,
+    character_names: list[str] | tuple[str, ...] = (),
+) -> tuple[str, list[dict[str, Any]]]:
     items: list[dict[str, Any]] = []
     word_count = len(re.sub(r"\s+", "", text))
     lower_text = text.lower()
@@ -630,11 +640,32 @@ def deterministic_editorial_items(text: str) -> tuple[str, list[dict[str, Any]]]
                 role_id="anti_ai_editor",
             )
         )
+    expression = character_expression_diagnostics(text, character_names=character_names)
+    for risk in expression["risks"]:
+        items.append(
+            review_item(
+                str(risk["code"]),
+                str(risk["severity"]),
+                str(risk["message"]),
+                role_id="character_editor",
+            )
+        )
     if not items:
         return "pass", []
     if any(item["severity"] in {"P0", "P1"} for item in items):
         return "needs_revision", items
     return "conditional_pass", items
+
+
+def project_character_names(root: Path) -> list[str]:
+    characters = load_json(root / "10_bible" / "characters.json", default=[])
+    if not isinstance(characters, list):
+        return []
+    return [
+        str(item.get("name"))
+        for item in characters
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    ]
 
 
 def build_editorial_disagreement_matrix(results: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
@@ -946,14 +977,22 @@ def editorial_role_source_inputs(
         "writing_agent": [
             chapter,
             card,
+            root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json",
             root / "10_bible" / "creative_brief.json",
-            root / "00_governance" / "reader_contract.md",
+        ],
+        "character_editor": [
+            chapter,
+            card,
+            root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json",
+            root / "10_bible" / "character_expression.json",
+            root / "10_bible" / "characters.json",
         ],
         "anti_ai_editor": [
             chapter,
             root / "50_workbench" / "humanizer_tasks" / f"ch{chapter_number:03d}.humanize_check.json",
             root / "50_workbench" / "quality_feedback" / "registry.jsonl",
             card,
+            root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json",
         ],
         "serial_verifier": [
             chapter,
@@ -1085,6 +1124,7 @@ def format_role_task(
             ),
             "Valid verdicts: pass, conditional_pass, needs_revision, rewrite, blocked.",
             "Every P0/P1 item must cite one or more exact excerpts from the current chapter in `evidence`.",
+            "The character_editor must return evidence-bearing items for every featured character even when the verdict is pass.",
             "Do not read any other editorial role result before submitting this result.",
             "Use only the files declared by this role's AgentTaskManifest.",
             "Do not mutate final/RAG/graph/memory/TCS/SQLite directly.",
@@ -1098,11 +1138,18 @@ def role_instruction(role_id: str) -> str:
     instructions = {
         "planning_chief_editor": (
             "Check chapter duty, outline anchor, payoff timing, event quota pressure, reverse-brake retention, "
-            "and whether the chapter advances the longform promise."
+            "whether the chapter advances the longform promise, and whether the chapter card's primary platform "
+            "promise remains sustainable across the next serial arc. Do not require a payoff or cliffhanger quota."
         ),
         "writing_agent": (
             "Check scene execution, dialogue difference, action-carried psychology, transition smoothness, "
             "tail hook, and whether prose can be repaired without changing canon."
+        ),
+        "character_editor": (
+            "Compare the chapter with the declared character packet. Check what each featured character notices, "
+            "wants, conceals, physically does, and changes in the relationship. Test whether attributed lines could "
+            "be swapped between speakers without changing force. Every featured character needs exact chapter evidence, "
+            "including pass findings; do not demand a universal dialogue, appearance, or interiority quota."
         ),
         "anti_ai_editor": (
             "Check AI diction, high-frequency filler, template paragraphs, summary-heavy prose, same-shape sentences, "
@@ -1115,7 +1162,8 @@ def role_instruction(role_id: str) -> str:
         "reader_quality_reviewer": (
             "Check whether the declared chapter duty is fulfilled, the reader receives a concrete gain, the gain has "
             "an earned cost, scenes avoid upgrade-log repetition, and the ending mode fits this chapter instead of "
-            "forcing a universal cliffhanger."
+            "forcing a universal cliffhanger. Evaluate medium-term reading motivation from evidence in the chapter. "
+            "Treat compatibility-market observations as non-blocking P2 advice; they cannot alone justify P0/P1."
         ),
         "canon_fidelity_reviewer": (
             "Read only declared source canon and fanfiction design. Check motive, speech habits, relationship phase, "
@@ -1330,6 +1378,7 @@ def validate_editorial_result_payload(
             "evidence": evidence,
             "evidence_validated": evidence_validated,
             "recommendation": str(item.get("recommendation") or ""),
+            "character_ids": normalize_string_list(item.get("character_ids")),
         }
         if normalized_item["severity"] in {"P0", "P1"} and not normalized_item["evidence"]:
             if schema_version == 2:
@@ -1339,6 +1388,28 @@ def validate_editorial_result_payload(
         elif schema_version == 2 and normalized_item["evidence"] and not evidence_validated:
             errors.append(f"items[{index}] evidence must match exact text in the current chapter.")
         items.append(normalized_item)
+    if role_id == "character_editor":
+        card_payload = load_json(
+            root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
+            default={},
+        )
+        featured_raw = card_payload.get("featured_character_ids") if isinstance(card_payload, dict) else []
+        featured_ids = {str(item) for item in featured_raw or [] if str(item).strip()}
+        evidenced_ids = {
+            character_id
+            for item in items
+            if item.get("evidence_validated")
+            for character_id in item.get("character_ids") or []
+        }
+        if not items:
+            errors.append("character_editor must not submit an empty pass; evidence-bearing items are required.")
+        missing_featured = sorted(featured_ids - evidenced_ids)
+        if missing_featured:
+            errors.append(
+                "character_editor evidence does not cover featured characters: "
+                + ", ".join(missing_featured)
+                + "."
+            )
     if verdict == "pass" and any(item.get("severity") in {"P0", "P1"} and item.get("status") != "resolved" for item in items):
         errors.append("pass verdict cannot include unresolved P0/P1 items.")
     context = load_editorial_context(root, chapter_number=chapter_number, role_id=role_id)
@@ -1689,6 +1760,8 @@ def editorial_team(
     signals = set(risk_signals)
     if "ai_flavor_recurrence" in signals:
         selected.add("anti_ai_editor")
+    if "character_expression_risk" in signals:
+        selected.add("character_editor")
     if "continuity_or_relationship_risk" in signals:
         selected.add("serial_verifier")
     if signals & {"volume_boundary", "major_payoff_or_reveal"}:
@@ -1737,7 +1810,10 @@ def editorial_review_required_reasons(
     if chapter_number in milestones:
         reasons.append("quality_milestone")
 
-    _status, deterministic_items = deterministic_editorial_items(safe_read_text(chapter_path))
+    _status, deterministic_items = deterministic_editorial_items(
+        safe_read_text(chapter_path),
+        character_names=project_character_names(root),
+    )
     reasons.extend(
         signal
         for signal in editorial_risk_signals(
@@ -1795,6 +1871,14 @@ def editorial_risk_signals(
         for token in ("continuity", "relationship", "timeline", "logic")
     ):
         signals.append("continuity_or_relationship_risk")
+    if chapter_number <= 3 and (root / "10_bible" / "character_expression.json").is_file():
+        signals.append("character_expression_risk")
+    if any(
+        token in code
+        for code in issue_codes
+        for token in ("dialogue", "voice", "character", "swapability", "embodiment")
+    ):
+        signals.append("character_expression_risk")
     if severities & {"P0", "P1"}:
         signals.append("blocking_P0_P1_risk")
 
@@ -1825,6 +1909,11 @@ def editorial_risk_signals(
             signals.append("major_payoff_or_reveal")
         if bool(card.get("volume_boundary")) or str(card.get("event_tier") or "").upper() == "A":
             signals.append("volume_boundary")
+        if any(
+            bool(card.get(key))
+            for key in ("first_character_appearance", "pov_switch", "relationship_turn")
+        ):
+            signals.append("character_expression_risk")
 
     if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
         signals.append("fanfiction_canon_risk")
@@ -1850,6 +1939,12 @@ def editorial_risk_signals(
             for token in ("ai_", "dialogue", "repetition", "formula")
         ):
             signals.append("ai_flavor_recurrence")
+        if any(
+            token in str(item.get("issue_code") or "")
+            for item in active
+            for token in ("dialogue", "voice", "character", "swapability", "embodiment")
+        ):
+            signals.append("character_expression_risk")
         if any(
             token in str(item.get("issue_code") or "")
             for item in active

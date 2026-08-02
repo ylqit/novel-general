@@ -29,6 +29,7 @@
 | 编辑团队 | CLI 按风险选角色并隔离上下文；Agent 独立审稿，aggregate 保留分歧和少数派 P0/P1 |
 | 节奏审查 | Agent 做语义判断，CLI 固化报告与阻断结果 |
 | 项目级智能任务 | 开书、纲要、改纲、研究、风格与改编分析均走候选/校验/显式 apply |
+| 人物表现与场景化叙事 | Book Design v2 建立人物表达合同；每章编译最小人物包，人物编辑按证据检查声音可交换性、工具人化和旁白代讲 |
 | 同人创作 | 支持原角色、关系、世界观、力量体系、续写、前传、AU、分歧与 crossover |
 | 中文网文质量 | Humanizer v3 词面检查 + v4 语义保真审稿、动态章节职责、读者收益/代价、兑现账本与里程碑语义审稿 |
 
@@ -36,7 +37,7 @@
 
 唯一发布源是 [ylqit/novel-general](https://github.com/ylqit/novel-general)。公开安装使用 pipx，把 engine 放入隔离环境，再由 engine 原子复制对应 Skill。无需先 clone 仓库，也不执行远程 `curl | shell`。
 
-> `v0.3.0` Git tag 与 Release 发布后，下列命令才对应稳定发行资产；当前仅完成本地 release candidate，本地开发方式见后文。
+> 当前公开版本为 `v0.3.0`。安装命令固定到该 tag，避免 `master` 后续变化影响已有项目；升级时由用户显式更新 engine 与 Skill。
 
 ### 让 Agent 安装
 
@@ -65,6 +66,8 @@ longform-engine doctor --tool all
 ```
 
 只安装一个宿主时，把 `all` 改成 `codex` 或 `claude-code`。
+
+Windows 如果自定义 `PIPX_HOME`，请使用较短的绝对路径。Semantic 完整依赖包含 Torch；把虚拟环境放在过深的源码子目录中可能触发 Windows `WinError 206`。README 的默认 pipx 用户目录不需要调整。
 
 ### macOS / Linux Bash
 
@@ -138,12 +141,18 @@ open-book
 -> /工程提交稿 -> gate
 -> /工程修章，或 gate 通过后执行 /工程收益审稿
 -> /工程校验收益 -> 显式 /工程定稿
+-> /工程章节语义任务 -> Agent 一次读取 final 并输出统一语义 JSON
+-> /工程章节语义校验 -> 显式 /工程章节语义应用
+-> /工程关闭章节 -> 下一章
 ```
 
 `reader_gain` 只是章节卡中的计划。`balanced`/`strict` 流程会在定稿前创建
 `reader_payoff_review`，要求 Agent 用当前 draft 的 hash 和精确 span 证明实际收益、代价与承诺进度。
 CLI 通过后，`chapter finalize` 才在同一事务中写入 `reader_reward_entry_v2` 和
-`30_state/quality/structure_history.jsonl`；失败或过期审稿不会污染正式状态。
+`30_state/quality/structure_history.jsonl`；失败或过期审稿不会污染正式状态。finalize 只确立正文证据，
+不再用正文开头冒充摘要，也不提前更新图谱、角色记忆、伏笔、TCS、RAG 或 SQLite。定稿后由
+`chapter_semantic_bundle_v1` 一次抽取全部证据化事实，CLI 事务化物化当前状态，`chapter close`
+成功后才允许进入下一章。旧 graph/memory/character 抽取命令仅为旧项目兼容保留。
 
 ## 创作模式与同人
 
@@ -213,21 +222,27 @@ Agent 不得直接写入：
 20_outline/
 10_bible/research_canon.jsonl
 30_state/story_graph.json
+30_state/semantic_ledger/
+30_state/foreshadowing_state.json
 30_state/tcs/
 40_manuscript/final/
 60_rag/
 70_runtime/db/
 ```
 
-Bible、outline、research canon、final、RAG、graph、TCS 与 SQLite 只能由 CLI 在候选产物通过 validate 后，通过显式 apply/finalize 和事务机制改变。无效输出、反馈摘要和 benchmark 记录不能进入 canonical 状态。
+Bible、outline、research canon、final、semantic ledger、RAG、graph、foreshadow state、TCS 与 SQLite 只能由 CLI 在候选产物通过 validate 后，通过显式 apply/finalize/close 和事务机制改变。无效输出、反馈摘要和 benchmark 记录不能进入 canonical 状态。SQLite 与向量库是可重建派生索引，不能覆盖 final 和证据化语义账本。架构与迁移状态见 [章节语义知识库与产物精简](docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md)。
 
 ## 中文网文质量与去 AI 味
 
 去 AI 味不等于追逐检测器，也不等于把所有平台都改成短句、高对白和悬崖结尾。引擎从 wheel 内置资源编译
-`market + genre + story phase + human-approved style baseline + project overrides`，区分
+`market + genre + global story phase + market-specific phase + human-approved style baseline + project overrides`，区分
 `qidian_male`、`fanqie_free`、`jinjiang_female` 与 `general_cn`，再结合玄幻、都市、悬疑、言情、历史题材和开篇、稳定连载、卷末、余波阶段形成 `effective_quality_contract_v1`。
 
 - Humanizer v3 检查空文本、重复模板、信息轰炸、流水账升级、纸片人/工具人、对白同质、伪细节、情绪标签、意义膨胀和强制钩子。
+- Humanizer v4 的第二遍改写读取 `character_expression_packet_v1`，保护人物的感知偏向、决策偏向、话语层级、社交面具和情绪泄漏，并强化相反欲望、隐藏议程、不可逆行动和情绪余波。
+- `book_design_candidate_v2` 可直接写入 `10_bible/character_expression.json`；兼容的 v1 设计会由 `production next` 安排 `character design-task` 补全，不允许 Agent 直接写 Bible。
+- 常规章节人物包仍受 7 文件/20K 字符预算约束；低对白、少外貌或少内心独白不会单独成为硬失败，CLI 同时报告真实 `dialogue_char_ratio`、引号密度、归因覆盖、说话人特征和可交换风险。
+- 第 1-3 章、人物初登场、POV 切换、关系转折和对白同质复发会选择 `character_editor`；即使 pass，也必须给每个 featured character 提供正文证据。
 - 润色候选会与来源稿比较数字事实、角色保留和改写比例；过度重写会触发 `need-human`，避免“去 AI 味”把剧情和人物一起洗掉。
 - Humanizer v4 Phase 1 在风险改写、里程碑、卷边界、strict 和同人场景创建独立语义审稿任务，校验人物、事件、因果、时间、关系、能力和禁揭露七类事实；复核后修改候选会使旧结果失效。
 - 章节卡声明 `chapter_duty`、`reader_gain`、代价、章节拓扑、结尾方式、承诺引用与兑现；finalize 后写入读者收益账本。
@@ -235,6 +250,8 @@ Bible、outline、research canon、final、RAG、graph、TCS 与 SQLite 只能�
 - 同人语义审稿额外检查人物声音、关系阶段、能力与世界规则、分歧因果、原角色主体性、原创贡献、集体降智和“只套角色皮”。
 - repair、Humanizer、编辑团队和节奏审查的反馈进入带 stable ID、TTL、复发与解决状态的 workbench registry；每次最多五条相关 active 反馈回流，不把整份报告反复塞进上下文。
 - 章节卡和写作者工作单携带生效质量合同；它允许慢章、完整收束和余波章，不把画像变成固定句长、对白率或钩子模板。
+- `qidian_male` 是默认主合同；`fanqie_free` 只输出最多三条非阻断兼容建议，不会自动改章或阻断定稿。
+- 章节卡明确区分平台承诺、章节职责、读者收益、代价与关系变化；Reader Payoff 必须从正文证据验证，不能把计划当成事实。
 - `quality baseline-approve` 只能显式批准已定稿章节的 prose-free 结构指纹，CLI 不会自动把新章节加入风格基线。
 - `chapter_direction` 只在 guided、纲要过于抽象、卷边界、重大转折、连续返修或多条合法剧情线时出现；普通稳定章节不增加人工步骤。
 
@@ -242,7 +259,11 @@ Bible、outline、research canon、final、RAG、graph、TCS 与 SQLite 只能�
 
 ```powershell
 longform-engine quality contract project.yaml --chapter N
+longform-engine quality contract project.yaml --chapter N --explain
+longform-engine quality contract project.yaml --chapter N --compare-market fanqie_free
 longform-engine quality baseline-approve project.yaml --chapter N --approved-by editor
+longform-engine character audit-task project.yaml --from-chapter 1 --to-chapter 15
+longform-engine character samples-approve project.yaml --file 50_workbench/character_reviews/voice_samples.json --approved-by human
 ```
 
 这些约束针对中文网文常见的开篇拖沓、流水账、角色扁平、对白失真和机械钩子，不承诺单一风格模板适合所有平台。公开写作课程背景可参考[番茄作家课堂](https://fanqienovel.com/writer/zone/tutorial?tab=1)。
@@ -293,6 +314,10 @@ longform-engine doctor --tool all --project project.yaml
 | `/工程提交稿` | 提交 Agent 草稿并运行门禁 |
 | `/工程修章` | 生成或处理修章任务 |
 | `/工程定稿` | 人工确认后进入 final |
+| `/工程章节语义任务` | 对 final 做一次统一证据抽取 |
+| `/工程章节语义应用` | 显式物化关系、伏笔、角色状态、TCS 与索引 |
+| `/工程关闭章节` | 完整性校验、关闭章节并保留两章活动区 |
+| `/工程产物精简` | dry-run 后将旧工作材料归档为可验证 ZIP |
 | `/工程改纲` | 生成范围改纲候选与影响标记 |
 | `/工程入库` | 显式提升审核后的研究资料 |
 | `/工程回滚` | 事务回滚并标记派生产物 stale |

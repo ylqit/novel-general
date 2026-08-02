@@ -1,8 +1,14 @@
 # 中文网文质量与 Humanizer 深化优化架构
 
+起点主合同、番茄非阻断兼容视图、阶段覆盖、合同解释和真实盲评边界见 [`PLATFORM_WRITING_ADAPTATION_CHECKLIST.md`](PLATFORM_WRITING_ADAPTATION_CHECKLIST.md)。平台工程能力完成不等于推荐效果或文学质量已经得到证明。
+
+人物表现合同、章节人物包、场景化章节职责、对白可交换诊断和人物编辑的独立验收见 [`CHARACTER_EXPRESSION_AND_SCENE_NARRATIVE_CHECKLIST.md`](CHARACTER_EXPRESSION_AND_SCENE_NARRATIVE_CHECKLIST.md)。工程能力与真实 15 章质量证据必须分别标记。
+
+章节关系、伏笔、角色记忆、TCS、检索索引和中间产物生命周期已收敛到 [`SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`](SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md)；新生产链在 finalize 后执行统一语义 apply 和 chapter close。
+
 ## 1. 文档状态
 
-- 状态：分阶段实施中；Phase 1-5 已实现，Phase 6 的正式证据协议、盲评编排与 production-model RAG runner 已实现，外部宿主实跑、三名独立评审和 500 章生产模型证据仍待完成。
+- 状态：分阶段实施中；Phase 1-5 已实现，Phase 6 的正式证据协议、盲评编排与 production-model RAG runner 已实现。Codex 当前协议已完成 15 章受控原创生产，但同模型 `novel-skill` 对照、Claude 外部宿主实跑、三名独立评审和 500 章生产模型证据仍待完成。
 - 适用项目：`longform-novel-engine`。
 - 目标宿主：Codex App、Codex CLI、Claude Code。
 - 默认工作模式：`writing.mode = agent_skill`。
@@ -27,7 +33,7 @@
 - Humanizer v4 Phase 1 已实现独立 `humanize_semantic_review`：双稿 hash/span、声明引用、实体 ID、七类事实、章节合同和人物声音由 CLI 严格校验。
 - Phase 2 已实现独立 `reader_payoff_review`：当前 draft hash、章节卡计划、精确证据 span、真实收益/代价、承诺进度和伪兑现 finding 由 CLI 严格校验。
 - `reader_reward_entry_v2` 区分 planned 与 observed；未经过语义审稿的 light-mode 章节会明确标记 `observation_status=not_required`，不会伪造 observed 结论。
-- finalize 在同一事务中写入收益账本与 `30_state/quality/structure_history.jsonl`，事务失败会连同 final、RAG 和 SQLite 一起回滚。
+- finalize 在同一事务中写入 final、收益账本与 `30_state/quality/structure_history.jsonl`；图谱、角色当前状态、伏笔、TCS、RAG 和 SQLite 延后到独立的统一语义事务。
 - 章节卡已经包含 `chapter_duty`、`reader_gain`、`cost`、`topology_id`、`hook_mode`、`promise_refs` 和禁揭露约束。
 - 高风险章节支持 Agent semantic review，并校验正文 span、canonical 引用和实体 ID。
 - gate、repair、Humanizer、pacing 和 editorial 结果能够压缩回流下一章。
@@ -686,7 +692,10 @@ conditional chapter_direction
 -> risk-based editorial review
 -> human finalize
 -> reward/structure ledger
--> RAG/graph/memory/SQLite
+-> chapter_semantic_bundle_v1
+-> semantic validate / explicit apply
+-> RAG/graph/character/foreshadow/TCS/SQLite
+-> chapter close
 ```
 
 ### 14.3 建议优先级
@@ -704,6 +713,8 @@ conditional chapter_direction
 | `reader_payoff_review` | 31 |
 | `editorial_review` | 40 |
 | `finalize boundary` | 50 |
+| `chapter_semantic` | 55 |
+| `chapter close boundary` | 60 |
 
 `production loop --no-apply` 只能自动执行确定性、无 canonical 写入的 task/validate/status 步骤。遇到 Agent 输出、人工选择、apply、finalize 或 need-human 时必须暂停并给出唯一 next command。
 
@@ -712,7 +723,9 @@ conditional chapter_direction
 - Humanizer semantic review 未通过时不得覆盖 managed draft。
 - payoff review 未通过时不得写 reward ledger。
 - chapter finalize 必须在一个事务中完成 final、reward observation、structure history 和相关状态更新。
-- finalize 失败必须恢复所有 canonical 目标。
+- finalize 失败必须恢复 final、reward 和 structure 目标；不得留下半完成正文。
+- chapter semantic-apply 必须在独立事务中一次性更新 semantic ledger、graph、角色当前视图、伏笔、TCS、RAG 和 SQLite；任一步失败恢复全部物化目标。
+- chapter close 前必须验证语义事务和所有派生视图，关闭前不得续写下一章。
 - 回滚章节时，reward、structure observation、RAG、graph、memory 和 SQLite 必须 stale 或重建。
 - 无效 Agent JSON 只能写 validation report。
 - feedback registry 失败不得影响 final 或 canonical state。
@@ -834,7 +847,9 @@ conditional chapter_direction
 - Humanizer 语义复核通过后仍需 `draft submit`。
 - payoff 通过但未 finalize 时不写 reward ledger。
 - finalize 事务同时写 final 和 observed payoff。
-- 失败 finalize 恢复全部 canonical 目标。
+- 失败 finalize 恢复其全部 canonical 目标。
+- unified semantic apply 原子更新关系、伏笔、角色当前状态、TCS、RAG 与 SQLite，invalid bundle 保持 no-pollution。
+- chapter close 阻断缺失语义账本、P0/P1、need-human 和活动 Agent task 的章节。
 - guided chapter direction 需要人工选择。
 - balanced 模式只在风险条件下触发新增任务。
 - strict 模式完整运行新增质量链路。

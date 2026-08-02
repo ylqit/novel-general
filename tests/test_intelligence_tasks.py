@@ -40,6 +40,7 @@ def project_snapshot(root: Path) -> dict[str, bytes]:
     paths = (
         "10_bible/creative_decisions.json",
         "10_bible/creative_brief.json",
+        "10_bible/character_expression.json",
         "10_bible/world.md",
         "10_bible/research_canon.jsonl",
         "20_outline/book_outline.md",
@@ -97,6 +98,50 @@ def valid_book_candidate() -> dict:
                 "type": "alliance",
                 "stage": "uneasy",
             }
+        ],
+    }
+
+
+def valid_character_expression() -> dict:
+    return {
+        "schema": "character_expression_profile_v1",
+        "narrative_expression_profile": {
+            "narrative_distance": "close",
+            "expression_mode": "balanced",
+            "description_density": "selective",
+            "dialogue_mode": "balanced",
+            "voice_separation": "clear",
+            "ensemble_mode": "dual",
+        },
+        "character_expression_contracts": [
+            {
+                "character_id": "lead_ari",
+                "perception_bias": "Notices altered records before faces.",
+                "decision_bias": "Verifies one physical trace before trusting testimony.",
+                "speech_register": "Short procedural questions that conceal personal fear.",
+                "conversation_tactics": ["narrows claims", "withholds one inference"],
+                "emotional_leaks": ["aligns document edges when afraid"],
+                "physical_presence": "Still shoulders and ink-stained fingertips.",
+                "social_masks": ["neutral archive clerk"],
+                "private_wants": "Wants proof that preserving records can also preserve people.",
+                "contradictions": "Demands evidence but acts on private guilt.",
+                "voice_examples": [],
+                "contrast_with": ["ally_mira"],
+            },
+            {
+                "character_id": "ally_mira",
+                "perception_bias": "Notices exits, witnesses, and status pressure.",
+                "decision_bias": "Tests a weak point before consensus closes it.",
+                "speech_register": "Concrete challenges, compressed humor, direct stakes.",
+                "conversation_tactics": ["forces a choice", "names the hidden cost"],
+                "emotional_leaks": ["paces toward the nearest exit when boxed in"],
+                "physical_presence": "Restless stance and quick changes of distance.",
+                "social_masks": ["reckless outsider"],
+                "private_wants": "Wants to be trusted without surrendering initiative.",
+                "contradictions": "Mocks procedure but keeps exact witness times.",
+                "voice_examples": [],
+                "contrast_with": ["lead_ari"],
+            },
         ],
     }
 
@@ -310,11 +355,77 @@ def test_opening_flow_requires_applied_book_and_full_outline_before_chapter_work
     apply_intelligence_candidate(config, task_type="outline_design", file_path=outline_candidate, approved_by="human")
 
     readiness = assess_project_readiness(config)
+    assert not readiness.ready
+    assert readiness.required_task_type == "character_expression_design"
+    expression_action = production_next(config)
+    assert expression_action["task_type"] == "character_expression_design"
+
+    expression_task = create_intelligence_task(config, task_type="character_expression_design")
+    expression_candidate = root / expression_task.candidate_file
+    expression_candidate.write_text(json.dumps(valid_character_expression()), encoding="utf-8")
+    expression_validation = validate_intelligence_candidate(
+        config,
+        task_type="character_expression_design",
+        file_path=expression_candidate,
+    )
+    assert expression_validation.ok, expression_validation.errors
+    apply_intelligence_candidate(
+        config,
+        task_type="character_expression_design",
+        file_path=expression_candidate,
+        approved_by="human",
+    )
+
+    readiness = assess_project_readiness(config)
     assert readiness.ready
     next_action = production_next(config)
     assert next_action["status"] == "ready_for_intelligence_task"
     assert next_action["task_type"] == "chapter_direction"
     assert next_action["trigger_reasons"] == ["abstract_outline_target", "volume_boundary"]
+
+
+def test_book_design_v2_applies_character_expression_in_same_human_transaction(tmp_path):
+    config = seed_project(tmp_path)
+    root = tmp_path / "novel"
+    task = create_intelligence_task(config, task_type="book_design")
+    candidate = root / task.candidate_file
+    payload = valid_book_candidate()
+    expression = valid_character_expression()
+    payload.update(
+        {
+            "schema": "book_design_candidate_v2",
+            "narrative_expression_profile": expression["narrative_expression_profile"],
+            "character_expression_contracts": expression["character_expression_contracts"],
+        }
+    )
+    candidate.write_text(json.dumps(payload), encoding="utf-8")
+
+    validation = validate_intelligence_candidate(config, task_type="book_design", file_path=candidate)
+    assert validation.ok, validation.errors
+    apply_intelligence_candidate(config, task_type="book_design", file_path=candidate, approved_by="human")
+
+    canonical = json.loads((root / "10_bible" / "character_expression.json").read_text(encoding="utf-8"))
+    state = json.loads((root / "30_state" / "novel_state.json").read_text(encoding="utf-8"))
+    assert canonical["schema"] == "character_expression_profile_v1"
+    assert state["project_intelligence"]["character_expression_design"]["status"] == "applied"
+
+
+def test_invalid_character_expression_candidate_does_not_pollute_bible(tmp_path):
+    config = seed_project(tmp_path)
+    root = tmp_path / "novel"
+    task = create_intelligence_task(config, task_type="character_expression_design")
+    candidate = root / task.candidate_file
+    candidate.write_text(json.dumps({"schema": "character_expression_profile_v1"}), encoding="utf-8")
+    before = project_snapshot(root)
+
+    validation = validate_intelligence_candidate(
+        config,
+        task_type="character_expression_design",
+        file_path=candidate,
+    )
+
+    assert not validation.ok
+    assert project_snapshot(root) == before
 
 
 @pytest.mark.parametrize(
