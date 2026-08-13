@@ -94,7 +94,8 @@ def test_chapter_work_order_compiles_character_packet_inside_existing_budget(tmp
     assert packet["schema"] == "character_expression_packet_v1"
     assert packet["featured_character_ids"] == ["lead_ari", "ally_mira"]
     assert len(packet["approved_voice_samples"]) <= 2
-    assert "50_workbench/character_packets/ch001.json" in manifest["input_files"]
+    assert manifest["input_files"] == ["50_workbench/writing_tasks/ch001.md"]
+    assert "50_workbench/character_packets/ch001.json" in task["context_plan"]["excluded_duplicates"]
     assert len(manifest["input_files"]) <= 7
     assert len(markdown) <= 20_000
     assert "Character Performance Packet" in markdown

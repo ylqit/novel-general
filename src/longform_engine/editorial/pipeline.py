@@ -926,7 +926,10 @@ def write_multi_agent_task_files(root: Path, payload: dict[str, Any]) -> list[st
                 context_payload=context_payload,
             ),
         )
-        role_inputs = [path, context_file, *source_inputs]
+        chapter_source = root / str(payload.get("source_path") or "")
+        role_inputs = [path, context_file]
+        if chapter_source.is_file():
+            role_inputs.append(chapter_source)
         manifest = build_manifest(
             root,
             task_type="editorial_review",
@@ -945,8 +948,8 @@ def write_multi_agent_task_files(root: Path, payload: dict[str, Any]) -> list[st
             ),
             task_id=f"editorial_review:{role_id}:ch{int(payload['chapter_number']):03d}:v2",
             context_policy={
-                "required_files": role_inputs[: min(3, len(role_inputs))],
-                "optional_files": role_inputs[min(3, len(role_inputs)):],
+                "required_files": role_inputs,
+                "optional_files": [],
                 "compiled_brief": path,
                 "selection_report": path,
                 "max_files": 7,
@@ -1037,6 +1040,12 @@ def build_editorial_context_payload(
     chapter_number = int(payload["chapter_number"])
     review_round = int(payload.get("review_round") or 1)
     context_hash = context_digest_hash(root, source_inputs)
+    chapter_source = root / str(payload.get("source_path") or "")
+    projections = {
+        relative_path(root, path): editorial_source_projection(path, max_chars=700)
+        for path in source_inputs
+        if path.resolve() != chapter_source.resolve()
+    }
     return {
         "schema": "editorial_context_isolation_v1",
         "chapter_number": chapter_number,
@@ -1047,7 +1056,18 @@ def build_editorial_context_payload(
         ),
         "context_digest_hash": context_hash,
         "independence_mode": "same_host_isolated_context",
-        "declared_source_files": [relative_path(root, path) for path in source_inputs],
+        "declared_source_files": [relative_path(root, chapter_source)] if chapter_source.is_file() else [],
+        "provenance_source_files": [relative_path(root, path) for path in source_inputs],
+        "canonical_source_provenance": [
+            {
+                "path": relative_path(root, path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "selection_reason": "role-specific evidence projected into this context packet",
+            }
+            for path in source_inputs
+            if path.resolve() != chapter_source.resolve()
+        ],
+        "source_projections": projections,
         "excluded_peer_results": [
             f"50_workbench/editorial_reviews/results/ch{chapter_number:03d}.*.json",
             f"50_workbench/editorial_reviews/ch{chapter_number:03d}.aggregate.json",
@@ -1058,6 +1078,20 @@ def build_editorial_context_payload(
         ),
         "created_at": utc_now(),
     }
+
+
+def editorial_source_projection(path: Path, *, max_chars: int) -> Any:
+    if path.suffix.lower() == ".json":
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            value = path.read_text(encoding="utf-8", errors="replace")
+        rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    else:
+        rendered = path.read_text(encoding="utf-8", errors="replace")
+    if len(rendered) <= max_chars:
+        return rendered
+    return rendered[: max(0, max_chars - 3)].rstrip() + "..."
 
 
 def context_digest_hash(root: Path, paths: list[Path]) -> str:
@@ -1428,14 +1462,14 @@ def validate_editorial_result_payload(
                 errors.append("reviewer_instance_id does not match the isolated role context.")
             if submitted_context_hash != str(context.get("context_digest_hash") or ""):
                 errors.append("context_digest_hash does not match the isolated role context.")
-            declared_paths = [
+            provenance_paths = [
                 root / str(path)
-                for path in context.get("declared_source_files") or []
+                for path in context.get("provenance_source_files") or context.get("declared_source_files") or []
                 if str(path).strip()
             ]
-            if any(not path.exists() for path in declared_paths):
+            if any(not path.exists() for path in provenance_paths):
                 errors.append("one or more declared editorial context files no longer exist.")
-            elif context_digest_hash(root, declared_paths) != str(context.get("context_digest_hash") or ""):
+            elif context_digest_hash(root, provenance_paths) != str(context.get("context_digest_hash") or ""):
                 errors.append("editorial context changed after task creation; regenerate the role task.")
             if review_round != int(context.get("review_round") or 0):
                 errors.append("review_round does not match the isolated role context.")

@@ -595,17 +595,19 @@ def character_task(config: ConfigDocument, *, chapter_number: int) -> CharacterT
             ]
         ),
     )
+    context_inputs = [
+        path
+        for path in (
+            root / "30_state" / "story_graph.json",
+            root / "30_state" / "tcs" / f"ch{chapter_number + 1:03d}.json",
+        )
+        if path.is_file()
+    ]
     manifest = build_manifest(
         root,
         task_type="character_memory",
         chapter_number=chapter_number,
-        input_files=[
-            task_file,
-            source,
-            root / "30_state" / "story_graph.json",
-            root / "30_state" / "tcs" / f"ch{chapter_number + 1:03d}.json",
-            root / "60_rag" / "memory" / "characters",
-        ],
+        input_files=[task_file, source, *context_inputs],
         allowed_output_paths=[output_file],
         output_schema="character_memory_cards_v1",
         validate_command=f"longform-engine memory character-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",

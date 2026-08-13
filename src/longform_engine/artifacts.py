@@ -31,6 +31,8 @@ class ArtifactStatusResult:
     archive_bytes: int
     committed_snapshot_dirs: int
     committed_snapshot_bytes: int
+    orphan_task_artifacts: int
+    orphan_task_files: tuple[str, ...]
     root: str
 
 
@@ -70,6 +72,7 @@ def artifact_status(config: ConfigDocument) -> ArtifactStatusResult:
     archive_paths = list(archive_dir.glob("ch*.zip")) if archive_dir.exists() else []
     snapshots = committed_snapshot_paths(root)
     loose_paths = [path for path in root.rglob("*") if path.is_file() and archive_dir not in path.parents]
+    orphans = orphan_agent_task_artifacts(root)
     return ArtifactStatusResult(
         loose_files=len(loose_paths),
         loose_bytes=sum(path.stat().st_size for path in loose_paths),
@@ -77,8 +80,30 @@ def artifact_status(config: ConfigDocument) -> ArtifactStatusResult:
         archive_bytes=sum(path.stat().st_size for path in archive_paths),
         committed_snapshot_dirs=len(snapshots),
         committed_snapshot_bytes=sum(directory_size(path) for path in snapshots),
+        orphan_task_artifacts=len(orphans),
+        orphan_task_files=tuple(relative_path(root, path) for path in orphans),
         root=str(root),
     )
+
+
+def orphan_agent_task_artifacts(root: Path) -> list[Path]:
+    """Report work orders left behind when a manifest contract failed before registration."""
+
+    result: list[Path] = []
+    for task_file in (root / "50_workbench").rglob("*.md"):
+        if task_file.parent.name == "writing_tasks" and re.fullmatch(r"ch\d+\.md", task_file.name):
+            manifest = task_file.with_name(f"{task_file.stem}.agent_task.json")
+        elif task_file.name.endswith("_task.md") or task_file.name.endswith(".repair_task.md"):
+            manifest = task_file.with_name(f"{task_file.stem}.agent_task.json")
+        else:
+            continue
+        if manifest.exists():
+            continue
+        result.append(task_file)
+        context = task_file.with_name(task_file.name.replace("_task.md", "_context.json"))
+        if context.exists():
+            result.append(context)
+    return sorted(set(result))
 
 
 def compact_artifacts(config: ConfigDocument, *, through: int, dry_run: bool = True) -> ArtifactCompactResult:

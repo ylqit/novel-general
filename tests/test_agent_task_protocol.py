@@ -167,7 +167,7 @@ def test_agent_task_manifests_for_repair_humanizer_graph_and_character_memory(tm
     humanize_manifest = load_manifest(root, "humanize:ch001:v1")
     repair_manifest = load_manifest(root, "repair:ch001:v1")
     assert humanize_manifest["failure_next_command"].startswith("longform-engine creative humanize-task ")
-    assert repair_manifest["failure_next_command"].startswith("longform-engine editorial need-human ")
+    assert repair_manifest["failure_next_command"].startswith("longform-engine repair-chapter ")
     for item in list_manifests(root, chapter_number=1):
         result = validate_manifest_strict(root, load_manifest(root, item["task_id"]))
         assert result.ok, (item["task_id"], result.errors)

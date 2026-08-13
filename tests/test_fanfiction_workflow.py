@@ -508,7 +508,9 @@ def test_unverified_commercial_fanfiction_reaches_writing_and_export_without_rig
     manifest = load_manifest(root, "chapter_write:ch001:v1")
     assert validate_manifest_strict(root, manifest).ok
     assert len(manifest["input_files"]) <= 7
-    assert "10_bible/fanfiction/source_canon.json" in manifest["input_files"]
+    assert manifest["input_files"] == ["50_workbench/writing_tasks/ch001.md"]
+    writing_payload = json.loads(Path(writing.writing_task_json).read_text(encoding="utf-8"))
+    assert "10_bible/fanfiction/source_canon.json" in writing_payload["context_plan"]["excluded_duplicates"]
     card = json.loads(Path(writing.chapter_card).read_text(encoding="utf-8"))
     assert card["requires_semantic_review"] is True
     assert card["canon_refs"] == ["classic:event_warning"]

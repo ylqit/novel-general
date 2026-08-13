@@ -23,6 +23,7 @@ AGENT_TASK_STATUSES = (
     "superseded",
     "rolled_back",
 )
+CHAPTER_CANDIDATE_TASK_TYPES = frozenset({"chapter_write", "repair", "humanize", "content_expand"})
 HARD_BOUNDARIES = (
     "no final",
     "no rag",
@@ -54,6 +55,10 @@ DEFAULT_FORBIDDEN_CONTEXT = (
     "60_rag/query_cache/",
     "70_runtime/db/",
 )
+
+
+class AgentTaskContractError(ValueError):
+    """Raised before an invalid Agent task can enter the project task index."""
 
 
 @dataclass(frozen=True)
@@ -418,6 +423,12 @@ def write_manifest(root: Path, manifest: dict[str, Any], manifest_file: str | Pa
     path = resolve_under_root(root, manifest_file)
     normalized = normalize_manifest(manifest)
     validate_manifest_shape(normalized)
+    validation = validate_manifest_strict(root, normalized)
+    if not validation.ok:
+        details = "; ".join(validation.errors)
+        raise AgentTaskContractError(
+            f"Agent task contract is invalid for {validation.task_id or '<unknown>'}: {details}"
+        )
     atomic_write_text(path, json.dumps(normalized, ensure_ascii=False, indent=2) + "\n")
     register_manifest(root, normalized, path)
     return str(path)
@@ -601,6 +612,83 @@ def mark_tasks_for_output(
             command=command,
             artifact=output_text,
             result=result,
+        )
+        if result_item is not None:
+            results.append(result_item)
+    return tuple(results)
+
+
+def tasks_for_output(
+    root: Path,
+    *,
+    chapter_number: int,
+    output_path: str | Path,
+    task_types: Iterable[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return indexed tasks that own one candidate output path."""
+
+    output_text = relative_path(root, output_path)
+    allowed_types = {normalize_token(item) for item in task_types} if task_types is not None else None
+    return [
+        task
+        for task in list_manifests(root, chapter_number=chapter_number)
+        if (allowed_types is None or normalize_token(str(task.get("task_type") or "")) in allowed_types)
+        and normalize_status(str(task.get("status") or "awaiting_agent"))
+        in {"awaiting_agent", "submitted", "validated", "invalid"}
+        and output_text in [str(path).replace("\\", "/") for path in task.get("allowed_output_paths") or []]
+    ]
+
+
+def resolve_candidate_task(
+    root: Path,
+    *,
+    chapter_number: int,
+    output_path: str | Path,
+) -> dict[str, Any]:
+    """Resolve exactly one chapter-candidate task or stop before ownership becomes ambiguous."""
+
+    matches = tasks_for_output(
+        root,
+        chapter_number=chapter_number,
+        output_path=output_path,
+        task_types=CHAPTER_CANDIDATE_TASK_TYPES,
+    )
+    if len(matches) != 1:
+        output_text = relative_path(root, output_path)
+        raise AgentTaskContractError(
+            f"Candidate output must belong to exactly one active chapter task; "
+            f"found {len(matches)} for {output_text}."
+        )
+    return matches[0]
+
+
+def supersede_other_candidate_tasks(
+    root: Path,
+    *,
+    chapter_number: int,
+    current_task_id: str,
+    command: str,
+    artifact: str | Path,
+) -> tuple[AgentTaskLifecycleResult, ...]:
+    """Retire earlier prose candidates after a replacement becomes the submitted chapter."""
+
+    results: list[AgentTaskLifecycleResult] = []
+    for task in list_manifests(root, chapter_number=chapter_number):
+        task_id = str(task.get("task_id") or "")
+        if task_id == current_task_id:
+            continue
+        if normalize_token(str(task.get("task_type") or "")) not in CHAPTER_CANDIDATE_TASK_TYPES:
+            continue
+        current = normalize_status(str(task.get("status") or "awaiting_agent"))
+        if current in {"applied", "rolled_back", "superseded"}:
+            continue
+        result_item = update_task_status(
+            root,
+            task_id,
+            to_status="superseded",
+            command=command,
+            artifact=artifact,
+            result=current_task_id,
         )
         if result_item is not None:
             results.append(result_item)
@@ -909,7 +997,7 @@ def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bo
             errors.append(f"input_files[{index}] must be a non-empty path.")
         elif is_parent_escape(path_text):
             errors.append(f"input_files[{index}] must not escape the project root: {item}")
-    validate_context_policy(manifest, errors)
+    validate_context_policy(root, manifest, errors)
 
     boundaries = {str(item).strip().lower() for item in manifest.get("hard_boundaries") or []}
     for boundary in HARD_BOUNDARIES:
@@ -1115,7 +1203,7 @@ def normalize_context_policy(
     }
 
 
-def validate_context_policy(manifest: dict[str, Any], errors: list[str]) -> None:
+def validate_context_policy(root: Path, manifest: dict[str, Any], errors: list[str]) -> None:
     policy = manifest.get("context_policy")
     if not isinstance(policy, dict):
         errors.append("context_policy must be an object.")
@@ -1152,9 +1240,27 @@ def validate_context_policy(manifest: dict[str, Any], errors: list[str]) -> None
     if not isinstance(max_files, int) or isinstance(max_files, bool) or max_files <= 0:
         errors.append("context_policy.max_files must be a positive integer.")
     elif len(inputs) > max_files:
-        errors.append(f"input_files exceeds context_policy.max_files ({len(inputs)} > {max_files}).")
+        errors.append(f"actual input file count {len(inputs)} exceeds max_files {max_files}.")
     if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars <= 0:
         errors.append("context_policy.max_chars must be a positive integer.")
+    elif isinstance(manifest.get("input_files"), list):
+        total_chars = 0
+        for index, item in enumerate(manifest["input_files"]):
+            path_text = normalize_manifest_path(root, item)
+            if not path_text or is_parent_escape(path_text):
+                continue
+            path = (root / path_text).resolve()
+            if not path.exists() or not path.is_file():
+                errors.append(f"input_files[{index}] does not exist or is not a file: {path_text}")
+                continue
+            try:
+                total_chars += len(path.read_text(encoding="utf-8").lstrip("\ufeff"))
+            except UnicodeDecodeError:
+                errors.append(f"input_files[{index}] must be valid UTF-8 text: {path_text}")
+        if total_chars > max_chars:
+            errors.append(
+                f"input_files exceeds context_policy.max_chars ({total_chars} > {max_chars})."
+            )
     compiled = str(policy.get("compiled_brief") or "")
     if not compiled or compiled not in required:
         errors.append("context_policy.compiled_brief must name one required input file.")

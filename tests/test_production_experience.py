@@ -629,11 +629,11 @@ def test_production_next_points_to_finalize_after_validated_draft(tmp_path):
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["status"] == "agent_task_validated"
-    assert payload["waiting_for"] == "apply_command"
+    assert payload["status"] == "awaiting_finalize"
+    assert payload["waiting_for"] == "human_finalize"
     assert payload["apply_command"] == "longform-engine chapter finalize project.yaml --chapter 1 --approved-by human"
     assert payload["next_command"] == payload["apply_command"]
-    assert payload["allowed_output_paths"] == ["50_workbench/agent_drafts/ch001.codex.md"]
+    assert payload["allowed_output_paths"] == []
 
 
 def test_production_next_editorial_task_includes_role_specific_work_order(tmp_path):
@@ -709,10 +709,10 @@ def test_production_loop_submits_existing_agent_draft_runs_gate_and_pauses_for_f
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
     assert payload["status"] == "paused"
-    assert payload["pause_reason"] == "apply_or_finalize_required"
+    assert payload["pause_reason"] == "human_finalize_required"
     assert payload["steps_executed"] == 1
     assert payload["steps"][0]["action"] == "draft_submit_existing_agent_output"
-    assert payload["next_action"]["status"] == "agent_task_validated"
+    assert payload["next_action"]["status"] == "awaiting_finalize"
     assert (project_dir / "40_manuscript" / "draft" / "ch001.md").exists()
     assert (project_dir / "50_workbench" / "gate_artifacts" / "ch001" / "gate_result.json").exists()
     assert not (project_dir / "40_manuscript" / "final" / "ch001.md").exists()
@@ -736,8 +736,8 @@ def test_production_loop_no_pollution_pause_path(tmp_path):
     chunks = query_table(project_config, "chapter_chunks", limit=20)
     events = query_table(project_config, "events", limit=20)
     mentions = query_table(project_config, "entity_mentions", limit=20)
-    assert payload["pause_reason"] == "apply_or_finalize_required"
-    assert payload["next_action"]["status"] == "agent_task_validated"
+    assert payload["pause_reason"] == "human_finalize_required"
+    assert payload["next_action"]["status"] == "awaiting_finalize"
     assert not (project_dir / "40_manuscript" / "final" / "ch001.md").exists()
     assert graph_path.read_text(encoding="utf-8") == graph_before
     assert not any((project_dir / "60_rag" / "chunks").glob("ch001*.json"))

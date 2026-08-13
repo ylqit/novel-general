@@ -10,7 +10,19 @@ import hashlib
 import json
 import re
 
-from longform_engine.agent_tasks import build_manifest, list_manifests, mark_tasks_for_chapter_type, mark_tasks_for_output, status_summary, write_manifest
+from longform_engine.agent_tasks import (
+    AgentTaskContractError,
+    CHAPTER_CANDIDATE_TASK_TYPES,
+    build_manifest,
+    list_manifests,
+    mark_tasks_for_chapter_type,
+    mark_tasks_for_output,
+    resolve_candidate_task,
+    status_summary,
+    supersede_other_candidate_tasks,
+    update_task_status,
+    write_manifest,
+)
 from longform_engine.character_expression import build_character_expression_packet, character_expression_diagnostics
 from longform_engine.config import ConfigDocument
 from longform_engine.creative import (
@@ -877,6 +889,23 @@ def submit_agent_draft(
     text = safe_read_text(source_path).strip()
     if not text:
         raise WorkflowError("Agent draft is empty.")
+    try:
+        candidate_task = resolve_candidate_task(
+            root,
+            chapter_number=chapter_number,
+            output_path=source_path,
+        )
+    except AgentTaskContractError as exc:
+        raise WorkflowError(str(exc)) from exc
+    candidate_task_id = str(candidate_task.get("task_id") or "")
+    candidate_task_type = str(candidate_task.get("task_type") or "")
+    replaced_task_ids = [
+        str(task.get("task_id") or "")
+        for task in list_manifests(root, chapter_number=chapter_number)
+        if str(task.get("task_id") or "") != candidate_task_id
+        and str(task.get("task_type") or "") in CHAPTER_CANDIDATE_TASK_TYPES
+        and str(task.get("status") or "") in {"awaiting_agent", "submitted", "validated", "invalid"}
+    ]
 
     draft_path = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
     if draft_path.exists() and not overwrite:
@@ -886,28 +915,48 @@ def submit_agent_draft(
     submitted_at = utc_now()
     submission_path = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.submission.json"
     task_path = root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.json"
+    previous_submission = load_json(submission_path, default={})
+    previous_revision = (
+        int(previous_submission.get("candidate_revision") or 0)
+        if isinstance(previous_submission, dict)
+        else 0
+    )
+    candidate_source_hash = sha256_bytes(source_path.read_bytes())
     submission = {
-        "schema_version": 1,
+        "schema_version": 2,
         "chapter_number": chapter_number,
         "agent": agent,
         "source_file": relative_path(root, source_path),
         "draft_file": relative_path(root, draft_path),
         "writing_task": relative_path(root, task_path) if task_path.exists() else None,
-        "source_sha256": sha256_bytes(source_path.read_bytes()),
+        "source_sha256": candidate_source_hash,
         "draft_sha256": sha256_text(text + "\n"),
+        "candidate_task_id": candidate_task_id,
+        "candidate_task_type": candidate_task_type,
+        "candidate_revision": previous_revision + 1,
+        "candidate_source_path": relative_path(root, source_path),
+        "candidate_source_hash": candidate_source_hash,
+        "candidate_status": "submitted",
+        "replaces_task_ids": replaced_task_ids,
         "word_count": estimate_words(text),
         "submitted_at": submitted_at,
     }
     write_json(submission_path, submission)
 
-    mark_tasks_for_output(
+    update_task_status(
         root,
-        chapter_number=chapter_number,
-        output_path=source_path,
+        candidate_task_id,
         to_status="submitted",
         command="draft submit",
+        artifact=source_path,
         result=draft_path,
-        from_statuses=("awaiting_agent", "submitted", "validated", "invalid"),
+    )
+    supersede_other_candidate_tasks(
+        root,
+        chapter_number=chapter_number,
+        current_task_id=candidate_task_id,
+        command="draft submit",
+        artifact=source_path,
     )
     gate = gate_check(config, chapter_number=chapter_number, source="draft", semantic=True)
     gate_path = Path(gate.gate_result)
@@ -930,6 +979,13 @@ def submit_agent_draft(
         gate.passed,
         next_command,
         semantic_review_pending=semantic_review_pending,
+        candidate={
+            "task_id": candidate_task_id,
+            "task_type": candidate_task_type,
+            "source_path": relative_path(root, source_path),
+            "source_hash": candidate_source_hash,
+            "revision": previous_revision + 1,
+        },
     )
     if humanizer_guard.get("required"):
         mark_tasks_for_chapter_type(
@@ -1016,15 +1072,19 @@ def submit_agent_draft(
         "created_at": utc_now(),
     }
     write_json(run_report, report)
-    mark_tasks_for_output(
+    update_task_status(
         root,
-        chapter_number=chapter_number,
-        output_path=source_path,
-        to_status="validated" if gate.passed or semantic_review_pending else "invalid",
+        candidate_task_id,
+        to_status="validated" if gate.passed else "submitted" if semantic_review_pending else "invalid",
         command="gate-check",
+        artifact=source_path,
         result=gate_path,
-        from_statuses=("submitted",),
     )
+    submission["candidate_status"] = (
+        "validated" if gate.passed else "submitted" if semantic_review_pending else "invalid"
+    )
+    submission["updated_at"] = utc_now()
+    write_json(submission_path, submission)
 
     return DraftSubmitResult(
         chapter_number=chapter_number,
@@ -1376,29 +1436,13 @@ def write_writing_task(
                     root,
                     task_type="chapter_write",
                     chapter_number=chapter_number,
-                    input_files=chapter_write_manifest_inputs(
-                        root,
-                        chapter_number,
-                        task_json,
-                        task_markdown,
-                        context_file,
-                        chapter_card_file,
-                        beat_sheet_file,
-                    ),
+                    input_files=[task_markdown],
                     allowed_output_paths=[recommended_draft],
                     output_schema="markdown_chapter_only",
                     validate_command=draft_submit_command(root, chapter_number, recommended_draft, default_agent),
                     apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
                     failure_next_command=f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only",
-                    context_policy=chapter_write_context_policy(
-                        root,
-                        chapter_number,
-                        task_json,
-                        task_markdown,
-                        context_file,
-                        chapter_card_file,
-                        beat_sheet_file,
-                    ),
+                    context_policy=chapter_write_context_policy(task_json, task_markdown),
                 ),
                 manifest_file,
             )
@@ -1557,29 +1601,13 @@ def write_writing_task(
         root,
         task_type="chapter_write",
         chapter_number=chapter_number,
-        input_files=chapter_write_manifest_inputs(
-            root,
-            chapter_number,
-            task_json,
-            task_markdown,
-            context_file,
-            chapter_card_file,
-            beat_sheet_file,
-        ),
+        input_files=[task_markdown],
         allowed_output_paths=[recommended_draft],
         output_schema="markdown_chapter_only",
         validate_command=next_command,
         apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
         failure_next_command=f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only",
-        context_policy=chapter_write_context_policy(
-            root,
-            chapter_number,
-            task_json,
-            task_markdown,
-            context_file,
-            chapter_card_file,
-            beat_sheet_file,
-        ),
+        context_policy=chapter_write_context_policy(task_json, task_markdown),
     )
     payload["agent_task_manifest"] = relative_path(root, manifest_file)
     markdown = format_writing_task_markdown(root, payload)
@@ -1607,65 +1635,13 @@ def draft_submit_command(root: Path, chapter_number: int, draft_path: Path, agen
     )
 
 
-def chapter_write_manifest_inputs(
-    root: Path,
-    chapter_number: int,
-    task_json: Path,
-    task_markdown: Path,
-    context_file: Path,
-    chapter_card_file: Path,
-    beat_sheet_file: Path,
-) -> list[Path]:
-    style_profile = root / "10_bible" / "style_profiles" / "current_style_profile.json"
-    style_source = style_profile if style_profile.exists() else root / "10_bible" / "style_bible.md"
-    fanfiction = (
-        (root / "10_bible" / "fanfiction" / "source_canon.json").exists()
-        and (root / "10_bible" / "fanfiction" / "fanfiction_bible.json").exists()
-    )
-    if fanfiction:
-        inputs = [
-            task_markdown,
-            context_file,
-            chapter_card_file,
-            beat_sheet_file,
-            root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json",
-            root / "10_bible" / "fanfiction" / "source_canon.json",
-            root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
-        ]
-    else:
-        inputs = [
-            task_markdown,
-            context_file,
-            chapter_card_file,
-            beat_sheet_file,
-            root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json",
-            root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json",
-            style_source,
-        ]
-    return [path for path in inputs if path.exists() or path == task_markdown]
-
-
 def chapter_write_context_policy(
-    root: Path,
-    chapter_number: int,
     task_json: Path,
     task_markdown: Path,
-    context_file: Path,
-    chapter_card_file: Path,
-    beat_sheet_file: Path,
 ) -> dict[str, Any]:
-    inputs = chapter_write_manifest_inputs(
-        root,
-        chapter_number,
-        task_json,
-        task_markdown,
-        context_file,
-        chapter_card_file,
-        beat_sheet_file,
-    )
     return {
         "required_files": [task_markdown],
-        "optional_files": [path for path in inputs if path != task_markdown],
+        "optional_files": [],
         "compiled_brief": task_markdown,
         "selection_report": task_json,
         "max_files": 7,
@@ -1682,15 +1658,7 @@ def chapter_write_context_plan(
     chapter_card_file: Path,
     beat_sheet_file: Path,
 ) -> dict[str, Any]:
-    policy = chapter_write_context_policy(
-        root,
-        chapter_number,
-        task_json,
-        task_markdown,
-        context_file,
-        chapter_card_file,
-        beat_sheet_file,
-    )
+    policy = chapter_write_context_policy(task_json, task_markdown)
     return {
         "schema": "writing_context_plan_v1",
         "required_files": [relative_path(root, path) for path in policy["required_files"]],
@@ -1704,12 +1672,24 @@ def chapter_write_context_plan(
         "max_chars": policy["max_chars"],
         "selection_reasons": {
             relative_path(root, task_markdown): "single compiled writable brief",
-            relative_path(root, context_file): "on-demand canonical RAG evidence",
-            relative_path(root, chapter_card_file): "on-demand chapter contract",
-            relative_path(root, beat_sheet_file): "on-demand scene sequence",
-            f"50_workbench/character_packets/ch{chapter_number:03d}.json": "chapter-scoped voice, want, body, and relationship contract",
+            relative_path(root, context_file): "bounded RAG evidence embedded into the compiled brief",
+            relative_path(root, chapter_card_file): "chapter contract embedded into the compiled brief",
+            relative_path(root, beat_sheet_file): "scene sequence embedded into the compiled brief",
+            f"50_workbench/character_packets/ch{chapter_number:03d}.json": "voice and relationship contract embedded into the compiled brief",
         },
-        "excluded_duplicates": [relative_path(root, task_json), *feedback_carryover_raw_sources(root, chapter_number)],
+        "excluded_duplicates": [
+            relative_path(root, task_json),
+            f"50_workbench/character_packets/ch{chapter_number:03d}.json",
+            *[
+                relative_path(root, path)
+                for path in (
+                    root / "10_bible" / "fanfiction" / "source_canon.json",
+                    root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
+                )
+                if path.is_file()
+            ],
+            *feedback_carryover_raw_sources(root, chapter_number),
+        ],
         "source_characters": {
             relative_path(root, context_file): len(safe_read_text(context_file)),
             relative_path(root, chapter_card_file): len(safe_read_text(chapter_card_file)),
@@ -2524,6 +2504,7 @@ def normalize_agent_gate_result(
     next_command: str,
     *,
     semantic_review_pending: bool = False,
+    candidate: dict[str, Any] | None = None,
 ) -> None:
     payload = load_json(gate_path, default={})
     if not isinstance(payload, dict):
@@ -2535,6 +2516,11 @@ def normalize_agent_gate_result(
         actions.append("agent_semantic_review")
     payload["allowed_actions"] = actions
     payload["next_command"] = next_command
+    payload["workflow_stage"] = (
+        "ready_to_finalize" if passed else "semantic_review_pending" if semantic_review_pending else "repair_pending"
+    )
+    if candidate:
+        payload["candidate"] = dict(candidate)
     payload["updated_at"] = utc_now()
     write_json(gate_path, payload)
 

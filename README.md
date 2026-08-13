@@ -37,20 +37,20 @@
 
 唯一发布源是 [ylqit/novel-general](https://github.com/ylqit/novel-general)。公开安装使用 pipx，把 engine 放入隔离环境，再由 engine 原子复制对应 Skill。无需先 clone 仓库，也不执行远程 `curl | shell`。
 
-> 当前公开版本为 `v0.3.0`。安装命令固定到该 tag，避免 `master` 后续变化影响已有项目；升级时由用户显式更新 engine 与 Skill。
+> 当前源码已准备 `v0.3.1` 热修复发布候选。以下命令固定到 `v0.3.1` tag；该 tag 与 GitHub Release 需在本地验收完成并得到明确发布确认后创建。
 
 ### 让 Agent 安装
 
 复制到 Codex：
 
 ```text
-请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.3.0。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool codex 和 longform-engine doctor --tool codex。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Codex 会话，并从 /工程下一步 开始。
+请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.3.1。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool codex 和 longform-engine doctor --tool codex。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Codex 会话，并从 /工程下一步 开始。
 ```
 
 复制到 Claude Code：
 
 ```text
-请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.3.0。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool claude-code 和 longform-engine doctor --tool claude-code。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Claude Code 会话，并从 /工程下一步 开始。
+请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.3.1。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool claude-code 和 longform-engine doctor --tool claude-code。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Claude Code 会话，并从 /工程下一步 开始。
 ```
 
 ### Windows PowerShell
@@ -60,7 +60,7 @@ py -3 -m pip install --user --upgrade pipx
 py -3 -m pipx ensurepath
 $env:PIPX_BIN_DIR = if ($env:PIPX_BIN_DIR) { $env:PIPX_BIN_DIR } else { Join-Path $env:USERPROFILE ".local\bin" }
 $env:PATH = "$env:PIPX_BIN_DIR;$env:PATH"
-py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.3.0'
+py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.3.1'
 longform-engine skills install --tool all
 longform-engine doctor --tool all
 ```
@@ -76,7 +76,7 @@ python3 -m pip install --user --upgrade pipx
 python3 -m pipx ensurepath
 export PIPX_BIN_DIR="${PIPX_BIN_DIR:-$HOME/.local/bin}"
 export PATH="$PIPX_BIN_DIR:$PATH"
-python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.3.0'
+python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.3.1'
 longform-engine skills install --tool all
 longform-engine doctor --tool all
 ```
@@ -86,7 +86,7 @@ longform-engine doctor --tool all
 ### 升级与卸载
 
 ```powershell
-py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.3.0'
+py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.3.1'
 longform-engine skills update --tool all
 longform-engine doctor --tool all
 ```

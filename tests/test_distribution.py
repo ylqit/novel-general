@@ -26,7 +26,7 @@ def test_version_and_bundled_resource_manifest_are_aligned():
     manifest = load_resource_manifest()
     asset_paths = [item["path"] for item in manifest["assets"]]
 
-    assert __version__ == "0.3.0"
+    assert __version__ == "0.3.1"
     assert manifest["engine_version"] == __version__
     for prefix in ("config/", "templates/", "longform-novel-codex/", "longform-novel-claude/", "shared/"):
         group = [path for path in asset_paths if path.startswith(prefix)]
@@ -88,7 +88,7 @@ def test_doctor_json_contract_reports_actionable_checks(monkeypatch, tmp_path):
     payload = doctor_payload("all")
 
     assert payload["schema"] == "doctor_v1"
-    assert payload["engine_version"] == "0.3.0"
+    assert payload["engine_version"] == "0.3.1"
     checks = {item["name"]: item for item in payload["checks"]}
     assert checks["bundled_resources"]["ok"]
     assert checks["skill_codex"]["ok"]

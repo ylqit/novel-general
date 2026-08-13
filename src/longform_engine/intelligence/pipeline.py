@@ -281,6 +281,8 @@ def create_intelligence_task(
         root,
         input_files or intelligence_default_inputs(root, task_type, spec, scope),
     )
+    if task_type == "chapter_direction":
+        inputs = [write_chapter_direction_context(config, root, int(scope["chapter_number"]))]
     if task_type in {"fanfiction_canon", "research_synthesis", "style_analysis", "adaptation_analysis"} and not inputs:
         raise ValueError(f"{task_type} requires at least one --input file.")
     if task_type.startswith("fanfiction_") and str(config.data.get("creation", {}).get("mode") or "") != "fanfiction":
@@ -317,7 +319,11 @@ def create_intelligence_task(
 
     config_arg = "project.yaml"
     range_args = scope_command_args(scope)
-    input_args = "".join(f" --input {path}" for path in input_rel if path != relative(root, instruction))
+    input_args = (
+        ""
+        if task_type == "chapter_direction"
+        else "".join(f" --input {path}" for path in input_rel if path != relative(root, instruction))
+    )
     validate_command, apply_command, failure_command = intelligence_commands(
         task_type,
         candidate=relative(root, candidate),
@@ -665,6 +671,108 @@ def intelligence_default_inputs(
             ]
         )
     return [path for path in candidates if path.is_file()]
+
+
+def write_chapter_direction_context(
+    config: ConfigDocument,
+    root: Path,
+    chapter_number: int,
+) -> Path:
+    """Compile one chapter's decision evidence without exposing the full outline."""
+
+    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    plan_path = root / "20_outline" / "chapter_plan.json"
+    ledger_path = root / "20_outline" / "foreshadowing_ledger.json"
+    brief_path = root / "10_bible" / "creative_brief.json"
+    card = read_json(card_path, {})
+    plan = read_json(plan_path, [])
+    ledger = read_json(ledger_path, [])
+    brief = read_json(brief_path, {})
+    card = card if isinstance(card, dict) else {}
+    plan_rows = plan if isinstance(plan, list) else []
+    ledger_rows = ledger if isinstance(ledger, list) else []
+    plan_row = next(
+        (
+            item
+            for item in plan_rows
+            if isinstance(item, dict) and int(item.get("chapter_number") or 0) == chapter_number
+        ),
+        {},
+    )
+    active_threads = []
+    for item in ledger_rows:
+        if not isinstance(item, dict):
+            continue
+        plant = int(item.get("plant_chapter") or 0)
+        window = item.get("payoff_window") if isinstance(item.get("payoff_window"), list) else []
+        payoff_end = int(window[-1]) if window and isinstance(window[-1], int) else chapter_number
+        if plant <= chapter_number <= payoff_end:
+            active_threads.append(
+                {
+                    key: item.get(key)
+                    for key in ("id", "thread_id", "description", "plant_chapter", "payoff_window", "status")
+                    if item.get(key) not in (None, "", [], {})
+                }
+            )
+        if len(active_threads) >= 8:
+            break
+    source_paths = [path for path in (card_path, plan_path, ledger_path, brief_path, root / "project.yaml") if path.is_file()]
+    payload = {
+        "schema": "chapter_direction_context_v1",
+        "chapter_number": chapter_number,
+        "chapter_card": {
+            key: card.get(key)
+            for key in (
+                "chapter_number",
+                "title",
+                "duty",
+                "chapter_duty",
+                "conflict",
+                "information",
+                "reader_gain",
+                "cost",
+                "relationship_move",
+                "forbidden_reveals",
+                "protected_reveals",
+                "pov_character_id",
+                "featured_character_ids",
+            )
+            if card.get(key) not in (None, "", [], {})
+        },
+        "chapter_plan": plan_row,
+        "active_foreshadowing": active_threads,
+        "book_contract": {
+            key: brief.get(key)
+            for key in ("design_decisions", "reader_contract", "core_taboo", "genre_style_profile")
+            if isinstance(brief, dict) and brief.get(key) not in (None, "", [], {})
+        },
+        "project_contract": {
+            "length": config.data.get("length", {}),
+            "primary_market": (
+                config.data.get("quality", {}).get("profile", {}).get("market", "")
+                if isinstance(config.data.get("quality"), dict)
+                and isinstance(config.data.get("quality", {}).get("profile"), dict)
+                else ""
+            ),
+        },
+        "provenance": [
+            {"path": relative(root, path), "sha256": sha256(path.read_bytes()).hexdigest()}
+            for path in source_paths
+        ],
+        "selection": {
+            "mode": "single_chapter_projection",
+            "full_chapter_plan_exposed": False,
+            "active_foreshadow_limit": 8,
+        },
+    }
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    if len(rendered) > 12_000:
+        raise ValueError(
+            f"Compiled chapter direction context exceeds 12000 characters for ch{chapter_number:03d}."
+        )
+    path = root / "50_workbench" / "intelligence_tasks" / f"chapter_direction.ch{chapter_number:03d}.context.json"
+    atomic_write_text(path, rendered)
+    return path
 
 
 def intelligence_canonical_targets(

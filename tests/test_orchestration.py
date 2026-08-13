@@ -361,7 +361,7 @@ def test_submit_agent_draft_waits_for_required_semantic_review_without_invalidat
 
     assert result.passed is False
     assert result.next_command == "agent-task brief project.yaml semantic_review:ch001:v1"
-    assert tasks["chapter_write:ch001:v1"]["status"] == "validated"
+    assert tasks["chapter_write:ch001:v1"]["status"] == "submitted"
     assert tasks["semantic_review:ch001:v1"]["status"] == "awaiting_agent"
     assert next_action["task_type"] == "semantic_review"
     assert next_action["status"] == "agent_task_awaiting_agent"

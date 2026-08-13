@@ -935,6 +935,15 @@ def expand_task(
     gate_artifact_dir = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}"
     gate_payload = load_json(gate_artifact_dir / "gate_result.json", default={})
     gate_failures = gate_payload.get("failures", []) if isinstance(gate_payload, dict) else []
+    gate_failures = [
+        {
+            key: item.get(key)
+            for key in ("code", "severity", "message", "repair_action")
+            if isinstance(item, dict) and item.get(key) not in (None, "", [], {})
+        }
+        for item in gate_failures[:8]
+        if isinstance(item, dict)
+    ]
     repair_path = gate_artifact_dir / "repair_plan.md"
     repair_text = safe_read_text(repair_path) if repair_path.exists() else "No repair_plan.md found."
     writing_task = load_json(root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.json", default={})
@@ -970,11 +979,11 @@ def expand_task(
                 "",
                 "## Repair Plan",
                 "",
-                repair_text.strip() or "No repair plan content.",
+                clip_text(repair_text.strip(), 1_200) or "No repair plan content.",
                 "",
                 "## Writing Brief Snapshot",
                 "",
-                writing_brief_snapshot(writing_task),
+                writing_brief_snapshot(writing_task, max_chars=2_000),
                 "",
                 "## Candidate Contract",
                 "",
@@ -991,15 +1000,7 @@ def expand_task(
         root,
         task_type="content_expand",
         chapter_number=chapter_number,
-        input_files=[
-            task_file,
-            source_path,
-            gate_artifact_dir / "gate_result.json",
-            repair_path,
-            root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.json",
-            root / "10_bible" / "style_bible.md",
-            root / "10_bible" / "creative_brief.json",
-        ],
+        input_files=[task_file, source_path],
         allowed_output_paths=[candidate_file],
         output_schema="markdown_expanded_candidate",
         validate_command=next_command,
@@ -1008,6 +1009,14 @@ def expand_task(
             f"--file {relative_path(root, candidate_file)} --agent codex --overwrite"
         ),
         failure_next_command=f"longform-engine creative expand-task project.yaml --chapter {chapter_number} --source {source}",
+        context_policy={
+            "required_files": [task_file, source_path],
+            "optional_files": [],
+            "compiled_brief": task_file,
+            "selection_report": task_file,
+            "max_files": 2,
+            "max_chars": 20_000,
+        },
     )
     write_manifest(root, manifest, manifest_file)
     return ExpandTaskResult(
@@ -1206,17 +1215,20 @@ def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = 
             ]
         ),
     )
+    optional_inputs = [
+        path
+        for path in (
+            root / "10_bible" / "style_bible.md",
+            root / "10_bible" / "creative_brief.json",
+            root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "humanize_report.md",
+        )
+        if path.is_file()
+    ]
     manifest = build_manifest(
         root,
         task_type="humanize",
         chapter_number=chapter_number,
-        input_files=[
-            task_file,
-            source_path,
-            root / "10_bible" / "style_bible.md",
-            root / "10_bible" / "creative_brief.json",
-            root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "humanize_report.md",
-        ],
+        input_files=[task_file, source_path, *optional_inputs],
         allowed_output_paths=[candidate_file],
         output_schema="markdown_humanized_candidate",
         validate_command=next_command,
@@ -1227,11 +1239,7 @@ def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = 
         failure_next_command=f"longform-engine creative humanize-task project.yaml --chapter {chapter_number} --source {source}",
         context_policy={
             "required_files": [task_file, source_path],
-            "optional_files": [
-                root / "10_bible" / "style_bible.md",
-                root / "10_bible" / "creative_brief.json",
-                root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "humanize_report.md",
-            ],
+            "optional_files": optional_inputs,
             "compiled_brief": task_file,
             "selection_report": task_file,
             "max_files": 5,
@@ -2675,7 +2683,7 @@ def expansion_instructions(expansion_types: tuple[str, ...]) -> list[str]:
     return [catalog[item] for item in expansion_types]
 
 
-def writing_brief_snapshot(payload: Any) -> str:
+def writing_brief_snapshot(payload: Any, *, max_chars: int = 2_000) -> str:
     if not isinstance(payload, dict):
         return "No writing task JSON found."
     snapshot = {
@@ -2684,7 +2692,15 @@ def writing_brief_snapshot(payload: Any) -> str:
         "beat_expansion_requirements": payload.get("beat_expansion_requirements", []),
         "constraint_packet": payload.get("constraint_packet", {}),
     }
-    return "\n".join(["```json", json.dumps(snapshot, ensure_ascii=False, indent=2), "```"])
+    rendered = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+    return "\n".join(["```json", clip_text(rendered, max_chars), "```"])
+
+
+def clip_text(text: str, max_chars: int) -> str:
+    value = str(text or "")
+    if len(value) <= max_chars:
+        return value
+    return value[: max(0, max_chars - 3)].rstrip() + "..."
 
 
 def detect_expansion_issues(

@@ -10,7 +10,16 @@ import hashlib
 import json
 import re
 
-from longform_engine.agent_tasks import build_manifest, mark_tasks_for_output, write_manifest
+from longform_engine.agent_tasks import (
+    AgentTaskContractError,
+    build_manifest,
+    list_manifests,
+    mark_tasks_for_output,
+    resolve_candidate_task,
+    supersede_other_candidate_tasks,
+    update_task_status,
+    write_manifest,
+)
 from longform_engine.config import ConfigDocument
 from longform_engine.character_expression import character_expression_diagnostics
 from longform_engine.creative import creative_repair_guidance, detect_humanizer_v2_issues, reader_experience_review
@@ -125,6 +134,297 @@ class RepairPlanResult:
     next_command: str
 
 
+SEMANTIC_REVIEW_CONTEXT_MAX_CHARS = 8_000
+
+
+def build_semantic_review_context(
+    root: Path,
+    *,
+    chapter_number: int,
+    source_path: Path,
+    source_text: str,
+    canonical_inputs: list[Path],
+    fanfiction: bool,
+) -> dict[str, Any]:
+    """Compile bounded canonical evidence without exposing full project state to the Agent."""
+
+    payloads = {relative_path(root, path): load_json(path, default={}) for path in canonical_inputs}
+    chapter_ref = f"20_outline/chapter_cards/ch{chapter_number:03d}.json"
+    chapter_card = payloads.get(chapter_ref, {})
+    if not isinstance(chapter_card, dict):
+        chapter_card = {}
+    participant_ids = semantic_review_participant_ids(chapter_card)
+    canon_refs = dedupe_strings(normalize_strings(chapter_card.get("canon_refs")))
+    match_terms = dedupe_strings([*participant_ids, *canon_refs])
+
+    character_payload = payloads.get("10_bible/characters.json", {})
+    graph_payload = payloads.get("30_state/story_graph.json", {})
+    tcs_payload = payloads.get(f"30_state/tcs/ch{chapter_number:03d}.json", {})
+    anchor_payload = payloads.get("20_outline/outline_anchors.json", {})
+    source_canon = payloads.get("10_bible/fanfiction/source_canon.json", {})
+    fanfiction_bible = payloads.get("10_bible/fanfiction/fanfiction_bible.json", {})
+
+    raw_sections = {
+        "chapter_contract": {
+                key: chapter_card.get(key)
+                for key in (
+                    "chapter_number",
+                    "title",
+                    "duty",
+                    "chapter_duty",
+                    "conflict",
+                    "reader_gain",
+                    "cost",
+                    "relationship_move",
+                    "pov_character_id",
+                    "featured_character_ids",
+                    "canon_refs",
+                    "divergence_effects",
+                    "voice_refs",
+                    "protected_reveals",
+                    "forbidden_reveals",
+                )
+                if chapter_card.get(key) not in (None, "", [], {})
+        },
+        "current_state": tcs_payload,
+        "outline_anchor": semantic_review_chapter_record(anchor_payload, chapter_number),
+        "characters": semantic_review_matching_records(character_payload, participant_ids),
+        "story_graph": semantic_review_matching_records(graph_payload, participant_ids),
+    }
+    if fanfiction:
+        raw_sections["fanfiction"] = {
+            "source_canon_matches": semantic_review_matching_records(source_canon, match_terms),
+            "design_matches": semantic_review_matching_records(fanfiction_bible, participant_ids),
+            "declared_continuity": semantic_review_declared_fanfiction_policy(fanfiction_bible),
+        }
+
+    section_budgets = {
+        "chapter_contract": 1_500,
+        "current_state": 900,
+        "outline_anchor": 600,
+        "characters": 1_500,
+        "story_graph": 800,
+        "fanfiction": 1_600,
+    }
+    sections: dict[str, Any] = {}
+    section_selection: dict[str, dict[str, Any]] = {}
+    for key, raw_value in raw_sections.items():
+        terms = participant_ids if key in {"characters", "story_graph"} else match_terms
+        compiled_value = fit_semantic_context_value(raw_value, section_budgets[key], terms)
+        source_chars = len(json.dumps(raw_value, ensure_ascii=False, separators=(",", ":")))
+        compiled_chars = len(json.dumps(compiled_value, ensure_ascii=False, separators=(",", ":")))
+        omitted = isinstance(compiled_value, dict) and compiled_value.get("omitted") is True
+        if omitted and key in {"chapter_contract", "current_state", "characters", "fanfiction"} and raw_value:
+            raise GateError(f"Critical semantic review context section cannot fit its budget: {key}.")
+        sections[key] = compiled_value
+        section_selection[key] = {
+            "source_chars": source_chars,
+            "compiled_chars": compiled_chars,
+            "truncated": compiled_chars < source_chars,
+            "omitted": omitted,
+        }
+
+    provenance = [
+        {
+            "path": path,
+            "sha256": sha256_text(safe_read_text(root / path)),
+            "selection_reason": semantic_review_selection_reason(path, fanfiction=fanfiction),
+        }
+        for path in payloads
+    ]
+    packet = {
+        "schema": "semantic_review_context_v1",
+        "chapter_number": chapter_number,
+        "source_path": relative_path(root, source_path),
+        "source_hash": sha256_text(source_text),
+        "participant_ids": participant_ids,
+        "canon_refs": canon_refs,
+        "allowed_canonical_refs": list(payloads),
+        "sections": sections,
+        "provenance": provenance,
+        "selection": {
+            "mode": "deterministic_relevant_projection",
+            "full_canonical_files_exposed": False,
+            "selected_source_count": len(payloads),
+            "sections": section_selection,
+            "notes": [
+                "The packet is a bounded review aid; canonical files remain the facts verified by the CLI.",
+                "Only chapter participants, declared canon references, current state, and the active anchor are projected.",
+            ],
+        },
+    }
+    serialized = json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
+    if len(serialized) > SEMANTIC_REVIEW_CONTEXT_MAX_CHARS:
+        raise GateError(
+            "Compiled semantic review context exceeds 8000 characters; reduce the chapter participant/canon scope."
+        )
+    packet["selection"]["compiled_chars"] = len(serialized)
+    return packet
+
+
+def semantic_review_participant_ids(chapter_card: dict[str, Any]) -> list[str]:
+    values = [str(chapter_card.get("pov_character_id") or "")]
+    for key in ("featured_character_ids", "voice_refs", "characterization_focus"):
+        values.extend(normalize_strings(chapter_card.get(key)))
+    return dedupe_strings([value.strip() for value in values if value.strip()])
+
+
+def semantic_review_chapter_record(value: Any, chapter_number: int) -> Any:
+    for record in semantic_review_all_records(value):
+        if int(record.get("chapter_number") or 0) == chapter_number:
+            return record
+    return {}
+
+
+def semantic_review_matching_records(value: Any, terms: list[str]) -> list[dict[str, Any]]:
+    if not terms:
+        return []
+    lowered = [term.casefold() for term in terms if term]
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in semantic_review_all_records(value):
+        identity = " ".join(
+            str(record.get(key) or "")
+            for key in ("id", "character_id", "entity_id", "thread_id", "name", "source_id")
+        ).casefold()
+        rendered = json.dumps(record, ensure_ascii=False, separators=(",", ":")).casefold()
+        if not any(term in identity or term in rendered for term in lowered):
+            continue
+        signature = sha256_text(rendered)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        result.append(record)
+        if len(result) >= 16:
+            break
+    return result
+
+
+def semantic_review_all_records(value: Any) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+
+    def visit(item: Any, depth: int) -> None:
+        if depth > 6:
+            return
+        if isinstance(item, dict):
+            if any(key in item for key in ("id", "character_id", "entity_id", "thread_id", "source_id")):
+                records.append(item)
+            for child in item.values():
+                visit(child, depth + 1)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child, depth + 1)
+
+    visit(value, 0)
+    return records
+
+
+def semantic_review_declared_fanfiction_policy(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    keys = (
+        "continuity_mode",
+        "canon_cutoff",
+        "divergence_point",
+        "divergence_points",
+        "ooc_tolerance",
+        "world_rule_changes",
+        "relationship_boundaries",
+    )
+    return {key: value.get(key) for key in keys if value.get(key) not in (None, "", [], {})}
+
+
+def fit_semantic_context_value(value: Any, max_chars: int, terms: list[str]) -> Any:
+    for max_items, max_string in ((8, 320), (6, 240), (4, 180), (2, 120), (1, 80)):
+        candidate = bound_semantic_context_value(
+            value,
+            terms=terms,
+            max_items=max_items,
+            max_string=max_string,
+            depth=0,
+        )
+        if len(json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))) <= max_chars:
+            return candidate
+    return {
+        "omitted": True,
+        "reason": "section_exceeded_budget",
+        "sha256": sha256_text(json.dumps(value, ensure_ascii=False, sort_keys=True)),
+    }
+
+
+def bound_semantic_context_value(
+    value: Any,
+    *,
+    terms: list[str],
+    max_items: int,
+    max_string: int,
+    depth: int,
+) -> Any:
+    if depth >= 5:
+        return "[depth-limited]"
+    if isinstance(value, str):
+        return value if len(value) <= max_string else value[: max_string - 1] + "..."
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, dict):
+        items = list(value.items())[: max_items * 2]
+        return {
+            str(key): bound_semantic_context_value(
+                item,
+                terms=terms,
+                max_items=max_items,
+                max_string=max_string,
+                depth=depth + 1,
+            )
+            for key, item in items
+        }
+    if isinstance(value, list):
+        lowered = [term.casefold() for term in terms if term]
+        ranked = sorted(
+            enumerate(value),
+            key=lambda pair: (
+                0
+                if any(
+                    term in json.dumps(pair[1], ensure_ascii=False, separators=(",", ":")).casefold()
+                    for term in lowered
+                )
+                else 1,
+                pair[0],
+            ),
+        )
+        return [
+            bound_semantic_context_value(
+                item,
+                terms=terms,
+                max_items=max_items,
+                max_string=max_string,
+                depth=depth + 1,
+            )
+            for _, item in ranked[:max_items]
+        ]
+    return str(value)[:max_string]
+
+
+def semantic_review_selection_reason(path: str, *, fanfiction: bool) -> str:
+    if "/chapter_cards/" in path:
+        return "chapter contract"
+    if path.startswith("30_state/tcs/"):
+        return "current chapter state"
+    if path.endswith("story_graph.json"):
+        return "participant relationship state"
+    if path.endswith("characters.json"):
+        return "participant identity and motivation"
+    if path.endswith("outline_anchors.json"):
+        return "current reveal boundary"
+    if fanfiction and path.endswith("source_canon.json"):
+        return "declared canon references"
+    if fanfiction and path.endswith("fanfiction_bible.json"):
+        return "continuity, divergence, and voice contract"
+    return "declared semantic review source"
+    gate_result: str
+    next_command: str
+
+
 @dataclass(frozen=True)
 class GateWaiverResult:
     """Result for a recorded gate waiver."""
@@ -143,6 +443,7 @@ def gate_check(
     chapter_number: int,
     source: str = "draft",
     semantic: bool = False,
+    sync_db: bool = True,
 ) -> GateCheckResult:
     """Run deterministic gates and write the artifact contract."""
 
@@ -230,7 +531,8 @@ def gate_check(
     gate_path = artifact_dir / "gate_result.json"
     write_json(gate_path, gate_payload)
     repair_path = write_repair_plan(artifact_dir, chapter_number, failures, warnings)
-    sync_database(config)
+    if sync_db:
+        sync_database(config)
     return GateCheckResult(
         chapter_number=chapter_number,
         passed=passed,
@@ -259,10 +561,10 @@ def semantic_review_task(
     artifact_dir = gate_artifact_dir(root, chapter_number)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     task_md = artifact_dir / "semantic_review_task.md"
+    context_file = artifact_dir / "semantic_review_context.json"
     output_file = artifact_dir / "semantic_review_result.json"
     manifest_file = artifact_dir / "semantic_review_task.agent_task.json"
-    candidate_inputs = [
-        chapter_path,
+    canonical_inputs = [
         root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json",
         root / "30_state" / "story_graph.json",
         root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
@@ -270,15 +572,24 @@ def semantic_review_task(
         root / "20_outline" / "outline_anchors.json",
     ]
     if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
-        candidate_inputs.extend(
+        canonical_inputs.extend(
             [
                 root / "10_bible" / "fanfiction" / "source_canon.json",
                 root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
             ]
         )
-    inputs = [path for path in candidate_inputs if path.exists()]
+    canonical_inputs = [path for path in canonical_inputs if path.exists()]
     source_text = safe_read_text(chapter_path)
     source_rel = relative_path(root, chapter_path)
+    context_payload = build_semantic_review_context(
+        root,
+        chapter_number=chapter_number,
+        source_path=chapter_path,
+        source_text=source_text,
+        canonical_inputs=canonical_inputs,
+        fanfiction=str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction",
+    )
+    write_json(context_file, context_payload)
     schema = semantic_review_output_template(chapter_number, chapter_path, root)
     atomic_write_text(
         task_md,
@@ -299,9 +610,10 @@ def semantic_review_task(
                 "",
                 f"- `{source_rel}` (sha256 `{sha256_text(source_text)}`)",
                 "",
-                "## Canonical References You May Use",
+                "## Compiled Canonical Context",
                 "",
-                *[f"- `{relative_path(root, path)}`" for path in inputs if path != chapter_path],
+                f"- Read only `{relative_path(root, context_file)}` for bounded canonical facts and allowed references.",
+                "- Do not open the canonical source files listed inside that packet; the CLI will verify cited references.",
                 "",
                 "## Output Contract",
                 "",
@@ -317,7 +629,7 @@ def semantic_review_task(
             ]
         ),
     )
-    manifest_inputs = [task_md, *inputs]
+    manifest_inputs = [task_md, chapter_path, context_file]
     manifest = build_manifest(
         root,
         task_type="semantic_review",
@@ -329,8 +641,12 @@ def semantic_review_task(
         apply_command=f"longform-engine gate semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
         failure_next_command=f"longform-engine gate semantic-task project.yaml --chapter {chapter_number}",
         context_policy={
-            "required_files": [relative_path(root, task_md), source_rel],
-            "optional_files": [relative_path(root, path) for path in inputs if path != chapter_path],
+            "required_files": [
+                relative_path(root, task_md),
+                source_rel,
+                relative_path(root, context_file),
+            ],
+            "optional_files": [],
             "forbidden_paths": [
                 "40_manuscript/final/",
                 "50_workbench/agent_drafts/",
@@ -340,7 +656,7 @@ def semantic_review_task(
             "max_files": 7,
             "max_chars": 18_000,
             "compiled_brief": relative_path(root, task_md),
-            "selection_report": "",
+            "selection_report": relative_path(root, context_file),
         },
     )
     write_manifest(root, manifest, manifest_file)
@@ -392,9 +708,10 @@ def semantic_review_validate(
     if verdict not in {"pass", "warning", "fail"}:
         errors.append("verdict must be pass, warning, or fail.")
     manifest = load_semantic_review_manifest(manifest_path=artifact_dir / "semantic_review_task.agent_task.json")
+    context = load_json(artifact_dir / "semantic_review_context.json", default={})
     allowed_refs = {
         str(item).replace("\\", "/")
-        for item in manifest.get("input_files", [])
+        for item in (context.get("allowed_canonical_refs") if isinstance(context, dict) else []) or []
         if is_canonical_reference(str(item))
     }
     known_entities = semantic_review_known_entities(root)
@@ -472,6 +789,14 @@ def semantic_review_apply(
     artifact_dir = gate_artifact_dir(root, chapter_number)
     application_file = artifact_dir / "semantic_review_application.json"
     payload = load_json(path, default={})
+    candidate_task = semantic_review_candidate_task(root, chapter_number)
+    candidate_task_id = str(candidate_task.get("task_id") or "")
+    submission_path = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.submission.json"
+    candidate_manifest_paths = [
+        root / str(task.get("manifest_file") or "")
+        for task in list_manifests(root, chapter_number=chapter_number)
+        if str(task.get("manifest_file") or "")
+    ]
     blocking = sum(
         1
         for item in payload.get("findings", [])
@@ -482,7 +807,14 @@ def semantic_review_apply(
         command="gate semantic-apply",
         chapter_number=chapter_number,
         source_paths=[path, validation.report_file],
-        touched_paths=[artifact_dir],
+        touched_paths=[
+            artifact_dir,
+            root / "50_workbench" / "agent_tasks",
+            root / "30_state" / "novel_state.json",
+            root / "40_manuscript" / "chapter_meta.jsonl",
+            submission_path,
+            *candidate_manifest_paths,
+        ],
         metadata={"gate_artifact_only": True, "blocking_findings": blocking},
     ):
         write_json(
@@ -496,16 +828,39 @@ def semantic_review_apply(
                 "applied_at": utc_now(),
             },
         )
-        gate_result = gate_check(config, chapter_number=chapter_number, semantic=True)
-    mark_tasks_for_output(
-        root,
-        chapter_number=chapter_number,
-        output_path=path,
-        to_status="applied",
-        command="gate semantic-apply",
-        result=application_file,
-        from_statuses=("validated",),
-    )
+        gate_result = gate_check(config, chapter_number=chapter_number, semantic=True, sync_db=False)
+        mark_tasks_for_output(
+            root,
+            chapter_number=chapter_number,
+            output_path=path,
+            to_status="applied",
+            command="gate semantic-apply",
+            result=application_file,
+            from_statuses=("validated",),
+        )
+        candidate_status = "validated" if gate_result.passed and not blocking else "invalid"
+        update_task_status(
+            root,
+            candidate_task_id,
+            to_status=candidate_status,
+            command="gate semantic-apply",
+            artifact=path,
+            result=gate_result.gate_result,
+        )
+        supersede_other_candidate_tasks(
+            root,
+            chapter_number=chapter_number,
+            current_task_id=candidate_task_id,
+            command="gate semantic-apply",
+            artifact=path,
+        )
+        update_semantic_review_stage_projection(
+            root,
+            chapter_number=chapter_number,
+            candidate_task=candidate_task,
+            gate_result_path=Path(gate_result.gate_result),
+            passed=gate_result.passed and not blocking,
+        )
     return SemanticReviewApplyResult(
         chapter_number=chapter_number,
         applied=True,
@@ -514,10 +869,114 @@ def semantic_review_apply(
         blocking_findings=blocking,
         next_command=(
             f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only"
-            if blocking
+            if blocking or not gate_result.passed
             else f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
         ),
     )
+
+
+def semantic_review_candidate_task(root: Path, chapter_number: int) -> dict[str, Any]:
+    submission_path = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.submission.json"
+    submission = load_json(submission_path, default={})
+    if not isinstance(submission, dict):
+        raise GateError("Chapter submission metadata is missing; semantic review cannot identify the current candidate.")
+    source_path = str(submission.get("candidate_source_path") or submission.get("source_file") or "")
+    if not source_path:
+        raise GateError("Chapter submission does not identify its candidate source path.")
+    try:
+        task = resolve_candidate_task(
+            root,
+            chapter_number=chapter_number,
+            output_path=source_path,
+        )
+    except AgentTaskContractError as exc:
+        raise GateError(str(exc)) from exc
+    declared_id = str(submission.get("candidate_task_id") or "")
+    if declared_id and declared_id != str(task.get("task_id") or ""):
+        raise GateError("Chapter submission candidate_task_id does not own candidate_source_path.")
+    return task
+
+
+def update_semantic_review_stage_projection(
+    root: Path,
+    *,
+    chapter_number: int,
+    candidate_task: dict[str, Any],
+    gate_result_path: Path,
+    passed: bool,
+) -> None:
+    gate_payload = load_json(gate_result_path, default={})
+    if not isinstance(gate_payload, dict):
+        raise GateError("Semantic apply did not produce a readable gate result.")
+    candidate = dict(gate_payload.get("candidate") or {})
+    candidate.setdefault("task_id", str(candidate_task.get("task_id") or ""))
+    candidate.setdefault("task_type", str(candidate_task.get("task_type") or ""))
+    gate_payload["candidate"] = candidate
+    gate_payload["workflow_stage"] = "ready_to_finalize" if passed else "repair_pending"
+    gate_payload["next_command"] = (
+        f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
+        if passed
+        else f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only"
+    )
+    gate_payload["updated_at"] = utc_now()
+    write_json(gate_result_path, gate_payload)
+
+    state_path = root / "30_state" / "novel_state.json"
+    state = load_json(state_path, default={})
+    if not isinstance(state, dict):
+        state = {}
+    state["status"] = "gate_passed_pending_finalize" if passed else "gate_failed"
+    state["current_chapter"] = chapter_number
+    state["pending_gate_chapter"] = chapter_number
+    state["last_gate_result"] = relative_path(root, gate_result_path)
+    state["updated_at"] = utc_now()
+    state.pop("pending_semantic_review_chapter", None)
+    if passed:
+        state["pending_final_chapter"] = chapter_number
+    else:
+        state.pop("pending_final_chapter", None)
+    write_json(state_path, state)
+
+    meta_path = root / "40_manuscript" / "chapter_meta.jsonl"
+    records: list[dict[str, Any]] = []
+    if meta_path.exists():
+        for line in safe_read_text(meta_path).splitlines():
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                records.append(item)
+    found = False
+    for item in records:
+        number = int(item.get("chapter_number") or item.get("chapter") or item.get("number") or 0)
+        if number != chapter_number:
+            continue
+        item["status"] = "gate_passed" if passed else "gate_failed"
+        item["gate_result"] = relative_path(root, gate_result_path)
+        found = True
+    if not found:
+        records.append(
+            {
+                "chapter_number": chapter_number,
+                "status": "gate_passed" if passed else "gate_failed",
+                "gate_result": relative_path(root, gate_result_path),
+            }
+        )
+    atomic_write_text(
+        meta_path,
+        "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in records),
+    )
+
+    submission_path = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.submission.json"
+    submission = load_json(submission_path, default={})
+    if not isinstance(submission, dict):
+        raise GateError("Chapter submission metadata became unreadable during semantic apply.")
+    submission["candidate_task_id"] = str(candidate_task.get("task_id") or "")
+    submission["candidate_task_type"] = str(candidate_task.get("task_type") or "")
+    submission["candidate_status"] = "validated" if passed else "invalid"
+    submission["updated_at"] = utc_now()
+    write_json(submission_path, submission)
 
 
 def pacing_review(
@@ -644,7 +1103,6 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
     task_json = artifact_dir / "semantic_pacing_task.json"
     task_md = artifact_dir / "semantic_pacing_task.md"
     manifest_file = artifact_dir / "semantic_pacing_task.agent_task.json"
-    text = safe_read_text(chapter_path)
     task_payload = {
         "schema_version": 1,
         "chapter_number": chapter_number,
@@ -684,9 +1142,7 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
                 json.dumps(task_payload["output_schema"], ensure_ascii=False, indent=2),
                 "```",
                 "",
-                "## Source Excerpt",
-                "",
-                trim_text(text, 5000),
+                "Read the declared source chapter in full; do not rely on a duplicated excerpt.",
                 "",
             ]
         ),
@@ -695,20 +1151,20 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
         root,
         task_type="pacing_review",
         chapter_number=chapter_number,
-        input_files=[
-            task_json,
-            task_md,
-            chapter_path,
-            root / "30_state" / "event_matrix.json",
-            root / "30_state" / "pacing_history.json",
-            root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
-            artifact_dir / "reverse_brake_report.md",
-        ],
+        input_files=[task_md, chapter_path, task_json],
         allowed_output_paths=[output_file],
         output_schema="semantic_pacing_result_v1",
         validate_command=f"longform-engine pacing semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
         apply_command=f"longform-engine pacing semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
         failure_next_command=f"longform-engine pacing semantic-task project.yaml --chapter {chapter_number}",
+        context_policy={
+            "required_files": [task_md, chapter_path, task_json],
+            "optional_files": [],
+            "compiled_brief": task_md,
+            "selection_report": task_json,
+            "max_files": 3,
+            "max_chars": 20_000,
+        },
     )
     write_manifest(root, manifest, manifest_file)
     return SemanticPacingTaskResult(

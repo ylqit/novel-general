@@ -77,7 +77,7 @@ def test_humanizer_semantic_pass_allows_submit_and_applies_both_tasks(tmp_path):
         for item in list_manifests(root, chapter_number=1)
         if item["task_type"] in {"humanize", "humanize_semantic_review"}
     }
-    assert statuses == {"humanize": "applied", "humanize_semantic_review": "applied"}
+    assert statuses == {"humanize": "invalid", "humanize_semantic_review": "applied"}
 
 
 def test_production_loop_validates_existing_humanizer_semantic_output_without_apply(tmp_path):

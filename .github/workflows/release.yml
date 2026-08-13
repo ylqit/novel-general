@@ -8,7 +8,7 @@ on:
       release_ref:
         description: Existing version tag to rebuild and publish.
         required: true
-        default: v0.3.0
+        default: v0.3.1
         type: string
 
 permissions:
@@ -41,7 +41,7 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.release_ref || github.ref_name }}
-          body_path: docs/releases/v0.3.0.md
+          body_path: docs/releases/${{ inputs.release_ref || github.ref_name }}.md
           files: |
             dist/*.whl
             dist/*.tar.gz

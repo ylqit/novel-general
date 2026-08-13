@@ -243,11 +243,9 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
         first_need_human_action(root)
         or project_readiness_action(config, root)
         or chapter_direction_action(config, root)
-        or reader_payoff_action(config, root)
-        or editorial_review_action(config, root)
         or chapter_semantic_lifecycle_action(root)
+        or chapter_workflow_action(config, root)
         or first_active_agent_task(root)
-        or first_gate_action(root)
         or first_draft_without_gate_action(root)
         or first_writing_task_action(root)
     )
@@ -1510,9 +1508,33 @@ def agent_task_action(root: Path, task: dict[str, Any]) -> dict[str, Any]:
     """Render one indexed active task as a production action."""
 
     manifest = load_manifest(root, str(task.get("task_id") or task.get("manifest_file") or ""))
+    validation = validate_manifest_strict(root, manifest, strict=True)
     status = str(task.get("status") or manifest.get("status") or "awaiting_agent")
     task_type = str(task.get("task_type") or manifest.get("task_type") or "agent_task")
     chapter_number = int(task.get("chapter_number") or manifest.get("chapter_number") or 0)
+    if not validation.ok:
+        action = base_action(
+            status="agent_task_contract_invalid",
+            chapter_number=chapter_number,
+            blocked_by="task_contract_invalid",
+            waiting_for="cli_task_regeneration",
+            task_id=str(manifest.get("task_id") or task.get("task_id") or ""),
+            task_type=task_type,
+            input_files=as_string_list(manifest.get("input_files")),
+            context_policy=dict(manifest.get("context_policy") or {}),
+            allowed_output_paths=as_string_list(manifest.get("allowed_output_paths")),
+            output_schema=str(manifest.get("output_schema") or ""),
+            validate_command=str(manifest.get("validate_command") or ""),
+            apply_command=str(manifest.get("apply_command") or ""),
+            failure_next_command=str(manifest.get("failure_next_command") or ""),
+            next_command=str(manifest.get("failure_next_command") or ""),
+            human_summary=(
+                f"ch{chapter_number:03d} {task_type} has an invalid Agent task contract and must be regenerated."
+            ),
+            sources=[str(task.get("manifest_file") or "")],
+        )
+        action["contract_errors"] = list(validation.errors)
+        return action
     next_command = command_for_task_status(manifest, status)
     if task_type == "humanize_semantic_review" and status == "invalid":
         validation = read_json(
@@ -1557,6 +1579,119 @@ def agent_task_action(root: Path, task: dict[str, Any]) -> dict[str, Any]:
     if task_type == "editorial_review":
         action.update(editorial_next_work_order(root, task, manifest, chapter_number, status))
     return action
+
+
+def chapter_workflow_action(config: ConfigDocument, root: Path) -> dict[str, Any] | None:
+    """Route an unfinished chapter by its evidence-backed stage before consulting generic task priority."""
+
+    chapter_numbers = sorted(
+        {
+            chapter_from_name(path.name)
+            for path in (root / MANUSCRIPT_DIR / "draft").glob("ch*.md")
+        }
+        | {
+            chapter_from_name(path.parent.name)
+            for path in (root / "50_workbench" / "gate_artifacts").glob("ch*/gate_result.json")
+        }
+    )
+    for chapter_number in chapter_numbers:
+        if chapter_number <= 0 or final_chapter_exists(root, chapter_number):
+            continue
+        stage = derive_chapter_stage(config, root, chapter_number)
+        stage_name = str(stage.get("stage") or "")
+        if stage_name == "semantic_review_pending":
+            tasks = active_chapter_tasks(root, chapter_number, {"semantic_review"})
+            if tasks:
+                return agent_task_action(root, sorted(tasks, key=task_sort_key)[0])
+            command = f"longform-engine gate semantic-task project.yaml --chapter {chapter_number}"
+            return base_action(
+                status="ready_for_semantic_review_task",
+                chapter_number=chapter_number,
+                blocked_by="semantic_review_pending",
+                waiting_for="cli",
+                task_type="semantic_review",
+                next_command=command,
+                failure_next_command=command,
+                human_summary=f"ch{chapter_number:03d} requires an evidence-backed semantic review task.",
+                sources=as_string_list(stage.get("sources")),
+            )
+        if stage_name == "payoff_pending":
+            return reader_payoff_action(config, root)
+        if stage_name == "editorial_pending":
+            return editorial_review_action(config, root)
+        if stage_name == "ready_to_finalize":
+            return first_gate_action(root)
+        if stage_name == "repair_pending":
+            replacements = active_chapter_tasks(root, chapter_number, {"repair", "humanize", "content_expand"})
+            if replacements:
+                return agent_task_action(root, sorted(replacements, key=task_sort_key)[0])
+            return first_gate_action(root)
+    return None
+
+
+def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int) -> dict[str, Any]:
+    """Derive one chapter stage from canonical artifacts and current candidate evidence."""
+
+    closure = root / "30_state" / "chapter_closures" / f"ch{chapter_number:03d}.json"
+    final = root / MANUSCRIPT_DIR / FINAL_LANE / f"ch{chapter_number:03d}.md"
+    ledger = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
+    gate_path = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
+    draft = root / MANUSCRIPT_DIR / "draft" / f"ch{chapter_number:03d}.md"
+    if closure.exists():
+        return {"stage": "closed", "sources": [relative_path(root, closure)]}
+    if final.exists() and not ledger.exists():
+        return {"stage": "finalized_needs_semantic_bundle", "sources": [relative_path(root, final)]}
+    if final.exists():
+        return {"stage": "finalized_needs_close", "sources": [relative_path(root, ledger)]}
+    gate = read_json(gate_path)
+    if gate_path.is_file() and isinstance(gate, dict) and gate:
+        semantic = gate.get("agent_semantic_review")
+        declared_stage = str(gate.get("workflow_stage") or "")
+        failures = gate.get("failures") if isinstance(gate.get("failures"), list) else []
+        only_semantic_failure = bool(failures) and all(
+            isinstance(item, dict) and item.get("code") == "semantic_review_required"
+            for item in failures
+        )
+        semantic_pending = declared_stage == "semantic_review_pending" or (
+            not declared_stage
+            and only_semantic_failure
+            and isinstance(semantic, dict)
+            and semantic.get("required") is True
+            and str(semantic.get("status") or "") != "applied"
+        )
+        if semantic_pending:
+            return {"stage": "semantic_review_pending", "sources": [relative_path(root, gate_path)]}
+        if gate.get("passed") is True or gate_has_waiver(gate):
+            payoff = reader_payoff_review_status(config, chapter_number=chapter_number)
+            if payoff.get("required") and not payoff.get("passed"):
+                return {"stage": "payoff_pending", "sources": [relative_path(root, gate_path)]}
+            reasons = editorial_review_required_reasons(config, chapter_number=chapter_number)
+            if reasons:
+                aggregate = read_json(
+                    root / "50_workbench" / "editorial_reviews" / f"ch{chapter_number:03d}.aggregate.json"
+                )
+                editorial_complete = (
+                    isinstance(aggregate, dict)
+                    and aggregate.get("need_human") is not True
+                    and not aggregate.get("missing_roles")
+                    and int(aggregate.get("result_count") or 0) > 0
+                )
+                if not editorial_complete:
+                    return {"stage": "editorial_pending", "sources": [relative_path(root, gate_path)]}
+            return {"stage": "ready_to_finalize", "sources": [relative_path(root, gate_path)]}
+        return {"stage": "repair_pending", "sources": [relative_path(root, gate_path)]}
+    if draft.exists():
+        return {"stage": "writing_pending", "sources": [relative_path(root, draft)]}
+    return {"stage": "writing_pending", "sources": []}
+
+
+def active_chapter_tasks(root: Path, chapter_number: int, task_types: set[str]) -> list[dict[str, Any]]:
+    return [
+        task
+        for task in list_manifests(root, chapter_number=chapter_number)
+        if str(task.get("task_type") or "") in task_types
+        and str(task.get("status") or "") in {"awaiting_agent", "submitted", "validated", "invalid"}
+    ]
 
 
 def chapter_semantic_lifecycle_action(root: Path) -> dict[str, Any] | None:
@@ -1737,7 +1872,19 @@ def first_gate_action(root: Path) -> dict[str, Any] | None:
                 sources=[relative_path(root, path)],
             )
         if payload.get("passed") is True or gate_has_waiver(payload):
-            next_command = str(
+            validated_candidates = active_chapter_tasks(
+                root,
+                chapter_number,
+                {"chapter_write", "repair", "humanize", "content_expand"},
+            )
+            validated_candidates = [
+                task for task in validated_candidates if str(task.get("status") or "") == "validated"
+            ]
+            candidate_apply = ""
+            if len(validated_candidates) == 1:
+                candidate_manifest = load_manifest(root, str(validated_candidates[0].get("task_id") or ""))
+                candidate_apply = str(candidate_manifest.get("apply_command") or "")
+            next_command = candidate_apply or str(
                 payload.get("next_command")
                 or f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
             )

@@ -254,7 +254,7 @@ def test_production_loop_creates_and_validates_payoff_without_finalize(tmp_path)
     validated = production_loop(config, max_steps=1, no_apply=True)
     assert validated["steps"][0]["action"] == "reader_payoff_validate"
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
-    assert production_next(config)["status"] == "agent_task_validated"
+    assert production_next(config)["status"] == "awaiting_finalize"
 
 
 def test_milestone_payoff_pass_requires_editorial_review_before_finalize(tmp_path):

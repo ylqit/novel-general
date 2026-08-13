@@ -30,7 +30,7 @@ https://github.com/ylqit/novel-general.git
 
 ## 3. Tag 与 Release
 
-版本 `0.3.0` 对应且只对应 tag `v0.3.0`。创建 tag 前再次运行：
+版本 `0.3.1` 对应且只对应 tag `v0.3.1`。创建 tag 前再次运行：
 
 ```powershell
 longform-engine release check --repository . --check-remote

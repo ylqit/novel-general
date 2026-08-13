@@ -5,7 +5,7 @@ from pathlib import Path
 from longform_engine.agent_tasks import load_manifest, validate_manifest_strict
 from longform_engine.config import load_project_config
 from longform_engine.gates import gate_check, semantic_review_apply, semantic_review_validate
-from longform_engine.orchestration import open_book, plan_chapter
+from longform_engine.orchestration import continue_write, open_book, submit_agent_draft
 from longform_engine.production import production_next
 from longform_engine.storage import init_project
 from tests.project_fixtures import mark_project_ready
@@ -19,16 +19,20 @@ def seed_high_risk_chapter(tmp_path: Path):
     open_book(config)
     mark_project_ready(root, config)
     config.data["length"]["chapter_word_count"]["hard_min"] = 20
-    plan_chapter(config, chapter_number=1)
+    continue_write(config, chapter_number=1)
     card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
     card = json.loads(card_path.read_text(encoding="utf-8"))
     card["requires_semantic_review"] = True
     card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
-    chapter = root / "40_manuscript" / "draft" / "ch001.md"
-    chapter.write_text(
-        "# Chapter 1\n\n" + ("Ari checks the archive seal and records one bounded clue. " * 20),
+    agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
+    agent_draft.write_text(
+        "# Chapter 1\n\n"
+        + ("Ari checks the archive seal and records one bounded clue. " * 20)
+        + "But the final seal names a second archive. Who opens it at midnight?",
         encoding="utf-8",
     )
+    submit_agent_draft(config, chapter_number=1, file_path=agent_draft, agent="codex")
+    chapter = root / "40_manuscript" / "draft" / "ch001.md"
     return config, root, chapter
 
 

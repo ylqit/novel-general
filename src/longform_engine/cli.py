@@ -3886,6 +3886,9 @@ def cmd_artifacts_status(args: argparse.Namespace) -> int:
         print(f"Loose files: {result.loose_files} ({result.loose_bytes} bytes)")
         print(f"Archives: {result.archive_files} ({result.archive_bytes} bytes)")
         print(f"Committed snapshots: {result.committed_snapshot_dirs} ({result.committed_snapshot_bytes} bytes)")
+        print(f"Orphan task artifacts: {result.orphan_task_artifacts}")
+        for path in result.orphan_task_files:
+            print(f"- {path}")
     return 0
 
 
@@ -4118,6 +4121,16 @@ def write_repair_candidate_task(config: ConfigDocument, *, chapter_number: int, 
     candidate_draft = candidate_dir / f"ch{chapter_number:03d}.{safe_agent}.repair_candidate.md"
     gate_text = gate_result.read_text(encoding="utf-8") if gate_result.exists() else "{}"
     repair_text = repair.read_text(encoding="utf-8") if repair.exists() else "Repair plan has not been generated yet."
+    try:
+        gate_payload = json.loads(gate_text)
+    except json.JSONDecodeError:
+        gate_payload = {}
+    gate_digest = {
+        key: gate_payload.get(key)
+        for key in ("passed", "severity", "failures", "warnings", "next_command", "workflow_stage")
+        if isinstance(gate_payload, dict) and gate_payload.get(key) not in (None, "", [], {})
+    }
+    chapter_draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
     next_command = (
         f"longform-engine draft submit project.yaml --chapter {chapter_number} "
         f"--file {cli_relative_path(root, candidate_draft)} --agent {safe_agent} --overwrite"
@@ -4151,12 +4164,12 @@ def write_repair_candidate_task(config: ConfigDocument, *, chapter_number: int, 
                 "## Gate Result",
                 "",
                 "```json",
-                gate_text,
+                json.dumps(gate_digest, ensure_ascii=False, indent=2),
                 "```",
                 "",
                 "## Repair Plan",
                 "",
-                repair_text,
+                repair_text[:5_000],
                 "",
             ]
         ),
@@ -4165,31 +4178,18 @@ def write_repair_candidate_task(config: ConfigDocument, *, chapter_number: int, 
         root,
         task_type="repair",
         chapter_number=chapter_number,
-        input_files=[
-            task_path,
-            gate_result,
-            repair,
-            root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md",
-            root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
-            root / "50_workbench" / "chapter_context" / f"ch{chapter_number:03d}.md",
-        ],
+        input_files=[task_path, chapter_draft],
         allowed_output_paths=[candidate_draft],
         output_schema="markdown_repair_candidate",
         validate_command=next_command,
         apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
         failure_next_command=(
-            f"longform-engine editorial need-human project.yaml --chapter {chapter_number} "
-            "--reason repair_candidate_failed"
+            f"longform-engine repair-chapter project.yaml --chapter {chapter_number} "
+            f"--candidate-only --agent {safe_agent}"
         ),
         context_policy={
-            "required_files": [task_path],
-            "optional_files": [
-                gate_result,
-                repair,
-                root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md",
-                root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
-                root / "50_workbench" / "chapter_context" / f"ch{chapter_number:03d}.md",
-            ],
+            "required_files": [task_path, chapter_draft],
+            "optional_files": [],
             "compiled_brief": task_path,
             "selection_report": task_path,
             "max_files": 6,

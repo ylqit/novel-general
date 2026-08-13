@@ -4,7 +4,7 @@
 
 唯一公开发布源：`https://github.com/ylqit/novel-general`，仓库根目录即 engine 根目录，默认分支为 `master`。
 
-当前包版本为 `0.3.0`。`v0.3.0` tag、GitHub Release、跨平台 CI 和全新远程 pipx 安装均已验证通过；当前协议 Codex 原创五章 smoke 也已通过。文学质量领先声明仍受 Claude Code、十章对照和独立盲评证据约束。
+当前源码包版本为 `0.3.1` release candidate；公开稳定版仍为已发布的 `v0.3.0`。v0.3.1 的本地协议热修复完成后，仍需全新项目重跑和明确发布确认。文学质量领先声明继续受 Claude Code、十章对照和独立盲评证据约束。
 
 ## 状态说明
 
@@ -166,16 +166,29 @@
 - [x] Codex 源码树已按当前协议完成 5 章 smoke，且第 6 章 next action 正确。
 - [~] 远程 Release 已完成；Claude Code、同人和正式 10 章盲评仍未完成，也没有用代码测试替代文学证据。
 
+## 13. v0.3.1 Protocol Hotfix
+
+- [x] 新增 `docs/V0_3_1_PROTOCOL_HOTFIX_CHECKLIST.md`，单独记录语义上下文、manifest 注册、候选生命周期和章节阶段验收。
+- [x] 包版本与运行时版本已统一提升为 `0.3.1` release candidate。
+- [x] v0.3.0 SAO 失败运行和两项 P1 issue 保持原样，未原地修改。
+- [x] Codex/Claude Code Skill 内容与 v0.3.0 完全一致。
+- [x] 本地协议与兼容测试、完整 pytest、构建审计及隔离 wheel/pipx 安装 smoke 已通过。
+- [ ] 全新 v0.3.1 SAO 项目完成第 1 章全闭环与 5 章 smoke。
+- [x] 本地验收未创建或推送 `v0.3.1` tag，也未创建 GitHub Release；后续仍须获得明确发布确认。
+
 ## 本轮本地验收记录
 
-- `python -m pytest -q`：314 passed。
+- `python -m pytest -q`：318 passed。
 - `python scripts/sync_skill_references.py --check`：passed。
 - `python scripts/build_resource_manifest.py --check`：passed。
 - `python scripts/validate_skills.py`：passed。
 - `python scripts/release_surface_guards.py`：passed。
-- `python -m build`：从最终源码成功构建 `longform_novel_engine-0.3.0.tar.gz` 与 wheel。
+- `python -m build`：从最终源码成功构建 `longform_novel_engine-0.3.1.tar.gz` 与 wheel。
 - `python scripts/audit_wheel.py`：100 entries，必需配置、模板、Skills、references 与资源 manifest 齐全。
-- `python scripts/audit_sdist.py`：189 entries，文档、workflow、Skills、源码与测试齐全。
+- `python scripts/audit_sdist.py`：192 entries，文档、workflow、Skills、源码与测试齐全。
+- v0.3.1 全新隔离 pipx/Python 3.12 `[semantic]` 安装：`--version=0.3.1`、模板校验、双 Skill install/status、`doctor_v1.ok=true` 与首个严格 `book_ideation` 工作单通过。
+- v0.3.0 SAO 项目只读兼容检查：`production next` 返回 `agent_task_contract_invalid -> semantic_review` 与重新生成命令；201 个文件前后 SHA-256 完全一致。
+- v0.3.1 `release check --tag v0.3.1 --check-remote`：17 pass、0 warning、3 expected failures（dirty worktree、本地无 tag、远程无 tag），未执行任何发布动作。
 - 全新隔离 pipx `[semantic]` 安装：`--version=0.3.0`、模板校验、Skill install/status/update/uninstall、`doctor_v1` 和首个 `book_ideation` 工作单通过。
 - 安装态模型验证：`bge-m3` embedding/reranker 均可加载，`fallback_active=false`；项目 doctor 为 green。
 - `codex-longform-phase6-smoke-5-current-v1`：5 个 final、5 个 PASS gate、1 次候选返修、1/3 章强制语义审查、平均上下文 7 个文件 / 12,608 字符、P0 为 0、残留 canonical 污染为 0。
