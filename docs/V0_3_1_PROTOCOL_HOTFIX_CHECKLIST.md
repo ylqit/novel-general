@@ -86,11 +86,11 @@
 - [ ] 第 1 章完成 write/repair/semantic/payoff/editorial/finalize/semantic bundle/close 全闭环。
 - [ ] 新项目连续 5 章 smoke 通过。
 - [ ] 新项目恢复 20 章生产并输出验证报告。
-- [x] 本地验收阶段未创建或推送 `v0.3.1` tag，也未创建 GitHub Release。
-- [ ] 发布后从真实 tag 完成远程 pipx、Skill status、doctor 与新终端 smoke。
+- [x] 获得用户明确发布确认后，已创建并推送 annotated `v0.3.1` tag，并由 Release workflow 创建 GitHub Release。
+- [x] 发布后已从真实 tag 完成远程 pipx、Skill install/status、doctor、模板校验与新终端 smoke。
 
 ## Definition Of Done
 
 - [x] 代码级协议缺陷已经修复并有组合回归；完整测试、构建审计与隔离安装均已通过。
 - [ ] 只有第 1 章全闭环和 5 章 smoke 均通过后，才恢复 20 章 SAO 生产。
-- [ ] 只有获得用户明确发布确认后，才把本 release candidate 发布为公开 v0.3.1。
+- [x] 已获得用户明确发布确认，并将验收通过的 release candidate 发布为公开 v0.3.1。

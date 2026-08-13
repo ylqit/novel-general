@@ -37,7 +37,7 @@
 
 唯一发布源是 [ylqit/novel-general](https://github.com/ylqit/novel-general)。公开安装使用 pipx，把 engine 放入隔离环境，再由 engine 原子复制对应 Skill。无需先 clone 仓库，也不执行远程 `curl | shell`。
 
-> 当前源码已准备 `v0.3.1` 热修复发布候选。以下命令固定到 `v0.3.1` tag；该 tag 与 GitHub Release 需在本地验收完成并得到明确发布确认后创建。
+> 当前公开稳定版为 `v0.3.1`。以下命令固定到已经发布的 tag，并已通过远程 pipx、Skill lifecycle 与 doctor smoke。
 
 ### 让 Agent 安装
 

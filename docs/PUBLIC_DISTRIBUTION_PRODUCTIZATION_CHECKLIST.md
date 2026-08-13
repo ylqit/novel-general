@@ -4,7 +4,7 @@
 
 唯一公开发布源：`https://github.com/ylqit/novel-general`，仓库根目录即 engine 根目录，默认分支为 `master`。
 
-当前源码包版本为 `0.3.1` release candidate；公开稳定版仍为已发布的 `v0.3.0`。v0.3.1 的本地协议热修复完成后，仍需全新项目重跑和明确发布确认。文学质量领先声明继续受 Claude Code、十章对照和独立盲评证据约束。
+当前源码包与公开稳定版均为 `v0.3.1`。协议热修复已经发布并通过真实 tag 安装验证；全新 SAO 项目重跑仍作为生产质量证据保留。文学质量领先声明继续受 Claude Code、十章对照和独立盲评证据约束。
 
 ## 状态说明
 
@@ -169,12 +169,12 @@
 ## 13. v0.3.1 Protocol Hotfix
 
 - [x] 新增 `docs/V0_3_1_PROTOCOL_HOTFIX_CHECKLIST.md`，单独记录语义上下文、manifest 注册、候选生命周期和章节阶段验收。
-- [x] 包版本与运行时版本已统一提升为 `0.3.1` release candidate。
+- [x] 包版本与运行时版本已统一提升并公开发布为 `0.3.1`。
 - [x] v0.3.0 SAO 失败运行和两项 P1 issue 保持原样，未原地修改。
 - [x] Codex/Claude Code Skill 内容与 v0.3.0 完全一致。
 - [x] 本地协议与兼容测试、完整 pytest、构建审计及隔离 wheel/pipx 安装 smoke 已通过。
 - [ ] 全新 v0.3.1 SAO 项目完成第 1 章全闭环与 5 章 smoke。
-- [x] 本地验收未创建或推送 `v0.3.1` tag，也未创建 GitHub Release；后续仍须获得明确发布确认。
+- [x] 获得明确发布确认后，annotated `v0.3.1` tag、GitHub Release、wheel 与 sdist 已公开发布。
 
 ## 本轮本地验收记录
 
@@ -189,6 +189,10 @@
 - v0.3.1 全新隔离 pipx/Python 3.12 `[semantic]` 安装：`--version=0.3.1`、模板校验、双 Skill install/status、`doctor_v1.ok=true` 与首个严格 `book_ideation` 工作单通过。
 - v0.3.0 SAO 项目只读兼容检查：`production next` 返回 `agent_task_contract_invalid -> semantic_review` 与重新生成命令；201 个文件前后 SHA-256 完全一致。
 - v0.3.1 `release check --tag v0.3.1 --check-remote`：17 pass、0 warning、3 expected failures（dirty worktree、本地无 tag、远程无 tag），未执行任何发布动作。
+- v0.3.1 发布后 readiness：20 pass、0 warning、0 failure；Release workflow 与主分支 CI 均为 success。
+- GitHub Release：`https://github.com/ylqit/novel-general/releases/tag/v0.3.1`。
+- v0.3.1 wheel SHA-256：`e52ed4eccb3ff4753c2bdf97f1b1d1ca8d6c8c9ab0dc01443948dd9646dfe538`；sdist SHA-256：`837fed90de589fed93eda8f8930f05cff68749c2cbfb55448a69bff421f03d45`。
+- 真实 v0.3.1 tag 的隔离 pipx `[semantic]` 安装、双 Skill install/status、doctor 与模板校验通过。
 - 全新隔离 pipx `[semantic]` 安装：`--version=0.3.0`、模板校验、Skill install/status/update/uninstall、`doctor_v1` 和首个 `book_ideation` 工作单通过。
 - 安装态模型验证：`bge-m3` embedding/reranker 均可加载，`fallback_active=false`；项目 doctor 为 green。
 - `codex-longform-phase6-smoke-5-current-v1`：5 个 final、5 个 PASS gate、1 次候选返修、1/3 章强制语义审查、平均上下文 7 个文件 / 12,608 字符、P0 为 0、残留 canonical 污染为 0。
