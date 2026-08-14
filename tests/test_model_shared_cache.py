@@ -104,7 +104,10 @@ def test_migration_is_idempotent_and_reference_is_scoped_to_profile(monkeypatch,
     manifest["unrelated_cache_metadata"] = "changed"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
-    assert verify_models(config).provider_ready
+    verification = verify_models(config)
+    assert verification.embedding_cached
+    assert verification.reranker_cached
+    assert not any("profile manifest hash does not match" in warning for warning in verification.warnings)
     dry_run = migrate_models_to_shared(config, dry_run=True, confirmed=False)
     assert dry_run["eligible"]
     assert not dry_run["source_present"]
