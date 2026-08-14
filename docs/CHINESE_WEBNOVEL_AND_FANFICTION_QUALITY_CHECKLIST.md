@@ -1,5 +1,7 @@
 # 中文网文质量、去 AI 味与同人创作支持 Checklist
 
+> v0.4.0 已用正交故事分面替代单值 genre，并改为字数主导与滚动纲要。当前实施与发布门槛见 [`V0_4_0_WORD_BUDGET_AND_COMPOSABLE_PROFILE_CHECKLIST.md`](V0_4_0_WORD_BUDGET_AND_COMPOSABLE_PROFILE_CHECKLIST.md)；本文件中的五种 genre 条目是 v0.3.x 历史证据，不代表 v0.4.0 当前协议。
+
 本文档是 `longform-novel-engine` 对中文网络小说质量、Humanizer 和一等同人工作流的验收标准。`[x]` 表示已有代码与自动测试，`[~]` 表示工具链已具备但仍缺真实章节证据，`[ ]` 表示尚未完成。
 
 通用人物表现与场景化叙事的实现和真实生产证据状态见 [`CHARACTER_EXPRESSION_AND_SCENE_NARRATIVE_CHECKLIST.md`](CHARACTER_EXPRESSION_AND_SCENE_NARRATIVE_CHECKLIST.md)。

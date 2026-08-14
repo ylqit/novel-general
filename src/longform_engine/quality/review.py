@@ -588,18 +588,36 @@ def build_payoff_context(
         )
     quality_source_ids: list[str] = []
     quality_source_by_path: dict[str, dict[str, str]] = {}
-    for index, item in enumerate(effective.get("sources") or []):
+    payoff_source_kinds = {
+        "market",
+        "phase",
+        "market_phase",
+        "current_story_arc",
+        "approved_style_baseline",
+        "project_overrides",
+    }
+    payoff_sources = [
+        item
+        for item in effective.get("sources") or []
+        if isinstance(item, dict) and str(item.get("kind") or "") in payoff_source_kinds
+    ]
+    for index, item in enumerate(payoff_sources):
         if not isinstance(item, dict) or not item.get("path") or not item.get("sha256"):
             continue
         path_text = str(item["path"])
         if path_text in quality_source_by_path:
             continue
         source_id = f"quality_source_{index + 1}"
+        source_kind = str(item.get("kind") or "")
         record = {
             "source_id": source_id,
             "path": path_text,
             "sha256": str(item["sha256"]),
-            "authority": "engine_resource",
+            "authority": (
+                "project"
+                if source_kind in {"current_story_arc", "approved_style_baseline", "project_overrides"}
+                else "engine_resource"
+            ),
             "selected_for": "bounded payoff guidance",
             "truncation_reason": "source reduced to payoff cadence and compatibility guidance",
         }

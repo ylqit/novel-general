@@ -20,11 +20,13 @@ from longform_engine.agent_tasks import (
 )
 from longform_engine.character_expression import character_expression_diagnostics
 from longform_engine.config import ConfigDocument
+from longform_engine.lengths import compile_length_forecast
 from longform_engine.quality import (
     compact_effective_quality_contract,
     compile_effective_quality_contract,
 )
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.text_metrics import content_character_count
 
 
 CREATIVE_BRIEF_FIELDS = (
@@ -34,7 +36,7 @@ CREATIVE_BRIEF_FIELDS = (
     "core_taboo",
     "automation_level",
     "target_scale",
-    "genre_style_profile",
+    "story_profile",
 )
 
 EXPANSION_TYPES = ("scene", "dialogue", "psychology", "action", "transition")
@@ -153,14 +155,6 @@ class CreativeBriefResult:
 
 
 @dataclass(frozen=True)
-class StyleProfileResult:
-    profile_file: str
-    current_profile_file: str
-    genre: str
-    target_audience: str
-
-
-@dataclass(frozen=True)
 class StyleExtractResult:
     profile_file: str
     current_profile_file: str
@@ -235,9 +229,10 @@ class ExpandTaskResult:
     manifest_file: str
     candidate_file: str
     expansion_types: tuple[str, ...]
-    current_word_count: int
-    minimum_word_count: int
-    missing_words: int
+    metric: str
+    current_content_characters: int
+    minimum_content_characters: int
+    missing_content_characters: int
     next_command: str
 
 
@@ -248,8 +243,9 @@ class ExpandCheckResult:
     report_file: str
     markdown_report: str
     passed: bool
-    word_count: int
-    minimum_word_count: int
+    metric: str
+    content_characters: int
+    minimum_content_characters: int
     expansion_types: tuple[str, ...]
     issues: tuple[dict[str, Any], ...]
     warnings: tuple[str, ...]
@@ -315,9 +311,11 @@ def validate_creative_brief(config: ConfigDocument) -> CreativeBriefResult:
 def default_creative_brief(config: ConfigDocument, confirmations: dict[str, Any]) -> dict[str, Any]:
     novel = config.data.get("novel", {}) if isinstance(config.data.get("novel"), dict) else {}
     length = config.data.get("length", {}) if isinstance(config.data.get("length"), dict) else {}
-    target_words = length.get("target_total_words", "")
-    chapters = length.get("total_chapters", "")
-    target_scale = confirmations.get("target_scale") or f"{chapters} chapters / {target_words} words"
+    forecast = compile_length_forecast(length)
+    target_scale = confirmations.get("target_scale") or (
+        f"{forecast.target_total_characters} content characters / "
+        f"about {forecast.estimated_chapters} chapters / {forecast.support_status}"
+    )
     target_audience = confirmations.get("target_audience") or novel.get("target_audience") or "longform novel readers"
     writing_style = confirmations.get("writing_style") or novel.get("style") or novel.get("writing_style") or "immersive serialized prose"
     core_taboo = confirmations.get("core_taboo") or confirmations.get("core_forbidden_zone") or novel.get("forbidden_experience") or [
@@ -330,7 +328,6 @@ def default_creative_brief(config: ConfigDocument, confirmations: dict[str, Any]
         "writing_style": writing_style,
         "reader_contract": {
             "platform": novel.get("target_platform", "unknown"),
-            "genre": novel.get("genre", "unknown"),
             "core_promise": novel.get("core_promise", ""),
             "main_question": novel.get("main_question", ""),
             "ending_direction": novel.get("ending_direction", ""),
@@ -338,12 +335,7 @@ def default_creative_brief(config: ConfigDocument, confirmations: dict[str, Any]
         "core_taboo": as_list(core_taboo),
         "automation_level": confirmations.get("automation_level") or "agent_skill with human approval for finalization",
         "target_scale": target_scale,
-        "genre_style_profile": {
-            "genre": novel.get("genre", "unknown"),
-            "tone": writing_style,
-            "payoff_density": "one local payoff per chapter; preserve longform core mystery",
-            "dialogue_bias": "use dialogue for pressure, status, and subtext rather than exposition",
-        },
+        "story_profile": config.data.get("story_profile", {}),
         "status": "confirmed",
         "created_at": utc_now(),
         "updated_at": utc_now(),
@@ -385,52 +377,6 @@ def write_creative_brief_task(root: Path, errors: list[str], payload: dict[str, 
 def load_creative_brief(root: Path) -> dict[str, Any]:
     payload = load_json(root / "10_bible" / "creative_brief.json", default={})
     return payload if isinstance(payload, dict) else {}
-
-
-def style_profile(config: ConfigDocument, *, genre: str, target_audience: str) -> StyleProfileResult:
-    """Write a deterministic genre-style matrix and selected style profile."""
-
-    root = resolve_project_root(config)
-    style_dir = root / "10_bible" / "style_profiles"
-    style_dir.mkdir(parents=True, exist_ok=True)
-    normalized_genre = normalize_key(genre or "general")
-    selected = profile_for_genre(genre, target_audience)
-    selected["market_contract"] = compact_effective_quality_contract(
-        compile_effective_quality_contract(config, chapter_number=1)
-    )
-    matrix = {
-        "schema_version": 1,
-        "profiles": {
-            "xuanhuan": profile_for_genre("xuanhuan", target_audience),
-            "urban": profile_for_genre("urban", target_audience),
-            "romance": profile_for_genre("romance", target_audience),
-            "suspense": profile_for_genre("suspense", target_audience),
-            normalized_genre: selected,
-        },
-        "selected": normalized_genre,
-        "target_audience": target_audience,
-        "updated_at": utc_now(),
-    }
-    matrix_path = style_dir / "genre_style_matrix.json"
-    current_path = style_dir / "current_style_profile.json"
-    write_json(matrix_path, matrix)
-    write_json(
-        current_path,
-        {
-            "schema_version": 1,
-            "genre": genre,
-            "target_audience": target_audience,
-            "profile_key": normalized_genre,
-            "profile": selected,
-            "updated_at": utc_now(),
-        },
-    )
-    return StyleProfileResult(
-        profile_file=str(matrix_path),
-        current_profile_file=str(current_path),
-        genre=genre,
-        target_audience=target_audience,
-    )
 
 
 def style_extract(
@@ -526,49 +472,6 @@ def style_extract(
     )
 
 
-def profile_for_genre(genre: str, target_audience: str) -> dict[str, Any]:
-    key = normalize_key(genre)
-    defaults = {
-        "sentence_length": "medium with short impact sentences at turns",
-        "dialogue_ratio": "25-35%",
-        "narrative_focus": ["scene action", "choice pressure", "emotional consequence"],
-        "payoff_density": "one local payoff plus one new hook",
-        "ai_voice_avoidance": ["summary lecture", "generic significance", "template trios"],
-    }
-    variants = {
-        "xuanhuan": {
-            "sentence_length": "medium-long for atmosphere, short at combat turns",
-            "dialogue_ratio": "18-28%",
-            "narrative_focus": ["power cost", "hierarchy pressure", "mystery escalation"],
-            "payoff_density": "cultivation gain or clue every chapter; major realm payoff after evidence",
-        },
-        "urban": {
-            "sentence_length": "short-medium with fast sensory anchoring",
-            "dialogue_ratio": "30-45%",
-            "narrative_focus": ["status reversal", "social pressure", "practical stakes"],
-            "payoff_density": "visible reversal or advantage every chapter",
-        },
-        "romance": {
-            "sentence_length": "medium with more interior cadence",
-            "dialogue_ratio": "35-50%",
-            "narrative_focus": ["subtext", "misread motive", "touch/absence detail"],
-            "payoff_density": "relationship micro-shift every chapter",
-        },
-        "suspense": {
-            "sentence_length": "variable; clipped at clues and threats",
-            "dialogue_ratio": "20-35%",
-            "narrative_focus": ["clue chain", "false certainty", "threat proximity"],
-            "payoff_density": "one clue clarified, one question sharpened",
-        },
-    }
-    profile = {**defaults, **variants.get(key, {})}
-    profile["target_audience"] = target_audience
-    profile["dialogue_strategy"] = "each speaker should reveal goal, concealment, or status; avoid interchangeable explanation"
-    profile["sensory_strategy"] = "give each major scene one concrete anchor: sound, texture, smell, light, or body cost"
-    profile["ending_hook_strategy"] = "end on an image, decision, discovery, or threat that changes the next chapter's problem"
-    return profile
-
-
 def build_sample_style_profile(text: str) -> dict[str, Any]:
     fingerprint = extracted_style_fingerprint(text)
     return {
@@ -647,8 +550,8 @@ def extracted_style_fingerprint(text: str) -> dict[str, Any]:
     compact = re.sub(r"\s+", "", text)
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", text) if part.strip()]
     sentences = [part.strip() for part in re.split(r"[.!?\u3002\uff01\uff1f]+", text) if part.strip()]
-    sentence_lengths = [estimate_words(sentence) for sentence in sentences]
-    paragraph_lengths = [estimate_words(paragraph) for paragraph in paragraphs]
+    sentence_lengths = [content_character_count(sentence) for sentence in sentences]
+    paragraph_lengths = [content_character_count(paragraph) for paragraph in paragraphs]
     total_chars = max(1, len(compact))
     dialogue_marks = sum(text.count(mark) for mark in ('"', "'", "\u201c", "\u201d", "\u300c", "\u300d"))
     dialogue_paragraphs = [paragraph for paragraph in paragraphs if has_dialogue_marker(paragraph)]
@@ -928,9 +831,9 @@ def expand_task(
     manifest_file = task_dir / f"ch{chapter_number:03d}.expand_task.agent_task.json"
     candidate_file = task_dir / f"ch{chapter_number:03d}.expanded_candidate.md"
     source_text = safe_read_text(source_path)
-    current_word_count = estimate_words(source_text)
-    minimum_word_count = expansion_minimum_words(config)
-    missing_words = max(0, minimum_word_count - current_word_count)
+    current_content_characters = content_character_count(source_text)
+    minimum_content_characters = expansion_minimum_content_characters(config)
+    missing_content_characters = max(0, minimum_content_characters - current_content_characters)
     gate_artifact_dir = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}"
     gate_payload = load_json(gate_artifact_dir / "gate_result.json", default={})
     gate_failures = gate_payload.get("failures", []) if isinstance(gate_payload, dict) else []
@@ -958,9 +861,10 @@ def expand_task(
                 "",
                 f"- Source: `{relative_path(root, source_path)}`",
                 f"- Candidate output: `{relative_path(root, candidate_file)}`",
-                f"- Current word count: {current_word_count}",
-                f"- Minimum word count: {minimum_word_count}",
-                f"- Missing words: {missing_words}",
+                "- Metric: `content_characters_v1`",
+                f"- Current content characters: {current_content_characters}",
+                f"- Minimum content characters: {minimum_content_characters}",
+                f"- Missing content characters: {missing_content_characters}",
                 f"- Expansion types: {', '.join(selected_types)}",
                 f"- Next command: `{next_command}`",
                 "",
@@ -1026,9 +930,10 @@ def expand_task(
         manifest_file=str(manifest_file),
         candidate_file=str(candidate_file),
         expansion_types=selected_types,
-        current_word_count=current_word_count,
-        minimum_word_count=minimum_word_count,
-        missing_words=missing_words,
+        metric="content_characters_v1",
+        current_content_characters=current_content_characters,
+        minimum_content_characters=minimum_content_characters,
+        missing_content_characters=missing_content_characters,
         next_command=next_command,
     )
 
@@ -1049,9 +954,16 @@ def expand_check(
 
     selected_types = normalize_expansion_types(expansion_types)
     text = safe_read_text(target)
-    word_count = estimate_words(text)
-    minimum_word_count = expansion_minimum_words(config)
-    issues, warnings = detect_expansion_issues(root, chapter_number, target, text, selected_types, minimum_word_count)
+    content_characters = content_character_count(text)
+    minimum_content_characters = expansion_minimum_content_characters(config)
+    issues, warnings = detect_expansion_issues(
+        root,
+        chapter_number,
+        target,
+        text,
+        selected_types,
+        minimum_content_characters,
+    )
     humanizer_issues, humanizer_warnings = detect_humanizer_v2_issues(text)
     for item in humanizer_issues:
         if item.get("severity") in {"P0", "P1"}:
@@ -1080,8 +992,9 @@ def expand_check(
         "chapter_number": chapter_number,
         "file": relative_path(root, target),
         "passed": passed,
-        "word_count": word_count,
-        "minimum_word_count": minimum_word_count,
+        "metric": "content_characters_v1",
+        "content_characters": content_characters,
+        "minimum_content_characters": minimum_content_characters,
         "expansion_types": list(selected_types),
         "issues": issues,
         "warnings": warnings,
@@ -1106,8 +1019,9 @@ def expand_check(
                 "",
                 f"- File: `{relative_path(root, target)}`",
                 f"- Passed: {passed}",
-                f"- Word count: {word_count}",
-                f"- Minimum word count: {minimum_word_count}",
+                "- Metric: `content_characters_v1`",
+                f"- Content characters: {content_characters}",
+                f"- Minimum content characters: {minimum_content_characters}",
                 f"- Expansion types: {', '.join(selected_types)}",
                 f"- Next command: `{next_command}`",
                 "",
@@ -1128,8 +1042,9 @@ def expand_check(
         report_file=str(report_file),
         markdown_report=str(md_file),
         passed=passed,
-        word_count=word_count,
-        minimum_word_count=minimum_word_count,
+        metric="content_characters_v1",
+        content_characters=content_characters,
+        minimum_content_characters=minimum_content_characters,
         expansion_types=selected_types,
         issues=tuple(issues),
         warnings=tuple(warnings),
@@ -1477,16 +1392,27 @@ def humanize_semantic_review_reasons(
 
 
 def humanizer_volume_boundary(config: ConfigDocument, chapter_number: int) -> bool:
-    length = config.data.get("length", {}) if isinstance(config.data.get("length"), dict) else {}
-    total_chapters = int(length.get("total_chapters") or 0)
-    volume_count = int(length.get("volume_count") or 0)
-    if chapter_number <= 0 or total_chapters <= 0 or volume_count <= 0:
+    if chapter_number <= 0:
         return False
-    boundaries = {1, total_chapters}
-    for volume in range(1, volume_count):
-        boundary = round(total_chapters * volume / volume_count)
-        boundaries.update({boundary, boundary + 1})
-    return chapter_number in boundaries
+    root = resolve_project_root(config)
+    plan = read_json(root / "20_outline" / "chapter_plan.json", [])
+    if not isinstance(plan, list):
+        return chapter_number == 1
+    rows = {
+        int(item.get("chapter_number") or 0): item
+        for item in plan
+        if isinstance(item, dict) and int(item.get("chapter_number") or 0) > 0
+    }
+    current = rows.get(chapter_number, {})
+    previous = rows.get(chapter_number - 1, {})
+    next_row = rows.get(chapter_number + 1, {})
+    current_volume = str(current.get("volume_id") or "")
+    return (
+        chapter_number == 1
+        or bool(current_volume and current_volume != str(previous.get("volume_id") or ""))
+        or bool(current_volume and next_row and current_volume != str(next_row.get("volume_id") or ""))
+        or str(current.get("phase") or "") in {"volume_climax", "aftermath"}
+    )
 
 
 def humanize_semantic_task(
@@ -2504,7 +2430,7 @@ def creative_repair_guidance(failure: dict[str, Any], chapter_number: int) -> di
     if code in {"meta_pollution", "humanizer_meta_pollution", "humanizer_meta_residue"}:
         base["delete_or_reduce"] = ["TODO/prompt labels", "AI self-reference", "author instructions"]
         base["rewrite_goal"] = "turn all instruction residue into clean in-world prose or remove it"
-    elif code == "word_count":
+    elif code == "content_character_count":
         base["add_evidence"] = ["one extra conflict beat", "one consequence beat", "one sensory anchor"]
         base["rewrite_goal"] = "reach configured length through scene material, not padding"
     elif code == "pacing":
@@ -2664,11 +2590,11 @@ def normalize_expansion_types(values: list[str] | tuple[str, ...] | None) -> tup
     return tuple(normalized)
 
 
-def expansion_minimum_words(config: ConfigDocument) -> int:
-    wc_config = config.data.get("length", {}).get("chapter_word_count", {})
-    if not isinstance(wc_config, dict):
+def expansion_minimum_content_characters(config: ConfigDocument) -> int:
+    chapter = config.data.get("length", {}).get("chapter", {})
+    if not isinstance(chapter, dict):
         return 0
-    return int(wc_config.get("hard_min") or wc_config.get("min") or 0)
+    return int(chapter.get("hard_min") or chapter.get("soft_min") or 0)
 
 
 def expansion_instructions(expansion_types: tuple[str, ...]) -> list[str]:
@@ -2708,9 +2634,9 @@ def detect_expansion_issues(
     target: Path,
     text: str,
     expansion_types: tuple[str, ...],
-    minimum_word_count: int,
+    minimum_content_characters: int,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    word_count = estimate_words(text)
+    content_characters = content_character_count(text)
     issues: list[dict[str, Any]] = []
     warnings: list[str] = []
     if not is_workbench_candidate(root, target):
@@ -2721,16 +2647,19 @@ def detect_expansion_issues(
                 "message": "expansion candidates must stay in 50_workbench/repair_candidates or 50_workbench/agent_drafts",
             }
         )
-    if minimum_word_count and word_count < minimum_word_count:
+    if minimum_content_characters and content_characters < minimum_content_characters:
         issues.append(
             {
-                "code": "expansion_word_count",
+                "code": "expansion_content_character_count",
                 "severity": "P1",
-                "message": f"expanded candidate is still below minimum: {word_count} < {minimum_word_count}",
+                "message": (
+                    "expanded candidate is still below minimum content characters: "
+                    f"{content_characters} < {minimum_content_characters}"
+                ),
             }
         )
     source_path = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
-    if source_path.exists() and word_count <= estimate_words(safe_read_text(source_path)):
+    if source_path.exists() and content_characters <= content_character_count(safe_read_text(source_path)):
         issues.append(
             {
                 "code": "expansion_not_longer",
@@ -2910,10 +2839,6 @@ def safe_read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8").lstrip("\ufeff")
     except UnicodeDecodeError:
         return path.read_text(encoding="utf-8", errors="ignore").lstrip("\ufeff")
-
-
-def estimate_words(text: str) -> int:
-    return len(re.sub(r"\s+", "", text))
 
 
 def relative_path(root: Path, path: Path) -> str:

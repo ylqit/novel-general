@@ -17,6 +17,7 @@ from typing import Any
 
 from longform_engine import __version__
 from longform_engine.config import ConfigError, load_project_config
+from longform_engine.lengths import compile_length_forecast
 from longform_engine.models import verify_models
 from longform_engine.resources import load_resource_manifest, resource_integrity_bytes, resource_path, resource_root
 
@@ -377,6 +378,19 @@ def doctor_payload(tool: str, *, project: str | None = None) -> dict[str, Any]:
         try:
             config = load_project_config(Path(project).expanduser().resolve())
             checks.append(_check("project_config", True, str(config.path or project)))
+            length_forecast = compile_length_forecast(config.data["length"])
+            checks.append(
+                _check(
+                    "length_support",
+                    True,
+                    (
+                        f"status={length_forecast.support_status}; "
+                        f"target_content_characters={length_forecast.target_total_characters}; "
+                        f"forecast_chapters={length_forecast.estimated_chapters}"
+                    ),
+                    "",
+                )
+            )
             model_result = verify_models(config)
             model_ok = bool(model_result.provider_ready)
             checks.append(

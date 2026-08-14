@@ -15,6 +15,7 @@ from longform_engine.character_expression import character_expression_diagnostic
 from longform_engine.config import ConfigDocument
 from longform_engine.quality import refresh_feedback_registry
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.text_metrics import content_character_count
 
 
 DEFAULT_EDITORIAL_TEAM: tuple[dict[str, str], ...] = (
@@ -632,9 +633,9 @@ def deterministic_editorial_items(
     character_names: list[str] | tuple[str, ...] = (),
 ) -> tuple[str, list[dict[str, Any]]]:
     items: list[dict[str, Any]] = []
-    word_count = len(re.sub(r"\s+", "", text))
+    content_characters = content_character_count(text)
     lower_text = text.lower()
-    if word_count < 800:
+    if content_characters < 800:
         items.append(
             review_item(
                 "short_chapter",
@@ -1225,14 +1226,19 @@ def role_instruction(role_id: str) -> str:
             "promise remains sustainable across the next serial arc. Do not require a payoff or cliffhanger quota."
         ),
         "writing_agent": (
-            "Check scene execution, dialogue difference, action-carried psychology, transition smoothness, "
-            "tail hook, and whether prose can be repaired without changing canon."
+            "Check whether the opening makes the world, immediate situation, near-term goal, long-term direction, "
+            "and motive visible when the approved arc requires them. Check that the protagonist makes consequential "
+            "choices instead of being carried by summary, that supporting characters have names, private wants, and "
+            "independent reactions, and that adjacent dialogue has attributable speakers. Also check embodied scene "
+            "execution, action-carried psychology, transition smoothness, and whether prose can be repaired without "
+            "changing canon. Return unknown or insufficient_evidence instead of inventing support for a pass."
         ),
         "character_editor": (
             "Compare the chapter with the declared character packet. Check what each featured character notices, "
             "wants, conceals, physically does, and changes in the relationship. Test whether attributed lines could "
             "be swapped between speakers without changing force. Every featured character needs exact chapter evidence, "
-            "including pass findings; do not demand a universal dialogue, appearance, or interiority quota."
+            "including pass findings; do not demand a universal dialogue, appearance, or interiority quota. When the "
+            "declared packet or chapter evidence is insufficient, return unknown or insufficient_evidence rather than pass."
         ),
         "anti_ai_editor": (
             "Check AI diction, high-frequency filler, template paragraphs, summary-heavy prose, same-shape sentences, "
@@ -1471,6 +1477,28 @@ def validate_editorial_result_payload(
         elif schema_version == 2 and normalized_item["evidence"] and not evidence_validated:
             errors.append(f"items[{index}] evidence must match exact text in the current chapter.")
         items.append(normalized_item)
+    explicit_coverage_gap = next(
+        (
+            str(item.get("code") or "")
+            for item in items
+            if str(item.get("code") or "").startswith(("unknown", "insufficient_evidence"))
+        ),
+        "",
+    )
+    coverage_status = (
+        "unknown"
+        if explicit_coverage_gap.startswith("unknown")
+        else "insufficient_evidence"
+        if explicit_coverage_gap or not items
+        else "complete"
+    )
+    if not items:
+        errors.append(
+            "editorial v2 reviews must not submit an empty pass; return evidence-bearing PASS items "
+            "or an explicit insufficient_evidence item with a non-pass verdict."
+        )
+    if coverage_status != "complete" and verdict == "pass":
+        errors.append("pass verdict cannot claim complete review when coverage is unknown or insufficient_evidence.")
     if role_id == "character_editor":
         card_payload = load_json(
             root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
@@ -1547,6 +1575,7 @@ def validate_editorial_result_payload(
         "independence_mode": independence_mode,
         "review_round": review_round,
         "confidence": confidence,
+        "coverage_status": coverage_status,
         "evidence_grade": "declared_independent_context" if schema_version == 2 else "legacy_unknown",
         "source_result_file": relative_path(root, result_file),
         "validated_at": utc_now(),

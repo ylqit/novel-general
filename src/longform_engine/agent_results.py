@@ -27,10 +27,10 @@ DELTA_COVERAGE = frozenset({"changed", "unchanged"})
 LEGACY_DOCUMENT_JSON_SCHEMAS = frozenset(
     {
         "adaptation_analysis_v1",
-        "book_design_candidate_v1",
         "book_design_candidate_v2",
         "fanfiction_design_candidate_v1",
-        "outline_design_candidate_v1",
+        "outline_design_candidate_v2",
+        "outline_extension_candidate_v1",
         "outline_revision_candidate_v1",
     }
 )

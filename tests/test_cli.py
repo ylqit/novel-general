@@ -121,7 +121,6 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("pacing", "semantic-apply", "project.yaml", "--chapter", "1", "--file", "50_workbench/gate_artifacts/ch001/semantic_pacing_result.json"),
         ("repair-chapter", "project.yaml", "--chapter", "1", "--plan-only"),
         ("creative", "brief", "project.yaml", "--init"),
-        ("creative", "style-profile", "project.yaml", "--genre", "suspense", "--target-audience", "readers"),
         ("creative", "style-extract", "project.yaml", "--file", "sample.md", "--name", "sample"),
         ("creative", "humanize-task", "project.yaml", "--chapter", "1", "--source", "draft"),
         ("creative", "humanize-check", "project.yaml", "--chapter", "1", "--file", "50_workbench/repair_candidates/ch001.md"),
@@ -195,6 +194,8 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("production", "status", "project.yaml"),
         ("production", "next", "project.yaml"),
         ("production", "next", "project.yaml", "--editorial"),
+        ("quality", "contract", "project.yaml", "--chapter", "1"),
+        ("quality", "story-profile", "project.yaml"),
         ("production", "board", "project.yaml"),
         ("production", "board", "project.yaml", "--editorial"),
         ("db", "status", "project.yaml"),
@@ -234,9 +235,9 @@ def test_cli_init_project_scale_preset(tmp_path):
 
     assert result.returncode == 0, result.stderr
     config = load_project_config(tmp_path / "novel" / "project.yaml")
-    assert config.data["length"]["total_chapters"] == 330
-    assert config.data["length"]["target_total_words"] == 1000000
-    assert config.data["length"]["volume_count"] == 5
+    assert config.data["length"]["target_total_characters"] == 1_000_000
+    assert config.data["length"]["planning"]["mode"] == "rolling"
+    assert config.data["length"]["volume"]["target_characters"] == 200_000
 
 
 def test_cli_init_project_explicit_scale_overrides_preset(tmp_path):
@@ -246,24 +247,21 @@ def test_cli_init_project_explicit_scale_overrides_preset(tmp_path):
         "qidian-longform",
         "--scale-preset",
         "million",
-        "--total-chapters",
-        "420",
-        "--target-total-words",
+        "--target-total-characters",
         "1200000",
-        "--chapter-target-words",
+        "--chapter-target-characters",
         "2800",
-        "--volume-count",
-        "7",
+        "--volume-target-characters",
+        "180000",
         "--output",
         str(tmp_path / "novel"),
     )
 
     assert result.returncode == 0, result.stderr
     config = load_project_config(tmp_path / "novel" / "project.yaml")
-    assert config.data["length"]["total_chapters"] == 420
-    assert config.data["length"]["target_total_words"] == 1200000
-    assert config.data["length"]["volume_count"] == 7
-    assert config.data["length"]["chapter_word_count"]["target"] == 2800
+    assert config.data["length"]["target_total_characters"] == 1_200_000
+    assert config.data["length"]["chapter"]["target_characters"] == 2800
+    assert config.data["length"]["volume"]["target_characters"] == 180_000
 
 
 def test_cli_open_book_interactive_creates_project_and_opens(tmp_path):
@@ -288,7 +286,7 @@ def test_cli_open_book_interactive_creates_project_and_opens(tmp_path):
     assert project_yaml.exists()
     config = load_project_config(project_yaml)
     assert config.data["project"]["slug"] == "interactive_longform"
-    assert config.data["length"]["total_chapters"] == 330
+    assert config.data["length"]["target_total_characters"] == 1_000_000
     assert (project_dir / "00_governance" / "idea_seed.md").exists()
     assert (project_dir / "00_governance" / "reader_contract.md").exists()
 
@@ -443,7 +441,7 @@ def test_cli_auto_write_plan_run_progress_report(tmp_path):
     project_yaml = tmp_path / "novel" / "project.yaml"
     assert run_cli("open-book", str(project_yaml)).returncode == 0
     mark_cli_project_ready(project_yaml)
-    plan = run_cli("auto-write", "plan", str(project_yaml), "--target-chapters", "2", "--target-words", "6000")
+    plan = run_cli("auto-write", "plan", str(project_yaml))
     run = run_cli("auto-write", "run", str(project_yaml))
     progress = run_cli("auto-write", "progress", str(project_yaml))
     report = run_cli("auto-write", "report", str(project_yaml))
@@ -458,8 +456,8 @@ def test_cli_auto_write_plan_run_progress_report(tmp_path):
     assert "Summary: Auto-write awaiting_agent_draft" in progress.stdout
     assert report.returncode == 0, report.stderr
     assert "auto_write_report.md" in report.stdout
-    assert state["target_chapters"] == 2
-    assert state["target_words"] == 6000
+    assert state["target_characters"] == 2_000_000
+    assert state["forecast_chapters"] == 667
     assert state["status"] == "awaiting_agent_draft"
     assert (tmp_path / "novel" / "50_workbench" / "writing_tasks" / "ch001.md").exists()
     assert (tmp_path / "novel" / "70_runtime" / "run_reports" / "auto_write_report.md").exists()
@@ -774,7 +772,8 @@ def test_quality_contract_cli_explains_primary_and_compatibility_markets():
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Profile: qidian_male + xuanhuan + opening" in result.stdout
+    assert "Profile: qidian_male + setting:xuanhuan, plot_engines:progression" in result.stdout
+    assert "+ opening" in result.stdout
     assert "Merge trace:" in result.stdout
     assert "market_phase" in result.stdout
     assert "fanqie_free" in result.stdout

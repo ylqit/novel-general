@@ -1,9 +1,0 @@
-schema: quality_profile_v1
-kind: genre
-id: xuanhuan
-contract:
-  genre_focus: ["规则可验证", "能力有边界", "成长有代价", "世界通过行动展开"]
-  payoff_cadence: {ability: "能力收益必须伴随限制、资源或关系代价", information: "规则分层揭示"}
-  upgrade_cost: ["禁止临场新增万能规则", "越级收益必须产生长期债务"]
-  exposition_density: {rule: "术语首次出现只解释当下决策所需部分"}
-  foreshadow_release: {rule: "力量体系伏笔先展示后果，再解释机制"}

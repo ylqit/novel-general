@@ -16,6 +16,7 @@ from longform_engine.db.sqlite_index import connect, database_path
 from longform_engine.graph import retrieve_graph
 from longform_engine.models import cosine_similarity, embed_text_with_provider, ensure_models_ready, rerank_pair
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.text_metrics import content_character_count
 from longform_engine.vectorstore import VectorQuery
 from longform_engine.vectorstore import query as query_vector_store
 from longform_engine.vectorstore import record_from_embedding
@@ -138,8 +139,8 @@ def build_chunks(
                     "title": title,
                     "text": chunk_text,
                     "keywords": keywords,
-                    "word_count": estimate_words(chunk_text),
-                    "token_estimate": max(1, estimate_words(chunk_text) // 2),
+                    "word_count": content_character_count(chunk_text),
+                    "token_estimate": max(1, content_character_count(chunk_text) // 2),
                     "metadata": chunk_meta,
                 }
             )
@@ -1018,7 +1019,7 @@ def write_query_cache(config: ConfigDocument, query_text: str, hits: list[RagHit
         "id": signature,
         "query": query_text,
         "cache_signature": signature,
-        "context_word_count": sum(estimate_words(hit.text) for hit in hits),
+        "context_word_count": sum(content_character_count(hit.text) for hit in hits),
         "hits": [asdict(hit) for hit in hits],
         "updated_at": utc_now(),
     }
@@ -1553,10 +1554,6 @@ def extract_title(text: str, path: Path) -> str:
         if stripped.startswith("#"):
             return stripped.lstrip("#").strip()
     return path.stem
-
-
-def estimate_words(text: str) -> int:
-    return len(re.sub(r"\s+", "", text))
 
 
 def trim_text(text: str, max_chars: int) -> str:

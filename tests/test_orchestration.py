@@ -175,7 +175,7 @@ def test_auto_write_plan_and_run_waits_for_agent_draft(tmp_path):
     open_book(project_config)
     root = tmp_path / "novel"
 
-    plan = auto_write_plan(project_config, target_chapters=3, target_words=9000)
+    plan = auto_write_plan(project_config)
     run = auto_write_run(project_config)
     progress = auto_write_progress(project_config)
     report = auto_write_report(project_config)
@@ -186,8 +186,8 @@ def test_auto_write_plan_and_run_waits_for_agent_draft(tmp_path):
     assert run.status == "awaiting_agent_draft"
     assert progress.status == "awaiting_agent_draft"
     assert report.report_file.endswith("auto_write_report.md")
-    assert state["target_words"] == 9000
-    assert state["target_chapters"] == 3
+    assert state["target_characters"] == 2_000_000
+    assert state["forecast_chapters"] == 667
     assert state["current_chapter"] == 1
     assert state["failure_count"] == 0
     assert "draft submit" in state["next_command"]
@@ -208,7 +208,7 @@ def test_auto_write_resume_after_finalize_schedules_next_chapter(tmp_path):
     open_book(project_config)
     root = tmp_path / "novel"
 
-    auto_write_plan(project_config, target_chapters=2, target_words=6000)
+    auto_write_plan(project_config)
     first = auto_write_run(project_config)
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(passing_draft_text(), encoding="utf-8")
@@ -234,7 +234,7 @@ def test_auto_write_pauses_on_gate_failure(tmp_path):
     open_book(project_config)
     root = tmp_path / "novel"
 
-    auto_write_plan(project_config, target_chapters=2, target_words=6000)
+    auto_write_plan(project_config)
     auto_write_run(project_config)
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text("# Chapter 1\n\nTODO: unfinished draft.\n", encoding="utf-8")
@@ -255,7 +255,7 @@ def test_auto_write_pauses_when_gate_passed_but_not_final(tmp_path):
     open_book(project_config)
     root = tmp_path / "novel"
 
-    auto_write_plan(project_config, target_chapters=2, target_words=6000)
+    auto_write_plan(project_config)
     auto_write_run(project_config)
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(passing_draft_text(), encoding="utf-8")
@@ -273,7 +273,7 @@ def test_auto_write_recognizes_repair_semantic_and_editorial_agent_waits(tmp_pat
     repair_config = seed_project(tmp_path / "repair")
     repair_root = tmp_path / "repair" / "novel"
     write_repair_manifest(repair_root)
-    auto_write_plan(repair_config, target_chapters=1, target_words=3000)
+    auto_write_plan(repair_config)
     repair = auto_write_run(repair_config)
     repair_state = json.loads((repair_root / "70_runtime" / "auto_write_state.json").read_text(encoding="utf-8"))
 
@@ -281,7 +281,7 @@ def test_auto_write_recognizes_repair_semantic_and_editorial_agent_waits(tmp_pat
     semantic_root = tmp_path / "semantic" / "novel"
     (semantic_root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_draft_text(), encoding="utf-8")
     semantic_pacing_task(semantic_config, chapter_number=1)
-    auto_write_plan(semantic_config, target_chapters=1, target_words=3000)
+    auto_write_plan(semantic_config)
     semantic = auto_write_run(semantic_config)
     semantic_state = json.loads((semantic_root / "70_runtime" / "auto_write_state.json").read_text(encoding="utf-8"))
 
@@ -289,7 +289,7 @@ def test_auto_write_recognizes_repair_semantic_and_editorial_agent_waits(tmp_pat
     editorial_root = tmp_path / "editorial" / "novel"
     (editorial_root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_draft_text(), encoding="utf-8")
     editorial_review(editorial_config, chapter_number=1)
-    auto_write_plan(editorial_config, target_chapters=1, target_words=3000)
+    auto_write_plan(editorial_config)
     editorial = auto_write_run(editorial_config)
     editorial_state = json.loads((editorial_root / "70_runtime" / "auto_write_state.json").read_text(encoding="utf-8"))
 

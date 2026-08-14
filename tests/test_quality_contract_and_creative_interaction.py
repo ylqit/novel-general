@@ -30,8 +30,51 @@ def seed_project(tmp_path: Path):
 
 def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> dict:
     card = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    scene_chain = [
+        {
+            "scene_id": "verify_witness",
+            "location": "archive gate",
+            "participants": ["lead_ari", "ally_mira"],
+            "desire_collision": "Ari wants verification while Mira wants immediate pursuit.",
+            "choice": "Ari spends the last safe minute checking the damaged seal.",
+            "cost": "The visible suspect gains distance.",
+            "turn": "The seal proves the suspect used an internal route.",
+        },
+        {
+            "scene_id": "share_evidence",
+            "location": "witness stair",
+            "participants": ["lead_ari", "ally_mira"],
+            "desire_collision": "Mira demands the route while Ari wants sole control of the clue.",
+            "choice": "Ari shares the route and accepts Mira's condition.",
+            "cost": "He loses sole control of the evidence.",
+            "turn": "Their alliance becomes an operational obligation.",
+        },
+    ]
+    common = {
+        "book_goal": "Expose who controls collective memory.",
+        "volume_goal": "Prove the archive is being altered from inside.",
+        "protagonist_goal": "Preserve evidence without treating Mira as a tool.",
+        "scene_chain": scene_chain,
+        "cast_desires": {
+            "lead_ari": "Verify the physical trace before pursuit.",
+            "ally_mira": "Catch the witness before the gate closes.",
+        },
+        "dialogue_ownership": "Ari narrows claims; Mira forces decisions and names costs.",
+        "embodiment_plan": "Use Ari's careful handling and Mira's changing distance under pressure.",
+        "interiority_function": "Expose Ari's urge to control information immediately before he shares it.",
+        "conflict": "Verification consumes the only safe pursuit window.",
+        "information_release": "The damaged seal identifies an internal route without naming the editor.",
+        "local_payoff": "A prior seal detail becomes actionable evidence.",
+        "character_cost": "Ari surrenders sole control and loses pursuit time.",
+        "mainline_move": "The investigation moves from outside sabotage to internal access.",
+        "character_arc_move": "Ari makes one bounded trust decision.",
+        "foreshadow_move": "The false treaty thread echoes through the matching seal cut.",
+        "relationship_move": "The alliance gains a shared obligation.",
+        "ending_mode": "changed_problem",
+        "main_risks": ["Too much procedure could flatten the choice."],
+    }
     return {
-        "schema": "chapter_direction_candidate_v1",
+        "schema": "chapter_direction_candidate_v2",
         "chapter_number": chapter_number,
         "chapter_card_sha256": sha256(card.read_bytes()).hexdigest(),
         "trigger_reasons": reasons,
@@ -40,29 +83,13 @@ def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str
                 "id": "verify_witness",
                 "title": "先核验目击者",
                 "chapter_duty": "用一次有代价的核验排除最显眼的错误判断。",
-                "conflict": "主角必须在保护证人与追赶线索之间选择。",
-                "information_release": "确认一条证词被人为改写，但不揭示改写者。",
-                "local_payoff": "读者获得可复核的新证据和一个被排除的假设。",
-                "character_cost": "主角失去当夜追踪另一名嫌疑人的机会。",
-                "longline_impact": "父亲旧案与当前改写手法建立弱关联。",
-                "foreshadow_impact": "推进 witness_line 伏笔但不越过兑现窗口。",
-                "relationship_impact": "盟友因主角放弃追击而重新评估他的判断。",
-                "ending_mode": "partial_payoff",
-                "main_risks": ["调查过程可能解释过密。"],
+                **common,
             },
             {
                 "id": "follow_decoy",
                 "title": "追踪诱饵",
                 "chapter_duty": "让主角主动犯下有依据的错误判断。",
-                "conflict": "更快的追踪会牺牲证据链完整性。",
-                "information_release": "诱饵来自内部流程，而非外部袭击者。",
-                "local_payoff": "读者看到能力边界在实际调查中生效。",
-                "character_cost": "主角承担一次错误承诺并暴露行动路线。",
-                "longline_impact": "扩大机构内部矛盾但延迟父亲旧案线索。",
-                "foreshadow_impact": "种下内部通行凭证的来源问题。",
-                "relationship_impact": "盟友暂时取得决策权。",
-                "ending_mode": "changed_problem",
-                "main_risks": ["若证据不足会显得为了反转而误判。"],
+                **{**common, "character_cost": "Ari loses the seal evidence and must admit the shortcut later."},
             },
         ],
         "selection": {
@@ -77,10 +104,13 @@ def test_effective_quality_contract_merges_resource_layers_and_project_override(
         template="qidian-longform",
         cli_overrides={
             "project": {"root_dir": str(tmp_path / "contract")},
+            "story_profile": {
+                "market": {"primary": "fanqie_free", "compatibility": []},
+                "setting": {"primary": "urban", "secondary": []},
+                "plot_engines": {"primary": "mystery", "supporting": []},
+            },
             "quality": {
                 "profile": {
-                    "market": "fanqie_free",
-                    "genre": "suspense",
                     "phase": "opening",
                     "strictness": "strict",
                     "overrides": {
@@ -98,31 +128,54 @@ def test_effective_quality_contract_merges_resource_layers_and_project_override(
     contract = compile_effective_quality_contract(config, chapter_number=1)
 
     assert contract["schema"] == "effective_quality_contract_v1"
-    assert (contract["market"], contract["genre"], contract["phase"]) == (
-        "fanqie_free",
-        "suspense",
-        "opening",
-    )
+    assert (contract["market"], contract["phase"]) == ("fanqie_free", "opening")
+    assert [item["id"] for item in contract["active_facets"][:2]] == ["urban", "mystery"]
     assert contract["strictness"] == "strict"
     assert contract["contract"]["foreshadow_release"]["preserve_core_answer"] is True
     assert contract["contract"]["slow_chapter_policy"]["project_reason"].startswith("A quiet")
-    assert [item["kind"] for item in contract["sources"]] == [
-        "market",
-        "genre",
-        "phase",
-        "market_phase",
-    ]
+    source_kinds = [item["kind"] for item in contract["sources"]]
+    assert source_kinds[0] == "market"
+    assert "setting" in source_kinds
+    assert "plot_engines" in source_kinds
+    assert source_kinds.index("phase") < source_kinds.index("setting")
+    assert source_kinds.index("market_phase") < source_kinds.index("setting")
     assert all(len(item["sha256"]) == 64 for item in contract["sources"])
     assert contract["contract"]["ending_distribution"] == ["quiet_shift"]
     assert "ending_distribution" in contract["overridden_fields"]
-    assert [item["layer"] for item in contract["merge_trace"]] == contract["merge_order"]
+    trace_layers = [item["layer"] for item in contract["merge_trace"]]
+    assert trace_layers[0] == "market"
+    assert trace_layers.index("story_phase") < trace_layers.index("market_phase")
+    assert trace_layers.index("market_phase") < trace_layers.index("project_overrides")
+    assert contract["merge_order"] == [
+        "fact_and_safety_boundaries",
+        "market",
+        "story_facets",
+        "current_story_arc",
+        "phase",
+        "market_phase",
+        "user_approved_style_baseline",
+        "project_overrides",
+    ]
     assert contract["approved_style_baseline"]["auto_expand"] is False
+
+
+def test_effective_contract_applies_current_arc_focus_after_story_facets(tmp_path):
+    config, root = seed_project(tmp_path)
+    mark_project_ready(root, config)
+
+    contract = compile_effective_quality_contract(config, chapter_number=1)
+
+    trace = [item["layer"] for item in contract["merge_trace"]]
+    assert trace.index("story_phase") < trace.index("setting")
+    assert trace.index("market_phase") < trace.index("setting")
+    assert trace.index("tone") < trace.index("current_story_arc")
+    assert contract["contract"]["current_story_arc"]["arc_id"] == "arc_01"
+    assert len(contract["active_facets"]) <= 3
 
 
 @pytest.mark.parametrize(
     ("override", "message"),
     (
-        ({"profile": {"genre": "wuxia_unknown"}}, "quality.profile.genre"),
         ({"profile": {"phase": "midgame"}}, "quality.profile.phase"),
         ({"profile": {"strictness": "maximum"}}, "quality.profile.strictness"),
         ({"creative_guidance": {"mode": "always_interrupt"}}, "creative_guidance.mode"),
@@ -131,6 +184,14 @@ def test_effective_quality_contract_merges_resource_layers_and_project_override(
 def test_quality_profile_config_rejects_unknown_contract_dimensions(override, message):
     with pytest.raises(ConfigError, match=message):
         load_project_config(template="qidian-longform", cli_overrides={"quality": override})
+
+
+def test_story_profile_rejects_unknown_facet():
+    with pytest.raises(ConfigError, match="unknown story facet"):
+        load_project_config(
+            template="qidian-longform",
+            cli_overrides={"story_profile": {"plot_engines": {"primary": "unknown_plot"}}},
+        )
 
 
 def test_style_baseline_only_expands_through_explicit_human_approval(tmp_path):
@@ -221,9 +282,9 @@ def test_book_ideation_invalid_selection_does_not_pollute_bible_or_state(tmp_pat
     assert brief["manifest_validation"]["ok"] is True
 
 
-def test_chapter_direction_is_conditional_strict_and_human_applied(tmp_path):
+def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
     config, root = seed_project(tmp_path)
-    mark_project_ready(root, config)
+    mark_project_ready(root, config, direction_applied=False)
     config.data["quality"]["creative_guidance"]["mode"] = "guided"
 
     next_action = production_next(config)
@@ -279,14 +340,15 @@ def test_chapter_direction_is_conditional_strict_and_human_applied(tmp_path):
     applied_card = json.loads(card.read_text(encoding="utf-8"))
     assert applied.status == "applied"
     assert applied_card["direction_selection"]["direction_id"] == "verify_witness"
-    assert applied_card["reader_gain"].startswith("读者获得")
+    assert applied_card["reader_gain"] == valid["directions"][0]["local_payoff"]
     assert assess_chapter_direction(config, 1)["required"] is False
     assert production_next(config)["status"] == "ready_for_continue_write"
 
 
-def test_automatic_direction_does_not_interrupt_specific_stable_chapter(tmp_path):
+def test_guided_direction_still_requires_human_choice_for_specific_chapter(tmp_path):
     config, root = seed_project(tmp_path)
-    mark_project_ready(root, config)
+    mark_project_ready(root, config, direction_applied=False)
+    config.data["quality"]["creative_guidance"]["mode"] = "guided"
     plan_path = root / "20_outline" / "chapter_plan.json"
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     plan[1].update(
@@ -299,16 +361,15 @@ def test_automatic_direction_does_not_interrupt_specific_stable_chapter(tmp_path
         }
     )
     plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    config.data["quality"]["creative_guidance"]["mode"] = "automatic"
-
     status = assess_chapter_direction(config, 2)
 
-    assert status == {"required": False, "reasons": [], "status": "not_required"}
+    assert status["required"] is True
+    assert "guided_mode" in status["reasons"]
 
 
 def test_chapter_direction_apply_failure_rolls_back_card_and_plan(tmp_path, monkeypatch):
     config, root = seed_project(tmp_path)
-    mark_project_ready(root, config)
+    mark_project_ready(root, config, direction_applied=False)
     config.data["quality"]["creative_guidance"]["mode"] = "guided"
     task = create_intelligence_task(config, task_type="chapter_direction", chapter_number=1)
     candidate = root / task.candidate_file
@@ -326,7 +387,7 @@ def test_chapter_direction_apply_failure_rolls_back_card_and_plan(tmp_path, monk
     plan = root / "20_outline" / "chapter_plan.json"
     before = {"card": card.read_bytes(), "plan": plan.read_bytes()}
 
-    def fail_after_partial_write(project_root, task_type, payload):
+    def fail_after_partial_write(project_config, project_root, task_type, payload):
         card.write_text('{"partial": true}', encoding="utf-8")
         plan.write_text("[]", encoding="utf-8")
         raise RuntimeError("injected direction apply failure")

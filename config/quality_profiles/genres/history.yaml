@@ -1,9 +1,0 @@
-schema: quality_profile_v1
-kind: genre
-id: history
-contract:
-  genre_focus: ["制度约束", "物质条件", "时代知识边界", "行动后果"]
-  payoff_cadence: {information: "历史信息服务当前冲突", status: "身份变化受制度承认"}
-  upgrade_cost: ["跨越阶层、地域或组织边界必须支付可信成本"]
-  exposition_density: {rule: "史料知识转化为人物能用、会误判的信息"}
-  dialogue: {functions: [礼法差异, 权力试探, 利益交换, 身份遮蔽]}

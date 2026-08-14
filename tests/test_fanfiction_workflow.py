@@ -11,6 +11,7 @@ from longform_engine.editorial import editorial_review
 from longform_engine.gates.pipeline import check_fanfiction_source_reproduction
 from longform_engine.intelligence import (
     apply_intelligence_candidate,
+    assess_chapter_direction,
     assess_project_readiness,
     create_intelligence_task,
     fanfiction_status,
@@ -21,6 +22,7 @@ from longform_engine.orchestration import continue_write, open_book
 from longform_engine.orchestration.pipeline import load_fanfiction_writing_contract
 from longform_engine.publication import export_publication_bundle, publication_risk_report
 from longform_engine.storage import init_project
+from tests.project_fixtures import build_outline_candidate
 
 
 def seed_fanfiction_project(tmp_path: Path):
@@ -39,11 +41,11 @@ def seed_fanfiction_project(tmp_path: Path):
         cli_overrides={
             "creation": {"mode": "fanfiction"},
             "fanfiction": {"continuity_mode": "canon_divergent", "sources": [source]},
-            "quality": {"creative_guidance": {"mode": "off"}},
+            "quality": {"creative_guidance": {"mode": "guided"}},
             "length": {
-                "total_chapters": 4,
-                "target_total_words": 12_000,
-                "volume_count": 2,
+                "target_total_characters": 100_000,
+                "volume": {"target_characters": 50_000},
+                "planning": {"detailed_horizon": 4, "refill_threshold": 2},
             },
         },
     )
@@ -162,14 +164,15 @@ def valid_canon(source_path: Path) -> dict:
 
 
 def book_design() -> dict:
+    expression = valid_character_expression()
     return {
-        "schema": "book_design_candidate_v1",
+        "schema": "book_design_candidate_v2",
         "creative_brief": {
             "target_audience": "Chinese fanfiction serial readers.",
             "writing_style": "Concrete scene-led prose with distinct voices.",
             "automation_level": "agent_skill with explicit human apply.",
             "target_scale": "4 chapters.",
-            "genre_style_profile": {"genre": "fantasy", "tone": "suspense"},
+            "story_profile": load_project_config(template="qidian-longform").data["story_profile"],
             "design_decisions": {
                 "core_hook": "The key opens a different gate after one changed choice.",
                 "world_rule": "Every divergence must create a visible consequence.",
@@ -209,6 +212,8 @@ def book_design() -> dict:
                 "stage": "guarded",
             }
         ],
+        "narrative_expression_profile": expression["narrative_expression_profile"],
+        "character_expression_contracts": expression["character_expression_contracts"],
     }
 
 
@@ -358,61 +363,19 @@ def test_fanfiction_design_compiles_realistic_canon_into_bounded_context(tmp_pat
     }
 
 
-def valid_outline() -> dict:
-    return {
-        "schema": "outline_design_candidate_v1",
-        "book_outline_markdown": "# Outline\n\nA four-chapter divergence arc.",
-        "volumes": [
+def valid_outline(config) -> dict:
+    outline = build_outline_candidate(config)
+    for chapter in outline["chapter_plan"]:
+        chapter.update(
             {
-                "id": "vol_01",
-                "number": 1,
-                "title": "Changed Answer",
-                "from_chapter": 1,
-                "to_chapter": 2,
-                "goal": "Establish the divergence.",
-                "escalation": "Make the voice-recording cost visible.",
-                "ending_turn": "The key points elsewhere.",
-            },
-            {
-                "id": "vol_02",
-                "number": 2,
-                "title": "Alternate Gate",
-                "from_chapter": 3,
-                "to_chapter": 4,
-                "goal": "Resolve the new duty conflict.",
-                "escalation": "Force both canon characters to choose.",
-                "ending_turn": "Close only the alternate gate.",
-            },
-        ],
-        "chapter_plan": [
-            {
-                "chapter_number": chapter,
-                "title": f"Changed Gate {chapter}",
-                "duty": "Advance the declared divergence through a character choice.",
-                "conflict": "Canon duty collides with the alternate gate.",
-                "information_release": "Reveal one bounded consequence.",
-                "hook": "Leave a changed concrete problem.",
-                "reader_payoff": "Deliver one canon-aware consequence.",
-                "volume_id": "vol_01" if chapter <= 2 else "vol_02",
-                "forbidden_reveals": ["original gate controller"],
                 "canon_refs": ["classic:event_warning"],
-                "voice_refs": ["classic:lin_zhou"],
-                "divergence_effects": ["the key records his answer"],
-                "original_contribution": "Advance the alternate gate mainline.",
-                "protected_reveals": ["original gate controller"],
+                "divergence_effects": ["The changed answer redirects the star key."],
+                "voice_refs": ["classic:lin_zhou", "classic:gatekeeper"],
+                "original_contribution": "Advance the alternate-gate duty conflict.",
+                "protected_reveals": ["identity of the original gate controller"],
             }
-            for chapter in range(1, 5)
-        ],
-        "foreshadowing_ledger": [
-            {
-                "id": "thread_recorded_voice",
-                "description": "The key stores the changed answer.",
-                "plant_chapter": 1,
-                "payoff_window": [3, 4],
-                "status": "planned",
-            }
-        ],
-    }
+        )
+    return outline
 
 
 def canonical_snapshot(root: Path) -> dict[str, bytes]:
@@ -523,7 +486,7 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
 
     outline_task = create_intelligence_task(config, task_type="outline_design")
     outline_candidate = root / outline_task.candidate_file
-    outline_candidate.write_text(json.dumps(valid_outline(), ensure_ascii=False), encoding="utf-8")
+    outline_candidate.write_text(json.dumps(valid_outline(config), ensure_ascii=False), encoding="utf-8")
     assert validate_intelligence_candidate(
         config,
         task_type="outline_design",
@@ -536,25 +499,97 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
         approved_by="human",
     )
 
-    readiness = assess_project_readiness(config)
-    assert readiness.stage == "character_expression_design"
-    character_task = create_intelligence_task(config, task_type="character_expression_design")
-    character_candidate = root / character_task.candidate_file
-    character_candidate.write_text(
-        json.dumps(valid_character_expression(), ensure_ascii=False),
+    direction_task = create_intelligence_task(
+        config,
+        task_type="chapter_direction",
+        chapter_number=1,
+    )
+    direction_candidate = root / direction_task.candidate_file
+    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
+    reasons = assess_chapter_direction(config, 1)["reasons"]
+    direction = {
+        "book_goal": "Resolve who controls the alternate gate.",
+        "volume_goal": "Make the first divergence create a visible obligation.",
+        "protagonist_goal": "Test the gate without surrendering agency.",
+        "scene_chain": [
+            {
+                "scene_id": "test_threshold",
+                "location": "alternate gate",
+                "participants": ["classic:lin_zhou", "classic:gatekeeper"],
+                "desire_collision": "Lin Zhou wants proof while the keeper wants compliance.",
+                "choice": "Lin Zhou tests one boundary before answering.",
+                "cost": "The key records his voice and closes the safe route.",
+                "turn": "The keeper must reveal one rule to prevent a breach.",
+            },
+            {
+                "scene_id": "accept_condition",
+                "location": "inside the threshold",
+                "participants": ["classic:lin_zhou", "classic:gatekeeper"],
+                "desire_collision": "Lin Zhou wants an exit while the keeper needs a binding witness.",
+                "choice": "Lin Zhou accepts one named duty but refuses an open-ended oath.",
+                "cost": "The safe route stays closed until the duty is discharged.",
+                "turn": "Their guarded relationship becomes a temporary operational bargain.",
+            },
+        ],
+        "cast_desires": {
+            "classic:lin_zhou": "Preserve a route of retreat while testing the claim.",
+            "classic:gatekeeper": "Protect the threshold without revealing its controller.",
+        },
+        "dialogue_ownership": "Lin Zhou narrows claims; the keeper answers with conditions.",
+        "embodiment_plan": "Use the key turning in a sleeve and a hand resting on the gate seam.",
+        "interiority_function": "Expose the urge to withhold trust before the costly answer.",
+        "conflict": "Testing the gate consumes the only safe retreat window.",
+        "information_release": "The alternate gate records voice as part of its access rule.",
+        "local_payoff": "The changed answer produces an immediate mechanical consequence.",
+        "character_cost": "Lin Zhou loses the unrecorded route back.",
+        "mainline_move": "The divergence becomes an active duty conflict.",
+        "character_arc_move": "Lin Zhou chooses a bounded test instead of passive distrust.",
+        "foreshadow_move": "The hidden controller remains protected while its method appears.",
+        "relationship_move": "Mutual testing becomes a temporary operational bargain.",
+        "ending_mode": "changed_problem",
+        "main_risks": ["Canon terminology could replace visible consequence."],
+    }
+    direction_candidate.write_text(
+        json.dumps(
+            {
+                "schema": "chapter_direction_candidate_v2",
+                "chapter_number": 1,
+                "chapter_card_sha256": sha256(card_path.read_bytes()).hexdigest(),
+                "trigger_reasons": reasons,
+                "directions": [
+                    {
+                        "id": "test_gate",
+                        "title": "Test the gate",
+                        "chapter_duty": "Turn the first divergence into a costly choice.",
+                        **direction,
+                    },
+                    {
+                        "id": "trust_keeper",
+                        "title": "Trust the keeper",
+                        "chapter_duty": "Trade immediate agency for one protected canon fact.",
+                        **{**direction, "character_cost": "Lin Zhou accepts the keeper's binding condition."},
+                    },
+                ],
+                "selection": {"direction_id": "test_gate", "user_adjustments": {}},
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     assert validate_intelligence_candidate(
         config,
-        task_type="character_expression_design",
-        file_path=character_candidate,
+        task_type="chapter_direction",
+        file_path=direction_candidate,
     ).ok
     apply_intelligence_candidate(
         config,
-        task_type="character_expression_design",
-        file_path=character_candidate,
+        task_type="chapter_direction",
+        file_path=direction_candidate,
         approved_by="human",
     )
+
+    readiness = assess_project_readiness(config)
+    assert readiness.ready
 
 
 def test_unverified_commercial_fanfiction_reaches_writing_and_export_without_rights_block(tmp_path):

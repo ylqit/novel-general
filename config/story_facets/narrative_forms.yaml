@@ -1,0 +1,45 @@
+schema: story_facet_registry_v1
+kind: narrative_forms
+profiles:
+  light_novel:
+    requirements: ["Character presence, readable scene movement, and socially legible reactions must carry exposition."]
+    preferences: ["Use visual beats, distinctive dialogue, and selective interiority."]
+    risks: ["All speakers using the same clipped rhythm", "Dialogue without attribution"]
+    review_questions: ["Could dialogue and reactions identify the active character without labels?"]
+    conflicts: []
+  ensemble:
+    requirements: ["Recurring characters need stable identities, private goals, and independent causal effects."]
+    preferences: ["Rotate agency without erasing the mainline."]
+    risks: ["Supporting cast reduced to role labels"]
+    review_questions: ["Which non-protagonist choice changed the chapter?"]
+    conflicts: ["narrative_forms:single_lead_only"]
+  single_lead:
+    requirements: ["The main causal line remains anchored to one lead while supporting characters retain agency."]
+    preferences: ["Keep viewpoint and reader orientation stable."]
+    risks: ["The world waiting for the lead to act"]
+    review_questions: ["Did the lead make a consequential choice in the chapter?"]
+    conflicts: []
+  single_lead_only:
+    requirements: ["Only the lead may carry independent plot agency."]
+    preferences: []
+    risks: ["Functional supporting cast"]
+    review_questions: ["Did another character accidentally become a co-lead?"]
+    conflicts: ["narrative_forms:ensemble"]
+  multi_pov:
+    requirements: ["Every viewpoint change must alter access, bias, or causal understanding."]
+    preferences: ["Use stable scene-level viewpoint boundaries."]
+    risks: ["Head hopping", "Repeated information"]
+    review_questions: ["Did each viewpoint provide unique dramatic value?"]
+    conflicts: []
+  episodic:
+    requirements: ["Each unit needs a local closure and a persistent state change."]
+    preferences: ["Carry character or promise consequences across units."]
+    risks: ["Resetting relationships after every unit"]
+    review_questions: ["What remained changed after the local case ended?"]
+    conflicts: []
+  road_novel:
+    requirements: ["Travel must change relationships, resources, knowledge, or identity."]
+    preferences: ["Let locations create different pressures rather than scenic inventory."]
+    risks: ["Tour-guide exposition"]
+    review_questions: ["Why could this event happen only at this stage of the journey?"]
+    conflicts: []

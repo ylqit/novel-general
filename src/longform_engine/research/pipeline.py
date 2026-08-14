@@ -18,6 +18,7 @@ from longform_engine.config import ConfigDocument
 from longform_engine.db import query_table, sync_database
 from longform_engine.rag import build_context
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.text_metrics import content_character_count
 
 
 class ResearchError(ValueError):
@@ -574,8 +575,8 @@ def write_research_rag_chunk(config: ConfigDocument, canon_record: dict[str, Any
                 "title": canon_record.get("title"),
                 "text": text,
                 "keywords": extract_keywords(text),
-                "word_count": estimate_words(text),
-                "token_estimate": max(1, estimate_words(text) // 2),
+                "word_count": content_character_count(text),
+                "token_estimate": max(1, content_character_count(text) // 2),
                 "metadata": {
                     "canon": True,
                     "source_type": "research_promote",
@@ -987,10 +988,6 @@ def read_json(path: Path, *, default: Any) -> Any:
         return json.loads(path.read_text(encoding="utf-8").lstrip("\ufeff"))
     except json.JSONDecodeError:
         return default
-
-
-def estimate_words(text: str) -> int:
-    return len(re.sub(r"\s+", "", text))
 
 
 def relative_path(root: Path, path: Path) -> str:

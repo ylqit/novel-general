@@ -1,0 +1,45 @@
+schema: story_facet_registry_v1
+kind: premise_devices
+profiles:
+  transmigration:
+    requirements: ["Prior knowledge, identity discontinuity, and adaptation costs must be bounded."]
+    preferences: ["Let remembered knowledge be incomplete, actionable, and vulnerable to divergence."]
+    risks: ["Wiki-memory protagonist", "Missing identity shock"]
+    review_questions: ["What did prior knowledge fail to solve or make more dangerous?"]
+    conflicts: []
+  rebirth:
+    requirements: ["Memory advantage and changed causality must be tracked separately."]
+    preferences: ["Make intervention reduce future certainty."]
+    risks: ["Perfect future recall"]
+    review_questions: ["Which prior fact became unreliable after intervention?"]
+    conflicts: []
+  system:
+    requirements: ["System permissions, costs, information limits, and failure states must be explicit."]
+    preferences: ["Keep choices meaningful outside interface rewards."]
+    risks: ["Mission panel replacing character motivation"]
+    review_questions: ["Would the character still have a reason to act without the reward?"]
+    conflicts: ["premise_devices:no_system"]
+  no_system:
+    requirements: ["Capability and motivation must arise from character, setting, and relationships."]
+    preferences: []
+    risks: []
+    review_questions: ["Did an undeclared interface-like authority enter the story?"]
+    conflicts: ["premise_devices:system"]
+  time_loop:
+    requirements: ["Reset scope, retained information, variation, and psychological cost must be tracked."]
+    preferences: ["Use repetition to alter meaning rather than replay scenes."]
+    risks: ["Cost-free retry"]
+    review_questions: ["What irreversible consequence survived the reset?"]
+    conflicts: []
+  infinite_flow:
+    requirements: ["Instance rules, transfer rules, persistent state, and return conditions must be explicit."]
+    preferences: ["Let each instance alter the longline rather than reset it."]
+    risks: ["Disconnected scenario anthology"]
+    review_questions: ["What persistent debt or relationship crossed the boundary?"]
+    conflicts: []
+  identity_swap:
+    requirements: ["Access, habits, social recognition, and exposure risk must constrain the new identity."]
+    preferences: ["Show identity through failed expectations and embodied adjustment."]
+    risks: ["Instant mastery of another life"]
+    review_questions: ["Which social or bodily detail challenged the assumed identity?"]
+    conflicts: []

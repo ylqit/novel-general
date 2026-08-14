@@ -15,6 +15,7 @@ from longform_engine.intelligence import (
 from longform_engine.orchestration import open_book
 from longform_engine.production import agent_task_brief, production_next
 from longform_engine.storage import init_project
+from tests.project_fixtures import build_outline_candidate
 import longform_engine.intelligence.pipeline as intelligence_pipeline
 
 
@@ -52,14 +53,15 @@ def project_snapshot(root: Path) -> dict[str, bytes]:
 
 
 def valid_book_candidate() -> dict:
+    expression = valid_character_expression()
     return {
-        "schema": "book_design_candidate_v1",
+        "schema": "book_design_candidate_v2",
         "creative_brief": {
             "target_audience": "Chinese longform serial readers.",
             "writing_style": "Concrete and continuous prose.",
             "automation_level": "agent_skill with human approval.",
-            "target_scale": "500 chapters.",
-            "genre_style_profile": {"genre": "mystery fantasy", "tone": "restrained"},
+            "target_scale": "2000000 content characters.",
+            "story_profile": load_project_config(template="qidian-longform").data["story_profile"],
             "design_decisions": {
                 "core_hook": "The archive changes overnight.",
                 "world_rule": "Corrections erase a witnessed memory.",
@@ -99,6 +101,8 @@ def valid_book_candidate() -> dict:
                 "stage": "uneasy",
             }
         ],
+        "narrative_expression_profile": expression["narrative_expression_profile"],
+        "character_expression_contracts": expression["character_expression_contracts"],
     }
 
 
@@ -147,58 +151,7 @@ def valid_character_expression() -> dict:
 
 
 def valid_outline_candidate(config) -> dict:
-    total = int(config.data["length"]["total_chapters"])
-    count = int(config.data["length"]["volume_count"])
-    volumes = []
-    chapters = []
-    start = 1
-    for number in range(1, count + 1):
-        remaining = total - start + 1
-        size = remaining // (count - number + 1)
-        end = start + size - 1
-        volume_id = f"vol_{number:02d}"
-        volumes.append(
-            {
-                "id": volume_id,
-                "number": number,
-                "title": f"Volume {number}",
-                "from_chapter": start,
-                "to_chapter": end,
-                "goal": f"Resolve layer {number}.",
-                "escalation": f"Increase the cost at layer {number}.",
-                "ending_turn": f"Change the evidence model at turn {number}.",
-            }
-        )
-        for chapter in range(start, end + 1):
-            chapters.append(
-                {
-                    "chapter_number": chapter,
-                    "title": f"Evidence {chapter}",
-                    "duty": "Advance one bounded investigation step.",
-                    "conflict": "Choose speed or verified evidence.",
-                    "information_release": "Release one clue.",
-                    "hook": "Open the next contradiction.",
-                    "reader_payoff": "Reframe one prior detail.",
-                    "volume_id": volume_id,
-                    "forbidden_reveals": ["final editor identity"],
-                }
-            )
-        start = end + 1
-    return {
-        "schema": "outline_design_candidate_v1",
-        "book_outline_markdown": "# Book Outline\n\nEscalating evidence arcs.",
-        "volumes": volumes,
-        "chapter_plan": chapters,
-        "foreshadowing_ledger": [
-            {
-                "id": "thread_false_treaty",
-                "description": "The treaty witness line was altered.",
-                "plant_chapter": 1,
-                "payoff_window": [total - 2, total],
-                "status": "planned",
-            }
-        ],
-    }
+    return build_outline_candidate(config)
 
 
 def apply_all_ideation_rounds(config, root: Path) -> None:
@@ -332,7 +285,7 @@ def test_invalid_book_design_candidate_does_not_pollute_canonical_state(tmp_path
     assert project_snapshot(root) == before
 
 
-def test_opening_flow_requires_applied_book_and_full_outline_before_chapter_work(tmp_path):
+def test_opening_flow_requires_v2_book_and_rolling_outline_before_direction_choice(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
     open_book(config)
@@ -355,33 +308,12 @@ def test_opening_flow_requires_applied_book_and_full_outline_before_chapter_work
     apply_intelligence_candidate(config, task_type="outline_design", file_path=outline_candidate, approved_by="human")
 
     readiness = assess_project_readiness(config)
-    assert not readiness.ready
-    assert readiness.required_task_type == "character_expression_design"
-    expression_action = production_next(config)
-    assert expression_action["task_type"] == "character_expression_design"
-
-    expression_task = create_intelligence_task(config, task_type="character_expression_design")
-    expression_candidate = root / expression_task.candidate_file
-    expression_candidate.write_text(json.dumps(valid_character_expression()), encoding="utf-8")
-    expression_validation = validate_intelligence_candidate(
-        config,
-        task_type="character_expression_design",
-        file_path=expression_candidate,
-    )
-    assert expression_validation.ok, expression_validation.errors
-    apply_intelligence_candidate(
-        config,
-        task_type="character_expression_design",
-        file_path=expression_candidate,
-        approved_by="human",
-    )
-
-    readiness = assess_project_readiness(config)
     assert readiness.ready
     next_action = production_next(config)
     assert next_action["status"] == "ready_for_intelligence_task"
     assert next_action["task_type"] == "chapter_direction"
-    assert next_action["trigger_reasons"] == ["abstract_outline_target", "volume_boundary"]
+    assert "guided_mode" in next_action["trigger_reasons"]
+    assert "abstract_outline_target" in next_action["trigger_reasons"]
 
 
 def test_book_design_v2_applies_character_expression_in_same_human_transaction(tmp_path):
@@ -497,7 +429,7 @@ def test_intelligence_apply_failure_rolls_back_every_touched_canonical_path(tmp_
     candidate.write_text(json.dumps(valid_book_candidate()), encoding="utf-8")
     before = project_snapshot(root)
 
-    def failing_write_targets(project_root, task_type, payload):
+    def failing_write_targets(_config, project_root, task_type, payload):
         (project_root / "10_bible" / "world.md").write_text("partially changed", encoding="utf-8")
         raise RuntimeError("injected apply failure")
 

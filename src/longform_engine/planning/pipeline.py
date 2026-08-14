@@ -12,6 +12,7 @@ import shutil
 
 from longform_engine.config import ConfigDocument
 from longform_engine.graph import cascade_graph
+from longform_engine.lengths import compile_length_forecast
 from longform_engine.memory import mark_memory_stale
 from longform_engine.storage import atomic_write_text, resolve_project_root
 
@@ -381,8 +382,9 @@ def build_outline_anchors(
     chapter_plan = load_json(root / "20_outline" / "chapter_plan.json", default=[])
     records = normalize_records(chapter_plan)
     if not records:
-        total = int(config.data.get("length", {}).get("total_chapters") or max(1, from_chapter))
-        step = max(1, total // max(1, int(config.data.get("length", {}).get("volume_count") or 1)))
+        forecast = compile_length_forecast(config.data["length"])
+        total = max(forecast.estimated_chapters, from_chapter)
+        step = max(1, total // forecast.estimated_volumes)
         records = [
             {
                 "chapter_number": chapter,
@@ -743,10 +745,27 @@ def infer_volume(config: ConfigDocument, chapter_number: int) -> int:
             if chapter_number <= cursor:
                 return index
         return len(distribution)
-    total = max(1, as_int(config.data.get("length", {}).get("total_chapters")) or chapter_number)
-    volumes = max(1, as_int(config.data.get("length", {}).get("volume_count")) or 1)
-    size = max(1, total // volumes)
-    return min(volumes, ((chapter_number - 1) // size) + 1)
+    root = resolve_project_root(config)
+    plan = load_json(root / "20_outline" / "chapter_plan.json", default=[])
+    row = next(
+        (
+            item for item in plan
+            if isinstance(plan, list) and isinstance(item, dict)
+            and as_int(item.get("chapter_number")) == chapter_number
+        ),
+        {},
+    )
+    volume_id = str(row.get("volume_id") or "") if isinstance(row, dict) else ""
+    volumes = load_json(root / "20_outline" / "volumes.json", default=[])
+    for index, volume in enumerate(volumes if isinstance(volumes, list) else [], start=1):
+        if isinstance(volume, dict) and str(volume.get("id") or "") == volume_id:
+            return as_int(volume.get("number")) or index
+    length = config.data["length"]
+    size = max(
+        1,
+        round(int(length["volume"]["target_characters"]) / int(length["chapter"]["target_characters"])),
+    )
+    return ((chapter_number - 1) // size) + 1
 
 
 def event_cooldown_config(config: ConfigDocument) -> dict[str, int]:

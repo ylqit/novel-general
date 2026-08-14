@@ -437,6 +437,13 @@ def character_expression_diagnostics(text: str, *, character_names: Iterable[str
         and any(token in str(item["text"]) for token in ("因为", "所以", "这意味着", "也就是说", "根据", "证据", "规定", "换句话说"))
     ]
     swapability = dialogue_swapability_risk(speaker_profiles)
+    evidence_status = (
+        "unknown"
+        if not utterances
+        else "insufficient_evidence"
+        if len(speaker_profiles) < 2
+        else "observed"
+    )
     risks: list[dict[str, Any]] = []
     if len(speaker_profiles) >= 2 and swapability >= 0.72:
         risks.append(
@@ -464,13 +471,14 @@ def character_expression_diagnostics(text: str, *, character_names: Iterable[str
         "attributed_dialogue_segments": len(attributed),
         "attribution_coverage": round(len(attributed) / max(1, len(utterances)), 4),
         "speaker_profiles": speaker_profiles,
-        "swapability_risk": swapability,
+        "swapability_evidence_status": evidence_status,
+        "swapability_risk": swapability if evidence_status == "observed" else None,
         "dialogue_exposition_ratio": round(len(exposition_dialogue) / max(1, len(utterances)), 4),
         "embodiment_term_density": round(sum(text.count(term) for term in body_terms) / compact_chars, 4),
         "interiority_term_density": round(sum(text.count(term) for term in interior_terms) / compact_chars, 4),
         "narrator_explanation_hits": sum(text.count(term) for term in explanation_terms),
         "risks": risks,
-        "quota_policy": "diagnostic_only; genre and scene intent decide acceptable density",
+        "quota_policy": "diagnostic_only; active story facets and scene intent decide acceptable density",
     }
 
 

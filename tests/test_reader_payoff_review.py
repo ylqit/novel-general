@@ -290,6 +290,7 @@ def test_production_loop_creates_and_validates_payoff_without_finalize(tmp_path)
 
 def test_milestone_payoff_pass_requires_editorial_review_before_finalize(tmp_path):
     config, root, _text = seed_payoff_project(tmp_path)
+    config.data["editorial"]["review_mode"] = "risk_based"
     config.data["quality"]["semantic_review_milestones"] = [1]
     task = reader_payoff_task(config, chapter_number=1)
     output = Path(task.output_file)
@@ -299,7 +300,8 @@ def test_milestone_payoff_pass_requires_editorial_review_before_finalize(tmp_pat
     action = production_next(config)
 
     assert action["status"] == "ready_for_editorial_review"
-    assert action["trigger_reasons"] == ["quality_milestone"]
+    assert "quality_milestone" in action["trigger_reasons"]
+    assert "character_expression_risk" in action["trigger_reasons"]
     with pytest.raises(WorkflowError, match="editorial_review_missing"):
         finalize_chapter(config, chapter_number=1, approved_by="human")
 
@@ -319,6 +321,7 @@ def seed_payoff_project(tmp_path, *, chapter_number=1):
     config.data["quality"]["assurance_mode"] = "balanced"
     config.data["quality"]["semantic_review_milestones"] = []
     config.data["quality"]["semantic_review_boundaries"] = False
+    config.data.setdefault("editorial", {})["review_mode"] = "off"
     plan_chapter(config, chapter_number=chapter_number)
     text = (
         f"# 第{chapter_number}章 旧账的新缺口\n\n"

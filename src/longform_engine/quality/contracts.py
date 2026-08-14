@@ -1,4 +1,4 @@
-"""Compile platform, genre, story-phase, and approved-style quality contracts."""
+"""Compile market, composable-story, phase, and approved-style quality contracts."""
 
 from __future__ import annotations
 
@@ -13,12 +13,13 @@ from typing import Any, Iterable
 import yaml
 
 from longform_engine.config import ConfigDocument
+from longform_engine.lengths import compile_length_forecast
 from longform_engine.resources import resource_path
+from longform_engine.story_profiles import active_story_facets, compile_story_profile
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 
 
 MARKET_PROFILE_IDS = ("general_cn", "qidian_male", "fanqie_free", "jinjiang_female")
-GENRE_PROFILE_IDS = ("xuanhuan", "urban", "suspense", "romance", "history")
 STORY_PHASE_IDS = ("opening", "early_serial", "stable_serial", "volume_climax", "aftermath")
 QUALITY_STRICTNESS = ("light", "balanced", "strict")
 APPROVED_BASELINE_PATH = "10_bible/style_profiles/approved_style_baseline.json"
@@ -64,14 +65,16 @@ def compile_effective_quality_contract(
     quality = quality if isinstance(quality, dict) else {}
     profile = quality.get("profile")
     profile = profile if isinstance(profile, dict) else {}
-    market = str(profile.get("market") or quality.get("market_profile") or "general_cn")
-    genre = str(profile.get("genre") or quality.get("genre_profile") or "xuanhuan")
+    story_profile = config.data.get("story_profile")
+    compiled_story = compile_story_profile(story_profile, market_ids=set(MARKET_PROFILE_IDS))
+    if not compiled_story["ready"]:
+        conflict_ids = ", ".join(item["conflict_id"] for item in compiled_story["unresolved_conflicts"])
+        raise ValueError(f"Story profile has unresolved human conflicts: {conflict_ids}")
+    market = str(compiled_story["market"]["primary"])
     configured_phase = str(profile.get("phase") or "auto")
     strictness = str(profile.get("strictness") or quality.get("assurance_mode") or "balanced")
     if market not in MARKET_PROFILE_IDS:
         raise ValueError(f"Unknown quality market profile: {market}")
-    if genre not in GENRE_PROFILE_IDS:
-        raise ValueError(f"Unknown quality genre profile: {genre}")
     if strictness not in QUALITY_STRICTNESS:
         raise ValueError(f"Unknown quality strictness: {strictness}")
     phase = (
@@ -83,14 +86,31 @@ def compile_effective_quality_contract(
         raise ValueError(f"Unknown quality story phase: {phase}")
 
     market_source = load_quality_profile("markets", market)
-    genre_source = load_quality_profile("genres", genre)
     phase_source = load_quality_profile("phases", phase)
-    sources = [market_source, genre_source, phase_source]
+    root = resolve_project_root(config)
+    plan = read_json(root / "20_outline" / "chapter_plan.json", [])
+    plan_row = next(
+        (
+            item
+            for item in plan if isinstance(plan, list) and isinstance(item, dict)
+            and int(item.get("chapter_number") or 0) == chapter_number
+        ),
+        {},
+    )
+    arc_id = str(plan_row.get("arc_id") or "") if isinstance(plan_row, dict) else ""
+    arcs = read_json(root / "20_outline" / "story_arcs.json", [])
+    current_arc = next(
+        (
+            item for item in arcs
+            if isinstance(arcs, list) and isinstance(item, dict) and str(item.get("id") or "") == arc_id
+        ),
+        {},
+    )
     contract: dict[str, Any] = {}
     source_records: list[dict[str, Any]] = []
     merge_trace: list[dict[str, Any]] = []
     overridden_fields: list[str] = []
-    for payload, path, digest in sources:
+    for payload, path, digest in (market_source,):
         merge_contract_layer(
             contract,
             payload["contract"],
@@ -101,6 +121,17 @@ def compile_effective_quality_contract(
             overridden_fields=overridden_fields,
         )
         source_records.append(profile_source_record(payload, path, digest))
+
+    merge_contract_layer(
+        contract,
+        phase_source[0]["contract"],
+        layer="story_phase",
+        source=phase_source[1],
+        digest=phase_source[2],
+        merge_trace=merge_trace,
+        overridden_fields=overridden_fields,
+    )
+    source_records.append(profile_source_record(phase_source[0], phase_source[1], phase_source[2]))
 
     market_phase_contract = market_source[0].get("phase_overrides", {}).get(phase, {})
     market_phase_record = {
@@ -128,7 +159,69 @@ def compile_effective_quality_contract(
             }
         )
 
-    root = resolve_project_root(config)
+    for facet in compiled_story["selected_facets"]:
+        facet_key = f"{facet['kind']}:{facet['id']}"
+        facet_contract = {
+            "story_facets": {
+                facet_key: {
+                    "level": facet["level"],
+                    "requirements": copy.deepcopy(facet.get("requirements") or []),
+                    "preferences": copy.deepcopy(facet.get("preferences") or []),
+                    "risks": copy.deepcopy(facet.get("risks") or []),
+                    "review_questions": copy.deepcopy(facet.get("review_questions") or []),
+                }
+            }
+        }
+        merge_contract_layer(
+            contract,
+            facet_contract,
+            layer=str(facet["kind"]),
+            source=str(facet["source"]),
+            digest=str(facet["sha256"]),
+            merge_trace=merge_trace,
+            overridden_fields=overridden_fields,
+        )
+        source_records.append(
+            {
+                "kind": str(facet["kind"]),
+                "id": str(facet["id"]),
+                "path": str(facet["source"]),
+                "sha256": str(facet["sha256"]),
+                "level": str(facet["level"]),
+            }
+        )
+
+    arc_focus = current_arc.get("quality_focus") if isinstance(current_arc, dict) else None
+    if isinstance(arc_focus, dict):
+        arc_contract = {
+            "current_story_arc": {
+                "arc_id": arc_id,
+                "goal": str(current_arc.get("goal") or ""),
+                "active_facets": copy.deepcopy(current_arc.get("active_facets") or []),
+                **copy.deepcopy(arc_focus),
+            }
+        }
+        arc_source = "20_outline/story_arcs.json"
+        arc_path = root / arc_source
+        arc_digest = file_sha256(arc_path)
+        merge_contract_layer(
+            contract,
+            arc_contract,
+            layer="current_story_arc",
+            source=arc_source,
+            digest=arc_digest,
+            merge_trace=merge_trace,
+            overridden_fields=overridden_fields,
+        )
+        source_records.append(
+            {
+                "kind": "current_story_arc",
+                "id": arc_id,
+                "path": arc_source,
+                "sha256": arc_digest,
+            }
+        )
+
     baseline = load_approved_style_baseline(root)
     baseline_contract = baseline.get("contract_overrides")
     if isinstance(baseline_contract, dict):
@@ -156,14 +249,13 @@ def compile_effective_quality_contract(
 
     blocking_policy = resolve_blocking_policy(contract)
     requested_compatibility = normalize_compatibility_markets(
-        profile.get("compatibility_markets"),
+        compiled_story["market"].get("compatibility"),
         compare_markets,
         primary_market=market,
     )
     compatibility_observations = build_compatibility_observations(
         market=market,
         target_markets=requested_compatibility,
-        genre_source=genre_source,
         phase_source=phase_source,
         phase=phase,
         primary_contract=contract,
@@ -173,12 +265,14 @@ def compile_effective_quality_contract(
 
     approved_records = baseline.get("approved_chapters")
     approved_records = approved_records if isinstance(approved_records, list) else []
+    requested_facets = list(plan_row.get("active_facets") or []) if isinstance(plan_row, dict) else []
     return {
         "schema": "effective_quality_contract_v1",
         "chapter_number": chapter_number,
         "primary_market": market,
         "market": market,
-        "genre": genre,
+        "story_profile": compiled_story,
+        "active_facets": active_story_facets(compiled_story, requested_facets, limit=3),
         "phase": phase,
         "market_phase": market_phase_record,
         "strictness": strictness,
@@ -200,8 +294,10 @@ def compile_effective_quality_contract(
         "compatibility_observations": compatibility_observations[:3],
         "blocking_policy": blocking_policy,
         "merge_order": [
+            "fact_and_safety_boundaries",
             "market",
-            "genre",
+            "story_facets",
+            "current_story_arc",
             "phase",
             "market_phase",
             "user_approved_style_baseline",
@@ -224,7 +320,14 @@ def compact_effective_quality_contract(payload: dict[str, Any]) -> dict[str, Any
         "chapter_number": int(payload.get("chapter_number") or 0),
         "primary_market": str(payload.get("primary_market") or payload.get("market") or ""),
         "market": str(payload.get("market") or ""),
-        "genre": str(payload.get("genre") or ""),
+        "active_facets": [
+            {
+                key: copy.deepcopy(item.get(key))
+                for key in ("kind", "id", "level", "requirements", "preferences", "risks", "review_questions")
+            }
+            for item in list(payload.get("active_facets") or [])[:3]
+            if isinstance(item, dict)
+        ],
         "phase": str(payload.get("phase") or ""),
         "market_phase": copy.deepcopy(payload.get("market_phase") or {}),
         "strictness": str(payload.get("strictness") or ""),
@@ -316,24 +419,34 @@ def approve_style_baseline(
 
 def infer_story_phase(config: ConfigDocument, chapter_number: int) -> str:
     root = resolve_project_root(config)
-    volumes = read_json(root / "20_outline" / "volumes.json", [])
-    if isinstance(volumes, list):
-        boundaries = {
-            int(item.get("to_chapter") or 0)
-            for item in volumes
-            if isinstance(item, dict) and int(item.get("to_chapter") or 0) > 0
-        }
-        if chapter_number in boundaries:
-            return "volume_climax"
-        if chapter_number > 1 and chapter_number - 1 in boundaries:
-            return "aftermath"
-    length = config.data.get("length")
-    length = length if isinstance(length, dict) else {}
-    total = max(1, int(length.get("total_chapters") or 1))
-    opening_end = min(total, max(3, int(length.get("new_book_phase_chapters") or round(total * 0.06))))
-    if chapter_number <= opening_end:
+    plan = read_json(root / "20_outline" / "chapter_plan.json", [])
+    plan_row = next(
+        (
+            item
+            for item in plan
+            if isinstance(plan, list) and isinstance(item, dict)
+            and int(item.get("chapter_number") or 0) == chapter_number
+        ),
+        {},
+    )
+    arc_id = str(plan_row.get("arc_id") or "") if isinstance(plan_row, dict) else ""
+    arcs = read_json(root / "20_outline" / "story_arcs.json", [])
+    if arc_id and isinstance(arcs, list):
+        arc = next((item for item in arcs if isinstance(item, dict) and item.get("id") == arc_id), {})
+        declared_phase = str(arc.get("phase") or "") if isinstance(arc, dict) else ""
+        if declared_phase in STORY_PHASE_IDS:
+            return declared_phase
+    forecast = compile_length_forecast(config.data["length"])
+    metrics = read_json(root / "30_state" / "manuscript_metrics.json", {})
+    completed = (
+        int(metrics.get("total_content_characters") or 0)
+        if isinstance(metrics, dict) and metrics.get("schema") == "manuscript_metrics_v1"
+        else 0
+    )
+    progress = completed / max(1, forecast.target_total_characters)
+    if chapter_number <= 3 or progress <= 0.06:
         return "opening"
-    if chapter_number <= max(opening_end + 1, round(total * 0.25)):
+    if progress <= 0.25:
         return "early_serial"
     return "stable_serial"
 
@@ -501,7 +614,6 @@ def build_compatibility_observations(
     *,
     market: str,
     target_markets: list[str],
-    genre_source: tuple[dict[str, Any], str, str],
     phase_source: tuple[dict[str, Any], str, str],
     phase: str,
     primary_contract: dict[str, Any],
@@ -512,7 +624,7 @@ def build_compatibility_observations(
     for target_market in target_markets:
         target_source = load_quality_profile("markets", target_market)
         target_contract: dict[str, Any] = {}
-        for layer in (target_source[0]["contract"], genre_source[0]["contract"], phase_source[0]["contract"]):
+        for layer in (target_source[0]["contract"], phase_source[0]["contract"]):
             deep_merge(target_contract, layer)
         target_phase = target_source[0].get("phase_overrides", {}).get(phase, {})
         if isinstance(target_phase, dict):

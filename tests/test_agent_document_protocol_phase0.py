@@ -20,6 +20,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_FILE = REPO_ROOT / "docs" / "baselines" / "AGENT_FIRST_DOCUMENT_PROTOCOL_PHASE0_V031.json"
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "agent_document_protocol_v031"
 V031_SCHEMA_SNAPSHOTS = {
+    "book_design": ["book_design_candidate_v1", "book_design_candidate_v2"],
+    "outline_design": ["outline_design_candidate_v1"],
+    "chapter_direction": ["chapter_direction_candidate_v1"],
     "pacing_review": ["semantic_pacing_result_v1"],
 }
 
@@ -28,8 +31,10 @@ def test_phase0_inventory_covers_every_v031_task_contract_and_output_schema():
     baseline = read_json(BASELINE_FILE)
     inventory = {item["task_type"]: item for item in baseline["task_inventory"]}
 
-    assert set(inventory) == set(TASK_CONTRACTS)
-    for task_type, contract in TASK_CONTRACTS.items():
+    legacy_task_types = set(TASK_CONTRACTS) - {"outline_extension"}
+    assert set(inventory) == legacy_task_types
+    for task_type in sorted(legacy_task_types):
+        contract = TASK_CONTRACTS[task_type]
         assert inventory[task_type]["scopes"] == list(contract["scope_kinds"])
         expected_schemas = V031_SCHEMA_SNAPSHOTS.get(task_type, list(contract["schemas"]))
         assert inventory[task_type]["schemas"] == expected_schemas
@@ -43,7 +48,8 @@ def test_phase0_inventory_covers_every_v031_task_contract_and_output_schema():
         for schema in group["schemas"]
     }
     contract_schemas = set()
-    for task_type, contract in TASK_CONTRACTS.items():
+    for task_type in sorted(legacy_task_types):
+        contract = TASK_CONTRACTS[task_type]
         contract_schemas.update(V031_SCHEMA_SNAPSHOTS.get(task_type, contract["schemas"]))
     assert classified_schemas == contract_schemas
 

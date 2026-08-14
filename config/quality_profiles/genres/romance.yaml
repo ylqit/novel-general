@@ -1,9 +1,0 @@
-schema: quality_profile_v1
-kind: genre
-id: romance
-contract:
-  genre_focus: ["双方主体性", "关系变化有触发", "亲密与边界同时可见"]
-  payoff_cadence: {relationship: "通过选择、误读修正和边界变化兑现", emotion: "不只用标签命名"}
-  upgrade_cost: ["关系升级需承担暴露、承诺或失去其他选择的代价"]
-  dialogue: {functions: [试探, 防御, 坦白, 边界, 修复, 共同决策]}
-  relationship_change_cadence: "重大变化必须有前置事件和后续影响"

@@ -66,7 +66,7 @@ def test_pacing_review_and_repair_plan(tmp_path):
 
 def test_gate_event_matrix_blocks_cooldown_and_fast_quota(tmp_path):
     project_config = seed_gate_project(tmp_path)
-    project_config.data["length"]["chapter_word_count"]["hard_min"] = 20
+    project_config.data["length"]["chapter"]["hard_min"] = 20
     project_config.data["pacing"]["fast_chapter_quota_per_volume"] = 1
     project_config.data["pacing"]["max_consecutive_fast_chapters"] = 1
     root = tmp_path / "novel"
@@ -92,7 +92,7 @@ def test_gate_event_matrix_blocks_cooldown_and_fast_quota(tmp_path):
 
 def test_gate_does_not_treat_one_event_word_as_a_blocking_event(tmp_path):
     project_config = seed_gate_project(tmp_path)
-    project_config.data["length"]["chapter_word_count"]["hard_min"] = 20
+    project_config.data["length"]["chapter"]["hard_min"] = 20
     root = tmp_path / "novel"
     (root / "30_state" / "pacing_history.json").write_text(
         json.dumps(
@@ -146,7 +146,7 @@ def test_pacing_review_warns_when_soft_event_gap_persists(tmp_path):
 
 def test_reverse_brake_blocks_complete_core_secret_reveal(tmp_path):
     project_config = seed_gate_project(tmp_path)
-    project_config.data["length"]["chapter_word_count"]["hard_min"] = 20
+    project_config.data["length"]["chapter"]["hard_min"] = 20
     root = tmp_path / "novel"
     plan_chapter(project_config, chapter_number=1)
     draft = "# Chapter 1\n\n" + ("Ari states the final truth and the ultimate secret is revealed. " * 24)
@@ -184,7 +184,7 @@ def test_event_inference_ignores_single_character_and_negated_prose_noise():
 
 def test_reverse_brake_requires_tail_hook_when_anchor_demands_it(tmp_path):
     project_config = seed_gate_project(tmp_path)
-    project_config.data["length"]["chapter_word_count"]["hard_min"] = 20
+    project_config.data["length"]["chapter"]["hard_min"] = 20
     root = tmp_path / "novel"
     (root / "20_outline" / "outline_anchors.json").write_text(
         json.dumps(
@@ -215,7 +215,7 @@ def test_reverse_brake_requires_tail_hook_when_anchor_demands_it(tmp_path):
 
 def test_reverse_brake_reports_abc_quota_overflow(tmp_path):
     project_config = seed_gate_project(tmp_path)
-    project_config.data["length"]["chapter_word_count"]["hard_min"] = 20
+    project_config.data["length"]["chapter"]["hard_min"] = 20
     project_config.data["pacing"]["max_major_quota_triggers_per_chapter"] = 1
     root = tmp_path / "novel"
     plan_chapter(project_config, chapter_number=1)

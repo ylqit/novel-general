@@ -6,9 +6,10 @@ from longform_engine.config import ConfigError, load_project_config
 def test_template_config_loads_with_defaults():
     config = load_project_config(template="qidian-longform")
 
-    assert config.data["project"]["slug"] == "longform_150w_demo"
-    assert config.data["length"]["total_chapters"] == 500
-    assert config.data["length"]["target_total_words"] == 1500000
+    assert config.data["project"]["slug"] == "longform_200w_demo"
+    assert config.data["length"]["target_total_characters"] == 2000000
+    assert config.data["length"]["planning"]["detailed_horizon"] == 20
+    assert "total_chapters" not in config.data["length"]
     assert config.data["storage"]["directories"]["runtime"] == "70_runtime"
     assert config.data["rag"]["backend"] == "sqlite_hybrid"
     assert config.data["writing"]["mode"] == "agent_skill"
@@ -22,7 +23,7 @@ def test_template_config_loads_with_defaults():
     assert config.data["quality"]["reader_payoff"]["language_similarity_threshold"] == 0.72
     assert config.data["quality"]["humanizer"]["semantic_review_mode"] == "risk_based"
     assert config.data["quality"]["humanizer"]["semantic_review_change_ratio"] == 0.15
-    assert config.data["semantic"]["vector_store"]["backend"] == "local_sqlite"
+    assert config.data["semantic"]["vector_store"]["backend"] == "local_hnsw"
     assert config.data["semantic"]["vector_store"]["hnsw_threshold"] == 10000
     assert config.data["semantic"]["vector_store"]["hnsw_ef_search"] == 80
 
@@ -63,12 +64,10 @@ project:
   title: Bad
   root_dir: novels/bad
 length:
-  total_chapters: 10
-  volume_count: 1
-  chapter_word_count:
-    target: 100
-    min: 200
-    max: 300
+  chapter:
+    target_characters: 100
+    soft_min: 200
+    soft_max: 300
 """,
         encoding="utf-8",
     )
@@ -76,7 +75,7 @@ length:
     try:
         load_project_config(config_path)
     except ConfigError as exc:
-        assert "chapter_word_count target" in str(exc)
+        assert "hard_min <= soft_min <= target_characters" in str(exc)
     else:
         raise AssertionError("Expected ConfigError")
 
@@ -90,12 +89,11 @@ project:
   title: 自定义项目
   root_dir: novel
 length:
-  total_chapters: 120
-  volume_count: 3
-  chapter_word_count:
-    target: 2600
-    min: 2000
-    max: 3200
+  target_total_characters: 360000
+  chapter:
+    target_characters: 2600
+    soft_min: 2000
+    soft_max: 3200
 """,
         encoding="utf-8",
     )
@@ -103,7 +101,7 @@ length:
     config = load_project_config(config_path)
 
     assert config.data["project"]["title"] == "自定义项目"
-    assert config.data["length"]["total_chapters"] == 120
+    assert config.data["length"]["target_total_characters"] == 360000
     assert config.data["rag"]["backend"] == "sqlite_hybrid"
     assert config.data["storage"]["directories"]["runtime"] == "70_runtime"
     assert config.data["writing"]["mode"] == "agent_skill"
@@ -117,13 +115,6 @@ project:
   slug: bad
   title: Bad
   root_dir: novels/bad
-length:
-  total_chapters: 10
-  volume_count: 1
-  chapter_word_count:
-    target: 2600
-    min: 2000
-    max: 3200
 writing:
   mode: direct_prompt
 """,
@@ -146,13 +137,6 @@ project:
   slug: bad
   title: Bad
   root_dir: novels/bad
-length:
-  total_chapters: 10
-  volume_count: 1
-  chapter_word_count:
-    target: 2600
-    min: 2000
-    max: 3200
 storage:
   directories:
     manuscript: "03_manuscript"
@@ -177,12 +161,7 @@ project:
   title: 自定义项目
   root_dir: novel
 length:
-  total_chapters: 120
-  volume_count: 3
-  chapter_word_count:
-    target: 2600
-    min: 2000
-    max: 3200
+  target_total_characters: 360000
 """,
         encoding="utf-8",
     )
@@ -205,21 +184,14 @@ def test_scale_preset_style_overrides_template_length():
         template="qidian-longform",
         cli_overrides={
             "length": {
-                "total_chapters": 330,
-                "target_total_words": 1000000,
-                "volume_count": 5,
-                "chapter_word_count": {
-                    "target": 3000,
-                    "min": 2400,
-                    "max": 3600,
-                },
+                "target_total_characters": 1000000,
+                "volume": {"target_characters": 200000},
             },
         },
     )
 
-    assert config.data["length"]["total_chapters"] == 330
-    assert config.data["length"]["target_total_words"] == 1000000
-    assert config.data["length"]["volume_count"] == 5
+    assert config.data["length"]["target_total_characters"] == 1000000
+    assert config.data["length"]["volume"]["target_characters"] == 200000
 
 
 def test_fanfiction_creation_modes_accept_advisory_rights_and_require_crossover_sources():

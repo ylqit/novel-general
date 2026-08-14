@@ -1,0 +1,51 @@
+schema: story_facet_registry_v1
+kind: plot_engines
+profiles:
+  progression:
+    requirements: ["Growth must change capability, responsibility, or vulnerability."]
+    preferences: ["Alternate acquisition, testing, cost, and consolidation."]
+    risks: ["Inventory-like upgrades", "Unpaid power growth"]
+    review_questions: ["What did the character pay or become responsible for?"]
+    conflicts: []
+  survival:
+    requirements: ["Threat, resources, escape choices, and consequences must stay concrete."]
+    preferences: ["Keep survival decisions local and observable."]
+    risks: ["Abstract danger", "Disposable unnamed survivors"]
+    review_questions: ["Which choice changed who could survive and at what cost?"]
+    conflicts: []
+  revenge:
+    requirements: ["The target, grievance, moral boundary, and cost of pursuit must evolve."]
+    preferences: ["Let new evidence complicate the original grievance."]
+    risks: ["Static anger as a substitute for agency"]
+    review_questions: ["Did revenge force a meaningful choice rather than repeat a slogan?"]
+    conflicts: []
+  mystery:
+    requirements: ["Evidence, inference, error, and correction must be independently traceable."]
+    preferences: ["Change the meaning of known facts instead of hiding required facts."]
+    risks: ["Author-only information", "Coincidental solution"]
+    review_questions: ["Can the reader locate the evidence supporting the latest inference?"]
+    conflicts: []
+  political_intrigue:
+    requirements: ["Every faction must have resources, constraints, and an agenda independent of the protagonist."]
+    preferences: ["Make agreements create future obligations."]
+    risks: ["Universal incompetence around the protagonist"]
+    review_questions: ["What did each side gain, risk, or conceal?"]
+    conflicts: []
+  war:
+    requirements: ["Logistics, command, information delay, and civilian cost must affect outcomes."]
+    preferences: ["Connect strategic decisions to individual consequences."]
+    risks: ["Battle summary without embodied stakes"]
+    review_questions: ["Did the outcome follow resources, information, and choices?"]
+    conflicts: []
+  business:
+    requirements: ["Value, cash flow, leverage, and stakeholder reaction must be traceable."]
+    preferences: ["Use negotiation and execution rather than unexplained success."]
+    risks: ["Numbers without operational reality"]
+    review_questions: ["What real constraint did the business decision change?"]
+    conflicts: []
+  romance:
+    requirements: ["Both sides need independent desires, boundaries, and consequential choices."]
+    preferences: ["Advance intimacy through action, misreading, repair, and changed trust."]
+    risks: ["A relationship existing only to reward the protagonist"]
+    review_questions: ["Did both people retain agency in the relationship move?"]
+    conflicts: []

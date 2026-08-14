@@ -10,19 +10,24 @@ from longform_engine.agent_normalization import SourceRegistry
 from longform_engine.agent_tasks import load_manifest
 from longform_engine.artifacts import artifact_status, restore_artifacts, verify_artifacts
 from longform_engine.config import load_project_config
+from longform_engine.intelligence import apply_intelligence_candidate, create_intelligence_task
 from longform_engine.orchestration import continue_write, finalize_chapter, open_book, submit_agent_draft
 from longform_engine.production import agent_task_brief, production_next
 from longform_engine.quality import reader_payoff_task, reader_payoff_validate
 from longform_engine.quality.review import payoff_output_template
 from longform_engine.semantic import chapter_close, semantic_apply
 from longform_engine.storage import init_project
-from tests.project_fixtures import mark_project_ready, prepare_unified_semantic_bundle
+from tests.project_fixtures import (
+    build_outline_extension_candidate,
+    mark_project_ready,
+    prepare_unified_semantic_bundle,
+)
 
 
 AUTHORIZATION = {
     "schema": "agent_data_pipeline_authorization_v1",
     "authorized": True,
-    "engine_version": "0.3.2",
+    "engine_version": "0.4.0.dev0",
     "protocol_surface_sha256": "f" * 64,
     "phase6_evidence_sha256": "e" * 64,
 }
@@ -90,6 +95,33 @@ def test_phase8_five_chapter_gate_then_twenty_chapter_artifact_acceptance(tmp_pa
 
     for chapter_number in range(1, 21):
         before = production_next(config)
+        if before["task_type"] == "outline_extension":
+            window = before["planning_window"]
+            extension = create_intelligence_task(
+                config,
+                task_type="outline_extension",
+                from_chapter=window["from_chapter"],
+                to_chapter=window["to_chapter"],
+            )
+            candidate = root / extension.candidate_file
+            candidate.write_text(
+                json.dumps(
+                    build_outline_extension_candidate(
+                        config,
+                        window["from_chapter"],
+                        window["to_chapter"],
+                    ),
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            apply_intelligence_candidate(
+                config,
+                task_type="outline_extension",
+                file_path=candidate,
+                approved_by="human",
+            )
+            before = production_next(config)
         assert before["status"] == "ready_for_continue_write"
         assert before["chapter_number"] == chapter_number
         writing = run_chapter_write(config, root, chapter_number)

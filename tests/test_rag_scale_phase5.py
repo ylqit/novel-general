@@ -113,6 +113,27 @@ def test_fixed_50_chapter_scale_runner_records_measured_nonclaim_evidence(tmp_pa
     assert not list((root / "60_rag" / "chunks").glob("*.json"))
 
 
+def test_two_million_character_forecast_rag_scale_is_incremental_and_bounded(tmp_path):
+    config = seed_project(tmp_path)
+
+    result = run_rag_scale_benchmark(
+        config,
+        scale_chapters=667,
+        backend="local_hnsw",
+        query_count=12,
+        top_k=5,
+    )
+
+    assert result.scale_chapters == 667
+    assert result.vector_count == 667 * 20
+    assert result.recall_at_k >= 0.85
+    assert result.fact_error_rate <= 0.02
+    assert result.p95_query_ms <= 1000
+    assert result.stale_sync_ok
+    assert result.rollback_restore_ok
+    assert result.meets_phase_thresholds
+
+
 def vector_record(record_id: str, vector: tuple[float, ...], *, chapter: int) -> VectorRecord:
     return VectorRecord(
         id=record_id,

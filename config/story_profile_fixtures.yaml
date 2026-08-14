@@ -1,0 +1,74 @@
+schema: story_profile_fixture_matrix_v1
+fixtures:
+  - id: xuanhuan_progression
+    profile:
+      market: {primary: qidian_male, compatibility: [fanqie_free]}
+      setting: {primary: xuanhuan, secondary: []}
+      plot_engines: {primary: progression, supporting: []}
+      narrative_forms: [single_lead]
+      premise_devices: []
+      relationship_modes: [team]
+      tone: [adventure]
+      resolutions: []
+  - id: urban_transmigration_light_novel
+    profile:
+      market: {primary: qidian_male, compatibility: [fanqie_free]}
+      setting: {primary: urban, secondary: []}
+      plot_engines: {primary: business, supporting: [romance]}
+      narrative_forms: [light_novel]
+      premise_devices: [transmigration]
+      relationship_modes: [romance]
+      tone: [lighthearted]
+      resolutions: []
+  - id: wuxia_adventure
+    profile:
+      market: {primary: qidian_male, compatibility: []}
+      setting: {primary: wuxia, secondary: []}
+      plot_engines: {primary: survival, supporting: []}
+      narrative_forms: [road_novel]
+      premise_devices: []
+      relationship_modes: [master_disciple]
+      tone: [adventure]
+      resolutions: []
+  - id: xuanhuan_mystery_ensemble_romance
+    profile:
+      market: {primary: qidian_male, compatibility: [jinjiang_female]}
+      setting: {primary: xuanhuan, secondary: []}
+      plot_engines: {primary: mystery, supporting: [romance]}
+      narrative_forms: [ensemble]
+      premise_devices: []
+      relationship_modes: [team, romance]
+      tone: [suspense]
+      resolutions: []
+  - id: game_fanfiction_mix
+    creation_mode: fanfiction
+    profile:
+      market: {primary: qidian_male, compatibility: [fanqie_free]}
+      setting: {primary: game_fantasy, secondary: [urban]}
+      plot_engines: {primary: survival, supporting: [progression, mystery, romance]}
+      narrative_forms: [light_novel, ensemble]
+      premise_devices: [transmigration]
+      relationship_modes: [team, friendship, romance]
+      tone: [adventure, suspense]
+      resolutions: []
+  - id: history_wuxia_political_multi_pov
+    profile:
+      market: {primary: qidian_male, compatibility: []}
+      setting: {primary: history, secondary: [wuxia]}
+      plot_engines: {primary: political_intrigue, supporting: [mystery, romance]}
+      narrative_forms: [multi_pov]
+      premise_devices: [identity_swap]
+      relationship_modes: [rivalry, romance]
+      tone: [dark, warm]
+      resolutions: []
+  - id: unresolved_conflict
+    expect_ready: false
+    profile:
+      market: {primary: qidian_male, compatibility: []}
+      setting: {primary: urban, secondary: []}
+      plot_engines: {primary: mystery, supporting: []}
+      narrative_forms: [ensemble, single_lead_only]
+      premise_devices: []
+      relationship_modes: [team]
+      tone: [lighthearted, unrelieved_dark]
+      resolutions: []

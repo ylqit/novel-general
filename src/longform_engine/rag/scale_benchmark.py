@@ -28,7 +28,7 @@ from longform_engine.vectorstore import (
 
 RAG_SCALE_BENCHMARK_SCHEMA = "rag_scale_engine_measurement_v1"
 RAG_SCALE_DATASET_ID = "chinese-webnovel-rag-scale-phase5-v1"
-SUPPORTED_SCALES = (50, 200, 500)
+SUPPORTED_SCALES = (50, 200, 500, 667)
 SUPPORTED_LOCAL_BACKENDS = ("local_sqlite", "local_hnsw")
 VECTOR_DIMENSION = 64
 VECTORS_PER_CHAPTER = 20
@@ -318,7 +318,7 @@ def phase_threshold_errors(
         errors.append("stale deletion did not remove the rolled-back chapter vectors.")
     if not rollback_restore_ok:
         errors.append("incremental sync did not restore the rolled-back chapter vectors.")
-    if scale_chapters == 500:
+    if scale_chapters >= 500:
         if recall_at_k < RAG_500_THRESHOLDS["recall_at_k_min"]:
             errors.append("recall_at_k is below 0.85.")
         if fact_error_rate > RAG_500_THRESHOLDS["fact_error_rate_max"]:

@@ -16,7 +16,7 @@ def write_index(root: Path, tasks: list[dict]) -> Path:
     return path
 
 
-def test_500_chapter_projection_keeps_only_project_and_recent_two_chapters(tmp_path):
+def test_two_million_character_projection_keeps_only_project_and_recent_two_chapters(tmp_path):
     root = tmp_path / "novel"
     tasks = [
         {
@@ -27,7 +27,7 @@ def test_500_chapter_projection_keeps_only_project_and_recent_two_chapters(tmp_p
             "manifest_file": "50_workbench/intelligence_tasks/book_design.agent_task.json",
         }
     ]
-    for chapter in range(1, 501):
+    for chapter in range(1, 668):
         for lane in ("chapter_write", "semantic_review", "chapter_semantic"):
             tasks.append(
                 {
@@ -51,22 +51,22 @@ def test_500_chapter_projection_keeps_only_project_and_recent_two_chapters(tmp_p
                 }
             )
             + "\n"
-            for chapter in range(1, 501)
+            for chapter in range(1, 668)
         ),
         encoding="utf-8",
     )
 
     result = compact_task_projection(
         root,
-        through=498,
-        archive_refs={chapter: f"70_runtime/artifacts/chapters/ch{chapter:03d}.zip" for chapter in range(1, 499)},
+        through=665,
+        archive_refs={chapter: f"70_runtime/artifacts/chapters/ch{chapter:03d}.zip" for chapter in range(1, 666)},
     )
     payload = json.loads(index.read_text(encoding="utf-8"))
 
     assert payload["schema"] == "agent_task_index_v2"
-    assert result["archived_tasks"] == 498 * 3
-    assert {int(item["chapter_number"]) for item in payload["tasks"]} == {0, 499, 500}
-    assert payload["terminal_counts"]["total"] == 498 * 3
+    assert result["archived_tasks"] == 665 * 3
+    assert {int(item["chapter_number"]) for item in payload["tasks"]} == {0, 666, 667}
+    assert payload["terminal_counts"]["total"] == 665 * 3
     assert index.stat().st_size < 1_000_000
     assert events.stat().st_size < 5 * 1024 * 1024
 

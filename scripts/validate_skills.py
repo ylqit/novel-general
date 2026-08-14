@@ -39,6 +39,22 @@ def project_version() -> str:
     return match.group(1)
 
 
+def public_install_version() -> str:
+    channel_path = ROOT / "config" / "release-channel.json"
+    payload = json.loads(channel_path.read_text(encoding="utf-8"))
+    version = project_version()
+    if payload.get("schema") != "release_channel_v1":
+        raise ValueError("config/release-channel.json has the wrong schema")
+    if payload.get("development_version") != version:
+        raise ValueError("config/release-channel.json does not match project.version")
+    if payload.get("status") == "stable":
+        return version
+    stable = str(payload.get("public_stable_version") or "").strip()
+    if not stable:
+        raise ValueError("config/release-channel.json is missing public_stable_version")
+    return stable
+
+
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     if not text.startswith("---\n"):
         return {}, text
@@ -132,10 +148,12 @@ def validate_readme() -> list[str]:
     errors: list[str] = []
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     version = project_version()
+    stable_version = public_install_version()
     required = (
         "longform-novel-engine = Python engine + Codex skill + Claude Code skill",
         PUBLIC_URL,
-        f"git+https://github.com/ylqit/novel-general.git@v{version}",
+        f"git+https://github.com/ylqit/novel-general.git@v{stable_version}",
+        version,
         "longform-novel-engine[semantic]",
         "PIPX_BIN_DIR",
         "longform-engine skills install --tool all",
@@ -166,7 +184,8 @@ def validate_readme() -> list[str]:
         "Humanizer v3",
         "Humanizer v4",
         "book_design_candidate_v2",
-        "character design-task",
+        "chapter_direction_candidate_v2",
+        "content_characters_v1",
         "character audit-task",
         "reader_payoff_review",
         "rights_status",

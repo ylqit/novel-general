@@ -10,7 +10,9 @@ import re
 
 import yaml
 
+from longform_engine.lengths import LengthContractError, validate_length_contract
 from longform_engine.resources import resource_path, resource_root
+from longform_engine.story_profiles import StoryProfileError, validate_story_profile
 
 
 class ConfigError(ValueError):
@@ -29,7 +31,7 @@ LEGACY_PATH_PREFIXES = (
 
 
 BUILTIN_DEFAULTS: dict[str, Any] = {
-    "schema_version": 1,
+    "schema_version": 2,
     "creation": {
         "mode": "original",
     },
@@ -45,16 +47,43 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
         "timezone": "Asia/Hong_Kong",
     },
     "length": {
-        "total_chapters": 500,
-        "target_total_words": 1_500_000,
-        "volume_count": 6,
-        "chapter_word_count": {
-            "target": 3000,
-            "min": 2400,
-            "max": 3600,
+        "metric": "content_characters_v1",
+        "target_total_characters": 2_000_000,
+        "completion_tolerance": [0.90, 1.10],
+        "chapter": {
+            "target_characters": 3000,
+            "soft_min": 2400,
+            "soft_max": 3600,
             "hard_min": 2000,
             "hard_max": 4200,
         },
+        "volume": {
+            "target_characters": 250_000,
+        },
+        "planning": {
+            "mode": "rolling",
+            "detailed_horizon": 20,
+            "refill_threshold": 8,
+        },
+    },
+    "story_profile": {
+        "market": {
+            "primary": "qidian_male",
+            "compatibility": ["fanqie_free"],
+        },
+        "setting": {
+            "primary": "xuanhuan",
+            "secondary": [],
+        },
+        "plot_engines": {
+            "primary": "progression",
+            "supporting": [],
+        },
+        "narrative_forms": ["single_lead"],
+        "premise_devices": [],
+        "relationship_modes": ["team"],
+        "tone": ["adventure"],
+        "resolutions": [],
     },
     "storage": {
         "layout_version": 2,
@@ -87,9 +116,6 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
     "quality": {
         "assurance_mode": "balanced",
         "profile": {
-            "market": "qidian_male",
-            "compatibility_markets": ["fanqie_free"],
-            "genre": "xuanhuan",
             "phase": "auto",
             "strictness": "balanced",
             "overrides": {},
@@ -112,7 +138,7 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
             "update_requires_human": True,
         },
         "creative_guidance": {
-            "mode": "automatic",
+            "mode": "guided",
         },
     },
 }
@@ -142,13 +168,6 @@ MARKET_PROFILES = {
     "qidian_male",
     "fanqie_free",
     "jinjiang_female",
-}
-GENRE_PROFILES = {
-    "history",
-    "romance",
-    "suspense",
-    "urban",
-    "xuanhuan",
 }
 QUALITY_PHASES = {
     "auto",
@@ -255,6 +274,9 @@ def load_project_config(
 def validate_config(data: dict[str, Any]) -> None:
     """Validate the minimal contract needed by the engine bootstrap."""
 
+    if data.get("schema_version") != 2:
+        raise ConfigError("schema_version must be 2; v0.4.0 does not load v0.3.x project configs")
+
     creation = _require_mapping(data, "creation")
     creation_mode = str(creation.get("mode") or "").strip()
     if creation_mode not in CREATION_MODES:
@@ -284,17 +306,15 @@ def validate_config(data: dict[str, Any]) -> None:
             raise ConfigError(f"project.{field} is required")
 
     length = _require_mapping(data, "length")
-    total_chapters = _require_positive_int(length, "total_chapters", "length")
-    volume_count = _require_positive_int(length, "volume_count", "length")
-    if volume_count > total_chapters:
-        raise ConfigError("length.volume_count cannot exceed length.total_chapters")
+    try:
+        validate_length_contract(length)
+    except LengthContractError as exc:
+        raise ConfigError(str(exc)) from exc
 
-    word_count = _require_mapping(length, "chapter_word_count", "length")
-    target = _require_positive_int(word_count, "target", "length.chapter_word_count")
-    minimum = _require_positive_int(word_count, "min", "length.chapter_word_count")
-    maximum = _require_positive_int(word_count, "max", "length.chapter_word_count")
-    if not minimum <= target <= maximum:
-        raise ConfigError("chapter_word_count target must be between min and max")
+    try:
+        validate_story_profile(data.get("story_profile"), market_ids=MARKET_PROFILES)
+    except StoryProfileError as exc:
+        raise ConfigError(str(exc)) from exc
 
     storage = _require_mapping(data, "storage")
     directories = _require_mapping(storage, "directories", "storage")
@@ -346,21 +366,12 @@ def validate_config(data: dict[str, Any]) -> None:
     if profile is not None and not isinstance(profile, dict):
         raise ConfigError("quality.profile must be a mapping")
     profile = profile if isinstance(profile, dict) else {}
-    market_profile = str(profile.get("market") or quality.get("market_profile") or "").strip()
-    if market_profile not in MARKET_PROFILES:
-        raise ConfigError(f"quality.profile.market must be one of: {', '.join(sorted(MARKET_PROFILES))}")
-    compatibility_markets = profile.get("compatibility_markets", [])
-    if not isinstance(compatibility_markets, list):
-        raise ConfigError("quality.profile.compatibility_markets must be a list")
-    for item in compatibility_markets:
-        compatibility_market = str(item).strip() if isinstance(item, str) else ""
-        if compatibility_market not in MARKET_PROFILES:
-            raise ConfigError(
-                f"quality.profile.compatibility_markets must contain only: {', '.join(sorted(MARKET_PROFILES))}"
-            )
-    genre_profile = str(profile.get("genre") or quality.get("genre_profile") or "").strip()
-    if genre_profile not in GENRE_PROFILES:
-        raise ConfigError(f"quality.profile.genre must be one of: {', '.join(sorted(GENRE_PROFILES))}")
+    removed_profile_fields = {"market", "compatibility_markets", "genre"} & set(profile)
+    if removed_profile_fields or "market_profile" in quality or "genre_profile" in quality:
+        raise ConfigError(
+            "v0.4.0 moved market and genre composition to story_profile; remove: "
+            + ", ".join(sorted(removed_profile_fields | ({"quality.market_profile"} if "market_profile" in quality else set()) | ({"quality.genre_profile"} if "genre_profile" in quality else set())))
+        )
     phase = str(profile.get("phase") or "auto").strip()
     if phase not in QUALITY_PHASES:
         raise ConfigError(f"quality.profile.phase must be one of: {', '.join(sorted(QUALITY_PHASES))}")
@@ -429,8 +440,8 @@ def validate_config(data: dict[str, Any]) -> None:
         raise ConfigError("quality.approved_style_baseline.update_requires_human must be boolean")
     creative_guidance = _require_mapping(quality, "creative_guidance", "quality")
     guidance_mode = str(creative_guidance.get("mode") or "").strip()
-    if guidance_mode not in {"automatic", "guided", "off"}:
-        raise ConfigError("quality.creative_guidance.mode must be one of: automatic, guided, off")
+    if guidance_mode != "guided":
+        raise ConfigError("quality.creative_guidance.mode must be guided in schema v2")
 
 
 def _validate_fanfiction_source(source: Any, *, index: int, source_ids: set[str]) -> None:

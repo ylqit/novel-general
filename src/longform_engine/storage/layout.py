@@ -96,7 +96,6 @@ INITIAL_JSON_FILES = {
         "writing_style": "immersive serialized prose",
         "reader_contract": {
             "platform": "unknown",
-            "genre": "unknown",
             "core_promise": "",
             "main_question": "",
             "ending_direction": "",
@@ -107,12 +106,7 @@ INITIAL_JSON_FILES = {
         ],
         "automation_level": "agent_skill with human approval for finalization",
         "target_scale": "pending confirmation",
-        "genre_style_profile": {
-            "genre": "unknown",
-            "tone": "immersive serialized prose",
-            "payoff_density": "one local payoff per chapter; preserve longform core mystery",
-            "dialogue_bias": "use dialogue for pressure, status, and subtext rather than exposition",
-        },
+        "story_profile": {},
         "status": "pending_confirmation",
     },
     "10_bible/characters.json": [],
@@ -120,7 +114,9 @@ INITIAL_JSON_FILES = {
     "10_bible/factions.json": [],
     "10_bible/locations.json": [],
     "20_outline/volumes.json": [],
+    "20_outline/story_arcs.json": [],
     "20_outline/chapter_plan.json": [],
+    "20_outline/planning_window.json": {},
     "20_outline/outline_anchors.json": [],
     "20_outline/foreshadowing_ledger.json": [],
     "30_state/novel_state.json": {
@@ -128,6 +124,15 @@ INITIAL_JSON_FILES = {
         "last_finalized_chapter": 0,
         "status": "initialized",
         "stale": [],
+    },
+    "30_state/manuscript_metrics.json": {
+        "schema": "manuscript_metrics_v1",
+        "metric": "content_characters_v1",
+        "finalized_chapter_count": 0,
+        "latest_finalized_chapter": 0,
+        "total_content_characters": 0,
+        "total_display_characters": 0,
+        "average_content_characters": 0,
     },
     "30_state/character_state.json": [],
     "30_state/story_graph.json": {

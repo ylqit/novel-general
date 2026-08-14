@@ -248,7 +248,7 @@ def seed_project(tmp_path: Path):
     root = tmp_path / "novel"
     open_book(config)
     mark_project_ready(root, config)
-    config.data["length"]["chapter_word_count"]["hard_min"] = 20
+    config.data["length"]["chapter"]["hard_min"] = 20
     return config, root
 
 

@@ -18,7 +18,7 @@ def seed_high_risk_chapter(tmp_path: Path):
     root = tmp_path / "novel"
     open_book(config)
     mark_project_ready(root, config)
-    config.data["length"]["chapter_word_count"]["hard_min"] = 20
+    config.data["length"]["chapter"]["hard_min"] = 20
     continue_write(config, chapter_number=1)
     card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
     card = json.loads(card_path.read_text(encoding="utf-8"))

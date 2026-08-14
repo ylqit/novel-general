@@ -19,10 +19,13 @@ from tests.project_fixtures import mark_project_ready
 
 def test_default_config_uses_the_unified_quality_profile_shape():
     quality = config_loader.BUILTIN_DEFAULTS["quality"]
+    story_profile = config_loader.BUILTIN_DEFAULTS["story_profile"]
 
-    assert quality["profile"]["market"] == "qidian_male"
-    assert quality["profile"]["compatibility_markets"] == ["fanqie_free"]
-    assert quality["profile"]["genre"] == "xuanhuan"
+    assert story_profile["market"]["primary"] == "qidian_male"
+    assert story_profile["market"]["compatibility"] == ["fanqie_free"]
+    assert story_profile["setting"]["primary"] == "xuanhuan"
+    assert story_profile["plot_engines"]["primary"] == "progression"
+    assert "genre" not in quality["profile"]
     assert "market_profile" not in quality
     assert "genre_profile" not in quality
 
@@ -101,19 +104,26 @@ def test_compact_contract_omits_explanation_payload_but_keeps_agent_boundaries(t
 @pytest.mark.parametrize(
     ("profile_override", "message"),
     (
-        ({"compatibility_markets": "fanqie_free"}, "compatibility_markets must be a list"),
-        ({"compatibility_markets": ["unknown_market"]}, "compatibility_markets must contain only"),
+        ({"market": {"primary": "qidian_male", "compatibility": "fanqie_free"}}, "compatibility contains an unknown market"),
+        ({"market": {"primary": "qidian_male", "compatibility": ["unknown_market"]}}, "compatibility contains an unknown market"),
         (
-            {"overrides": {"platform_policy": {"primary_deviation": "P0_blocking"}}},
+            {"quality_override": {"overrides": {"platform_policy": {"primary_deviation": "P0_blocking"}}}},
             "primary_deviation",
         ),
     ),
 )
 def test_platform_contract_config_rejects_invalid_values(profile_override, message):
+    story_override = profile_override.get("market")
+    quality_override = profile_override.get("quality_override")
+    overrides = {}
+    if story_override is not None:
+        overrides["story_profile"] = {"market": story_override}
+    if quality_override is not None:
+        overrides["quality"] = {"profile": quality_override}
     with pytest.raises(ConfigError, match=message):
         load_project_config(
             template="qidian-longform",
-            cli_overrides={"quality": {"profile": profile_override}},
+            cli_overrides=overrides,
         )
 
 

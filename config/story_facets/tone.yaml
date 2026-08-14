@@ -1,0 +1,57 @@
+schema: story_facet_registry_v1
+kind: tone
+profiles:
+  adventure:
+    requirements: ["Discovery must create a choice, risk, or changed understanding."]
+    preferences: ["Alternate anticipation, encounter, consequence, and reflection."]
+    risks: ["Location checklist"]
+    review_questions: ["What did exploration make possible or costly?"]
+    conflicts: []
+  suspense:
+    requirements: ["Uncertainty must arise from concrete incomplete knowledge."]
+    preferences: ["Vary anticipation, discovery, reversal, and aftermath."]
+    risks: ["Artificially withheld viewpoint facts"]
+    review_questions: ["What exactly can the reader fear or question here?"]
+    conflicts: []
+  lighthearted:
+    requirements: ["Lightness must coexist with credible consequence."]
+    preferences: ["Use social timing, contrast, and recovery rather than constant jokes."]
+    risks: ["Erasing grief or danger immediately"]
+    review_questions: ["Did humor reveal character without cancelling stakes?"]
+    conflicts: ["tone:unrelieved_dark"]
+  humorous:
+    requirements: ["Comedy must arise from character, expectation, or situation."]
+    preferences: ["Let different characters find different things funny."]
+    risks: ["Humiliation as the only joke"]
+    review_questions: ["Would this joke still work with the names removed?"]
+    conflicts: []
+  dark:
+    requirements: ["Damage and moral pressure must have persistent consequences."]
+    preferences: ["Preserve contrast and moments of agency."]
+    risks: ["Suffering without character consequence"]
+    review_questions: ["What did darkness force someone to choose?"]
+    conflicts: []
+  unrelieved_dark:
+    requirements: ["Every major beat must intensify despair without tonal release."]
+    preferences: []
+    risks: ["Emotional flattening"]
+    review_questions: ["Did any scene accidentally provide relief?"]
+    conflicts: ["tone:lighthearted"]
+  hot_blooded:
+    requirements: ["Emotional escalation must be earned by action and shared stakes."]
+    preferences: ["Use commitment and sacrifice rather than slogans alone."]
+    risks: ["Inflated declarations"]
+    review_questions: ["Which prior action earned the emotional peak?"]
+    conflicts: []
+  warm:
+    requirements: ["Care must appear as attention, labor, boundary, or sacrifice."]
+    preferences: ["Let tenderness coexist with disagreement."]
+    risks: ["Generic reassurance"]
+    review_questions: ["What concrete act made the warmth believable?"]
+    conflicts: []
+  tragic:
+    requirements: ["Loss must follow character choice, constraint, and accumulated causality."]
+    preferences: ["Preserve meaning without pretending the cost did not matter."]
+    risks: ["Arbitrary death for stimulation"]
+    review_questions: ["Which earlier choice made the loss both avoidable and inevitable?"]
+    conflicts: []

@@ -2,8 +2,8 @@
   "assets": [
     {
       "path": "config/agent_data_pipeline_authorization.json",
-      "sha256": "b532c66d28bad58518ccdf020c36fd342f1e7c513f93ff0edb58bb8b62532f53",
-      "size": 314
+      "sha256": "41ad9b8bc4e70d0b9e0adb56011f16c3905b30dd252256ad621c131bd6f05e54",
+      "size": 319
     },
     {
       "path": "config/agent_roles/prompts/adaptation_analyst.md",
@@ -27,8 +27,8 @@
     },
     {
       "path": "config/agent_roles/prompts/chapter_author.md",
-      "sha256": "fc0cfb10ea0f0e0c3bbbd0f2608591437633c745b2b6d46d23ab2f4d26237491",
-      "size": 1717
+      "sha256": "d8b16e31aa6c06a64d2b9f8dd997892dd5776b52cd563feb77e3d02cc1c64359",
+      "size": 1827
     },
     {
       "path": "config/agent_roles/prompts/chapter_semantic_archivist.md",
@@ -37,13 +37,13 @@
     },
     {
       "path": "config/agent_roles/prompts/chapter_story_editor.md",
-      "sha256": "bcedada2d6d9f67c687f57dd94fa45730425227865d1fa835071d3c1979b773c",
-      "size": 1296
+      "sha256": "bb3041e5b66f98eef0a195c68f81d2cdd8fe9ed6c874eac5c9bdfa27e6ad1d97",
+      "size": 1620
     },
     {
       "path": "config/agent_roles/prompts/character_editor.md",
-      "sha256": "935058fe755a62354a8bf565d9a5f714429a4703aed5bdcfa12393e87e363c57",
-      "size": 1345
+      "sha256": "ffd24bb3eb9d1619c5251f47440d07f88f213f40f74c085754d7d66d2488e50b",
+      "size": 1499
     },
     {
       "path": "config/agent_roles/prompts/character_performance_architect.md",
@@ -112,8 +112,8 @@
     },
     {
       "path": "config/agent_roles/prompts/longform_outline_architect.md",
-      "sha256": "208dd06ce0d8e605373a17362a2b4744432e96ee38cb5b96ead2100a36ebde56",
-      "size": 1475
+      "sha256": "47ce2ad15146af75b8fc77dd91e6bf401e3aefc69fe47f97c560a23437b95c77",
+      "size": 1871
     },
     {
       "path": "config/agent_roles/prompts/planning_chief_editor.md",
@@ -162,43 +162,18 @@
     },
     {
       "path": "config/agent_roles/prompts/writing_agent.md",
-      "sha256": "226294959144a1da9805cf6d1cbd19068bec283ddacd67b00c7f3e71eaf44726",
-      "size": 1265
+      "sha256": "56d397ff9c53de99ede8bdee69cbff04e6e01327594ad8315237b6a10be7cf2e",
+      "size": 1553
     },
     {
       "path": "config/agent_roles/registry.json",
-      "sha256": "455d718d6fb5231f37936f9cbfecec937fdb788a3849f3301b9f9274e43ebf47",
-      "size": 8776
+      "sha256": "ac9c73d0252e09466c6fc286556a7e5a3aeed4f68d43288fe8586eded1e3eb40",
+      "size": 8831
     },
     {
       "path": "config/default.engine.yaml",
-      "sha256": "ebb0afbeeb3ddf4d89b98c63866c5fd6044d5d9ee62b05dc245ad574358b1915",
-      "size": 5599
-    },
-    {
-      "path": "config/quality_profiles/genres/history.yaml",
-      "sha256": "04a986735ca54097517ba25ae6fbb45713b9607cbdd76330c6ca43ba9cf4919a",
-      "size": 502
-    },
-    {
-      "path": "config/quality_profiles/genres/romance.yaml",
-      "sha256": "740c1be52869a5e514c6b49bcdff4726cb4dc752168ed06837d7b448d4b44915",
-      "size": 520
-    },
-    {
-      "path": "config/quality_profiles/genres/suspense.yaml",
-      "sha256": "6d90a87c8ea9d39212791d41499b8eba1f9fe8533872d6b3e4c09aca6dfb5b88",
-      "size": 567
-    },
-    {
-      "path": "config/quality_profiles/genres/urban.yaml",
-      "sha256": "6ead04541d869c1691d8072ba68fd27961c9b13a1260bfbba28cc7087c65f114",
-      "size": 521
-    },
-    {
-      "path": "config/quality_profiles/genres/xuanhuan.yaml",
-      "sha256": "1da556d5b64774f2774606e6fefa8084e801979cf49da54b3837ac9da5d92a03",
-      "size": 543
+      "sha256": "52ea79c94a08947202859d30330dc40381c26d950191952024cdc9bfbc3b8593",
+      "size": 5924
     },
     {
       "path": "config/quality_profiles/markets/fanqie_free.yaml",
@@ -244,6 +219,46 @@
       "path": "config/quality_profiles/phases/volume_climax.yaml",
       "sha256": "7ead0cc4660aba9051a48a69611ce82a329f225ed4d3e9179faf40c8964c9034",
       "size": 459
+    },
+    {
+      "path": "config/release-channel.json",
+      "sha256": "df65985760868d788a7de3df7d6dba79cfc9e41ff0dcf2fb449be0dd63fbd4f5",
+      "size": 219
+    },
+    {
+      "path": "config/story_facets/narrative_forms.yaml",
+      "sha256": "feaff291b3f488e2207f00ece34c865d2fcdc87b56756c8bd2ef8fafa290e010",
+      "size": 2480
+    },
+    {
+      "path": "config/story_facets/plot_engines.yaml",
+      "sha256": "6d2ce4c8a2c1615a97b391d223c43452296c6cf12ef6a64dc010b3f75e9b290a",
+      "size": 2861
+    },
+    {
+      "path": "config/story_facets/premise_devices.yaml",
+      "sha256": "9804ab948ab9b0faa74ca8249482239ccff10b18b8a445f553e9d9ca96fd2287",
+      "size": 2475
+    },
+    {
+      "path": "config/story_facets/relationship_modes.yaml",
+      "sha256": "57b40bff8954274621b345ee9833e30aed3e1f8fde6bcdd40d87768ad9c8a5f5",
+      "size": 2019
+    },
+    {
+      "path": "config/story_facets/setting.yaml",
+      "sha256": "edef1319150fcc736f09d6dcc8b1cb56bf283bcb3939e05c51d155b02b3931cb",
+      "size": 2608
+    },
+    {
+      "path": "config/story_facets/tone.yaml",
+      "sha256": "a240947d4af9148e7507a81eeacf1ac3cb9b1ad580f0f4e2a14b3812bde28284",
+      "size": 2829
+    },
+    {
+      "path": "config/story_profile_fixtures.yaml",
+      "sha256": "a01f493acb94843dde7d57d127119bf8b48fc9904a7c32ddfd32541ce01424a8",
+      "size": 2828
     },
     {
       "path": "longform-novel-claude/agents/openai.yaml",
@@ -317,8 +332,8 @@
     },
     {
       "path": "pyproject.toml",
-      "sha256": "ae0db292f6ee61a1ffc76fcb4dd4a848d7eae1bc0cf603e6018149bcf8678ccc",
-      "size": 2065
+      "sha256": "18aec61aa93df3be8cd41ddbc087319638757af74b5c9594af28747199ed6fdb",
+      "size": 2070
     },
     {
       "path": "shared/artifact_reporting.md",
@@ -347,11 +362,11 @@
     },
     {
       "path": "templates/qidian-longform/project.yaml",
-      "sha256": "8ab8775cc6fa0874a80b81128d714500b130ec9f7a86b05de82e70d36c4972d2",
-      "size": 3747
+      "sha256": "7881f76a4e23e66f4013cb60be58cf968af62adb5b748a64538c944dd8fb156b",
+      "size": 4070
     }
   ],
-  "engine_version": "0.3.2",
+  "engine_version": "0.4.0.dev0",
   "hash_policy": "text-lf-v1",
   "schema": "longform_resource_manifest_v1"
 }

@@ -9,6 +9,8 @@
 - 本地文件是事实源；SQLite、RAG 和图谱是受控写入或可重建派生状态。
 - 每个 Agent 工单声明输入文件、允许输出、schema、validate、apply、失败命令与硬边界。
 
+> 源码主线当前为未发布的 `0.4.0.dev0`，采用字数主导、滚动纲要与可组合题材协议，且不读取 v0.3.x 项目配置。公开稳定安装仍固定在 `v0.3.2`；完成两组混合题材五章盲评和 200 万字符规模验证前，不发布 v0.4.0，也不宣称文学质量全面优于 `novel-skill`。进度见 [v0.4.0 验收清单](docs/V0_4_0_WORD_BUDGET_AND_COMPOSABLE_PROFILE_CHECKLIST.md)。
+
 ## Skills
 
 | Skill | 宿主 | Agent 允许写入 |
@@ -129,11 +131,11 @@ open-book
 -> book_ideation 每轮一个问题 -> Agent 给 2-3 个选项 -> human selection/apply
 -> book_design 工作单 -> Agent 候选 JSON -> strict validate -> human apply
 -> outline_design 工作单 -> Agent 候选 JSON -> strict validate -> human apply
--> 角色、卷纲、连续章节计划和伏笔账本就绪
+-> 角色、全书故事弧、卷级字数预算、未来 20 章详细窗口和伏笔账本就绪
 -> 第一章 writing 工作单
 ```
 
-`book_ideation` 依次确认目标读者与阅读场景、核心卖点、世界规则、主角欲望与缺陷、长期矛盾、卷级升级、结局边界以及禁区。CLI 每轮只保存用户明确选择或明确提供的一项答案。缺少这些决定、稳定角色 ID、人物弧线、完整卷范围、目标章节覆盖或伏笔窗口时，CLI 会阻止第一章任务生成。项目级 apply 仍由人显式确认，Agent 不能直接写 Bible 或 outline。
+`book_ideation` 依次确认目标读者与阅读场景、核心卖点、世界规则、主角欲望与缺陷、长期矛盾、卷级升级、结局边界以及禁区。CLI 每轮只保存用户明确选择或明确提供的一项答案。缺少这些决定、稳定角色 ID、人物弧线、全书故事弧、卷级预算、首个详细窗口或伏笔窗口时，CLI 会阻止第一章任务生成。详细窗口只覆盖未来 20 章，剩余计划不足 8 章时才安排下一轮 `outline_extension`。项目级 apply 仍由人显式确认，Agent 不能直接写 Bible 或 outline。
 
 典型章节闭环：
 
@@ -236,13 +238,13 @@ Bible、outline、research canon、final、semantic ledger、RAG、graph、fores
 
 ## 中文网文质量与去 AI 味
 
-去 AI 味不等于追逐检测器，也不等于把所有平台都改成短句、高对白和悬崖结尾。引擎从 wheel 内置资源编译
-`market + genre + global story phase + market-specific phase + human-approved style baseline + project overrides`，区分
-`qidian_male`、`fanqie_free`、`jinjiang_female` 与 `general_cn`，再结合玄幻、都市、悬疑、言情、历史题材和开篇、稳定连载、卷末、余波阶段形成 `effective_quality_contract_v1`。
+去 AI 味不等于追逐检测器，也不等于把所有平台都改成短句、高对白和悬崖结尾。引擎从 wheel 内置资源按
+`事实边界 -> 市场 -> 主世界类型 -> 剧情引擎 -> 叙事形式 -> 前提装置 -> 关系重点 -> 当前故事弧 -> 人工风格 -> 项目覆盖`
+编译质量合同。玄幻、游戏异界、都市属于世界分面；成长、求生、调查、言情属于剧情引擎；轻小说、群像、多视角属于叙事形式；穿越、重生、系统属于前提装置；同人则由 `creation.mode` 独立表达。冲突不会按数组顺序静默覆盖，必须由人明确解决。
 
 - Humanizer v3 检查空文本、重复模板、信息轰炸、流水账升级、纸片人/工具人、对白同质、伪细节、情绪标签、意义膨胀和强制钩子。
 - Humanizer v4 的第二遍改写读取 `character_expression_packet_v1`，保护人物的感知偏向、决策偏向、话语层级、社交面具和情绪泄漏，并强化相反欲望、隐藏议程、不可逆行动和情绪余波。
-- `book_design_candidate_v2` 可直接写入 `10_bible/character_expression.json`；兼容的 v1 设计会由 `production next` 安排 `character design-task` 补全，不允许 Agent 直接写 Bible。
+- `book_design_candidate_v2` 可直接写入 `10_bible/character_expression.json`；v0.4.0 不再接收旧 book design 项目协议，也不允许 Agent 直接写 Bible。
 - 常规章节人物包仍受 7 文件/20K 字符预算约束；低对白、少外貌或少内心独白不会单独成为硬失败，CLI 同时报告真实 `dialogue_char_ratio`、引号密度、归因覆盖、说话人特征和可交换风险。
 - 第 1-3 章、人物初登场、POV 切换、关系转折和对白同质复发会选择 `character_editor`；即使 pass，也必须给每个 featured character 提供正文证据。
 - 润色候选会与来源稿比较数字事实、角色保留和改写比例；过度重写会触发 `need-human`，避免“去 AI 味”把剧情和人物一起洗掉。
@@ -255,7 +257,7 @@ Bible、outline、research canon、final、semantic ledger、RAG、graph、fores
 - `qidian_male` 是默认主合同；`fanqie_free` 只输出最多三条非阻断兼容建议，不会自动改章或阻断定稿。
 - 章节卡明确区分平台承诺、章节职责、读者收益、代价与关系变化；Reader Payoff 必须从正文证据验证，不能把计划当成事实。
 - `quality baseline-approve` 只能显式批准已定稿章节的 prose-free 结构指纹，CLI 不会自动把新章节加入风格基线。
-- `chapter_direction` 只在 guided、纲要过于抽象、卷边界、重大转折、连续返修或多条合法剧情线时出现；普通稳定章节不增加人工步骤。
+- 每章都必须完成 `chapter_direction_candidate_v2`：Agent 提供 2 至 3 个有明确代价的方向，用户显式选择后才生成章节卡和正文工作单。CLI 不替作者决定关键剧情。
 
 查看本章实际合同：
 
@@ -272,7 +274,9 @@ longform-engine character samples-approve project.yaml --file 50_workbench/chara
 
 ## 长篇一致性
 
-默认 `standard` 模板是 150 万字 / 500 章 / 6 卷，也提供 100 万字和 200 万字规模预设。核心状态层包括：
+v0.4.0 以 `content_characters_v1` 为唯一生产规模口径：只统计正文中的 Unicode 字母和数字，不计空白、标点、Markdown 标记、标题、工作单或审稿文件。默认目标为 200 万正文字符，每章目标 3000、软区间 2400 至 3600，预测约 667 章和 8 卷；章节数与卷数会随实际章长和故事密度重估，不再是硬约束。200 万以内属于正式工程支持，超过 200 万可配置但 doctor 标记为 experimental。
+
+全书完成条件是“人工批准的结局完成 + 必要承诺闭环 + 正文字符数进入容差 + 无 P0/P1”，不是抵达某个固定章节号。低于目标时只能由人批准扩展故事弧，禁止自动注水；超过目标时提示重估，不机械压缩已经成立的剧情。核心状态层包括：
 
 | 机制 | 作用 |
 | --- | --- |
@@ -377,11 +381,11 @@ longform-engine release check --repository . --check-remote
 longform-engine benchmark init project.yaml --run-id codex-smoke-5 --agent-product codex --chapters 5 --scenario-id setting-v1 --agent-model MODEL --host-version VERSION
 longform-engine benchmark record project.yaml --run-id codex-smoke-5 --chapter 1 --continuity 8 --character-consistency 8 --foreshadowing-control 8 --pacing 7 --reader-payoff 8 --ai-taste 3 --gate-passed --context-file-count 6 --context-character-count 18000 --judge editor-a --judge editor-b --judge editor-c
 longform-engine benchmark report project.yaml --run-id codex-smoke-5
-longform-engine benchmark rag-scale-run project.yaml --scale-chapters 500 --backend local_hnsw
+longform-engine benchmark rag-scale-run project.yaml --scale-chapters 667 --backend local_hnsw
 longform-engine benchmark compare project.yaml --comparison-id codex-vs-claude-10 --run-id codex-quality-10 --run-id claude-quality-10
 ```
 
-`rag-scale-run` 使用固定种子验证 50/200/500 章下的向量索引、增量更新、stale 和 rollback，结果明确标记为 `synthetic_engineering`，不等于真实中文语义质量证据。正式 compare 默认要求所有运行使用相同 `scenario-id`、相同章节数并全部完成。`--allow-incomplete` 只生成 provisional 中间报告，不能用于质量宣称。只有对照 `novel-skill`、同宿主同模型、10 章完整记录、三名独立评审和生产模型 RAG 证据同时满足门槛时，报告才会给出 `claim_eligible: true`。
+`rag-scale-run` 使用固定种子验证 50/200/500/667 章下的向量索引、增量更新、stale 和 rollback；667 章正式规模使用 `local_hnsw`。结果明确标记为 `synthetic_engineering`，不等于真实中文语义质量证据。正式 compare 默认要求所有运行使用相同 `scenario-id`、相同章节数并全部完成。`--allow-incomplete` 只生成 provisional 中间报告，不能用于质量宣称。只有对照 `novel-skill`、同宿主同模型、10 章完整记录、三名独立评审和生产模型 RAG 证据同时满足门槛时，报告才会给出 `claim_eligible: true`。
 
 ## 文档
 

@@ -59,7 +59,7 @@ longform-engine repair-chapter project.yaml --chapter 12 --plan-only
 当前已实现以下确定性检查：
 
 - 正文 meta 污染：检测 `TODO`、`写作说明`、`作者按`、`角色定位`、`[说明]`、AI 自述等 prompt/草稿残留，触发 P0。
-- 字数硬阈值：根据 `length.chapter_word_count.hard_min` 和 `hard_max` 判断 P1。
+- 正文字符硬阈值：根据 `length.chapter.hard_min` 和 `hard_max`，使用 `content_characters_v1` 判断 P1；标题、空白、标点和 Markdown 标记不计入生产规模。
 - 章节卡完整性：检查 `duty`、`conflict`、`information`、`hook` 是否存在。
 - 图谱一致性：复用 `graph check` 的人物位置、能力边界、时间线等冲突报告。
 - 节奏失衡：检测连续快章、A/B/C 重大事件超配额、核心秘密过早完整揭露风险。
@@ -70,7 +70,7 @@ longform-engine repair-chapter project.yaml --chapter 12 --plan-only
 | --- | --- | --- |
 | `PASS` | 无 P0/P1 失败 | 可进入下一步 |
 | `P0` | 正文污染、严重流程污染或不可发布内容 | 必须修复或回滚 |
-| `P1` | 字数、结构、图谱、节奏等硬性质量失败 | 必须修复或回滚 |
+| `P1` | 正文字符数、结构、图谱、节奏等硬性质量失败 | 必须修复或回滚 |
 | `P2` | 警告级风险 | 记录到报告，不阻断 |
 
 当前版本只要存在 P0/P1 即 `passed=false`。

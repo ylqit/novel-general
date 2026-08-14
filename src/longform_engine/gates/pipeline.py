@@ -29,6 +29,7 @@ from longform_engine.graph import check_graph
 from longform_engine.memory import deterministic_evidence_gate_findings
 from longform_engine.planning import evaluate_event_matrix, event_type_marker_count, infer_event_types_from_text
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
+from longform_engine.text_metrics import content_character_count
 
 
 class GateError(ValueError):
@@ -502,7 +503,7 @@ def gate_check(
     failures: list[dict[str, Any]] = []
     warnings: list[str] = []
     failures.extend(check_meta_pollution(config, text))
-    failures.extend(check_word_count(config, text))
+    failures.extend(check_content_character_count(config, text))
     failures.extend(check_chapter_card(root, chapter_number, text))
     consistency_issues, consistency_warnings = run_consistency_check(config)
     failures.extend(consistency_issues)
@@ -1616,16 +1617,28 @@ def check_meta_pollution(config: ConfigDocument, text: str) -> list[dict[str, An
     return failures
 
 
-def check_word_count(config: ConfigDocument, text: str) -> list[dict[str, Any]]:
-    wc_config = config.data.get("length", {}).get("chapter_word_count", {})
-    hard_min = int(wc_config.get("hard_min") or 0)
-    hard_max = int(wc_config.get("hard_max") or 10**9)
-    count = estimate_words(text)
+def check_content_character_count(config: ConfigDocument, text: str) -> list[dict[str, Any]]:
+    chapter_contract = config.data.get("length", {}).get("chapter", {})
+    hard_min = int(chapter_contract.get("hard_min") or 0)
+    hard_max = int(chapter_contract.get("hard_max") or 10**9)
+    count = content_character_count(text)
     failures = []
     if count < hard_min:
-        failures.append({"code": "word_count", "severity": "P1", "message": f"字数低于 hard_min：{count} < {hard_min}"})
+        failures.append(
+            {
+                "code": "content_character_count",
+                "severity": "P1",
+                "message": f"正文字符数低于 hard_min：{count} < {hard_min}",
+            }
+        )
     if count > hard_max:
-        failures.append({"code": "word_count", "severity": "P1", "message": f"字数高于 hard_max：{count} > {hard_max}"})
+        failures.append(
+            {
+                "code": "content_character_count",
+                "severity": "P1",
+                "message": f"正文字符数高于 hard_max：{count} > {hard_max}",
+            }
+        )
     return failures
 
 
@@ -2157,8 +2170,8 @@ def ngram_overlap_ratio(candidate: str, source: str, *, size: int) -> float:
 def style_fingerprint(text: str) -> dict[str, Any]:
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", text) if part.strip()]
     sentences = [part.strip() for part in re.split(r"[。！？.!?]+", text) if part.strip()]
-    sentence_lengths = [estimate_words(sentence) for sentence in sentences]
-    paragraph_lengths = [estimate_words(paragraph) for paragraph in paragraphs]
+    sentence_lengths = [content_character_count(sentence) for sentence in sentences]
+    paragraph_lengths = [content_character_count(paragraph) for paragraph in paragraphs]
     avg_sentence = sum(sentence_lengths) / max(1, len(sentence_lengths))
     avg_paragraph = sum(paragraph_lengths) / max(1, len(paragraph_lengths))
     variance = sum(abs(length - avg_paragraph) for length in paragraph_lengths) / max(1, len(paragraph_lengths))
@@ -2485,7 +2498,7 @@ def write_artifact_reports(
                 "",
                 f"- Source: `{draft_path}`",
                 f"- Pacing tier: {pacing.tier}",
-                f"- Word count: {estimate_words(text)}",
+                f"- Word count: {content_character_count(text)}",
                 "",
                 "This is a gate artifact only. Canonical memory updates occur after chapter finalize.",
                 "",
@@ -2624,7 +2637,7 @@ def repair_action_for_failure(failure: dict[str, Any], chapter_number: int) -> s
         return f"remove prompt/meta residue, then rerun `longform-engine gate-check project.yaml --chapter {chapter_number}`"
     if code.startswith("humanizer_"):
         return f"run `longform-engine creative humanize-task project.yaml --chapter {chapter_number}`, submit the candidate, then rerun gate-check"
-    if code == "word_count":
+    if code == "content_character_count":
         return "expand or trim the draft to configured hard_min/hard_max"
     if code == "chapter_card":
         return f"run `longform-engine plan-chapter project.yaml --chapter {chapter_number} --overwrite` and align the draft"
@@ -2788,7 +2801,16 @@ def semantic_review_gate_items(
     root = resolve_project_root(config)
     artifact_dir = gate_artifact_dir(root, chapter_number)
     card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
-    explicit = isinstance(card, dict) and bool(card.get("requires_semantic_review"))
+    quality = config.data.get("quality") if isinstance(config.data.get("quality"), dict) else {}
+    milestones = {
+        int(item)
+        for item in quality.get("semantic_review_milestones", [])
+        if isinstance(item, int) and not isinstance(item, bool) and item > 0
+    }
+    explicit = (
+        (isinstance(card, dict) and bool(card.get("requires_semantic_review")))
+        or chapter_number in milestones
+    )
     deterministic_risk = any(
         str(item.get("severity") or "").upper() in {"P0", "P1"}
         for item in deterministic_failures
@@ -3175,10 +3197,6 @@ def safe_read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8").lstrip("\ufeff")
     except UnicodeDecodeError:
         return path.read_text(encoding="utf-8", errors="ignore").lstrip("\ufeff")
-
-
-def estimate_words(text: str) -> int:
-    return len(re.sub(r"\s+", "", text))
 
 
 def relative_path(root: Path, path: Path) -> str:

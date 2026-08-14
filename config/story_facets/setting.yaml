@@ -1,0 +1,45 @@
+schema: story_facet_registry_v1
+kind: setting
+profiles:
+  xuanhuan:
+    requirements: ["Power rules must be observable, bounded, and costly."]
+    preferences: ["Reveal the world through decisions and consequences."]
+    risks: ["Convenient new rules", "Level-up exposition"]
+    review_questions: ["Did every exceptional gain respect an established boundary?"]
+    conflicts: []
+  xianxia:
+    requirements: ["Cultivation, resources, lifespan, and causality must remain coherent."]
+    preferences: ["Let doctrine affect choices instead of serving as decoration."]
+    risks: ["Realm names replacing conflict", "Cost-free transcendence"]
+    review_questions: ["Did advancement change obligations and relationships?"]
+    conflicts: []
+  wuxia:
+    requirements: ["Martial capability, social reputation, and jianghu obligations must constrain action."]
+    preferences: ["Express ethics through choices under loyalty and survival pressure."]
+    risks: ["Fantasy power inflation erasing martial limits"]
+    review_questions: ["Did the conflict preserve bodily and social consequences?"]
+    conflicts: []
+  urban:
+    requirements: ["Institutions, professions, money, and public reactions must remain credible."]
+    preferences: ["Make resources and status visible through concrete access and responsibility."]
+    risks: ["Cardboard institutions", "Frictionless wealth or influence"]
+    review_questions: ["Did the setting react plausibly to the character's action?"]
+    conflicts: []
+  history:
+    requirements: ["Material conditions, institutions, and period knowledge must constrain action."]
+    preferences: ["Use historical knowledge only when it changes a decision."]
+    risks: ["Modern assumptions without causal support"]
+    review_questions: ["Could the declared action occur under the period's material conditions?"]
+    conflicts: []
+  science_fiction:
+    requirements: ["Technology and social consequences must follow declared constraints."]
+    preferences: ["Introduce technical facts at the point of use or failure."]
+    risks: ["Technology as an unlimited answer machine"]
+    review_questions: ["Did the technology create consequences as well as capability?"]
+    conflicts: []
+  game_fantasy:
+    requirements: ["Game rules, player knowledge, risk, and embodied experience must remain distinguishable."]
+    preferences: ["Show mechanics through play, failure, and social response."]
+    risks: ["Interface dump", "NPC-like supporting cast", "Mechanics without lived stakes"]
+    review_questions: ["Did the chapter make game rules matter to a human choice?"]
+    conflicts: []

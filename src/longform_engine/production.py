@@ -16,6 +16,7 @@ from longform_engine.agent_pipeline import (
 )
 from longform_engine.agent_tasks import HARD_BOUNDARIES, list_manifests, load_manifest, status_summary, validate_manifest_strict
 from longform_engine.config import ConfigDocument
+from longform_engine.completion import fast_completion_marker
 from longform_engine.creative import expand_check, humanize_check, humanize_semantic_validate
 from longform_engine.editorial import (
     editorial_aggregate,
@@ -38,6 +39,7 @@ from longform_engine.intelligence import (
     create_intelligence_task,
     validate_intelligence_candidate,
 )
+from longform_engine.lengths import compile_length_forecast
 from longform_engine.memory import character_validate, semantic_validate
 from longform_engine.orchestration import continue_write, open_book, submit_agent_draft
 from longform_engine.quality import (
@@ -57,6 +59,7 @@ TASK_WAITING_FOR = {
     "fanfiction_design": "fanfiction_design_json",
     "book_design": "book_design_json",
     "outline_design": "outline_design_json",
+    "outline_extension": "outline_extension_json",
     "chapter_direction": "human_selected_chapter_direction_json",
     "outline_revision": "outline_revision_json",
     "research_synthesis": "research_synthesis_json",
@@ -82,6 +85,7 @@ TASK_PRIORITY = {
     "fanfiction_design": 2,
     "book_design": 3,
     "outline_design": 4,
+    "outline_extension": 8,
     "chapter_direction": 9,
     "outline_revision": 5,
     "research_synthesis": 4,
@@ -117,6 +121,7 @@ TASK_WORK_SCOPES = {
     "fanfiction_design": "Design a canon-aware fanfiction contract and original mainline as a candidate only.",
     "book_design": "Design project-level book foundations as a candidate only.",
     "outline_design": "Design the book/volume/chapter outline as a candidate only.",
+    "outline_extension": "Extend only the next human-approved rolling outline window.",
     "chapter_direction": "Offer causally distinct directions for only the declared chapter.",
     "outline_revision": "Revise only the declared chapter range and report stale impact.",
     "research_synthesis": "Synthesize only cited declared research inputs.",
@@ -140,7 +145,7 @@ TASK_WORK_SCOPES = {
 TASK_OUTPUT_GUIDANCE = {
     "book_ideation": "Write JSON matching book_ideation_candidate_v1 with one explicit human selection.",
     "fanfiction_canon": "Write JSON matching fanfiction_source_canon_v1 with source hashes and evidence spans.",
-    "fanfiction_design": "Write JSON matching fanfiction_design_candidate_v1, including a nested book_design_candidate_v1.",
+    "fanfiction_design": "Write JSON matching fanfiction_design_candidate_v1, including a nested book_design_candidate_v2.",
     "book_design": "Write JSON matching book_design_candidate_v2 at the declared intelligence candidate path.",
     "character_expression_design": (
         "Write JSON matching character_expression_profile_v1 with one complete contract per declared character."
@@ -148,8 +153,9 @@ TASK_OUTPUT_GUIDANCE = {
     "character_expression_review": (
         "Write JSON matching character_expression_review_v1 with hash-bound evidence for every reviewed chapter and character."
     ),
-    "outline_design": "Write JSON matching outline_design_candidate_v1 at the declared intelligence candidate path.",
-    "chapter_direction": "Write JSON matching chapter_direction_candidate_v1 with two or three directions and one human selection.",
+    "outline_design": "Write JSON matching outline_design_candidate_v2 with macro arcs and one rolling chapter window.",
+    "outline_extension": "Write JSON matching outline_extension_candidate_v1 for only the declared range.",
+    "chapter_direction": "Write JSON matching chapter_direction_candidate_v2 with two or three directions and one human selection.",
     "outline_revision": "Write JSON matching outline_revision_candidate_v1, including impact and stale markers.",
     "research_synthesis": "Write JSON matching research_synthesis_v1 with evidence and declared source_path citations.",
     "style_analysis": "Write JSON matching semantic_style_profile_v1 with source hashes.",
@@ -216,11 +222,33 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
 
     require_agent_first_production_pipeline()
     root = resolve_project_root(config)
+    completion_state, completion = fast_completion_marker(config)
+    if completion_state == "approved":
+        return base_action(
+            status="book_completed",
+            chapter_number=int(completion["latest_final_chapter"]),
+            blocked_by="none",
+            waiting_for="none",
+            next_command="",
+            human_summary=(
+                f"Book completion is human-approved at {completion['total_content_characters']} content characters."
+            ),
+        )
+    if completion_state == "invalid":
+        return base_action(
+            status="need_human",
+            chapter_number=int(completion.get("latest_final_chapter") or 0),
+            blocked_by="stale_book_completion_approval",
+            waiting_for="human",
+            next_command="longform-engine book completion-status project.yaml",
+            human_summary="The book completion approval no longer matches its immutable final evidence.",
+        )
     action = (
         first_need_human_action(root)
         or chapter_semantic_lifecycle_action(root)
         or chapter_workflow_action(config, root)
         or project_readiness_action(config, root)
+        or rolling_outline_action(config, root)
         or chapter_direction_action(config, root)
         or first_active_agent_task(root)
         or first_draft_without_gate_action(root)
@@ -474,6 +502,8 @@ def production_loop(
 def loop_decision(root: Path, action: dict[str, Any], *, no_apply: bool) -> dict[str, Any]:
     status = str(action.get("status") or "")
     task_type = str(action.get("task_type") or "")
+    if status == "book_completed":
+        return {"kind": "stop", "reason": "book_completed"}
     if status == "ready_for_open_book":
         return {"kind": "execute", "action": "open_book", "command": action.get("next_command")}
     if status == "ready_for_intelligence_task":
@@ -573,6 +603,7 @@ LOOP_OUTPUT_VALIDATORS = {
     "book_ideation": "intelligence_validate",
     "book_design": "intelligence_validate",
     "outline_design": "intelligence_validate",
+    "outline_extension": "intelligence_validate",
     "chapter_direction": "intelligence_validate",
     "outline_revision": "intelligence_validate",
     "research_synthesis": "intelligence_validate",
@@ -1275,6 +1306,18 @@ def project_readiness_action(config: ConfigDocument, root: Path) -> dict[str, An
             next_command="longform-engine open-book project.yaml",
             human_summary="Confirm the opening contract before project-level Agent design begins.",
         )
+    if readiness.stage == "story_profile_conflict":
+        return base_action(
+            status="need_human",
+            chapter_number=0,
+            blocked_by="story_profile_conflict",
+            waiting_for="human",
+            next_command="longform-engine quality story-profile project.yaml --json",
+            human_summary=(
+                "Resolve the selected story-facet conflicts explicitly in project.yaml: "
+                + "; ".join(readiness.errors[:3])
+            ),
+        )
     task_type = readiness.required_task_type
     active_statuses = {"awaiting_agent", "submitted", "validated", "invalid"}
     if any(
@@ -1304,6 +1347,49 @@ def project_intelligence_task_command(task_type: str) -> str:
     if task_type == "character_expression_design":
         return "longform-engine character design-task project.yaml"
     return f"longform-engine intelligence task project.yaml --task-type {task_type}"
+
+
+def rolling_outline_action(config: ConfigDocument, root: Path) -> dict[str, Any] | None:
+    """Request the next detailed planning window before the active plan runs dry."""
+
+    next_chapter = highest_finalized_chapter(root) + 1
+    plan = read_json(root / "20_outline" / "chapter_plan.json")
+    rows = [item for item in plan if isinstance(item, dict)] if isinstance(plan, list) else []
+    planned_numbers = sorted(
+        {int(item.get("chapter_number") or 0) for item in rows if int(item.get("chapter_number") or 0) > 0}
+    )
+    if not planned_numbers:
+        return None
+    last_planned = planned_numbers[-1]
+    planning = config.data["length"]["planning"]
+    remaining = max(0, last_planned - next_chapter + 1)
+    if next_chapter <= last_planned and remaining > int(planning["refill_threshold"]):
+        return None
+    active_statuses = {"awaiting_agent", "submitted", "validated", "invalid"}
+    if any(
+        task.get("task_type") == "outline_extension" and task.get("status") in active_statuses
+        for task in list_manifests(root, chapter_number=0)
+    ):
+        return None
+    start = last_planned + 1
+    end = start + int(planning["detailed_horizon"]) - 1
+    forecast = compile_length_forecast(config.data["length"])
+    return base_action(
+        status="ready_for_intelligence_task",
+        chapter_number=next_chapter,
+        task_type="outline_extension",
+        blocked_by="rolling_outline_refill",
+        waiting_for="cli",
+        next_command=(
+            "longform-engine intelligence task project.yaml --task-type outline_extension "
+            f"--from-chapter {start} --to-chapter {end}"
+        ),
+        human_summary=(
+            f"Only {remaining} detailed chapter plans remain. Prepare ch{start:03d}-ch{end:03d} "
+            f"against the {forecast.target_total_characters}-character book budget for explicit human apply."
+        ),
+        planning_window={"from_chapter": start, "to_chapter": end, "remaining": remaining},
+    )
 
 
 def chapter_direction_action(config: ConfigDocument, root: Path) -> dict[str, Any] | None:
@@ -2096,6 +2182,7 @@ def base_action(
     sources: list[str] | None = None,
     need_human_reasons: list[str] | None = None,
     trigger_reasons: list[str] | None = None,
+    planning_window: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "schema_version": 1,
@@ -2126,6 +2213,7 @@ def base_action(
         "sources": sources or [],
         "need_human_reasons": need_human_reasons or [],
         "trigger_reasons": trigger_reasons or [],
+        "planning_window": planning_window or {},
     }
 
 

@@ -24,6 +24,7 @@ from longform_engine.agent_tasks import (
     write_manifest,
 )
 from longform_engine.character_expression import build_character_expression_packet, character_expression_diagnostics
+from longform_engine.completion import fast_completion_marker
 from longform_engine.config import ConfigDocument
 from longform_engine.creative import (
     humanize_candidate_submission_guard,
@@ -38,17 +39,20 @@ from longform_engine.editorial import editorial_finalization_blockers
 from longform_engine.gates import gate_check, semantic_pacing_review_status
 from longform_engine.graph import validate_graph
 from longform_engine.intelligence import assess_chapter_direction, assess_project_readiness
+from longform_engine.lengths import compile_length_forecast
 from longform_engine.memory import build_tcs
 from longform_engine.planning import event_tier_for_types, recommend_event_types, record_event_usage
 from longform_engine.quality import (
     carry_feedback,
     compact_effective_quality_contract,
     compile_effective_quality_contract,
+    infer_story_phase,
     reader_payoff_review_status,
     record_quality_history,
 )
 from longform_engine.rag import build_context
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
+from longform_engine.text_metrics import content_character_count, display_character_count
 
 
 class WorkflowError(ValueError):
@@ -160,8 +164,8 @@ class AutoWriteResult:
     status: str
     state_file: str
     report_file: str
-    target_chapters: int
-    target_words: int
+    forecast_chapters: int
+    target_characters: int
     current_chapter: int
     last_finalized_chapter: int
     chapters_attempted: int
@@ -185,6 +189,7 @@ def open_book(config: ConfigDocument, confirmations: dict[str, Any] | None = Non
 
     novel = config.data.get("novel", {})
     length = config.data.get("length", {})
+    forecast = compile_length_forecast(length)
     forbidden = as_list(resolved["core_forbidden_zone"])
 
     atomic_write_text(
@@ -213,7 +218,7 @@ def open_book(config: ConfigDocument, confirmations: dict[str, Any] | None = Non
                 "# Reader Contract",
                 "",
                 f"- Platform: {novel.get('target_platform', 'unknown')}",
-                f"- Genre: {novel.get('genre', 'unknown')}",
+                f"- Story profile: {json.dumps(config.data.get('story_profile', {}), ensure_ascii=False)}",
                 f"- Audience: {resolved['target_audience']}",
                 f"- Core promise: {novel.get('core_promise', '待补充')}",
                 f"- Main question: {novel.get('main_question', '待补充')}",
@@ -232,9 +237,10 @@ def open_book(config: ConfigDocument, confirmations: dict[str, Any] | None = Non
                 "# Book Outline",
                 "",
                 f"- Title: {config.data['project']['title']}",
-                f"- Target chapters: {length.get('total_chapters')}",
-                f"- Target total words: {length.get('target_total_words')}",
-                f"- Volume count: {length.get('volume_count')}",
+                f"- Target content characters: {forecast.target_total_characters}",
+                f"- Forecast chapters: {forecast.estimated_chapters}",
+                f"- Forecast volumes: {forecast.estimated_volumes}",
+                f"- Support status: {forecast.support_status}",
                 f"- Main question: {novel.get('main_question', '待补充')}",
                 f"- Ending direction: {novel.get('ending_direction', '待补充')}",
                 "",
@@ -938,7 +944,7 @@ def submit_agent_draft(
         "candidate_source_hash": candidate_source_hash,
         "candidate_status": "submitted",
         "replaces_task_ids": replaced_task_ids,
-        "word_count": estimate_words(text),
+        "word_count": content_character_count(text),
         "submitted_at": submitted_at,
     }
     write_json(submission_path, submission)
@@ -1010,7 +1016,7 @@ def submit_agent_draft(
                 if gate.passed
                 else "semantic_review_pending" if semantic_review_pending else "gate_failed"
             ),
-            "word_count": estimate_words(text),
+            "word_count": content_character_count(text),
             "agent": agent,
             "submission_file": relative_path(root, submission_path),
             "submitted_at": submitted_at,
@@ -1179,6 +1185,8 @@ def finalize_chapter(
         else draft_path
     )
     state_path = root / "30_state" / "novel_state.json"
+    metrics_path = root / "30_state" / "manuscript_metrics.json"
+    previous_final_text = safe_read_text(final_path) if final_path.is_file() else ""
     run_report = root / "70_runtime" / "run_reports" / f"chapter_finalize_ch{chapter_number:03d}.json"
     next_command = f"longform-engine chapter semantic-task project.yaml --chapter {chapter_number}"
     with apply_transaction(
@@ -1201,6 +1209,7 @@ def finalize_chapter(
             summary_path,
             root / "40_manuscript" / "chapter_meta.jsonl",
             state_path,
+            metrics_path,
             root / "30_state" / "event_matrix.json",
             root / "30_state" / "reward_ledger.jsonl",
             root / "30_state" / "quality" / "structure_history.jsonl",
@@ -1238,6 +1247,32 @@ def finalize_chapter(
         }
         write_json(finalization_path, finalization)
 
+        metrics = load_json(metrics_path, default={})
+        if not isinstance(metrics, dict) or metrics.get("schema") != "manuscript_metrics_v1":
+            raise WorkflowError("30_state/manuscript_metrics.json is missing or invalid for schema v2.")
+        previous_content = content_character_count(previous_final_text)
+        previous_display = display_character_count(previous_final_text)
+        current_content = content_character_count(final_text)
+        current_display = display_character_count(final_text)
+        previous_count = int(metrics.get("finalized_chapter_count") or 0)
+        finalized_count = previous_count if previous_final_text else previous_count + 1
+        total_content = int(metrics.get("total_content_characters") or 0) - previous_content + current_content
+        total_display = int(metrics.get("total_display_characters") or 0) - previous_display + current_display
+        metrics.update(
+            {
+                "metric": "content_characters_v1",
+                "finalized_chapter_count": finalized_count,
+                "latest_finalized_chapter": max(
+                    int(metrics.get("latest_finalized_chapter") or 0), chapter_number
+                ),
+                "total_content_characters": total_content,
+                "total_display_characters": total_display,
+                "average_content_characters": round(total_content / max(1, finalized_count)),
+                "updated_at": finalized_at,
+            }
+        )
+        write_json(metrics_path, metrics)
+
         upsert_chapter_meta(
             root,
             {
@@ -1247,7 +1282,9 @@ def finalize_chapter(
                 "summary": "",
                 "volume": infer_volume(config, chapter_number),
                 "status": "final",
-                "word_count": estimate_words(final_text),
+                "content_character_count": current_content,
+                "display_character_count": current_display,
+                "metric": "content_characters_v1",
                 "approved_by": approved_by,
                 "finalization_file": relative_path(root, finalization_path),
                 "finalized_at": finalized_at,
@@ -1470,7 +1507,7 @@ def write_writing_task(
     story_graph_path = root / "30_state" / "story_graph.json"
     story_graph = load_json(story_graph_path, default={})
     length = config.data.get("length", {})
-    target_words = int(length.get("chapter_word_count", {}).get("target") or 3000)
+    target_characters = int(length.get("chapter", {}).get("target_characters") or 3000)
     context_text = context_file.read_text(encoding="utf-8") if context_file.exists() else ""
     graph_summary = summarize_story_graph(story_graph)
     canon_research = load_recent_research_canon(root)
@@ -1551,7 +1588,7 @@ def write_writing_task(
         "title": card.get("title", f"第{chapter_number}章"),
         "status": "task_ready",
         "writing_mode": "agent_skill",
-        "target_word_count": target_words,
+        "target_character_count": target_characters,
         "chapter_card": {
             "path": relative_path(root, chapter_card_file),
             "data": compact_chapter_card(card),
@@ -1593,7 +1630,7 @@ def write_writing_task(
         "forbidden_reveals": as_list(card.get("forbidden_reveals")),
         "output_contract": {
             "format": "markdown_chapter_only",
-            "target_word_count": target_words,
+            "target_character_count": target_characters,
             "write_to": relative_path(root, recommended_draft),
             "must_not_include": [
                 "TODO",
@@ -1940,8 +1977,6 @@ def batch_write(
 def auto_write_plan(
     config: ConfigDocument,
     *,
-    target_chapters: int | None = None,
-    target_words: int | None = None,
     start_chapter: int | None = None,
     overwrite: bool = False,
 ) -> AutoWriteResult:
@@ -1963,24 +1998,19 @@ def auto_write_plan(
 
     novel_state = load_json(root / "30_state" / "novel_state.json", default={})
     last_finalized = highest_finalized_chapter(root, novel_state)
-    length = config.data.get("length", {})
-    planned_target_chapters = int(target_chapters or length.get("total_chapters") or max(1, last_finalized + 1))
-    planned_target_words = int(target_words or length.get("target_total_words") or 0)
+    forecast = compile_length_forecast(config.data["length"])
     planned_start = int(start_chapter or last_finalized + 1)
-    if planned_target_chapters <= 0:
-        raise WorkflowError("target_chapters must be positive.")
-    if planned_target_words < 0:
-        raise WorkflowError("target_words cannot be negative.")
     if planned_start <= 0:
         raise WorkflowError("start_chapter must be positive.")
 
     now = utc_now()
     state = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "planned",
         "mode": "agent_skill_scheduler",
-        "target_words": planned_target_words,
-        "target_chapters": planned_target_chapters,
+        "target_characters": forecast.target_total_characters,
+        "forecast_chapters": forecast.estimated_chapters,
+        "support_status": forecast.support_status,
         "start_chapter": planned_start,
         "current_chapter": planned_start,
         "last_finalized_chapter": last_finalized,
@@ -2166,12 +2196,14 @@ def reconcile_auto_write_state(config: ConfigDocument, root: Path, state: dict[s
     last_finalized = highest_finalized_chapter(root, novel_state)
     length = config.data.get("length", {})
     if not state:
+        forecast = compile_length_forecast(length)
         state = {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "unplanned",
             "mode": "agent_skill_scheduler",
-            "target_words": int(length.get("target_total_words") or 0),
-            "target_chapters": int(length.get("total_chapters") or max(1, last_finalized + 1)),
+            "target_characters": forecast.target_total_characters,
+            "forecast_chapters": forecast.estimated_chapters,
+            "support_status": forecast.support_status,
             "start_chapter": last_finalized + 1,
             "current_chapter": last_finalized + 1,
             "chapters_attempted": 0,
@@ -2182,8 +2214,10 @@ def reconcile_auto_write_state(config: ConfigDocument, root: Path, state: dict[s
     current = int(state.get("current_chapter") or last_finalized + 1)
     state["last_finalized_chapter"] = last_finalized
     state["current_chapter"] = max(current, last_finalized + 1)
-    state.setdefault("target_words", int(length.get("target_total_words") or 0))
-    state.setdefault("target_chapters", int(length.get("total_chapters") or state["current_chapter"]))
+    forecast = compile_length_forecast(length)
+    state["target_characters"] = forecast.target_total_characters
+    state["forecast_chapters"] = forecast.estimated_chapters
+    state["support_status"] = forecast.support_status
     state.setdefault("chapters_attempted", 0)
     state.setdefault("failure_count", 0)
     state.setdefault("pause_reason", "")
@@ -2193,14 +2227,8 @@ def reconcile_auto_write_state(config: ConfigDocument, root: Path, state: dict[s
 
 
 def auto_write_completed(config: ConfigDocument, root: Path, state: dict[str, Any]) -> bool:
-    target_chapters = int(state.get("target_chapters") or 0)
-    target_words = int(state.get("target_words") or 0)
-    last_finalized = int(state.get("last_finalized_chapter") or 0)
-    if target_chapters and last_finalized >= target_chapters:
-        return True
-    if target_words and total_final_words(root) >= target_words:
-        return True
-    return False
+    del root, state
+    return fast_completion_marker(config)[0] == "approved"
 
 
 def auto_write_blocker(root: Path, chapter_number: int) -> tuple[str, str, str, bool] | None:
@@ -2381,8 +2409,8 @@ def auto_write_result(root: Path, state: dict[str, Any], *, action: str, report_
         status=str(state.get("status") or "unknown"),
         state_file=str(auto_write_state_path(root)),
         report_file=report_file,
-        target_chapters=int(state.get("target_chapters") or 0),
-        target_words=int(state.get("target_words") or 0),
+        forecast_chapters=int(state.get("forecast_chapters") or 0),
+        target_characters=int(state.get("target_characters") or 0),
         current_chapter=int(state.get("current_chapter") or 0),
         last_finalized_chapter=int(state.get("last_finalized_chapter") or 0),
         chapters_attempted=int(state.get("chapters_attempted") or 0),
@@ -2394,14 +2422,14 @@ def auto_write_result(root: Path, state: dict[str, Any], *, action: str, report_
 
 
 def auto_write_summary(config: ConfigDocument, root: Path, state: dict[str, Any]) -> str:
-    target_chapters = int(state.get("target_chapters") or 0)
-    target_words = int(state.get("target_words") or 0)
+    forecast_chapters = int(state.get("forecast_chapters") or 0)
+    target_characters = int(state.get("target_characters") or 0)
     last_finalized = int(state.get("last_finalized_chapter") or 0)
-    total_words = total_final_words(root)
+    total_characters = total_final_characters(root)
     return (
         f"Auto-write {state.get('status', 'unknown')}: "
-        f"finalized {last_finalized}/{target_chapters or '?'} chapters, "
-        f"{total_words}/{target_words or '?'} words, "
+        f"finalized {last_finalized} chapters (forecast {forecast_chapters or '?'}), "
+        f"{total_characters}/{target_characters or '?'} content characters, "
         f"current ch{int(state.get('current_chapter') or 0):03d}."
     )
 
@@ -2420,8 +2448,8 @@ def render_auto_write_report(config: ConfigDocument, root: Path, state: dict[str
         "## State",
         "",
         f"- Status: {state.get('status', 'unknown')}",
-        f"- Target chapters: {state.get('target_chapters', 0)}",
-        f"- Target words: {state.get('target_words', 0)}",
+        f"- Forecast chapters: {state.get('forecast_chapters', 0)}",
+        f"- Target content characters: {state.get('target_characters', 0)}",
         f"- Current chapter: {state.get('current_chapter', 0)}",
         f"- Last finalized chapter: {state.get('last_finalized_chapter', 0)}",
         f"- Chapters attempted: {state.get('chapters_attempted', 0)}",
@@ -2462,21 +2490,22 @@ def render_auto_write_report(config: ConfigDocument, root: Path, state: dict[str
 
 def highest_finalized_chapter(root: Path, novel_state: Any) -> int:
     state_last = int(novel_state.get("last_finalized_chapter") or 0) if isinstance(novel_state, dict) else 0
-    final_dir = root / "40_manuscript" / "final"
-    found = state_last
-    for path in final_dir.glob("ch*.md"):
-        match = re.match(r"ch(\d+)\.md$", path.name)
-        if match:
-            found = max(found, int(match.group(1)))
-    return found
+    metrics = manuscript_metrics_projection(root)
+    return max(state_last, int(metrics.get("latest_finalized_chapter") or 0))
 
 
-def total_final_words(root: Path) -> int:
-    final_dir = root / "40_manuscript" / "final"
-    total = 0
-    for path in sorted(final_dir.glob("ch*.md")):
-        total += estimate_words(safe_read_text(path))
-    return total
+def total_final_characters(root: Path) -> int:
+    return int(manuscript_metrics_projection(root).get("total_content_characters") or 0)
+
+
+def manuscript_metrics_projection(root: Path) -> dict[str, Any]:
+    payload = load_json(root / "30_state" / "manuscript_metrics.json", default={})
+    if not isinstance(payload, dict) or payload.get("schema") != "manuscript_metrics_v1":
+        raise WorkflowError(
+            "30_state/manuscript_metrics.json is missing or invalid; v0.4.0 production routing "
+            "does not scan the full manuscript as a fallback."
+        )
+    return payload
 
 
 def normalize_agent(agent: str) -> str:
@@ -3038,35 +3067,26 @@ def build_writing_core_context_coverage(
 
 
 def chapter_stage(config: ConfigDocument, chapter_number: int) -> dict[str, Any]:
-    length = config.data.get("length", {})
-    total = max(1, int(length.get("total_chapters") or chapter_number or 1))
-    ratio = min(1.0, max(0.0, chapter_number / total))
-    opening_end = min(total, max(1, int(length.get("new_book_phase_chapters") or round(total * 0.08))))
-    ending_size = min(total, max(1, int(length.get("ending_phase_chapters") or round(total * 0.15))))
-    ending_start = max(opening_end + 1, total - ending_size + 1)
-    if chapter_number <= opening_end:
-        label = "opening"
-        strategy = "establish promise, POV pressure, rules, and first unresolved hook"
-    elif ratio <= 0.35:
-        label = "early_build"
-        strategy = "compound goals, costs, factions, and relationship leverage without core resolution"
-    elif ratio <= 0.65:
-        label = "midgame"
-        strategy = "turn prior promises into consequences and deepen the central contradiction"
-    elif chapter_number < ending_start:
-        label = "late_escalation"
-        strategy = "tighten payoffs, expose costs, and preserve final-answer suspense"
-    else:
-        label = "climax_resolution"
-        strategy = "pay off planted promises while keeping only approved residual hooks"
+    forecast = compile_length_forecast(config.data["length"])
+    ratio = min(
+        1.0,
+        max(0.0, total_final_characters(resolve_project_root(config)) / max(1, forecast.target_total_characters)),
+    )
+    label = infer_story_phase(config, chapter_number)
+    strategies = {
+        "opening": "establish world pressure, immediate objective, longline motive, and a consequential choice",
+        "early_serial": "prove the core promise can recur while relationships and costs accumulate",
+        "stable_serial": "rotate active engines and turn prior promises into new consequences",
+        "volume_climax": "pay off the approved volume promise and preserve causally earned continuation",
+        "aftermath": "let consequences alter character state, relationships, goals, or reader knowledge",
+    }
     return {
         "label": label,
         "chapter_number": chapter_number,
-        "total_chapters": total,
+        "target_total_characters": forecast.target_total_characters,
+        "forecast_chapters": forecast.estimated_chapters,
         "progress_ratio": round(ratio, 4),
-        "opening_phase_ends": opening_end,
-        "ending_phase_starts": ending_start,
-        "strategy": strategy,
+        "strategy": strategies[label],
     }
 
 
@@ -3208,7 +3228,7 @@ def format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> str:
         f"# Writing Task ch{int(payload['chapter_number']):03d}",
         "",
         f"- Title: {payload.get('title', '')}",
-        f"- Target word count: {payload.get('target_word_count', '')}",
+        f"- Target content characters: {payload.get('target_character_count', '')}",
         f"- Write only: `{payload.get('draft_submission_path', '')}`",
         f"- Validate: `{payload.get('next_command', '')}`",
         "",
@@ -3238,7 +3258,9 @@ def format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> str:
         "",
         "## Effective Quality Contract",
         "",
-        f"- Profile: {quality_contract.get('primary_market') or quality_contract.get('market', '')} + {quality_contract.get('genre', '')} + {quality_contract.get('phase', '')}",
+        f"- Profile: {quality_contract.get('primary_market') or quality_contract.get('market', '')} + "
+        f"{', '.join(str(item.get('kind')) + ':' + str(item.get('id')) for item in quality_contract.get('active_facets', []))} + "
+        f"{quality_contract.get('phase', '')}",
         f"- Strictness: {quality_contract.get('strictness', '')}",
         f"- Contract: {trim_text(json.dumps(quality_contract.get('contract', {}), ensure_ascii=False), 2200)}",
         f"- Human-approved baseline: {json.dumps(quality_contract.get('approved_style_baseline', {}), ensure_ascii=False)}",
@@ -3508,7 +3530,7 @@ def legacy_format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> 
         f"- Status: `{payload['status']}`",
         f"- Writing mode: `{payload['writing_mode']}`",
         f"- Title: {payload['title']}",
-        f"- Target word count: {payload['target_word_count']}",
+        f"- Target content characters: {payload['target_character_count']}",
         f"- Recommended draft path: `{payload['draft_submission_path']}`",
         f"- Next command: `{payload['next_command']}`",
         "",
@@ -4063,14 +4085,17 @@ def summarize_feedback_list(primary: list[Any], secondary: list[Any], *, fallbac
     return "; ".join(fragments) if fragments else fallback
 
 
-def dedupe_strings(items: list[str]) -> list[str]:
+def dedupe_strings(items: list[Any]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
     for item in items:
-        if item in seen:
+        if not isinstance(item, str) or not item.strip():
             continue
-        seen.add(item)
-        result.append(item)
+        normalized = item.strip()
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
     return result
 
 
@@ -4195,14 +4220,25 @@ def resolve_confirmations(config: ConfigDocument, provided: dict[str, Any]) -> d
     novel = config.data.get("novel", {})
     length = config.data.get("length", {})
     codex = config.data.get("codex", {})
-    style = provided.get("writing_style") or novel.get("style") or novel.get("subgenre") or novel.get("genre")
+    story_profile = config.data.get("story_profile", {})
+    setting = story_profile.get("setting") if isinstance(story_profile, dict) and isinstance(story_profile.get("setting"), dict) else {}
+    engines = story_profile.get("plot_engines") if isinstance(story_profile, dict) and isinstance(story_profile.get("plot_engines"), dict) else {}
+    narrative_forms = story_profile.get("narrative_forms", []) if isinstance(story_profile, dict) else []
+    tones = story_profile.get("tone", []) if isinstance(story_profile, dict) else []
+    selected_style = [
+        str(setting.get("primary") or ""),
+        str(engines.get("primary") or ""),
+        *[str(item) for item in narrative_forms],
+        *[str(item) for item in tones],
+    ]
+    style = provided.get("writing_style") or novel.get("style") or ", ".join(item for item in selected_style if item)
     if isinstance(style, list):
         style = ", ".join(str(item) for item in style)
     forbidden = provided.get("core_forbidden_zone") or novel.get("forbidden_experience")
+    forecast = compile_length_forecast(length)
     target_scale = provided.get("target_scale") or (
-        f"{length.get('total_chapters')} chapters / "
-        f"{length.get('target_total_words')} words / "
-        f"{length.get('chapter_word_count', {}).get('target')} words per chapter"
+        f"{forecast.target_total_characters} content characters / "
+        f"about {forecast.estimated_chapters} chapters / {forecast.support_status}"
     )
     resolved = {
         "target_audience": provided.get("target_audience") or novel.get("audience"),
@@ -4220,11 +4256,27 @@ def resolve_confirmations(config: ConfigDocument, provided: dict[str, Any]) -> d
 
 
 def infer_volume(config: ConfigDocument, chapter_number: int) -> int:
-    length = config.data.get("length", {})
-    volume_count = int(length.get("volume_count") or 1)
-    total_chapters = int(length.get("total_chapters") or chapter_number)
-    per_volume = max(1, total_chapters // max(1, volume_count))
-    return min(volume_count, ((chapter_number - 1) // per_volume) + 1)
+    root = resolve_project_root(config)
+    plan = load_json(root / "20_outline" / "chapter_plan.json", default=[])
+    row = next(
+        (
+            item for item in plan
+            if isinstance(plan, list) and isinstance(item, dict)
+            and int(item.get("chapter_number") or 0) == chapter_number
+        ),
+        {},
+    )
+    volume_id = str(row.get("volume_id") or "") if isinstance(row, dict) else ""
+    volumes = load_json(root / "20_outline" / "volumes.json", default=[])
+    for index, volume in enumerate(volumes if isinstance(volumes, list) else [], start=1):
+        if isinstance(volume, dict) and str(volume.get("id") or "") == volume_id:
+            return int(volume.get("number") or index)
+    length = config.data["length"]
+    per_volume = max(
+        1,
+        round(int(length["volume"]["target_characters"]) / int(length["chapter"]["target_characters"])),
+    )
+    return ((chapter_number - 1) // per_volume) + 1
 
 
 def write_chapter_card_artifacts(root: Path, card: dict[str, Any]) -> None:
@@ -4358,10 +4410,6 @@ def normalize_records(value: Any) -> list[Any]:
                 return value[key]
         return list(value.values())
     return []
-
-
-def estimate_words(text: str) -> int:
-    return len(re.sub(r"\s+", "", text))
 
 
 def relative_path(root: Path, path: Path) -> str:

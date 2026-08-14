@@ -6,11 +6,14 @@ from hashlib import sha256
 from pathlib import Path
 import json
 import re
-
-from longform_engine.agent_protocol_readiness import protocol_surface_hash
-
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from longform_engine.agent_protocol_readiness import protocol_surface_hash  # noqa: E402
+
+
 SRC = ROOT / "src" / "longform_engine"
 
 LEGACY_PATHS = (
@@ -33,6 +36,8 @@ ALLOW_FINAL_WRITES = {
     "src/longform_engine/artifacts.py",
     "src/longform_engine/agent_tasks.py",
     "src/longform_engine/character_expression.py",
+    # Completion verifies final hashes but never writes manuscript files.
+    "src/longform_engine/completion.py",
     "src/longform_engine/orchestration/pipeline.py",
     "src/longform_engine/intelligence/pipeline.py",
     "src/longform_engine/legacy.py",

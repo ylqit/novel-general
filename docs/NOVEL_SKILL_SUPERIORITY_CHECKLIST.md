@@ -1,5 +1,7 @@
 # longform-novel-engine 超越 novel-skill 验收 Checklist
 
+> v0.4.0 字数主导、滚动纲要与混合题材能力的独立验收见 [`V0_4_0_WORD_BUDGET_AND_COMPOSABLE_PROFILE_CHECKLIST.md`](V0_4_0_WORD_BUDGET_AND_COMPOSABLE_PROFILE_CHECKLIST.md)。两组真实混合题材五章盲评与 200 万规模证据完成前，不能据此升级文学质量领先声明。
+
 本文档是“功能、效率与生成质量全面超越 `novel-skill`”的可执行验收标准。状态含义：`[x]` 已有代码和自动测试证据，`[~]` 已具备工具但仍需真实运行证据，`[ ]` 尚未完成。工程能力完成不等于文学质量已经领先。
 
 起点优先的平台合同与番茄非阻断兼容视图见 [`PLATFORM_WRITING_ADAPTATION_CHECKLIST.md`](PLATFORM_WRITING_ADAPTATION_CHECKLIST.md)。平台适配接口通过测试不能替代真实题材盲评，也不能作为平台推荐效果证明。

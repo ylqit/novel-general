@@ -6,9 +6,17 @@ import yaml
 
 from longform_engine.semantic import chapter_close, semantic_apply, semantic_task
 from longform_engine.semantic.pipeline import active_planned_thread_ids, foreshadow_state_threads, planned_threads
+from longform_engine.lengths import compile_length_forecast
+from longform_engine.quality import compact_effective_quality_contract, compile_effective_quality_contract
 
 
-def mark_project_ready(root: Path, config, *, preserve_existing_characters: bool = False) -> None:
+def mark_project_ready(
+    root: Path,
+    config,
+    *,
+    preserve_existing_characters: bool = False,
+    direction_applied: bool = True,
+) -> None:
     """Seed canonical book/outline state for tests that start after human apply."""
 
     # Legacy chapter-flow fixtures predate mandatory milestone Agent reviews.
@@ -16,20 +24,19 @@ def mark_project_ready(root: Path, config, *, preserve_existing_characters: bool
     config.data.setdefault("quality", {})["semantic_review_milestones"] = []
     config.data["quality"]["semantic_review_boundaries"] = False
     config.data["quality"]["assurance_mode"] = "light"
-    config.data["quality"].setdefault("creative_guidance", {})["mode"] = "off"
+    config.data.setdefault("editorial", {})["review_mode"] = "off"
     project_yaml = (root / "project.yaml").resolve()
     if config.path is not None and config.path.resolve() == project_yaml and project_yaml.is_file():
         payload = yaml.safe_load(project_yaml.read_text(encoding="utf-8"))
         payload.setdefault("quality", {})["semantic_review_milestones"] = []
         payload["quality"]["semantic_review_boundaries"] = False
         payload["quality"]["assurance_mode"] = "light"
-        payload["quality"].setdefault("creative_guidance", {})["mode"] = "off"
+        payload.setdefault("editorial", {})["review_mode"] = "off"
         project_yaml.write_text(
             yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
             encoding="utf-8",
         )
-    total_chapters = int(config.data["length"]["total_chapters"])
-    volume_count = int(config.data["length"]["volume_count"])
+    forecast = compile_length_forecast(config.data["length"])
     characters = [
         {
             "id": "lead_ari",
@@ -95,8 +102,8 @@ def mark_project_ready(root: Path, config, *, preserve_existing_characters: bool
         "target_audience": "Chinese longform serial readers.",
         "writing_style": "Concrete, continuous, evidence-led prose.",
         "automation_level": "agent_skill with human approval for canonical apply.",
-        "target_scale": f"{total_chapters} chapters.",
-        "genre_style_profile": {"genre": "mystery fantasy", "tone": "restrained"},
+        "target_scale": f"{forecast.target_total_characters} content characters.",
+        "story_profile": config.data["story_profile"],
         "design_decisions": {
             "core_hook": "A border clerk discovers history is being edited overnight.",
             "world_rule": "Every supernatural correction erases a witnessed memory.",
@@ -109,50 +116,18 @@ def mark_project_ready(root: Path, config, *, preserve_existing_characters: bool
         "core_taboo": ["Do not reveal the final editor before the last volume."],
         "status": "confirmed",
     }
-    volumes = []
-    chapter_plan = []
-    start = 1
-    for number in range(1, volume_count + 1):
-        remaining = total_chapters - start + 1
-        remaining_volumes = volume_count - number + 1
-        size = remaining // remaining_volumes
-        end = start + size - 1
-        volume_id = f"vol_{number:02d}"
-        volumes.append(
-            {
-                "id": volume_id,
-                "number": number,
-                "title": f"Volume {number}",
-                "from_chapter": start,
-                "to_chapter": end,
-                "goal": f"Resolve escalation layer {number}.",
-                "escalation": f"Raise the institutional cost at layer {number}.",
-                "ending_turn": f"Change the evidence model at turn {number}.",
-            }
-        )
-        for chapter_number in range(start, end + 1):
-            chapter_plan.append(
-                {
-                    "chapter_number": chapter_number,
-                    "title": f"Evidence {chapter_number}",
-                    "duty": "Advance the active investigation.",
-                    "conflict": "Ari must choose between speed and verified evidence.",
-                    "information_release": "Release one bounded clue.",
-                    "hook": "The clue points to a larger contradiction.",
-                    "reader_payoff": "A prior detail gains a concrete new meaning.",
-                    "volume_id": volume_id,
-                    "forbidden_reveals": ["final editor identity"],
-                }
-            )
-        start = end + 1
+    outline = build_outline_candidate(config, characters=characters)
+    story_arcs = outline["story_arcs"]
+    volumes = outline["volumes"]
+    chapter_plan = outline["chapter_plan"]
+    planning_window = outline["planning_window"]
     ledger = [
         {
-            "id": "thread_false_treaty",
-            "description": "The treaty contains a deliberately altered witness line.",
+            **item,
             "plant_chapter": 1,
-            "payoff_window": [max(2, total_chapters - 2), total_chapters],
-            "status": "planned",
+            "payoff_window": [max(2, forecast.estimated_chapters - 2), forecast.estimated_chapters],
         }
+        for item in outline["foreshadowing_ledger"]
     ]
     write_json(root / "10_bible" / "creative_brief.json", brief)
     decisions = {
@@ -185,10 +160,85 @@ def mark_project_ready(root: Path, config, *, preserve_existing_characters: bool
     (root / "10_bible" / "power_system.md").write_text("# Power\n\nEvery correction consumes a witnessed memory.\n", encoding="utf-8")
     write_json(root / "10_bible" / "characters.json", characters)
     write_json(root / "10_bible" / "relationships.json", relationships)
+    write_json(
+        root / "10_bible" / "character_expression.json",
+        {
+            "schema": "character_expression_profile_v1",
+            "narrative_expression_profile": {
+                "narrative_distance": "close",
+                "expression_mode": "balanced",
+                "description_density": "selective",
+                "dialogue_mode": "balanced",
+                "voice_separation": "clear",
+                "ensemble_mode": "dual",
+            },
+            "character_expression_contracts": [
+                {
+                    "character_id": item["id"],
+                    "perception_bias": f"Notices evidence through {item['goal'].lower()}",
+                    "decision_bias": f"Acts against the pressure created by {item['flaw'].lower()}",
+                    "speech_register": f"Uses concrete claims shaped by {item['goal'].lower()}",
+                    "conversation_tactics": ["asks for one observable fact", "names one immediate cost"],
+                    "emotional_leaks": ["changes physical distance before admitting fear"],
+                    "physical_presence": "Carries tension through posture, hands, and use of space.",
+                    "social_masks": ["competent ally"],
+                    "private_wants": item["goal"],
+                    "contradictions": f"Wants {item['goal'].lower()} but is limited by {item['flaw'].lower()}",
+                    "voice_examples": [],
+                    "contrast_with": [other["id"] for other in characters if other["id"] != item["id"]],
+                }
+                for item in characters
+            ],
+        },
+    )
     (root / "20_outline" / "book_outline.md").write_text("# Book Outline\n\nTen escalating evidence arcs.\n", encoding="utf-8")
+    write_json(root / "20_outline" / "story_arcs.json", story_arcs)
     write_json(root / "20_outline" / "volumes.json", volumes)
     write_json(root / "20_outline" / "chapter_plan.json", chapter_plan)
+    write_json(root / "20_outline" / "planning_window.json", planning_window)
     write_json(root / "20_outline" / "foreshadowing_ledger.json", ledger)
+    if direction_applied:
+        for row in chapter_plan:
+            chapter_number = int(row["chapter_number"])
+            effective_quality_contract = compile_effective_quality_contract(
+                config,
+                chapter_number=chapter_number,
+            )
+            quality_body = effective_quality_contract.get("contract") or {}
+            card = {
+                **row,
+                "status": "planned",
+                "pov_character_id": row["featured_character_ids"][0],
+                "chapter_duty": row["duty"],
+                "information": row["information_release"],
+                "reader_gain": row["reader_payoff"],
+                "cost": "The chosen gain narrows the protagonist's next safe option.",
+                "platform_promise": str(quality_body.get("platform_promise") or ""),
+                "effective_quality_contract": compact_effective_quality_contract(
+                    effective_quality_contract
+                ),
+                "scene_chain": [
+                    {
+                        "scene_id": f"ch{chapter_number:03d}:fixture",
+                        "location": "archive gate",
+                        "participants": row["featured_character_ids"],
+                        "desire_collision": "Verification competes with immediate pursuit.",
+                        "choice": "Ari shares the clue and accepts the delay.",
+                        "cost": "The suspect gains distance.",
+                        "turn": "The evidence points to internal access.",
+                    }
+                ],
+                "direction_selection": {
+                    "status": "applied",
+                    "direction_id": "fixture_human_choice",
+                    "approved_by": "human",
+                },
+            }
+            write_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", card)
+            (root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.md").write_text(
+                f"# Chapter Card ch{chapter_number:03d}\n\nHuman-approved fixture direction.\n",
+                encoding="utf-8",
+            )
     state_path = root / "30_state" / "novel_state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["status"] = "project_ready"
@@ -196,6 +246,7 @@ def mark_project_ready(root: Path, config, *, preserve_existing_characters: bool
         "book_ideation": {"status": "applied", "candidate_hash": "test-ideation"},
         "book_design": {"status": "applied", "candidate_hash": "test-book"},
         "outline_design": {"status": "applied", "candidate_hash": "test-outline"},
+        "character_expression_design": {"status": "applied", "candidate_hash": "test-expression"},
     }
     write_json(state_path, state)
 
@@ -203,6 +254,130 @@ def mark_project_ready(root: Path, config, *, preserve_existing_characters: bool
 def write_json(path: Path, payload) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def build_outline_candidate(config, *, characters: list[dict] | None = None) -> dict:
+    """Return a valid v0.4 rolling-outline candidate for integration tests."""
+
+    characters = characters or [{"id": "lead_ari"}, {"id": "ally_mira"}]
+    forecast = compile_length_forecast(config.data["length"])
+    horizon = int(config.data["length"]["planning"]["detailed_horizon"])
+    arc_phases = ("opening", "early_serial", "stable_serial", "volume_climax")
+    arc_count = len(arc_phases)
+    story_arcs = []
+    remaining = forecast.target_total_characters
+    for number, phase in enumerate(arc_phases, start=1):
+        target = remaining if number == arc_count else forecast.target_total_characters // arc_count
+        remaining -= target
+        story_arcs.append(
+            {
+                "id": f"arc_{number:02d}", "number": number, "title": f"Story Arc {number}",
+                "phase": phase, "progress_window": [(number - 1) / arc_count, number / arc_count],
+                "target_characters": target, "goal": f"Resolve causal layer {number}.",
+                "conflict_escalation": f"Increase the evidence cost at layer {number}.",
+                "character_arc_moves": ["Ari changes one trust decision."],
+                "promise_ids": ["thread_false_treaty"],
+                "active_facets": ["setting:xuanhuan", "plot_engines:progression"],
+                "quality_focus": {
+                    "requirements": [f"Arc {number} must change a decision, relationship, or known fact."],
+                    "preferences": [f"Let escalation layer {number} shape scene selection."],
+                    "risks": [f"Arc {number} may repeat investigation beats without a new cost."],
+                    "review_questions": [f"Did arc {number} produce its declared causal change?"],
+                },
+            }
+        )
+    volumes = []
+    remaining = forecast.target_total_characters
+    volume_target = int(config.data["length"]["volume"]["target_characters"])
+    for number in range(1, forecast.estimated_volumes + 1):
+        target = remaining if number == forecast.estimated_volumes else volume_target
+        remaining -= target
+        arc_number = min(arc_count, max(1, (number - 1) * arc_count // forecast.estimated_volumes + 1))
+        volumes.append(
+            {
+                "id": f"vol_{number:02d}", "number": number, "title": f"Volume {number}",
+                "target_characters": target, "arc_ids": [f"arc_{arc_number:02d}"],
+                "goal": f"Resolve escalation layer {number}.",
+                "escalation": f"Raise the institutional cost at layer {number}.",
+                "ending_turn": f"Change the evidence model at turn {number}.",
+            }
+        )
+    chapter_plan = []
+    chapter_target = int(config.data["length"]["chapter"]["target_characters"])
+    for chapter_number in range(1, horizon + 1):
+        arc_number = min(arc_count, max(1, (chapter_number - 1) * arc_count // forecast.estimated_chapters + 1))
+        volume_number = min(
+            forecast.estimated_volumes,
+            max(1, (chapter_number - 1) * chapter_target // volume_target + 1),
+        )
+        chapter_plan.append(
+            {
+                "chapter_number": chapter_number, "title": f"Evidence {chapter_number}",
+                "duty": "Advance the active investigation.",
+                "conflict": "Ari must choose between speed and verified evidence.",
+                "information_release": "Release one bounded clue.",
+                "hook": "The clue points to a larger contradiction.",
+                "reader_payoff": "A prior detail gains a concrete new meaning.",
+                "volume_id": f"vol_{volume_number:02d}", "arc_id": f"arc_{arc_number:02d}",
+                "featured_character_ids": [characters[0]["id"], characters[1]["id"]],
+                "characterization_focus": [characters[0]["id"]],
+                "scene_wants": {
+                    characters[0]["id"]: "Verify the clue before acting.",
+                    characters[1]["id"]: "Force a decision before the witness leaves.",
+                },
+                "relationship_move": "Pressure the uneasy alliance through a costly choice.",
+                "active_facets": ["setting:xuanhuan", "plot_engines:progression"],
+                "forbidden_reveals": ["final editor identity"],
+            }
+        )
+    return {
+        "schema": "outline_design_candidate_v2",
+        "book_outline_markdown": "# Book Outline\n\nEscalating evidence arcs.",
+        "story_arcs": story_arcs,
+        "volumes": volumes,
+        "planning_window": {
+            "schema": "rolling_outline_window_v1", "start_chapter": 1, "end_chapter": horizon,
+            "detailed_horizon": horizon,
+            "refill_threshold": int(config.data["length"]["planning"]["refill_threshold"]),
+        },
+        "chapter_plan": chapter_plan,
+        "foreshadowing_ledger": [
+            {
+                "id": "thread_false_treaty",
+                "description": "The treaty contains a deliberately altered witness line.",
+                "plant": {"arc_id": "arc_01", "progress_window": [0.0, 0.2]},
+                "payoff": {"arc_id": "arc_04", "progress_window": [0.8, 1.0]},
+                "completion_required": True,
+                "status": "planned",
+            }
+        ],
+    }
+
+
+def build_outline_extension_candidate(config, start: int, end: int) -> dict:
+    """Return one bounded rolling-outline window for integration tests."""
+
+    base = build_outline_candidate(config)["chapter_plan"][0]
+    return {
+        "schema": "outline_extension_candidate_v1",
+        "planning_window": {
+            "schema": "rolling_outline_window_v1",
+            "start_chapter": start,
+            "end_chapter": end,
+            "detailed_horizon": int(config.data["length"]["planning"]["detailed_horizon"]),
+            "refill_threshold": int(config.data["length"]["planning"]["refill_threshold"]),
+        },
+        "chapter_plan": [
+            {
+                **base,
+                "chapter_number": number,
+                "title": f"Rolling Evidence {number}",
+                "duty": f"Advance causal step {number} without rewriting prior plans.",
+            }
+            for number in range(start, end + 1)
+        ],
+        "foreshadowing_updates": [],
+    }
 
 
 def prepare_unified_semantic_bundle(root: Path, config, chapter_number: int) -> Path:

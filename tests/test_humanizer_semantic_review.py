@@ -232,6 +232,12 @@ def test_humanizer_candidate_change_after_review_requires_a_new_review(tmp_path)
 def test_low_change_non_risk_humanizer_candidate_does_not_require_semantic_review(tmp_path):
     config, root, candidate = seed_humanizer_project(tmp_path, milestones=[])
     config.data["quality"]["semantic_review_boundaries"] = False
+    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card["requires_semantic_review"] = False
+    card["protected_reveals"] = []
+    card["forbidden_reveals"] = []
+    write_json(card_path, card)
 
     check = humanize_check(config, chapter_number=1, file_path=candidate)
 

@@ -1,0 +1,39 @@
+schema: story_facet_registry_v1
+kind: relationship_modes
+profiles:
+  romance:
+    requirements: ["Romantic movement must preserve both characters' goals and boundaries."]
+    preferences: ["Use changed trust, vulnerability, and negotiated choices."]
+    risks: ["Possession presented as intimacy"]
+    review_questions: ["What changed for both people after the interaction?"]
+    conflicts: []
+  friendship:
+    requirements: ["Friendship must include reciprocity, disagreement, and remembered obligations."]
+    preferences: ["Let friends challenge as well as support each other."]
+    risks: ["Unconditional helper role"]
+    review_questions: ["What could this friend refuse?"]
+    conflicts: []
+  family:
+    requirements: ["Family history and obligation must affect present choices without erasing individuality."]
+    preferences: ["Track care, resentment, dependency, and repair separately."]
+    risks: ["Kinship label substituting for relationship work"]
+    review_questions: ["Which old family pattern shaped the present decision?"]
+    conflicts: []
+  team:
+    requirements: ["Members need differentiated skills, risks, and decision authority."]
+    preferences: ["Make coordination reveal trust and friction."]
+    risks: ["Everyone becoming the protagonist's hands"]
+    review_questions: ["Which member changed the plan and why?"]
+    conflicts: []
+  rivalry:
+    requirements: ["Rivals need independent standards, progress, and leverage."]
+    preferences: ["Let rivalry expose values instead of repeating insults."]
+    risks: ["Permanent humiliation target"]
+    review_questions: ["What can the rival do or see that the protagonist cannot?"]
+    conflicts: []
+  master_disciple:
+    requirements: ["Teaching, authority, dependency, and eventual independence must have boundaries."]
+    preferences: ["Make instruction change method and relationship."]
+    risks: ["Teacher as exposition machine"]
+    review_questions: ["What did the learner misunderstand, resist, or transform?"]
+    conflicts: []

@@ -71,6 +71,10 @@ def test_finalize_applies_submitted_candidate_and_supersedes_unused_repair(tmp_p
     root = tmp_path / "novel"
     open_book(config)
     mark_project_ready(root, config)
+    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card["requires_semantic_review"] = True
+    card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     continue_write(config, chapter_number=1)
     draft_path = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"

@@ -9,7 +9,6 @@ from .pipeline import (
     HumanizeSemanticValidateResult,
     HumanizeTaskResult,
     StyleExtractResult,
-    StyleProfileResult,
     creative_repair_guidance,
     detect_humanizer_v2_issues,
     expand_check,
@@ -26,7 +25,6 @@ from .pipeline import (
     load_creative_brief,
     reader_experience_review,
     style_extract,
-    style_profile,
     validate_creative_brief,
     writer_craft_brief,
 )
@@ -40,7 +38,6 @@ __all__ = [
     "HumanizeSemanticValidateResult",
     "HumanizeTaskResult",
     "StyleExtractResult",
-    "StyleProfileResult",
     "creative_repair_guidance",
     "detect_humanizer_v2_issues",
     "expand_check",
@@ -57,7 +54,6 @@ __all__ = [
     "load_creative_brief",
     "reader_experience_review",
     "style_extract",
-    "style_profile",
     "validate_creative_brief",
     "writer_craft_brief",
 ]

@@ -4,7 +4,7 @@ import pytest
 
 from longform_engine.agent_tasks import load_manifest, status_summary, validate_manifest_strict
 from longform_engine.config import load_project_config
-from longform_engine.creative import expand_check, expand_task, humanize_check, humanize_task, style_extract, style_profile
+from longform_engine.creative import expand_check, expand_task, humanize_check, humanize_task, style_extract
 from longform_engine.gates import gate_check, pacing_review
 from longform_engine.orchestration import WorkflowError, continue_write, open_book as engine_open_book, plan_chapter
 from longform_engine.storage import init_project
@@ -42,7 +42,6 @@ def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
     open_book(project_config)
-    style_profile(project_config, genre="suspense", target_audience="serial readers")
     (root / "20_outline" / "outline_anchors.json").write_text(
         json.dumps(
             [
@@ -74,6 +73,18 @@ def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp
         ),
         encoding="utf-8",
     )
+    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card.update(
+        {
+            "duty": "plant the bell debt without solving it",
+            "chapter_duty": "plant the bell debt without solving it",
+            "forbidden_reveals": ["Dragon Crown"],
+            "resolution_markers": ["ultimate patron"],
+            "must_preserve_suspense": ["who controls the bell"],
+        }
+    )
+    card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     continue_write(project_config, chapter_number=1)
 
@@ -106,7 +117,7 @@ def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp
     assert "tcs" in constraints
     assert constraints["character_memory"]["status"] == "available"
     assert constraints["event_matrix"]["source"].endswith("event_matrix.json")
-    assert constraints["style_profile"]["source"].endswith("current_style_profile.json")
+    assert constraints["style_profile"]["source"].endswith("style_bible.md")
     assert "Writable Brief" in task_md
     assert "Beat Expansion Requirements" in task_md
     assert "Constraint Packet" in task_md
@@ -265,8 +276,8 @@ def test_expand_task_and_check_repair_short_chapter_without_pollution(tmp_path):
     check = expand_check(project_config, chapter_number=1, file_path=candidate)
 
     assert gate.passed is False
-    assert any(item["code"] == "word_count" for item in gate.failures)
-    assert task.missing_words > 0
+    assert any(item["code"] == "content_character_count" for item in gate.failures)
+    assert task.missing_content_characters > 0
     assert task.expansion_types == ("scene", "dialogue", "psychology", "action", "transition")
     assert Path(task.candidate_file).parent.name == "repair_candidates"
     assert Path(task.manifest_file).exists()
@@ -281,20 +292,6 @@ def test_expand_task_and_check_repair_short_chapter_without_pollution(tmp_path):
     assert "--overwrite" in check.next_command
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
     assert not (root / "60_rag" / "chunks" / "ch001.json").exists()
-
-
-def test_style_profile_writes_genre_matrix(tmp_path):
-    project_config = seed_project(tmp_path)
-    root = tmp_path / "novel"
-
-    result = style_profile(project_config, genre="suspense", target_audience="late-night serialized readers")
-    matrix = json.loads((root / "10_bible" / "style_profiles" / "genre_style_matrix.json").read_text(encoding="utf-8"))
-    current = json.loads((root / "10_bible" / "style_profiles" / "current_style_profile.json").read_text(encoding="utf-8"))
-
-    assert result.profile_file.endswith("genre_style_matrix.json")
-    assert matrix["selected"] == "suspense"
-    assert current["profile"]["payoff_density"]
-    assert current["profile"]["dialogue_strategy"]
 
 
 def test_style_extract_writes_sample_profile_and_continue_write_uses_it(tmp_path):

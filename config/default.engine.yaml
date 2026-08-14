@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 
 creation:
   mode: "original"
@@ -20,24 +20,43 @@ project:
 
 novel:
   target_platform: "qidian"
-  genre: "玄幻"
   audience: "中文长篇网文读者"
   core_promise: "以稳定主线、阶段爽点和持续伏笔回收支撑长篇连载。"
   main_question: "主角如何在既有秩序中完成成长并改变自身命运？"
   ending_direction: "主线矛盾完成收束，主角付出明确代价并兑现读者承诺。"
 
 length:
-  total_chapters: 500
-  target_total_words: 1500000
-  volume_count: 6
-  new_book_phase_chapters: 30
-  ending_phase_chapters: 60
-  chapter_word_count:
-    target: 3000
-    min: 2400
-    max: 3600
+  metric: "content_characters_v1"
+  target_total_characters: 2000000
+  completion_tolerance: [0.90, 1.10]
+  chapter:
+    target_characters: 3000
+    soft_min: 2400
+    soft_max: 3600
     hard_min: 2000
     hard_max: 4200
+  volume:
+    target_characters: 250000
+  planning:
+    mode: "rolling"
+    detailed_horizon: 20
+    refill_threshold: 8
+
+story_profile:
+  market:
+    primary: "qidian_male"
+    compatibility: ["fanqie_free"]
+  setting:
+    primary: "xuanhuan"
+    secondary: []
+  plot_engines:
+    primary: "progression"
+    supporting: []
+  narrative_forms: ["single_lead"]
+  premise_devices: []
+  relationship_modes: ["team"]
+  tone: ["adventure"]
+  resolutions: []
 
 workflow:
   require_previous_gate_passed: true
@@ -73,9 +92,6 @@ writing:
 quality:
   assurance_mode: "balanced"
   profile:
-    market: "qidian_male"
-    compatibility_markets: ["fanqie_free"]
-    genre: "xuanhuan"
     phase: "auto"
     strictness: "balanced"
     overrides: {}
@@ -83,7 +99,7 @@ quality:
     chapters: []
     update_requires_human: true
   creative_guidance:
-    mode: "automatic"
+    mode: "guided"
   semantic_review_milestones: [1, 3, 10, 30]
   semantic_review_boundaries: true
   reader_payoff:
@@ -146,7 +162,7 @@ semantic:
   require_real_model: true
   allow_fallback: false
   vector_store:
-    backend: "local_sqlite"
+    backend: "local_hnsw"
     url: ""
     index_url: ""
     collection: "longform_vectors"
@@ -230,5 +246,5 @@ revision:
 
 codex:
   default_workflow: "command_driven"
-  require_human_confirmation_per_chapter: false
+  require_human_confirmation_per_chapter: true
   pause_on_gate_failure: true

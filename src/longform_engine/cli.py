@@ -43,6 +43,7 @@ from longform_engine.agent_protocol_readiness import (
     render_agent_data_pipeline_readiness,
 )
 from longform_engine.config import ConfigDocument, ConfigError, load_project_config
+from longform_engine.completion import approve_completion, completion_status
 from longform_engine.creative import (
     expand_check,
     expand_task,
@@ -52,7 +53,6 @@ from longform_engine.creative import (
     humanize_task,
     init_creative_brief,
     style_extract,
-    style_profile,
     validate_creative_brief,
 )
 from longform_engine.db import init_database, query_table, rebuild_database, status as db_status, sync_database
@@ -104,6 +104,8 @@ from longform_engine.intelligence import (
     validate_intelligence_candidate,
 )
 from longform_engine.legacy import legacy_backfill, legacy_compact, legacy_status
+from longform_engine.lengths import compile_length_forecast
+from longform_engine.story_profiles import BUILTIN_MARKET_IDS, compile_story_profile
 from longform_engine.memory import (
     apply_semantic_memory,
     build_tcs,
@@ -184,42 +186,36 @@ from longform_engine.vectorstore import healthcheck as vector_healthcheck, rebui
 
 SCALE_PRESETS: dict[str, dict[str, Any]] = {
     "million": {
-        "label": "百万字",
+        "label": "100 万字",
         "length": {
-            "total_chapters": 330,
-            "target_total_words": 1_000_000,
-            "volume_count": 5,
-            "chapter_word_count": {
-                "target": 3000,
-                "min": 2400,
-                "max": 3600,
-            },
+            "metric": "content_characters_v1",
+            "target_total_characters": 1_000_000,
+            "completion_tolerance": [0.90, 1.10],
+            "chapter": {"target_characters": 3000, "soft_min": 2400, "soft_max": 3600, "hard_min": 2000, "hard_max": 4200},
+            "volume": {"target_characters": 200_000},
+            "planning": {"mode": "rolling", "detailed_horizon": 20, "refill_threshold": 8},
         },
     },
     "standard": {
-        "label": "标准长篇",
+        "label": "150 万字",
         "length": {
-            "total_chapters": 500,
-            "target_total_words": 1_500_000,
-            "volume_count": 6,
-            "chapter_word_count": {
-                "target": 3000,
-                "min": 2400,
-                "max": 3600,
-            },
+            "metric": "content_characters_v1",
+            "target_total_characters": 1_500_000,
+            "completion_tolerance": [0.90, 1.10],
+            "chapter": {"target_characters": 3000, "soft_min": 2400, "soft_max": 3600, "hard_min": 2000, "hard_max": 4200},
+            "volume": {"target_characters": 250_000},
+            "planning": {"mode": "rolling", "detailed_horizon": 20, "refill_threshold": 8},
         },
     },
     "extended": {
-        "label": "超长篇",
+        "label": "200 万字正式上限",
         "length": {
-            "total_chapters": 650,
-            "target_total_words": 2_000_000,
-            "volume_count": 8,
-            "chapter_word_count": {
-                "target": 3000,
-                "min": 2400,
-                "max": 3600,
-            },
+            "metric": "content_characters_v1",
+            "target_total_characters": 2_000_000,
+            "completion_tolerance": [0.90, 1.10],
+            "chapter": {"target_characters": 3000, "soft_min": 2400, "soft_max": 3600, "hard_min": 2000, "hard_max": 4200},
+            "volume": {"target_characters": 250_000},
+            "planning": {"mode": "rolling", "detailed_horizon": 20, "refill_threshold": 8},
         },
     },
 }
@@ -262,6 +258,23 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     status.set_defaults(func=cmd_status)
+
+    book = subparsers.add_parser("book", help="Inspect and explicitly approve whole-book completion.")
+    book_subparsers = book.add_subparsers(dest="book_command", required=True)
+    completion_status_cmd = book_subparsers.add_parser(
+        "completion-status", help="Check ending, character budget, promises, gates, and closure."
+    )
+    completion_status_cmd.add_argument("config", nargs="?", default="project.yaml")
+    completion_status_cmd.add_argument("--json", action="store_true")
+    completion_status_cmd.set_defaults(func=cmd_book_completion_status)
+    completion_approve_cmd = book_subparsers.add_parser(
+        "completion-approve", help="Record explicit human approval after completion evidence passes."
+    )
+    completion_approve_cmd.add_argument("config", nargs="?", default="project.yaml")
+    completion_approve_cmd.add_argument("--approved-by", required=True)
+    completion_approve_cmd.add_argument("--ending-summary", required=True)
+    completion_approve_cmd.add_argument("--json", action="store_true")
+    completion_approve_cmd.set_defaults(func=cmd_book_completion_approve)
 
     skills = subparsers.add_parser("skills", help="Install and maintain bundled Codex/Claude Code Skills.")
     skills_subparsers = skills.add_subparsers(dest="skills_command", required=True)
@@ -387,7 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the fixed 50/200/500 chapter vector-store engineering benchmark.",
     )
     benchmark_rag_run.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_rag_run.add_argument("--scale-chapters", type=int, choices=(50, 200, 500), required=True)
+    benchmark_rag_run.add_argument("--scale-chapters", type=int, choices=(50, 200, 500, 667), required=True)
     benchmark_rag_run.add_argument("--backend", choices=("local_sqlite", "local_hnsw"))
     benchmark_rag_run.add_argument("--query-count", type=positive_int_arg, default=60)
     benchmark_rag_run.add_argument("--top-k", type=positive_int_arg, default=10)
@@ -879,13 +892,6 @@ def build_parser() -> argparse.ArgumentParser:
     creative_brief.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     creative_brief.set_defaults(func=cmd_creative_brief)
 
-    creative_style = creative_subparsers.add_parser("style-profile", help="Write a genre style profile matrix.")
-    creative_style.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    creative_style.add_argument("--genre", required=True, help="Genre label, for example xuanhuan or suspense.")
-    creative_style.add_argument("--target-audience", required=True, help="Target audience for the style profile.")
-    creative_style.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    creative_style.set_defaults(func=cmd_creative_style_profile)
-
     style_extract_cmd = creative_subparsers.add_parser("style-extract", help="Extract a style profile from sample chapters.")
     style_extract_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     style_extract_cmd.add_argument("--file", dest="sample_files", action="append", help="Sample chapter file. Repeat for multiple samples.")
@@ -968,7 +974,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     quality_contract_cmd = quality_subparsers.add_parser(
         "contract",
-        help="Compile the effective market + genre + phase + approved-baseline quality contract.",
+        help="Compile the effective market + story facets + phase + approved-baseline quality contract.",
     )
     quality_contract_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     quality_contract_cmd.add_argument("--chapter", type=positive_int_arg, required=True)
@@ -985,6 +991,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     quality_contract_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     quality_contract_cmd.set_defaults(func=cmd_quality_contract)
+
+    story_profile_cmd = quality_subparsers.add_parser(
+        "story-profile",
+        help="Compile selected story facets and report conflicts requiring human resolution.",
+    )
+    story_profile_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    story_profile_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    story_profile_cmd.set_defaults(func=cmd_quality_story_profile)
 
     baseline_approve_cmd = quality_subparsers.add_parser(
         "baseline-approve",
@@ -1245,8 +1259,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     auto_plan = auto_subparsers.add_parser("plan", help="Create or inspect the auto-write plan.")
     auto_plan.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    auto_plan.add_argument("--target-chapters", type=positive_int_arg, help="Final chapter target for this run.")
-    auto_plan.add_argument("--target-words", type=positive_int_arg, help="Final word target for this run.")
     auto_plan.add_argument("--start-chapter", type=positive_int_arg, help="Chapter where the scheduler should start.")
     auto_plan.add_argument("--overwrite", action="store_true", help="Reset an existing auto-write state file.")
     auto_plan.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
@@ -1589,7 +1601,6 @@ def build_parser() -> argparse.ArgumentParser:
         models_migrate,
         vector_rebuild_cmd,
         creative_brief,
-        creative_style,
         style_extract_cmd,
         payoff_task_cmd,
         payoff_validate_cmd,
@@ -1708,12 +1719,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def add_scale_arguments(command: argparse.ArgumentParser) -> None:
     command.add_argument("--scale-preset", choices=sorted(SCALE_PRESETS), help="Project scale preset.")
-    command.add_argument("--total-chapters", type=positive_int_arg, help="Total chapter count.")
-    command.add_argument("--target-total-words", type=positive_int_arg, help="Target total word count.")
-    command.add_argument("--chapter-target-words", type=positive_int_arg, help="Target words per chapter.")
-    command.add_argument("--chapter-min-words", type=positive_int_arg, help="Soft minimum words per chapter.")
-    command.add_argument("--chapter-max-words", type=positive_int_arg, help="Soft maximum words per chapter.")
-    command.add_argument("--volume-count", type=positive_int_arg, help="Volume count.")
+    command.add_argument("--target-total-characters", type=positive_int_arg, help="Target manuscript characters.")
+    command.add_argument("--chapter-target-characters", type=positive_int_arg, help="Target characters per chapter.")
+    command.add_argument("--chapter-soft-min", type=positive_int_arg, help="Soft minimum characters per chapter.")
+    command.add_argument("--chapter-soft-max", type=positive_int_arg, help="Soft maximum characters per chapter.")
+    command.add_argument("--volume-target-characters", type=positive_int_arg, help="Target characters per volume.")
+    command.add_argument("--planning-horizon", type=positive_int_arg, help="Detailed rolling-outline horizon.")
+    command.add_argument("--refill-threshold", type=positive_int_arg, help="Remaining plans that trigger refill.")
 
 
 def positive_int_arg(value: str) -> int:
@@ -1749,28 +1761,34 @@ def scale_overrides_from_args(args: argparse.Namespace) -> dict[str, Any]:
     if preset:
         overrides = json.loads(json.dumps({"length": SCALE_PRESETS[preset]["length"]}, ensure_ascii=False))
     length: dict[str, Any] = dict(overrides.get("length", {}))
-    chapter_word_count: dict[str, Any] = dict(length.get("chapter_word_count", {}))
+    chapter: dict[str, Any] = dict(length.get("chapter", {}))
+    volume: dict[str, Any] = dict(length.get("volume", {}))
+    planning: dict[str, Any] = dict(length.get("planning", {}))
+    target_total = getattr(args, "target_total_characters", None)
+    if target_total is not None:
+        length["target_total_characters"] = target_total
     for attr, key in (
-        ("total_chapters", "total_chapters"),
-        ("target_total_words", "target_total_words"),
-        ("volume_count", "volume_count"),
+        ("chapter_target_characters", "target_characters"),
+        ("chapter_soft_min", "soft_min"),
+        ("chapter_soft_max", "soft_max"),
     ):
         value = getattr(args, attr, None)
         if value is not None:
-            length[key] = value
-    for attr, key in (
-        ("chapter_target_words", "target"),
-        ("chapter_min_words", "min"),
-        ("chapter_max_words", "max"),
-    ):
-        value = getattr(args, attr, None)
-        if value is not None:
-            chapter_word_count[key] = value
-    if not length and not chapter_word_count:
+            chapter[key] = value
+    if getattr(args, "volume_target_characters", None) is not None:
+        volume["target_characters"] = args.volume_target_characters
+    if getattr(args, "planning_horizon", None) is not None:
+        planning["detailed_horizon"] = args.planning_horizon
+    if getattr(args, "refill_threshold", None) is not None:
+        planning["refill_threshold"] = args.refill_threshold
+    if not length and not chapter and not volume and not planning:
         return {}
-    if chapter_word_count:
-        length["chapter_word_count"] = chapter_word_count
-    overrides["length"] = length
+    if chapter:
+        length["chapter"] = chapter
+    if volume:
+        length["volume"] = volume
+    if planning:
+        length["planning"] = planning
     return {"length": length}
 
 
@@ -1779,12 +1797,13 @@ def has_scale_arguments(args: argparse.Namespace) -> bool:
         getattr(args, attr, None) is not None
         for attr in (
             "scale_preset",
-            "total_chapters",
-            "target_total_words",
-            "chapter_target_words",
-            "chapter_min_words",
-            "chapter_max_words",
-            "volume_count",
+            "target_total_characters",
+            "chapter_target_characters",
+            "chapter_soft_min",
+            "chapter_soft_max",
+            "volume_target_characters",
+            "planning_horizon",
+            "refill_threshold",
         )
     )
 
@@ -1858,10 +1877,10 @@ def prompt_positive_int(label: str, default: int) -> int:
 
 def prompt_scale_choice() -> str:
     options = [
-        ("million", "百万字", "100 万字 / 330 章 / 单章 3000 字 / 5 卷"),
-        ("standard", "标准长篇", "150 万字 / 500 章 / 单章 3000 字 / 6 卷"),
-        ("extended", "超长篇", "200 万字 / 650 章 / 单章 3000 字 / 8 卷"),
-        ("custom", "自定义", "手动填写总字数、章节数、单章字数和卷数"),
+        ("million", "百万字", "100 万正文字符 / 约 333 章 / 滚动细纲"),
+        ("standard", "标准长篇", "150 万正文字符 / 约 500 章 / 滚动细纲"),
+        ("extended", "超长篇", "200 万正文字符 / 约 667 章 / 正式支持上限"),
+        ("custom", "自定义", "手动填写总字符、单章与单卷容量，不锁定总章数"),
     ]
     print("规模预设:")
     for index, (_, label, detail) in enumerate(options, start=1):
@@ -1891,21 +1910,26 @@ def prompt_scale_choice() -> str:
 
 
 def prompt_custom_length() -> dict[str, Any]:
-    total_words = prompt_positive_int("目标总字数", 1_000_000)
-    total_chapters = prompt_positive_int("总章节数", 330)
-    target = prompt_positive_int("单章目标字数", max(1, total_words // total_chapters))
+    total_characters = prompt_positive_int("目标正文字符数", 1_000_000)
+    target = prompt_positive_int("单章目标字符数", 3000)
     minimum = prompt_positive_int("单章软下限", max(1, int(target * 0.8)))
     maximum = prompt_positive_int("单章软上限", max(target, int(target * 1.2)))
-    volume_count = prompt_positive_int("卷数", 5)
+    volume_target = prompt_positive_int("单卷目标字符数", 200_000)
+    horizon = prompt_positive_int("滚动细纲章数", 20)
+    refill = prompt_positive_int("细纲补充阈值", 8)
     return {
-        "total_chapters": total_chapters,
-        "target_total_words": total_words,
-        "volume_count": volume_count,
-        "chapter_word_count": {
-            "target": target,
-            "min": minimum,
-            "max": maximum,
+        "metric": "content_characters_v1",
+        "target_total_characters": total_characters,
+        "completion_tolerance": [0.90, 1.10],
+        "chapter": {
+            "target_characters": target,
+            "soft_min": minimum,
+            "soft_max": maximum,
+            "hard_min": max(1, int(minimum * 0.8)),
+            "hard_max": max(maximum, int(maximum * 1.2)),
         },
+        "volume": {"target_characters": volume_target},
+        "planning": {"mode": "rolling", "detailed_horizon": horizon, "refill_threshold": refill},
     }
 
 
@@ -1939,7 +1963,8 @@ def safe_slug(value: str) -> str:
 def print_creation_summary(config: ConfigDocument, output: str, template: str, scale: str) -> None:
     project = config.data["project"]
     length = config.data["length"]
-    word_count = length["chapter_word_count"]
+    chapter = length["chapter"]
+    forecast = compile_length_forecast(length)
     scale_label = "自定义" if scale == "custom" else SCALE_PRESETS[scale]["label"]
     print("")
     print("项目创建摘要")
@@ -1948,10 +1973,15 @@ def print_creation_summary(config: ConfigDocument, output: str, template: str, s
     print(f"Output: {output}")
     print(f"Template: {template}")
     print(f"Scale: {scale_label}")
-    print(f"Chapters: {length['total_chapters']}")
-    print(f"Target words: {length['target_total_words']}")
-    print(f"Words per chapter: {word_count['target']} ({word_count['min']}-{word_count['max']})")
-    print(f"Volumes: {length['volume_count']}")
+    print(f"Target content characters: {forecast.target_total_characters}")
+    print(
+        "Forecast chapters: "
+        f"{forecast.estimated_chapters} "
+        f"({forecast.minimum_reasonable_chapters}-{forecast.maximum_reasonable_chapters})"
+    )
+    print(f"Characters per chapter: {chapter['target_characters']} ({chapter['soft_min']}-{chapter['soft_max']})")
+    print(f"Forecast volumes: {forecast.estimated_volumes}")
+    print(f"Support: {forecast.support_status}")
     print("")
 
 
@@ -1959,10 +1989,12 @@ def cmd_validate_config(args: argparse.Namespace) -> int:
     config = load_project_config(args.config, template=args.template, cli_overrides=scale_overrides_from_args(args))
     print("OK: configuration is valid")
     title = config.data["project"]["title"]
-    chapters = config.data["length"]["total_chapters"]
-    words = config.data["length"]["target_total_words"]
+    forecast = compile_length_forecast(config.data["length"])
     print(f"Project: {title}")
-    print(f"Scale: {chapters} chapters / {words} target words")
+    print(
+        f"Scale: {forecast.target_total_characters} target characters / "
+        f"about {forecast.estimated_chapters} chapters / {forecast.support_status}"
+    )
     if args.explain:
         print("Sources:")
         for source in config.sources:
@@ -1991,8 +2023,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         "root": str(root),
         "exists": root.exists(),
         "project_config": str(config_path),
-        "total_chapters": config.data["length"]["total_chapters"],
-        "target_total_words": config.data["length"]["target_total_words"],
+        "length_forecast": compile_length_forecast(config.data["length"]).to_dict(),
         "state_status": revision_status.state_status,
         "current_chapter": revision_status.current_chapter,
         "last_finalized_chapter": revision_status.last_finalized_chapter,
@@ -2006,7 +2037,11 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"Project: {payload['title']} ({payload['slug']})")
         print(f"Root: {payload['root']}")
         print(f"Exists: {payload['exists']}")
-        print(f"Scale: {payload['total_chapters']} chapters / {payload['target_total_words']} words")
+        forecast = payload["length_forecast"]
+        print(
+            f"Scale: {forecast['target_total_characters']} target characters / "
+            f"about {forecast['estimated_chapters']} chapters / {forecast['support_status']}"
+        )
         print(f"State: {payload['state_status']}")
         print(f"Current chapter: {payload['current_chapter']}")
         print(f"Last finalized chapter: {payload['last_finalized_chapter']}")
@@ -2016,6 +2051,39 @@ def cmd_status(args: argparse.Namespace) -> int:
             for chapter in payload["chapter_states"]:
                 statuses = ", ".join(chapter["statuses"])
                 print(f"  - ch{chapter['chapter_number']:03d}: {chapter['status']} ({statuses})")
+    return 0
+
+
+def cmd_book_completion_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = completion_status(config).to_dict()
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Ready for approval: {str(payload['ready_for_human_approval']).lower()}")
+        print(f"Approved: {str(payload['approved']).lower()}")
+        print(f"Content characters: {payload['total_content_characters']}")
+        print(f"Completion range: {payload['completion_range'][0]}-{payload['completion_range'][1]}")
+        print(f"Length status: {payload['length_status']}")
+        print(f"Recommended action: {payload['recommended_action']}")
+        print(f"Blockers: {', '.join(payload['blockers']) or 'none'}")
+        print(f"Next command: {payload['next_command'] or 'none'}")
+    return 0 if payload["ready_for_human_approval"] or payload["approved"] else 2
+
+
+def cmd_book_completion_approve(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = approve_completion(
+        config,
+        approved_by=args.approved_by,
+        ending_summary=args.ending_summary,
+    ).to_dict()
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: whole-book completion explicitly approved")
+        print(f"Content characters: {payload['total_content_characters']}")
+        print(f"Latest final chapter: {payload['latest_final_chapter']}")
     return 0
 
 
@@ -3108,20 +3176,6 @@ def cmd_creative_brief(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
-def cmd_creative_style_profile(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = style_profile(config, genre=args.genre, target_audience=args.target_audience)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: creative style profile written")
-        print(f"Genre: {result.genre}")
-        print(f"Target audience: {result.target_audience}")
-        print(f"Matrix: {result.profile_file}")
-        print(f"Current profile: {result.current_profile_file}")
-    return 0
-
-
 def cmd_creative_style_extract(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
     result = style_extract(
@@ -3251,8 +3305,11 @@ def cmd_quality_contract(args: argparse.Namespace) -> int:
     else:
         print("OK: effective quality contract compiled")
         print(f"Chapter: {args.chapter}")
+        facet_ids = [
+            f"{item.get('kind')}:{item.get('id')}" for item in payload.get("active_facets", [])
+        ]
         print(
-            f"Profile: {payload['primary_market']} + {payload['genre']} + {payload['phase']} "
+            f"Profile: {payload['primary_market']} + {', '.join(facet_ids)} + {payload['phase']} "
             f"[{payload['strictness']}]"
         )
         print(
@@ -3278,6 +3335,26 @@ def cmd_quality_contract(args: argparse.Namespace) -> int:
                     f"{observation['code']}: {observation['message']} (non-blocking)"
                 )
     return 0
+
+
+def cmd_quality_story_profile(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = compile_story_profile(config.data["story_profile"], market_ids=set(BUILTIN_MARKET_IDS))
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: story profile compiled" if payload["ready"] else "BLOCKED: story profile needs human resolution")
+        print(f"Primary market: {payload['market']['primary']}")
+        print("Selected facets:")
+        for item in payload["selected_facets"]:
+            print(f"- {item['kind']}:{item['id']} [{item['level']}]")
+        for item in payload["unresolved_conflicts"]:
+            print(f"- unresolved {item['conflict_id']}: {', '.join(item['facets'])}")
+        for conflict_id in payload["unused_resolution_ids"]:
+            print(f"- unused resolution: {conflict_id}")
+        if not payload["ready"]:
+            print("Next: edit project.yaml story_profile.resolutions with an explicit human decision and rationale.")
+    return 0 if payload["ready"] else 1
 
 
 def cmd_quality_baseline_approve(args: argparse.Namespace) -> int:
@@ -3382,9 +3459,10 @@ def cmd_creative_expand_task(args: argparse.Namespace) -> int:
         print(f"Task: {result.task_file}")
         print(f"Candidate: {result.candidate_file}")
         print(f"Expansion types: {', '.join(result.expansion_types)}")
-        print(f"Current word count: {result.current_word_count}")
-        print(f"Minimum word count: {result.minimum_word_count}")
-        print(f"Missing words: {result.missing_words}")
+        print(f"Metric: {result.metric}")
+        print(f"Current content characters: {result.current_content_characters}")
+        print(f"Minimum content characters: {result.minimum_content_characters}")
+        print(f"Missing content characters: {result.missing_content_characters}")
         print(f"Next command: {result.next_command}")
     return 0
 
@@ -3403,8 +3481,9 @@ def cmd_creative_expand_check(args: argparse.Namespace) -> int:
         print("OK: content expansion check completed")
         print(f"Chapter: {result.chapter_number}")
         print(f"Passed: {result.passed}")
-        print(f"Word count: {result.word_count}")
-        print(f"Minimum word count: {result.minimum_word_count}")
+        print(f"Metric: {result.metric}")
+        print(f"Content characters: {result.content_characters}")
+        print(f"Minimum content characters: {result.minimum_content_characters}")
         print(f"Report: {result.report_file}")
         print(f"Markdown: {result.markdown_report}")
         print(f"Issues: {len(result.issues)}")
@@ -3891,8 +3970,6 @@ def cmd_auto_write_plan(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
     result = auto_write_plan(
         config,
-        target_chapters=args.target_chapters,
-        target_words=args.target_words,
         start_chapter=args.start_chapter,
         overwrite=args.overwrite,
     )
@@ -3928,8 +4005,8 @@ def print_auto_write_result(result: Any, *, json_output: bool) -> None:
     print(f"OK: auto-write {result.action}")
     print(f"Status: {result.status}")
     print(f"Summary: {result.summary}")
-    print(f"Target chapters: {result.target_chapters}")
-    print(f"Target words: {result.target_words}")
+    print(f"Forecast chapters: {result.forecast_chapters}")
+    print(f"Target content characters: {result.target_characters}")
     print(f"Current chapter: {result.current_chapter}")
     print(f"Last finalized chapter: {result.last_finalized_chapter}")
     print(f"Chapters attempted: {result.chapters_attempted}")

@@ -74,7 +74,7 @@ def test_chapter_work_order_compiles_character_packet_inside_existing_budget(tmp
         {
             "pov_character_id": "lead_ari",
             "featured_character_ids": ["lead_ari", "ally_mira"],
-            "characterization_focus": ["Ari hides guilt by narrowing the claim", "Mira tests trust through action"],
+                "characterization_focus": ["lead_ari", "ally_mira"],
             "scene_wants": {"lead_ari": "verify the seal", "ally_mira": "force access before closure"},
             "opposing_wants": ["verification versus immediate access"],
             "hidden_agenda": ["Ari recognizes his father's filing mark"],
@@ -138,7 +138,8 @@ def test_character_editor_rejects_empty_pass_and_requires_featured_character_evi
     continue_write(config, chapter_number=1, overwrite=True)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     evidence = "Ari aligns the torn receipt before asking who changed the seal."
-    draft.write_text(f"# Chapter 1\n\n{evidence}\n", encoding="utf-8")
+    ally_evidence = "Mira blocks the archive door and demands that Ari name the cost of waiting."
+    draft.write_text(f"# Chapter 1\n\n{evidence}\n\n{ally_evidence}\n", encoding="utf-8")
     review = editorial_review(config, chapter_number=1)
     assert "character_editor" in review.selected_roles
     context_path = (
@@ -181,6 +182,15 @@ def test_character_editor_rejects_empty_pass_and_requires_featured_character_evi
                         "evidence": [evidence],
                         "character_ids": ["lead_ari"],
                         "recommendation": "preserve this pressure-specific behavior",
+                    },
+                    {
+                        "code": "character_evidence_ally_mira",
+                        "severity": "PASS",
+                        "status": "resolved",
+                        "message": "Mira applies pressure through action and a direct demand.",
+                        "evidence": [ally_evidence],
+                        "character_ids": ["ally_mira"],
+                        "recommendation": "preserve her action-first pressure",
                     }
                 ],
             }

@@ -15,6 +15,7 @@ import uuid
 
 from longform_engine.config import ConfigDocument
 from longform_engine.storage import resolve_project_root
+from longform_engine.text_metrics import content_character_count
 
 
 SCHEMA_VERSION = "1"
@@ -544,7 +545,7 @@ def sync_chapters(conn: sqlite3.Connection, root: Path) -> int:
             "summary": read_summary(summary_dir, chapter_number),
             "volume": None,
             "status": "final",
-            "word_count": estimate_words(text),
+            "word_count": content_character_count(text),
         }
 
     meta_path = root / "40_manuscript" / "chapter_meta.jsonl"
@@ -700,7 +701,7 @@ def sync_chunks(conn: sqlite3.Connection, root: Path) -> int:
                         dumps(keywords),
                         source_path,
                         int(chunk.get("token_estimate") or chunk.get("tokens") or 0),
-                        int(chunk.get("word_count") or estimate_words(text)),
+                        int(chunk.get("word_count") or content_character_count(text)),
                         dumps(metadata),
                         utc_now(),
                     ),
@@ -1637,10 +1638,6 @@ def extract_title(text: str, path: Path) -> str:
         if stripped.startswith("#"):
             return stripped.lstrip("#").strip()
     return path.stem
-
-
-def estimate_words(text: str) -> int:
-    return len(re.sub(r"\s+", "", text))
 
 
 def parse_chapter_number(path: Path) -> int | None:

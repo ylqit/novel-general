@@ -19,6 +19,20 @@ from longform_engine.quality.feedback import read_registry
 from longform_engine.storage import init_project
 
 
+def evidence_pass_items(role_id: str, evidence: str) -> list[dict]:
+    return [
+        {
+            "code": f"{role_id}_observed_pass",
+            "severity": "PASS",
+            "status": "resolved",
+            "message": "The declared review lens has direct chapter evidence.",
+            "evidence": [evidence],
+            "character_ids": ["lead_ari", "ally_mira"] if role_id == "character_editor" else [],
+            "recommendation": "preserve the evidenced behavior",
+        }
+    ]
+
+
 def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_blocker(tmp_path):
     config, root = seed_project(tmp_path)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
@@ -89,7 +103,10 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
                 / f"{role_id}.context.json"
             ).read_text(encoding="utf-8")
         )
-        items = role_items.get(role_id, [])
+        items = role_items.get(
+            role_id,
+            evidence_pass_items(role_id, "Ari follows the clue"),
+        )
         result_file.write_text(
             json.dumps(
                 {
@@ -252,7 +269,10 @@ def test_partial_editorial_submissions_do_not_invalidate_peer_contexts(tmp_path)
                     "chapter_number": 1,
                     "role_id": role_id,
                     "verdict": "pass",
-                    "items": [],
+                    "items": evidence_pass_items(
+                        role_id,
+                        "Ari chooses the marked retreat route and records its cost.",
+                    ),
                     "reviewer_instance_id": context["reviewer_instance_id"],
                     "agent_product": "codex-app",
                     "agent_version": "test",
@@ -310,7 +330,7 @@ def test_editorial_aggregate_rejects_results_for_replaced_chapter_candidate(tmp_
                     "chapter_number": 1,
                     "role_id": role_id,
                     "verdict": "pass",
-                    "items": [],
+                    "items": evidence_pass_items(role_id, "Ari inspects the first bounded clue."),
                     "reviewer_instance_id": context["reviewer_instance_id"],
                     "agent_product": "codex-app",
                     "agent_version": "test",

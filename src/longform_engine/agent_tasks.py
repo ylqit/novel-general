@@ -247,7 +247,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "book_design": {
         "scope_kinds": ("project",),
-        "schemas": ("book_design_candidate_v1", "book_design_candidate_v2"),
+        "schemas": ("book_design_candidate_v2",),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
@@ -289,7 +289,15 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "outline_design": {
         "scope_kinds": ("project",),
-        "schemas": ("outline_design_candidate_v1",),
+        "schemas": ("outline_design_candidate_v2",),
+        "output_prefixes": ("50_workbench/intelligence_candidates/",),
+        "validate_prefixes": ("longform-engine intelligence validate ",),
+        "apply_prefixes": ("longform-engine intelligence apply ",),
+        "failure_prefixes": ("longform-engine intelligence task ",),
+    },
+    "outline_extension": {
+        "scope_kinds": ("range",),
+        "schemas": ("outline_extension_candidate_v1",),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
@@ -297,7 +305,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "chapter_direction": {
         "scope_kinds": ("chapter",),
-        "schemas": ("chapter_direction_candidate_v1",),
+        "schemas": ("chapter_direction_candidate_v2",),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
@@ -471,6 +479,8 @@ def write_manifest(root: Path, manifest: dict[str, Any], manifest_file: str | Pa
         raise AgentTaskContractError(
             f"Agent task contract is invalid for {validation.task_id or '<unknown>'}: {details}"
         )
+    for output in normalized["allowed_output_paths"]:
+        resolve_under_root(root, output).parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(path, json.dumps(normalized, ensure_ascii=False, indent=2) + "\n")
     register_manifest(root, normalized, path)
     return str(path)
