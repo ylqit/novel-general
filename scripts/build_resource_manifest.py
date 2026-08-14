@@ -12,6 +12,11 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from longform_engine.resources import RESOURCE_HASH_POLICY, resource_integrity_bytes  # noqa: E402
+
+
 MANIFEST = ROOT / "resource-manifest.json"
 RESOURCE_DIRS = (
     ROOT / "config",
@@ -26,7 +31,7 @@ RESOURCE_FILES = (ROOT / "pyproject.toml",)
 def build_payload() -> dict[str, object]:
     assets: list[dict[str, object]] = []
     for path in RESOURCE_FILES:
-        data = path.read_bytes()
+        data = resource_integrity_bytes(path)
         assets.append(
             {
                 "path": path.relative_to(ROOT).as_posix(),
@@ -39,7 +44,7 @@ def build_payload() -> dict[str, object]:
         for path in sorted(candidates, key=lambda item: item.relative_to(ROOT).as_posix().casefold()):
             if "__pycache__" in path.parts or path.suffix == ".pyc":
                 continue
-            data = path.read_bytes()
+            data = resource_integrity_bytes(path)
             assets.append(
                 {
                     "path": path.relative_to(ROOT).as_posix(),
@@ -51,6 +56,7 @@ def build_payload() -> dict[str, object]:
     return {
         "schema": "longform_resource_manifest_v1",
         "engine_version": project_version(),
+        "hash_policy": RESOURCE_HASH_POLICY,
         "assets": assets,
     }
 

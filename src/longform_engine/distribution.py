@@ -18,7 +18,7 @@ from typing import Any
 from longform_engine import __version__
 from longform_engine.config import ConfigError, load_project_config
 from longform_engine.models import verify_models
-from longform_engine.resources import load_resource_manifest, resource_path, resource_root
+from longform_engine.resources import load_resource_manifest, resource_integrity_bytes, resource_path, resource_root
 
 
 INSTALL_SCHEMA = "longform_skill_install_v1"
@@ -333,7 +333,7 @@ def _verify_bundled_resources() -> tuple[bool, str]:
             failures.append("invalid manifest entry")
             continue
         path = root / str(entry.get("path", ""))
-        if not path.is_file() or sha256(path.read_bytes()).hexdigest() != entry.get("sha256"):
+        if not path.is_file() or sha256(resource_integrity_bytes(path)).hexdigest() != entry.get("sha256"):
             failures.append(str(entry.get("path", "")))
     return not failures, "all hashes match" if not failures else "mismatch: " + ", ".join(failures[:5])
 

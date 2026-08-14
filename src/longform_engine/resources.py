@@ -10,6 +10,17 @@ from typing import Any
 
 
 RESOURCE_ENV = "LONGFORM_ENGINE_RESOURCE_ROOT"
+RESOURCE_HASH_POLICY = "text-lf-v1"
+TEXT_RESOURCE_SUFFIXES = frozenset({".json", ".md", ".toml", ".txt", ".yaml", ".yml"})
+
+
+def resource_integrity_bytes(path: Path) -> bytes:
+    """Return stable bytes for a resource integrity check on every platform."""
+
+    data = path.read_bytes()
+    if path.suffix.casefold() in TEXT_RESOURCE_SUFFIXES:
+        return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    return data
 
 
 def _checkout_root() -> Path | None:

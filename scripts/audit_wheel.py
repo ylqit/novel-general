@@ -4,10 +4,17 @@
 from __future__ import annotations
 
 import argparse
+from hashlib import sha256
 import json
-from pathlib import Path
+from pathlib import Path, PurePath
 import sys
 import zipfile
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from longform_engine.resources import RESOURCE_HASH_POLICY, TEXT_RESOURCE_SUFFIXES  # noqa: E402
 
 
 REQUIRED = (
@@ -58,6 +65,8 @@ def main() -> int:
         return 1
     with zipfile.ZipFile(wheel) as archive:
         names = set(archive.namelist())
+        manifest_member = "longform_engine/resources/resource-manifest.json"
+        manifest = json.loads(archive.read(manifest_member).decode("utf-8")) if manifest_member in names else {}
         registry_member = "longform_engine/resources/config/agent_roles/registry.json"
         if registry_member in names:
             registry = json.loads(archive.read(registry_member).decode("utf-8"))
@@ -73,6 +82,29 @@ def main() -> int:
         print("Wheel resource audit failed:", file=sys.stderr)
         for name in missing:
             print(f"- missing {name}", file=sys.stderr)
+        return 1
+    integrity_errors: list[str] = []
+    if manifest.get("hash_policy") != RESOURCE_HASH_POLICY:
+        integrity_errors.append("resource manifest has the wrong hash policy")
+    with zipfile.ZipFile(wheel) as archive:
+        for entry in manifest.get("assets", []):
+            if not isinstance(entry, dict):
+                integrity_errors.append("resource manifest contains an invalid entry")
+                continue
+            relative = str(entry.get("path") or "")
+            member = "longform_engine/resources/" + relative
+            if member not in names:
+                integrity_errors.append(f"missing resource {relative}")
+                continue
+            data = archive.read(member)
+            if PurePath(relative).suffix.casefold() in TEXT_RESOURCE_SUFFIXES:
+                data = data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+            if sha256(data).hexdigest() != entry.get("sha256") or len(data) != entry.get("size"):
+                integrity_errors.append(f"resource integrity mismatch {relative}")
+    if integrity_errors:
+        print("Wheel resource integrity audit failed:", file=sys.stderr)
+        for error in integrity_errors[:20]:
+            print(f"- {error}", file=sys.stderr)
         return 1
     print(f"OK: wheel resource audit passed ({len(names)} entries): {wheel}")
     return 0

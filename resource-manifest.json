@@ -2,8 +2,8 @@
   "assets": [
     {
       "path": "config/agent_data_pipeline_authorization.json",
-      "sha256": "cd5e56a51a38f3e7950715086a6c1ce8a11aa23ab7fef810c47e5d29cc3c28d9",
-      "size": 318
+      "sha256": "b532c66d28bad58518ccdf020c36fd342f1e7c513f93ff0edb58bb8b62532f53",
+      "size": 314
     },
     {
       "path": "config/agent_roles/prompts/adaptation_analyst.md",
@@ -352,5 +352,6 @@
     }
   ],
   "engine_version": "0.3.2",
+  "hash_policy": "text-lf-v1",
   "schema": "longform_resource_manifest_v1"
 }

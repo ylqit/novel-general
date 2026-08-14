@@ -12,7 +12,7 @@ from longform_engine.distribution import (
     uninstall_skills,
     update_skills,
 )
-from longform_engine.resources import load_resource_manifest, resource_path
+from longform_engine.resources import RESOURCE_HASH_POLICY, load_resource_manifest, resource_integrity_bytes, resource_path
 
 
 def configure_skill_roots(monkeypatch, tmp_path: Path):
@@ -23,12 +23,13 @@ def configure_skill_roots(monkeypatch, tmp_path: Path):
     return codex, claude
 
 
-def test_version_and_bundled_resource_manifest_are_aligned():
+def test_version_and_bundled_resource_manifest_are_aligned(tmp_path):
     manifest = load_resource_manifest()
     asset_paths = [item["path"] for item in manifest["assets"]]
 
     assert __version__ == "0.3.2"
     assert manifest["engine_version"] == __version__
+    assert manifest["hash_policy"] == RESOURCE_HASH_POLICY
     for prefix in ("config/", "templates/", "longform-novel-codex/", "longform-novel-claude/", "shared/"):
         group = [path for path in asset_paths if path.startswith(prefix)]
         assert group == sorted(group, key=str.casefold)
@@ -36,6 +37,16 @@ def test_version_and_bundled_resource_manifest_are_aligned():
     assert resource_path("templates", "qidian-longform", "project.yaml").is_file()
     assert resource_path("longform-novel-codex", "references", "command_protocol.md").is_file()
     assert resource_path("longform-novel-claude", "references", "command_protocol.md").is_file()
+
+    unix_text = tmp_path / "unix.json"
+    windows_text = tmp_path / "windows.json"
+    binary = tmp_path / "payload.bin"
+    unix_text.write_bytes(b'{\n  "ok": true\n}\n')
+    windows_text.write_bytes(b'{\r\n  "ok": true\r\n}\r\n')
+    binary.write_bytes(b"a\r\nb\r")
+
+    assert resource_integrity_bytes(unix_text) == resource_integrity_bytes(windows_text)
+    assert resource_integrity_bytes(binary) == b"a\r\nb\r"
 
 
 def test_skill_lifecycle_is_owned_hashed_and_atomic(monkeypatch, tmp_path):

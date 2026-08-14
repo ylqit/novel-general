@@ -11,6 +11,11 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from longform_engine.resources import RESOURCE_HASH_POLICY, resource_integrity_bytes  # noqa: E402
+
+
 SKILL_SPECS = {
     "longform-novel-codex": {"platform": "Codex", "forbidden_platform": "Claude"},
     "longform-novel-claude": {"platform": "Claude Code", "forbidden_platform": "Codex"},
@@ -208,6 +213,8 @@ def validate_resource_manifest() -> list[str]:
         errors.append("resource-manifest.json: wrong schema")
     if payload.get("engine_version") != project_version():
         errors.append("resource-manifest.json: wrong engine version")
+    if payload.get("hash_policy") != RESOURCE_HASH_POLICY:
+        errors.append("resource-manifest.json: wrong hash policy")
     listed: set[str] = set()
     for entry in payload.get("assets", []):
         if not isinstance(entry, dict):
@@ -218,7 +225,7 @@ def validate_resource_manifest() -> list[str]:
         asset = ROOT / relative
         if not asset.is_file():
             errors.append(f"resource-manifest.json: missing asset {relative}")
-        elif sha256(asset.read_bytes()).hexdigest() != entry.get("sha256"):
+        elif sha256(resource_integrity_bytes(asset)).hexdigest() != entry.get("sha256"):
             errors.append(f"resource-manifest.json: stale hash {relative}")
     for required in (
         "config/default.engine.yaml",
