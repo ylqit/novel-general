@@ -10,6 +10,7 @@ from typing import Any
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 
 import yaml
@@ -49,7 +50,7 @@ class TransactionReportResult:
 
 
 class ApplyTransaction:
-    """Filesystem transaction for canonical apply/finalize commands."""
+    """Canonical transaction with file snapshots and SQLite backup participants."""
 
     def __init__(
         self,
@@ -77,6 +78,8 @@ class ApplyTransaction:
         snapshot_id = sha256(self.report_file.stem.encode("utf-8")).hexdigest()[:12]
         self.snapshot_dir = self.report_dir / "s" / snapshot_id
         self._snapshots: list[dict[str, Any]] = []
+        self._sqlite_backups: list[dict[str, Any]] = []
+        self._filesystem_paths, self._sqlite_paths = partition_transaction_paths(self.root, self.touched_paths)
         self._active = False
         self._finished = False
 
@@ -96,8 +99,28 @@ class ApplyTransaction:
             return self
         self.report_dir.mkdir(parents=True, exist_ok=True)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
-        for path in self.touched_paths:
+        atomic_write_text(
+            self.report_file,
+            json.dumps(
+                self._payload(
+                    status="pending",
+                    report_type="canonical_write_transaction_report_v2",
+                    extra={
+                        "snapshot_dir": project_relative_path(self.root, self.snapshot_dir),
+                        "snapshots": [],
+                        "sqlite_backups": [],
+                        "cleanup_complete": False,
+                    },
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+        )
+        for path in self._filesystem_paths:
             self._snapshots.append(snapshot_transaction_path(self.root, self.snapshot_dir, path))
+        for path in self._sqlite_paths:
+            self._sqlite_backups.append(snapshot_sqlite_database(self.root, self.snapshot_dir, path))
         self._active = True
         return self
 
@@ -109,18 +132,21 @@ class ApplyTransaction:
     def commit(self) -> TransactionReportResult:
         if self._finished:
             return TransactionReportResult(report_file=self.report_file)
+        cleanup_errors = cleanup_transaction_snapshot(self.snapshot_dir)
+        cleanup_complete = not cleanup_errors
         payload = self._payload(
             status="applied",
-            report_type="canonical_write_transaction_report",
+            report_type="canonical_write_transaction_report_v2",
             extra={
                 "snapshot_dir": project_relative_path(self.root, self.snapshot_dir),
                 "snapshots": self._snapshots,
-                "snapshots_retained": False,
+                "sqlite_backups": self._sqlite_backups,
+                "snapshots_retained": not cleanup_complete,
+                "cleanup_complete": cleanup_complete,
+                "cleanup_errors": cleanup_errors,
             },
         )
         atomic_write_text(self.report_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-        if self.snapshot_dir.exists():
-            shutil.rmtree(self.snapshot_dir)
         self._finished = True
         return TransactionReportResult(report_file=self.report_file)
 
@@ -128,35 +154,53 @@ class ApplyTransaction:
         if self._finished:
             return TransactionReportResult(report_file=self.rollback_file)
         restored: list[str] = []
+        restored_databases: list[str] = []
         restore_errors: list[str] = []
         for item in reversed(self._snapshots):
             try:
                 restore_transaction_path(self.root, self.snapshot_dir, item)
                 restored.append(str(item.get("path") or ""))
-            except OSError as restore_exc:
+            except (OSError, StorageError) as restore_exc:
                 restore_errors.append(f"{item.get('path')}: {restore_exc}")
+        for item in reversed(self._sqlite_backups):
+            try:
+                restore_sqlite_database(self.root, self.snapshot_dir, item)
+                restored_databases.append(str(item.get("path") or ""))
+            except (OSError, sqlite3.Error, StorageError) as restore_exc:
+                restore_errors.append(f"{item.get('path')}: {restore_exc}")
+        cleanup_errors: list[str] = []
+        if not restore_errors:
+            cleanup_errors = cleanup_transaction_snapshot(self.snapshot_dir)
+        cleanup_complete = not restore_errors and not cleanup_errors
         error_payload = {
             "type": exc.__class__.__name__ if exc is not None else "",
             "message": str(exc) if exc is not None else "",
         }
         payload = self._payload(
             status="rolled_back",
-            report_type="canonical_write_transaction_rollback",
+            report_type="canonical_write_transaction_rollback_v2",
             extra={
                 "snapshot_dir": project_relative_path(self.root, self.snapshot_dir),
                 "snapshots": self._snapshots,
+                "sqlite_backups": self._sqlite_backups,
                 "restored_paths": restored,
+                "restored_databases": restored_databases,
                 "restore_errors": restore_errors,
+                "cleanup_complete": cleanup_complete,
+                "cleanup_errors": cleanup_errors,
+                "snapshots_retained": not cleanup_complete,
                 "error": error_payload,
             },
         )
+        atomic_write_text(self.report_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         atomic_write_text(self.rollback_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         self._finished = True
         return TransactionReportResult(report_file=self.rollback_file)
 
     def _payload(self, *, status: str, report_type: str, extra: dict[str, Any]) -> dict[str, Any]:
         payload = {
-            "schema_version": 1,
+            "schema": "canonical_write_transaction_report_v2",
+            "schema_version": 2,
             "report_type": report_type,
             "status": status,
             "command": self.command,
@@ -167,6 +211,7 @@ class ApplyTransaction:
                 "agent_outputs_directly_applied": False,
                 "canonical_mutation_requires_apply_or_finalize": True,
                 "rollback_restores_touched_paths": True,
+                "sqlite_uses_backup_participant": True,
             },
             "metadata": self.metadata,
             "created_at": utc_now(),
@@ -326,8 +371,9 @@ def record_transaction_report(
         name_parts.append(f"ch{chapter_number:03d}")
     report_file = unique_report_path(report_dir / ("_".join(name_parts) + ".json"))
     payload = {
-        "schema_version": 1,
-        "report_type": "canonical_write_transaction_report",
+        "schema": "canonical_write_transaction_report_v2",
+        "schema_version": 2,
+        "report_type": "canonical_write_transaction_report_v2",
         "status": status,
         "command": command,
         "chapter_number": chapter_number,
@@ -338,6 +384,9 @@ def record_transaction_report(
             "canonical_mutation_requires_apply_or_finalize": True,
         },
         "metadata": metadata or {},
+        "cleanup_complete": True,
+        "snapshots": [],
+        "sqlite_backups": [],
         "created_at": utc_now(),
     }
     atomic_write_text(report_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
@@ -509,6 +558,91 @@ def restore_transaction_path(root: Path, snapshot_dir: Path, item: dict[str, Any
     if snapshot.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(snapshot, target)
+
+
+def partition_transaction_paths(root: Path, paths: list[Path]) -> tuple[list[Path], list[Path]]:
+    """Separate ordinary files from SQLite participants without snapshotting the DB directory."""
+
+    filesystem_paths: list[Path] = []
+    sqlite_paths: list[Path] = []
+    runtime_db_dir = (root / "70_runtime" / "db").resolve()
+    for path in paths:
+        resolved = path.resolve()
+        if resolved == runtime_db_dir:
+            sqlite_paths.extend(sorted(runtime_db_dir.glob("*.sqlite")))
+            sqlite_paths.extend((runtime_db_dir / "longform_engine.sqlite", runtime_db_dir / "vector_store.sqlite"))
+        elif resolved.suffix.lower() in {".sqlite", ".sqlite3", ".db"} and runtime_db_dir in resolved.parents:
+            sqlite_paths.append(resolved)
+        else:
+            filesystem_paths.append(resolved)
+    return filesystem_paths, dedupe_project_paths(root, sqlite_paths)
+
+
+def snapshot_sqlite_database(root: Path, snapshot_dir: Path, path: Path) -> dict[str, Any]:
+    relative = project_relative_path(root, path)
+    backup = snapshot_dir / "sqlite" / f"{sha256(relative.encode('utf-8')).hexdigest()[:20]}.sqlite"
+    item = {
+        "path": relative,
+        "existed": path.is_file(),
+        "kind": "sqlite_backup",
+        "backup_path": project_relative_path(root, backup),
+        "pages_per_step": 256,
+    }
+    if not path.is_file():
+        return item
+    backup.parent.mkdir(parents=True, exist_ok=True)
+    source = sqlite3.connect(path)
+    destination = sqlite3.connect(backup)
+    try:
+        source.backup(destination, pages=256)
+    finally:
+        destination.close()
+        source.close()
+    item["backup_bytes"] = backup.stat().st_size
+    return item
+
+
+def restore_sqlite_database(root: Path, snapshot_dir: Path, item: dict[str, Any]) -> None:
+    relative = str(item.get("path") or "")
+    if not relative:
+        raise StorageError("SQLite transaction participant is missing its project path.")
+    target = (root / relative).resolve()
+    target.relative_to(root.resolve())
+    if not item.get("existed"):
+        for suffix in ("", "-wal", "-shm"):
+            candidate = Path(str(target) + suffix)
+            if candidate.exists():
+                candidate.unlink()
+        return
+    backup_relative = str(item.get("backup_path") or "")
+    backup = (root / backup_relative).resolve()
+    try:
+        backup.relative_to(snapshot_dir.resolve())
+    except ValueError as exc:
+        raise StorageError(f"SQLite backup escaped its transaction directory: {backup}") from exc
+    if not backup.is_file():
+        raise StorageError(f"SQLite transaction backup is missing: {backup}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Backup into the live database rather than replacing the file. On Windows a
+    # recently committed connection may still hold a handle even though no SQL
+    # transaction is active; SQLite's own backup API remains safe in that case.
+    source = sqlite3.connect(backup)
+    destination = sqlite3.connect(target)
+    try:
+        source.backup(destination, pages=256)
+    finally:
+        destination.close()
+        source.close()
+
+
+def cleanup_transaction_snapshot(snapshot_dir: Path) -> list[str]:
+    if not snapshot_dir.exists():
+        return []
+    try:
+        shutil.rmtree(snapshot_dir)
+    except OSError as exc:
+        return [str(exc)]
+    return []
 
 
 def remove_path(path: Path) -> None:

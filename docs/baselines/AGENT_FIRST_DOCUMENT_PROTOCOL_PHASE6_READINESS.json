@@ -1,0 +1,46 @@
+{
+  "schema": "agent_data_pipeline_readiness_v1",
+  "ready_for_data_pipeline": true,
+  "engine_version": "0.3.2",
+  "provenance": {
+    "git_commit_at_validation": "5259cba2eab512953c9e969409279d183ce440e2",
+    "dirty_tree_sha256": "6b8b80182e083707628586e666dc10c9279f86466d6c701b0530eac5103e83da",
+    "protocol_surface_sha256": "a9aaa2bc3207025b3ed347fcaf1363fa4f19a594329f6b9a6a0c8eb926868a91",
+    "role_resource_sha256": "e4016037b429d158feba7bdb4cb2f000f98b065132c937c66623e019a3879f0b",
+    "phase6_evidence_sha256": "8321595c2d00f07c476053a312fd1895a7cab7f3234a7bb6f7ab53eb327667b6",
+    "skills": {
+      "codex": {
+        "version": "0.3.2",
+        "sha256": "94784b55da6264ff2bd26edfca7180e3732d6b9f0506e2192705208a04d1673a"
+      },
+      "claude_code": {
+        "version": "0.3.2",
+        "sha256": "d908d8a575977dffe7bd9d27b3591a7854d266fe4305ce375c647eb85ef2f681"
+      }
+    }
+  },
+  "test_evidence": {
+    "full_pytest": "416 passed in one complete Windows run",
+    "ruff": "passed",
+    "skill_reference_sync": "passed",
+    "resource_manifest": "passed",
+    "skill_validation": "passed",
+    "release_guards": "passed"
+  },
+  "checks": [
+    {"id": "phase_0_to_5_complete", "status": "pass"},
+    {"id": "role_and_task_coverage", "status": "pass"},
+    {"id": "phase6_test_evidence", "status": "pass"},
+    {"id": "runtime_pipeline_authorization", "status": "pass"},
+    {"id": "current_skill_reference_sync", "status": "pass"},
+    {"id": "current_resource_manifest", "status": "pass"},
+    {"id": "current_skill_validation", "status": "pass"},
+    {"id": "current_release_guards", "status": "pass"}
+  ],
+  "summary": {
+    "passed": 8,
+    "failures": 0
+  },
+  "blocking_reasons": [],
+  "next_command": "Phase 7 is authorized; continue with production next and keep apply/finalize explicit."
+}

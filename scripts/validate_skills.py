@@ -222,12 +222,45 @@ def validate_resource_manifest() -> list[str]:
             errors.append(f"resource-manifest.json: stale hash {relative}")
     for required in (
         "config/default.engine.yaml",
+        "config/agent_roles/registry.json",
         "templates/qidian-longform/project.yaml",
         "longform-novel-codex/SKILL.md",
         "longform-novel-claude/SKILL.md",
     ):
         if required not in listed:
             errors.append(f"resource-manifest.json: missing listing {required}")
+    registry_path = ROOT / "config" / "agent_roles" / "registry.json"
+    if registry_path.is_file():
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        for role in registry.get("roles", []):
+            relative = str(role.get("prompt_path") or "") if isinstance(role, dict) else ""
+            if relative and relative not in listed:
+                errors.append(f"resource-manifest.json: missing role Prompt listing {relative}")
+    return errors
+
+
+def validate_agent_roles() -> list[str]:
+    errors: list[str] = []
+    sys.path.insert(0, str(ROOT / "src"))
+    try:
+        from longform_engine.agent_tasks import TASK_CONTRACTS
+        from longform_engine.roles import validate_role_task_coverage
+
+        registry = validate_role_task_coverage(set(TASK_CONTRACTS), root=ROOT)
+    except (ImportError, ValueError) as exc:
+        return [f"agent role registry: {exc}"]
+    finally:
+        if sys.path and sys.path[0] == str(ROOT / "src"):
+            sys.path.pop(0)
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    if '"config" = "longform_engine/resources/config"' not in pyproject:
+        errors.append("pyproject.toml: agent role resources are not force-included in the wheel")
+    for skill in SKILL_SPECS:
+        text = (ROOT / skill / "SKILL.md").read_text(encoding="utf-8")
+        if "agent-task brief" not in text:
+            errors.append(f"{skill}: host Skill does not use the shared role-aware agent-task brief")
+    if len(registry.roles) != len(set(registry.roles)):
+        errors.append("agent role registry: duplicate role IDs")
     return errors
 
 
@@ -237,6 +270,7 @@ def main() -> int:
         errors.extend(validate_skill(name, spec["platform"], spec["forbidden_platform"]))
     errors.extend(validate_readme())
     errors.extend(validate_config_surface())
+    errors.extend(validate_agent_roles())
     errors.extend(validate_resource_manifest())
     if errors:
         print("Skill validation failed:", file=sys.stderr)

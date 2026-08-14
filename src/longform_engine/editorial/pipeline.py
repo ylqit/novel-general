@@ -177,6 +177,7 @@ def editorial_review(config: ConfigDocument, *, chapter_number: int) -> Editoria
         "schema_version": 3,
         "chapter_number": chapter_number,
         "source_path": relative_path(root, chapter_path),
+        "source_sha256": hashlib.sha256(chapter_path.read_bytes()).hexdigest(),
         "mode": "task_file_multi_role",
         "status": status,
         "review_round": previous_round + 1,
@@ -453,9 +454,40 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
     expected_roles = expected_editorial_roles(config, root=root, chapter_number=chapter_number)
     accepted: list[dict[str, Any]] = []
     result_files: list[str] = []
+    stale_results: list[dict[str, str]] = []
     for path in sorted(result_dir.glob(f"ch{chapter_number:03d}.*.normalized.json")):
         payload = load_json(path, default={})
         if isinstance(payload, dict):
+            if int(payload.get("schema_version") or 1) < 2:
+                accepted.append(payload)
+                result_files.append(relative_path(root, path))
+                continue
+            role_id = role_definition(str(payload.get("role_id") or ""))["id"]
+            context = load_editorial_context(root, chapter_number=chapter_number, role_id=role_id)
+            provenance_paths = [
+                root / str(item)
+                for item in context.get("provenance_source_files") or []
+                if str(item).strip()
+            ]
+            expected_hash = str(context.get("context_digest_hash") or "")
+            current_hash = (
+                context_digest_hash(root, provenance_paths)
+                if provenance_paths and all(item.is_file() for item in provenance_paths)
+                else ""
+            )
+            if (
+                not context
+                or str(payload.get("context_digest_hash") or "") != expected_hash
+                or current_hash != expected_hash
+            ):
+                stale_results.append(
+                    {
+                        "role_id": role_id,
+                        "result_file": relative_path(root, path),
+                        "reason": "editorial context no longer matches the current chapter evidence",
+                    }
+                )
+                continue
             accepted.append(payload)
             result_files.append(relative_path(root, path))
     accepted_roles = {role_definition(str(result.get("role_id") or ""))["id"] for result in accepted}
@@ -490,6 +522,8 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
         reasons.append("duplicate_role_results")
     if invalid_results:
         reasons.append("invalid_role_results")
+    if stale_results:
+        reasons.append("stale_editorial_results")
     if minority_blockers:
         reasons.append("minority_P0_P1")
     if disagreement["human_decisions"]:
@@ -504,34 +538,41 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
     aggregate_file = review_root(root) / f"ch{chapter_number:03d}.aggregate.json"
     markdown_file = review_root(root) / f"ch{chapter_number:03d}.aggregate.md"
     feedback_registry: dict[str, Any] = {
-        "status": "not_updated",
+        "status": "deferred",
         "hard_boundary": "workbench guidance only; never a canonical fact source",
     }
-    try:
-        records = refresh_feedback_registry(
-            root,
-            chapter_number=chapter_number,
-            observations=editorial_feedback_observations(
-                unresolved,
-                source_path=relative_path(root, aggregate_file),
+    aggregate_complete = not (
+        missing_roles or duplicate_role_results or invalid_results or stale_results
+    )
+    if aggregate_complete:
+        try:
+            records = refresh_feedback_registry(
+                root,
                 chapter_number=chapter_number,
-            ),
-        )
-        feedback_registry = {
-            "status": "updated",
-            "path": "50_workbench/quality_feedback/registry.jsonl",
-            "records": len(records),
-            "hard_boundary": "workbench guidance only; never a canonical fact source",
-        }
-    except (OSError, ValueError) as exc:
-        feedback_registry = {
-            "status": "warning",
-            "warning": str(exc),
-            "hard_boundary": "registry failure does not block aggregate or chapter finalization",
-        }
+                observations=editorial_feedback_observations(
+                    unresolved,
+                    source_path=relative_path(root, aggregate_file),
+                    chapter_number=chapter_number,
+                ),
+            )
+            feedback_registry = {
+                "status": "updated",
+                "path": "50_workbench/quality_feedback/registry.jsonl",
+                "records": len(records),
+                "hard_boundary": "workbench guidance only; never a canonical fact source",
+            }
+        except (OSError, ValueError) as exc:
+            feedback_registry = {
+                "status": "warning",
+                "warning": str(exc),
+                "hard_boundary": "registry failure does not block aggregate or chapter finalization",
+            }
+    chapter_path = find_chapter(root, chapter_number)
     payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "chapter_number": chapter_number,
+        "source_path": relative_path(root, chapter_path) if chapter_path is not None else "",
+        "source_sha256": hashlib.sha256(chapter_path.read_bytes()).hexdigest() if chapter_path is not None else "",
         "accepted_results": result_files,
         "result_count": len(accepted),
         "expected_roles": expected_roles,
@@ -539,6 +580,7 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
         "missing_roles": list(missing_roles),
         "duplicate_role_results": list(duplicate_role_results),
         "invalid_results": list(invalid_results),
+        "stale_results": stale_results,
         "conditional_passes": verdicts.count("conditional_pass"),
         "severity_counts": counts,
         "unresolved_items": unresolved,
@@ -947,6 +989,7 @@ def write_multi_agent_task_files(root: Path, payload: dict[str, Any]) -> list[st
                 "--reason editorial_result_invalid"
             ),
             task_id=f"editorial_review:{role_id}:ch{int(payload['chapter_number']):03d}:v2",
+            role_id=role_id,
             context_policy={
                 "required_files": role_inputs,
                 "optional_files": [],
@@ -993,7 +1036,6 @@ def editorial_role_source_inputs(
         "anti_ai_editor": [
             chapter,
             root / "50_workbench" / "humanizer_tasks" / f"ch{chapter_number:03d}.humanize_check.json",
-            root / "50_workbench" / "quality_feedback" / "registry.jsonl",
             card,
             root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json",
         ],
@@ -1020,7 +1062,6 @@ def editorial_role_source_inputs(
         "executive_editor": [
             chapter,
             card,
-            root / "50_workbench" / "quality_feedback" / "registry.jsonl",
         ],
     }
     candidates = candidates_by_role.get(
@@ -1157,8 +1198,16 @@ def format_role_task(
                 "independence_mode, review_round, confidence."
             ),
             "Valid verdicts: pass, conditional_pass, needs_revision, rewrite, blocked.",
+            (
+                "Each items[] object must contain: code, severity (P0|P1|P2|PASS), message, "
+                "evidence (an array of exact current-chapter excerpts), and may contain status, "
+                "recommendation, character_ids."
+            ),
             "Every P0/P1 item must cite one or more exact excerpts from the current chapter in `evidence`.",
-            "The character_editor must return evidence-bearing items for every featured character even when the verdict is pass.",
+            (
+                "The character_editor must return evidence-bearing items for every featured character even when the verdict "
+                "is pass, and list the covered stable IDs in each item's `character_ids`."
+            ),
             "Do not read any other editorial role result before submitting this result.",
             "Use only the files declared by this role's AgentTaskManifest.",
             "Do not mutate final/RAG/graph/memory/TCS/SQLite directly.",
@@ -1350,8 +1399,8 @@ def validate_editorial_result_payload(
         schema_version = int(payload.get("schema_version") or 1)
     except (TypeError, ValueError):
         schema_version = 0
-    if schema_version not in {1, 2}:
-        errors.append("schema_version must be 1 or 2.")
+    if schema_version != 2:
+        errors.append("schema_version must be 2; historical editorial result schemas are not accepted.")
     if int(payload.get("chapter_number") or 0) != chapter_number:
         errors.append("payload chapter_number does not match command chapter.")
     payload_role = role_definition(str(payload.get("role_id") or "")).get("id")
@@ -1454,42 +1503,34 @@ def validate_editorial_result_payload(
     independence_mode = str(payload.get("independence_mode") or "").strip()
     review_round = int(payload.get("review_round") or 0)
     confidence = normalize_confidence(payload.get("confidence"))
-    if schema_version == 2:
-        if not context:
-            errors.append("editorial v2 context metadata is missing; regenerate the editorial review task.")
-        else:
-            if reviewer_instance_id != str(context.get("reviewer_instance_id") or ""):
-                errors.append("reviewer_instance_id does not match the isolated role context.")
-            if submitted_context_hash != str(context.get("context_digest_hash") or ""):
-                errors.append("context_digest_hash does not match the isolated role context.")
-            provenance_paths = [
-                root / str(path)
-                for path in context.get("provenance_source_files") or context.get("declared_source_files") or []
-                if str(path).strip()
-            ]
-            if any(not path.exists() for path in provenance_paths):
-                errors.append("one or more declared editorial context files no longer exist.")
-            elif context_digest_hash(root, provenance_paths) != str(context.get("context_digest_hash") or ""):
-                errors.append("editorial context changed after task creation; regenerate the role task.")
-            if review_round != int(context.get("review_round") or 0):
-                errors.append("review_round does not match the isolated role context.")
-        if not agent_product:
-            errors.append("agent_product is required for editorial_role_review_v2.")
-        if not agent_version:
-            errors.append("agent_version is required for editorial_role_review_v2.")
-        if independence_mode not in {"same_host_isolated_context", "cross_host", "human", "unknown"}:
-            errors.append(
-                "independence_mode must be same_host_isolated_context, cross_host, human, or unknown."
-            )
-        if confidence is None:
-            errors.append("confidence must be a number from 0 to 1.")
+    if not context:
+        errors.append("editorial v2 context metadata is missing; regenerate the editorial review task.")
     else:
-        warnings.append(
-            "editorial_role_review_v1 accepted for compatibility; independence evidence is unknown."
+        if reviewer_instance_id != str(context.get("reviewer_instance_id") or ""):
+            errors.append("reviewer_instance_id does not match the isolated role context.")
+        if submitted_context_hash != str(context.get("context_digest_hash") or ""):
+            errors.append("context_digest_hash does not match the isolated role context.")
+        provenance_paths = [
+            root / str(path)
+            for path in context.get("provenance_source_files") or context.get("declared_source_files") or []
+            if str(path).strip()
+        ]
+        if any(not path.exists() for path in provenance_paths):
+            errors.append("one or more declared editorial context files no longer exist.")
+        elif context_digest_hash(root, provenance_paths) != str(context.get("context_digest_hash") or ""):
+            errors.append("editorial context changed after task creation; regenerate the role task.")
+        if review_round != int(context.get("review_round") or 0):
+            errors.append("review_round does not match the isolated role context.")
+    if not agent_product:
+        errors.append("agent_product is required for editorial_role_review_v2.")
+    if not agent_version:
+        errors.append("agent_version is required for editorial_role_review_v2.")
+    if independence_mode not in {"same_host_isolated_context", "cross_host", "human", "unknown"}:
+        errors.append(
+            "independence_mode must be same_host_isolated_context, cross_host, human, or unknown."
         )
-        reviewer_instance_id = reviewer_instance_id or str(context.get("reviewer_instance_id") or "legacy-v1")
-        submitted_context_hash = submitted_context_hash or str(context.get("context_digest_hash") or "")
-        independence_mode = independence_mode or "unknown"
+    if confidence is None:
+        errors.append("confidence must be a number from 0 to 1.")
         review_round = review_round or int(context.get("review_round") or 1)
         confidence = confidence if confidence is not None else 0.0
     normalized = {
@@ -1655,6 +1696,14 @@ def editorial_finalization_blockers(config: ConfigDocument, *, chapter_number: i
     payload = load_json(aggregate_file, default={})
     if not isinstance(payload, dict):
         return ["invalid_editorial_aggregate"]
+    chapter_path = find_chapter(root, chapter_number)
+    source_hash = str(payload.get("source_sha256") or "")
+    if int(payload.get("schema_version") or 1) >= 2 and (
+        chapter_path is None
+        or not source_hash
+        or hashlib.sha256(chapter_path.read_bytes()).hexdigest() != source_hash
+    ):
+        return ["stale_editorial_aggregate"]
     counts = payload.get("severity_counts") if isinstance(payload.get("severity_counts"), dict) else {}
     reasons = [str(reason) for reason in payload.get("need_human_reasons") or [] if str(reason).strip()]
     if int(counts.get("P0") or 0) > 0 and "unresolved_P0" not in reasons:

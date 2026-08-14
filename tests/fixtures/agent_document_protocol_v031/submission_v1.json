@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "chapter_number": 1,
+  "agent": "codex",
+  "source_file": "50_workbench/repair_candidates/ch001.codex.repair_candidate.md",
+  "draft_file": "40_manuscript/draft/ch001.md",
+  "writing_task": "50_workbench/writing_tasks/ch001.json",
+  "source_sha256": "01b1c4c17ac50eaac3e21f6cfca23b3843f44290a774a43500d53974be86a33b",
+  "draft_sha256": "01b1c4c17ac50eaac3e21f6cfca23b3843f44290a774a43500d53974be86a33b",
+  "word_count": 27,
+  "submitted_at": "2026-08-13T00:00:00+00:00",
+  "updated_at": "2026-08-13T00:00:01+00:00"
+}

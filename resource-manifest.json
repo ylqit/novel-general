@@ -1,9 +1,179 @@
 {
   "assets": [
     {
+      "path": "config/agent_data_pipeline_authorization.json",
+      "sha256": "cd5e56a51a38f3e7950715086a6c1ce8a11aa23ab7fef810c47e5d29cc3c28d9",
+      "size": 318
+    },
+    {
+      "path": "config/agent_roles/prompts/adaptation_analyst.md",
+      "sha256": "aa13e9e52ccf9d9059e2638249245e8587b2be29d920c694b7e3048a511b8ebb",
+      "size": 1292
+    },
+    {
+      "path": "config/agent_roles/prompts/anti_ai_editor.md",
+      "sha256": "82926ddcd5f9d73af4644eab44b48cd092353c0f0b4b3d8633e771917955c1e8",
+      "size": 1436
+    },
+    {
+      "path": "config/agent_roles/prompts/book_architect.md",
+      "sha256": "5c33a28e1bdedb688c794259f03f2bfb64d4c872e75290f547677d3055b23c8d",
+      "size": 1599
+    },
+    {
+      "path": "config/agent_roles/prompts/canon_fidelity_reviewer.md",
+      "sha256": "60c33b95435ea62999edcd76ca09fe7e4a51337c129eecf65f977d7e55cd42c7",
+      "size": 1470
+    },
+    {
+      "path": "config/agent_roles/prompts/chapter_author.md",
+      "sha256": "fc0cfb10ea0f0e0c3bbbd0f2608591437633c745b2b6d46d23ab2f4d26237491",
+      "size": 1717
+    },
+    {
+      "path": "config/agent_roles/prompts/chapter_semantic_archivist.md",
+      "sha256": "a67243af8efd2013b9518a3ee9285ad771119fd198a910801cb47428d4b23b77",
+      "size": 1516
+    },
+    {
+      "path": "config/agent_roles/prompts/chapter_story_editor.md",
+      "sha256": "bcedada2d6d9f67c687f57dd94fa45730425227865d1fa835071d3c1979b773c",
+      "size": 1296
+    },
+    {
+      "path": "config/agent_roles/prompts/character_editor.md",
+      "sha256": "935058fe755a62354a8bf565d9a5f714429a4703aed5bdcfa12393e87e363c57",
+      "size": 1345
+    },
+    {
+      "path": "config/agent_roles/prompts/character_performance_architect.md",
+      "sha256": "4198996cdb3a7905b1d32758c33ed4718eaeedfc97570889a1646985528d266d",
+      "size": 1343
+    },
+    {
+      "path": "config/agent_roles/prompts/character_performance_reviewer.md",
+      "sha256": "76f96b6a12dacef4e4b032d55ffae3df00eb4ebc20b72aac55e87a706036b0a6",
+      "size": 1444
+    },
+    {
+      "path": "config/agent_roles/prompts/continuity_outline_editor.md",
+      "sha256": "8151a2af90c468342fe9b26d11fb28e41913137a49935c638b2b6d160598a240",
+      "size": 1425
+    },
+    {
+      "path": "config/agent_roles/prompts/creative_facilitator.md",
+      "sha256": "17a3ba476b87363f0b56c19410df7e49388fec6a814b18097901dc6870711987",
+      "size": 1536
+    },
+    {
+      "path": "config/agent_roles/prompts/executive_editor.md",
+      "sha256": "7594a0bc603f4dc498e626198e2968888ac8a9022ef8e132d7e6b36f1f6d7219",
+      "size": 1518
+    },
+    {
+      "path": "config/agent_roles/prompts/expansion_writer.md",
+      "sha256": "e0690c904153e757d81b8db95d1b710a09718e469faff2eb02f7c650d40ad57b",
+      "size": 1413
+    },
+    {
+      "path": "config/agent_roles/prompts/fanfiction_architect.md",
+      "sha256": "fda9cb4820e84e195fdab0fbd9ea96ece06c8cd6633e78b163f81643bc3acaa7",
+      "size": 1467
+    },
+    {
+      "path": "config/agent_roles/prompts/fanfiction_canon_archivist.md",
+      "sha256": "716b61e15be90e4e8d2a16490ec27272b6a22bbffc69704282e9eb2891983744",
+      "size": 1447
+    },
+    {
+      "path": "config/agent_roles/prompts/humanizer.md",
+      "sha256": "5ab348e46bdf5bf8cb102c66ce374adc07aeb84d2b05685f2224e525b4431d69",
+      "size": 1474
+    },
+    {
+      "path": "config/agent_roles/prompts/humanizer_semantic_reviewer.md",
+      "sha256": "0c83b51a80c9e93425245553281405ab30d9de982de2fc4c8e7789c6eed4eb5b",
+      "size": 1405
+    },
+    {
+      "path": "config/agent_roles/prompts/legacy_character_memory_curator.md",
+      "sha256": "4a10dc60acc342bb93b2ce283d71c292e73c5d5f1d51e98c754a04579ffc6f2e",
+      "size": 1256
+    },
+    {
+      "path": "config/agent_roles/prompts/legacy_graph_extractor.md",
+      "sha256": "f30fb5285d7ee78da262140c5ff31d67759645f04c46e1adfe25fbfe44a60da5",
+      "size": 1200
+    },
+    {
+      "path": "config/agent_roles/prompts/legacy_memory_extractor.md",
+      "sha256": "70450fb44cb15e3d7cab429da4cb48db924158ff6e8fc1cf607137a5c95aa64e",
+      "size": 1173
+    },
+    {
+      "path": "config/agent_roles/prompts/longform_outline_architect.md",
+      "sha256": "208dd06ce0d8e605373a17362a2b4744432e96ee38cb5b96ead2100a36ebde56",
+      "size": 1475
+    },
+    {
+      "path": "config/agent_roles/prompts/planning_chief_editor.md",
+      "sha256": "a63bd0d60508610d6dd43d8efc86a5390b1034658910b15a491df44d76707569",
+      "size": 1343
+    },
+    {
+      "path": "config/agent_roles/prompts/reader_payoff_reviewer.md",
+      "sha256": "b9f22751d9cf3e93409fcd06f68d7717e893b32e90e2d63d95f85e3f65fc4219",
+      "size": 1417
+    },
+    {
+      "path": "config/agent_roles/prompts/reader_quality_reviewer.md",
+      "sha256": "7da2e0247b1e87ca7763b223a0b4b1b58a31a4d0a539cc508d857299c6e09d0c",
+      "size": 1319
+    },
+    {
+      "path": "config/agent_roles/prompts/repair_author.md",
+      "sha256": "c05486471714013bd7702efc5b068370f27e509ac99773e7833de7668d53dd3e",
+      "size": 1456
+    },
+    {
+      "path": "config/agent_roles/prompts/research_synthesizer.md",
+      "sha256": "90521153e9ac9e38ded06863d3726a70eef9d1091379228f5e3b57794c6893ff",
+      "size": 1360
+    },
+    {
+      "path": "config/agent_roles/prompts/semantic_continuity_reviewer.md",
+      "sha256": "e8ba9aa01cd23df922c7cb47e252686592adffee142c9d284168ccbdaf1523bf",
+      "size": 1396
+    },
+    {
+      "path": "config/agent_roles/prompts/semantic_pacing_reviewer.md",
+      "sha256": "dad699bb408883aa451af7aef0fa10ce6567ac5c85dfdbe0a22db0728df03238",
+      "size": 1463
+    },
+    {
+      "path": "config/agent_roles/prompts/semantic_style_analyst.md",
+      "sha256": "a3ff51dbeff5a8200965ec03dfa901c7d9f1c4ca9ff0d20bddee75caab351ff8",
+      "size": 1304
+    },
+    {
+      "path": "config/agent_roles/prompts/serial_verifier.md",
+      "sha256": "5049bc32316d3da4bc6d6fa240106396876809bdb85463c2d39b235086d6fdfe",
+      "size": 1300
+    },
+    {
+      "path": "config/agent_roles/prompts/writing_agent.md",
+      "sha256": "226294959144a1da9805cf6d1cbd19068bec283ddacd67b00c7f3e71eaf44726",
+      "size": 1265
+    },
+    {
+      "path": "config/agent_roles/registry.json",
+      "sha256": "455d718d6fb5231f37936f9cbfecec937fdb788a3849f3301b9f9274e43ebf47",
+      "size": 8776
+    },
+    {
       "path": "config/default.engine.yaml",
-      "sha256": "03e2b72b18d04ed9858918400a2d757a4ce2ecdf2b7eb28a58c2661b44a9b7d5",
-      "size": 5616
+      "sha256": "ebb0afbeeb3ddf4d89b98c63866c5fd6044d5d9ee62b05dc245ad574358b1915",
+      "size": 5599
     },
     {
       "path": "config/quality_profiles/genres/history.yaml",
@@ -76,9 +246,39 @@
       "size": 459
     },
     {
-      "path": "templates/qidian-longform/project.yaml",
-      "sha256": "3676b5963b58efe931e0bbe786df75436aa98dd35c69e9422461ec6755624ddf",
-      "size": 3764
+      "path": "longform-novel-claude/agents/openai.yaml",
+      "sha256": "c1b74d46a3d84d9b489d7c560a3c9458c0d7c67cb76605c748a47bdedf77cfec",
+      "size": 226
+    },
+    {
+      "path": "longform-novel-claude/references/artifact_reporting.md",
+      "sha256": "80a8ed029966874602d85605d12c15e43d2cd9f6e0ecd1943218f8cfd01a1c47",
+      "size": 1447
+    },
+    {
+      "path": "longform-novel-claude/references/command_protocol.md",
+      "sha256": "26c760633020dcabb6e3102cc1461e47dba79cd95b2ebe425bf5539568053677",
+      "size": 30059
+    },
+    {
+      "path": "longform-novel-claude/references/creative_operator_protocol.md",
+      "sha256": "16bee52e5b6de65d1fc72df9cbcf6cb2a0924cafb3b6aa455188dfba94edd41d",
+      "size": 10029
+    },
+    {
+      "path": "longform-novel-claude/references/iron_laws.md",
+      "sha256": "f8382f57e7babb59131e93373231202da7212db2d1fb3ac8f78393d3cbabd59b",
+      "size": 6110
+    },
+    {
+      "path": "longform-novel-claude/references/workflow_mapping.md",
+      "sha256": "cd49b37a0b254f1c49c512013d3ddb32877b90813fd630843b2734b3b61bb157",
+      "size": 6233
+    },
+    {
+      "path": "longform-novel-claude/SKILL.md",
+      "sha256": "0c69edfd45690d1967ed92b46a6d2be5854859c773222585d224369cfed856f1",
+      "size": 4322
     },
     {
       "path": "longform-novel-codex/agents/openai.yaml",
@@ -116,39 +316,9 @@
       "size": 4316
     },
     {
-      "path": "longform-novel-claude/agents/openai.yaml",
-      "sha256": "c1b74d46a3d84d9b489d7c560a3c9458c0d7c67cb76605c748a47bdedf77cfec",
-      "size": 226
-    },
-    {
-      "path": "longform-novel-claude/references/artifact_reporting.md",
-      "sha256": "80a8ed029966874602d85605d12c15e43d2cd9f6e0ecd1943218f8cfd01a1c47",
-      "size": 1447
-    },
-    {
-      "path": "longform-novel-claude/references/command_protocol.md",
-      "sha256": "26c760633020dcabb6e3102cc1461e47dba79cd95b2ebe425bf5539568053677",
-      "size": 30059
-    },
-    {
-      "path": "longform-novel-claude/references/creative_operator_protocol.md",
-      "sha256": "16bee52e5b6de65d1fc72df9cbcf6cb2a0924cafb3b6aa455188dfba94edd41d",
-      "size": 10029
-    },
-    {
-      "path": "longform-novel-claude/references/iron_laws.md",
-      "sha256": "f8382f57e7babb59131e93373231202da7212db2d1fb3ac8f78393d3cbabd59b",
-      "size": 6110
-    },
-    {
-      "path": "longform-novel-claude/references/workflow_mapping.md",
-      "sha256": "cd49b37a0b254f1c49c512013d3ddb32877b90813fd630843b2734b3b61bb157",
-      "size": 6233
-    },
-    {
-      "path": "longform-novel-claude/SKILL.md",
-      "sha256": "0c69edfd45690d1967ed92b46a6d2be5854859c773222585d224369cfed856f1",
-      "size": 4322
+      "path": "pyproject.toml",
+      "sha256": "ae0db292f6ee61a1ffc76fcb4dd4a848d7eae1bc0cf603e6018149bcf8678ccc",
+      "size": 2065
     },
     {
       "path": "shared/artifact_reporting.md",
@@ -174,8 +344,13 @@
       "path": "shared/workflow_mapping.md",
       "sha256": "cd49b37a0b254f1c49c512013d3ddb32877b90813fd630843b2734b3b61bb157",
       "size": 6233
+    },
+    {
+      "path": "templates/qidian-longform/project.yaml",
+      "sha256": "8ab8775cc6fa0874a80b81128d714500b130ec9f7a86b05de82e70d36c4972d2",
+      "size": 3747
     }
   ],
-  "engine_version": "0.3.1",
+  "engine_version": "0.3.2",
   "schema": "longform_resource_manifest_v1"
 }

@@ -1,9 +1,12 @@
+from hashlib import sha256
 import json
 from pathlib import Path
+import zipfile
 
 import pytest
 
 from longform_engine.benchmark import (
+    CHAPTER_ARTIFACT_PATHS,
     compare_benchmarks,
     init_benchmark,
     record_benchmark_chapter,
@@ -147,6 +150,84 @@ def test_technical_record_captures_and_revalidates_chapter_artifact_hashes(tmp_p
     validation = validate_benchmark(config, run_id=initialized.run_id)
     assert not validation.ok
     assert any("gate_result SHA-256 does not match" in error for error in validation.errors)
+
+
+def test_technical_record_reads_compacted_chapter_artifacts_without_restore(tmp_path):
+    config = seed_project(tmp_path)
+    root = tmp_path / "novel"
+    initialized = init_benchmark(
+        config,
+        run_id="codex-compacted-smoke",
+        agent_product="codex",
+        chapters=1,
+    )
+    paths = {
+        name: root / template.format(chapter=1)
+        for name, template in CHAPTER_ARTIFACT_PATHS.items()
+    }
+    for name, path in paths.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"artifact:{name}", encoding="utf-8")
+    final = root / "40_manuscript" / "final" / "ch001.md"
+    final.parent.mkdir(parents=True, exist_ok=True)
+    final.write_bytes(paths["reviewed_manuscript"].read_bytes())
+
+    entries = []
+    archive = root / "70_runtime" / "artifacts" / "chapters" / "ch001.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive, "w") as handle:
+        for name, path in paths.items():
+            digest = sha256(path.read_bytes()).hexdigest()
+            entry = {
+                "path": path.relative_to(root).as_posix(),
+                "sha256": digest,
+                "size": path.stat().st_size,
+            }
+            if name == "reviewed_manuscript":
+                entry["retained_role"] = "final"
+            else:
+                member = f"_audit/blobs/{digest}"
+                entry["member"] = member
+                handle.writestr(member, path.read_bytes())
+            entries.append(entry)
+        handle.writestr(
+            "_audit/manifest.json",
+            json.dumps(
+                {
+                    "schema": "chapter_artifact_archive_v3",
+                    "chapter_number": 1,
+                    "entries": entries,
+                    "retained_evidence": [
+                        {
+                            "role": "final",
+                            "path": "40_manuscript/final/ch001.md",
+                            "sha256": sha256(final.read_bytes()).hexdigest(),
+                            "size": final.stat().st_size,
+                        }
+                    ],
+                }
+            ),
+        )
+    for path in paths.values():
+        path.unlink()
+
+    record_benchmark_chapter(
+        config,
+        run_id=initialized.run_id,
+        chapter_number=1,
+        scores=None,
+        gate_passed=True,
+        repair_count=0,
+        need_human_count=0,
+        context_file_count=1,
+        context_character_count=100,
+        review_status="technical_pending",
+        require_artifact_hashes=True,
+    )
+
+    validation = validate_benchmark(config, run_id=initialized.run_id)
+    assert validation.ok, validation.errors
+    assert validation.acceptance_passed
 
 
 def test_fanfiction_benchmark_requires_all_quality_dimensions_before_recording(tmp_path):

@@ -2,6 +2,8 @@
 
 公开发行源：`https://github.com/ylqit/novel-general`。普通用户使用 pipx 安装 engine，再由 `longform-engine skills` 管理内置的自包含 Skill；无需手工复制 `shared/`，也无需 OpenAI、Anthropic 或 provider API key。
 
+`v0.3.2` 不保证旧版小说项目数据兼容；请为生产验证创建新项目。升级 engine 后必须同步更新 Skill 并重新运行 doctor。
+
 ## Public Install
 
 Windows PowerShell：
@@ -11,7 +13,7 @@ py -3 -m pip install --user --upgrade pipx
 py -3 -m pipx ensurepath
 $env:PIPX_BIN_DIR = if ($env:PIPX_BIN_DIR) { $env:PIPX_BIN_DIR } else { Join-Path $env:USERPROFILE ".local\bin" }
 $env:PATH = "$env:PIPX_BIN_DIR;$env:PATH"
-py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.3.1'
+py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.3.2'
 longform-engine skills install --tool all
 longform-engine doctor --tool all
 ```
@@ -23,7 +25,7 @@ python3 -m pip install --user --upgrade pipx
 python3 -m pipx ensurepath
 export PIPX_BIN_DIR="${PIPX_BIN_DIR:-$HOME/.local/bin}"
 export PATH="$PIPX_BIN_DIR:$PATH"
-python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.3.1'
+python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.3.2'
 longform-engine skills install --tool all
 longform-engine doctor --tool all
 ```
@@ -60,6 +62,31 @@ longform-engine models install project.yaml --profile bge-m3 --download
 ```
 
 JSON 使用稳定的 `doctor_v1` schema。
+
+## Shared Model Cache
+
+`v0.3.2` 起，Semantic 模型默认安装到操作系统的用户级缓存，同一台机器上的小说项目共用一份模型。项目只保存 `semantic_model_cache_ref_v1` 引用，不再各自复制数 GB 权重。
+
+```powershell
+longform-engine models cache-status --json
+longform-engine models migrate project.yaml --to-shared --dry-run --json
+longform-engine models migrate project.yaml --to-shared --yes --json
+```
+
+显式绝对 `models_dir` 仍视为用户管理路径，不自动迁移。旧版相对路径 `70_runtime/models` 会被识别为 legacy；迁移顺序固定为复制或复用、逐文件校验、写引用，最后才删除项目内副本。
+
+## Legacy Project Lifecycle
+
+旧项目已经存在 final、但缺少统一语义账本或 closure 时，先让 CLI 诊断，不要手工伪造关闭记录：
+
+```powershell
+longform-engine legacy status project.yaml --json
+longform-engine legacy backfill project.yaml --through 15 --json
+longform-engine legacy compact project.yaml --through 15 --approved-by human --dry-run --json
+longform-engine legacy compact project.yaml --through 15 --approved-by human --json
+```
+
+`legacy backfill` 每次只创建最早缺失章的 Agent 语义任务，仍需 Agent 输出、validate 和显式 apply。`legacy compact` 只有在整段 final、gate、语义账本和重建状态一致后，才会事务化生成 migration closure 并归档旧产物。
 
 ## First Production
 

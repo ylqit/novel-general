@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from longform_engine.config import load_project_config
 from longform_engine.gates import GateError, gate_check, pacing_review, record_waiver, repair_plan
@@ -87,6 +88,33 @@ def test_gate_event_matrix_blocks_cooldown_and_fast_quota(tmp_path):
     assert result.passed is False
     assert "event_cooldown" in messages
     assert "fast_quota" in messages
+
+
+def test_gate_does_not_treat_one_event_word_as_a_blocking_event(tmp_path):
+    project_config = seed_gate_project(tmp_path)
+    project_config.data["length"]["chapter_word_count"]["hard_min"] = 20
+    root = tmp_path / "novel"
+    (root / "30_state" / "pacing_history.json").write_text(
+        json.dumps(
+            [{"chapter_number": 1, "tier": "fast", "event_types": ["conflict_thrill"]}],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    plan_chapter(project_config, chapter_number=2)
+    draft = (
+        "# Chapter 2\n\nAri writes down one battle retreat password. "
+        + ("He checks ordinary supply prices and copies the route into a notebook. " * 8)
+    )
+    (root / "40_manuscript" / "draft" / "ch002.md").write_text(draft, encoding="utf-8")
+
+    result = gate_check(project_config, chapter_number=2)
+    messages = " ".join(str(item.get("message", "")) for item in result.failures)
+    gate_payload = json.loads(Path(result.gate_result).read_text(encoding="utf-8"))
+
+    assert "event_cooldown" not in messages
+    assert any("weak lexical event hints" in warning for warning in gate_payload["warnings"])
 
 
 def test_pacing_review_warns_when_soft_event_gap_persists(tmp_path):

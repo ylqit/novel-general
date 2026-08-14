@@ -28,6 +28,7 @@ from longform_engine.blind_review import (
 )
 from longform_engine.character_expression import approve_voice_samples
 
+from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_tasks import (
     build_manifest,
     list_manifests,
@@ -35,6 +36,11 @@ from longform_engine.agent_tasks import (
     status_summary,
     validate_manifest_strict,
     write_manifest,
+)
+from longform_engine.agent_protocol_readiness import (
+    DEFAULT_EVIDENCE as DEFAULT_AGENT_PROTOCOL_EVIDENCE,
+    check_agent_data_pipeline_readiness,
+    render_agent_data_pipeline_readiness,
 )
 from longform_engine.config import ConfigDocument, ConfigError, load_project_config
 from longform_engine.creative import (
@@ -97,6 +103,7 @@ from longform_engine.intelligence import (
     fanfiction_status,
     validate_intelligence_candidate,
 )
+from longform_engine.legacy import legacy_backfill, legacy_compact, legacy_status
 from longform_engine.memory import (
     apply_semantic_memory,
     build_tcs,
@@ -111,7 +118,13 @@ from longform_engine.memory import (
     validate_tcs,
     validate_memory,
 )
-from longform_engine.models import install_model_profile, list_profiles, verify_models
+from longform_engine.models import (
+    cache_status_payload,
+    install_model_profile,
+    list_profiles,
+    migrate_models_to_shared,
+    verify_models,
+)
 from longform_engine.orchestration import (
     auto_write_plan,
     auto_write_progress,
@@ -129,6 +142,7 @@ from longform_engine.orchestration import (
 from longform_engine.planning import revise_outline
 from longform_engine.publication import export_publication_bundle, publication_risk_report
 from longform_engine.production import agent_task_brief, production_board, production_loop, production_next, production_status
+from longform_engine.prompting import validate_project_prompt_overlay
 from longform_engine.quality import (
     approve_style_baseline,
     compile_effective_quality_contract,
@@ -495,8 +509,29 @@ def build_parser() -> argparse.ArgumentParser:
     agent_task_brief_cmd = agent_task_subparsers.add_parser("brief", help="Render one manifest as an Agent work order.")
     agent_task_brief_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     agent_task_brief_cmd.add_argument("task", help="Task id or manifest path.")
+    agent_task_brief_cmd.add_argument(
+        "--host", choices=("codex", "claude-code"), default="codex", help="Host-specific display adapter."
+    )
     agent_task_brief_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     agent_task_brief_cmd.set_defaults(func=cmd_agent_task_brief)
+
+    agent_task_overlay_validate = agent_task_subparsers.add_parser(
+        "overlay-validate",
+        help="Validate the optional human-approved project Prompt overlay without changing project state.",
+    )
+    agent_task_overlay_validate.add_argument(
+        "config", nargs="?", default="project.yaml", help="Path to project.yaml."
+    )
+    agent_task_overlay_validate.add_argument(
+        "--file", default="00_governance/agent_prompt_overlay.json", help="Project-relative overlay JSON."
+    )
+    agent_task_overlay_validate.add_argument(
+        "--role-id", default="chapter_author", help="Role whose overlay allowlist should be checked."
+    )
+    agent_task_overlay_validate.add_argument(
+        "--json", action="store_true", help="Print machine-readable JSON."
+    )
+    agent_task_overlay_validate.set_defaults(func=cmd_agent_task_overlay_validate)
 
     agent_task_validate = agent_task_subparsers.add_parser("validate", help="Validate one AgentTaskManifest v1/v2 contract.")
     agent_task_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
@@ -504,6 +539,43 @@ def build_parser() -> argparse.ArgumentParser:
     agent_task_validate.add_argument("--strict", action="store_true", help="Check task type, lanes, schemas, commands, and hard boundaries.")
     agent_task_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     agent_task_validate.set_defaults(func=cmd_agent_task_validate)
+
+    agent_result_validate = agent_task_subparsers.add_parser(
+        "result-validate",
+        help="Normalize and verify one Agent result without changing lifecycle or canonical state.",
+    )
+    agent_result_validate.add_argument(
+        "config", nargs="?", default="project.yaml", help="Path to project.yaml."
+    )
+    agent_result_validate.add_argument("task", help="Task id or manifest path.")
+    agent_result_validate.add_argument("--file", required=True, help="Declared Agent result path.")
+    agent_result_validate.add_argument(
+        "--document", help="Declared Markdown companion for a document/index bundle."
+    )
+    agent_result_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    agent_result_validate.set_defaults(func=cmd_agent_task_result_validate)
+
+    agent_task_readiness = agent_task_subparsers.add_parser(
+        "readiness",
+        help="Check whether Phase 0-6 evidence permits implementation of the Agent-first data pipeline.",
+    )
+    agent_task_readiness.add_argument(
+        "--repository", default=".", help="Engine repository root."
+    )
+    agent_task_readiness.add_argument(
+        "--evidence",
+        default=DEFAULT_AGENT_PROTOCOL_EVIDENCE.as_posix(),
+        help="Repository-relative Phase 6 evidence JSON.",
+    )
+    agent_task_readiness.add_argument(
+        "--skip-contracts",
+        action="store_true",
+        help="Use recorded contract evidence without rerunning the four quick contract commands.",
+    )
+    agent_task_readiness.add_argument(
+        "--json", action="store_true", help="Print agent_data_pipeline_readiness_v1 JSON."
+    )
+    agent_task_readiness.set_defaults(func=cmd_agent_task_readiness)
 
     production = subparsers.add_parser("production", help="Inspect production experience orchestration state.")
     production_subparsers = production.add_subparsers(dest="production_command", required=True)
@@ -771,6 +843,18 @@ def build_parser() -> argparse.ArgumentParser:
     models_verify.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     models_verify.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     models_verify.set_defaults(func=cmd_models_verify)
+
+    models_cache_status = models_subparsers.add_parser("cache-status", help="Inspect the shared semantic model cache.")
+    models_cache_status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    models_cache_status.set_defaults(func=cmd_models_cache_status)
+
+    models_migrate = models_subparsers.add_parser("migrate", help="Migrate a legacy project model cache to shared storage.")
+    models_migrate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    models_migrate.add_argument("--to-shared", action="store_true", required=True, help="Migrate to the user-level shared cache.")
+    models_migrate.add_argument("--dry-run", action="store_true", help="Inspect migration without writing files.")
+    models_migrate.add_argument("--yes", action="store_true", help="Confirm migration and legacy cache removal.")
+    models_migrate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    models_migrate.set_defaults(func=cmd_models_migrate)
 
     vector_store = subparsers.add_parser("vector-store", help="Verify and rebuild pluggable vector indexes.")
     vector_subparsers = vector_store.add_subparsers(dest="vector_command", required=True)
@@ -1282,6 +1366,28 @@ def build_parser() -> argparse.ArgumentParser:
     artifacts_restore_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     artifacts_restore_cmd.set_defaults(func=cmd_artifacts_restore)
 
+    legacy = subparsers.add_parser("legacy", help="Inspect and migrate projects created before semantic closure.")
+    legacy_subparsers = legacy.add_subparsers(dest="legacy_command", required=True)
+    legacy_status_cmd = legacy_subparsers.add_parser("status", help="Inspect legacy evidence and migration blockers.")
+    legacy_status_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    legacy_status_cmd.add_argument("--through", type=int, help="Optional finalized range to inspect.")
+    legacy_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    legacy_status_cmd.set_defaults(func=cmd_legacy_status)
+
+    legacy_backfill_cmd = legacy_subparsers.add_parser("backfill", help="Create the earliest missing semantic backfill task.")
+    legacy_backfill_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    legacy_backfill_cmd.add_argument("--through", type=int, required=True, help="Last finalized chapter in the migration range.")
+    legacy_backfill_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    legacy_backfill_cmd.set_defaults(func=cmd_legacy_backfill)
+
+    legacy_compact_cmd = legacy_subparsers.add_parser("compact", help="Rebuild, create migration closures, and compact legacy chapters.")
+    legacy_compact_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    legacy_compact_cmd.add_argument("--through", type=int, required=True, help="Complete finalized range to migrate.")
+    legacy_compact_cmd.add_argument("--approved-by", required=True, help="Human identity approving migration closures.")
+    legacy_compact_cmd.add_argument("--dry-run", action="store_true", help="Validate the full batch without mutation.")
+    legacy_compact_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    legacy_compact_cmd.set_defaults(func=cmd_legacy_compact)
+
     gate = subparsers.add_parser("gate-check", help="Run deterministic chapter gates.")
     gate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     gate.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
@@ -1480,6 +1586,7 @@ def build_parser() -> argparse.ArgumentParser:
         db_sync,
         db_rebuild,
         models_install,
+        models_migrate,
         vector_rebuild_cmd,
         creative_brief,
         creative_style,
@@ -1528,6 +1635,8 @@ def build_parser() -> argparse.ArgumentParser:
         chapter_close_cmd,
         artifacts_compact_cmd,
         artifacts_restore_cmd,
+        legacy_backfill_cmd,
+        legacy_compact_cmd,
         gate,
         semantic_gate_task_cmd,
         semantic_gate_validate_cmd,
@@ -1554,6 +1663,7 @@ def build_parser() -> argparse.ArgumentParser:
         editorial_aggregate_cmd,
         editorial_need,
         production_loop_cmd,
+        agent_result_validate,
         intelligence_task,
         intelligence_validate,
         intelligence_apply,
@@ -2363,12 +2473,33 @@ def cmd_agent_task_show(args: argparse.Namespace) -> int:
 
 def cmd_agent_task_brief(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    payload = agent_task_brief(config, args.task)
+    payload = agent_task_brief(config, args.task, host=args.host)
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(payload["work_order_markdown"], end="")
     return 0
+
+
+def cmd_agent_task_overlay_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = validate_project_prompt_overlay(
+        resolve_project_root(config),
+        file_path=args.file,
+        role_id=args.role_id,
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Project Prompt overlay: {'OK' if payload['ok'] else 'INVALID'}")
+        print(f"File: {payload['overlay_file']}")
+        if payload.get("overlay_hash"):
+            print(f"SHA-256: {payload['overlay_hash']}")
+        if payload.get("conflict_report"):
+            for item in payload["conflict_report"].get("conflicts") or []:
+                print(f"Conflict [{item.get('field')}]: {item.get('reason')}")
+            print(f"Repair: {payload['repair_command']}")
+    return 0 if payload["ok"] else 1
 
 
 def cmd_agent_task_validate(args: argparse.Namespace) -> int:
@@ -2394,6 +2525,49 @@ def cmd_agent_task_validate(args: argparse.Namespace) -> int:
             for item in result.warnings:
                 print(f"  - {item}")
     return 0 if result.ok else 1
+
+
+def cmd_agent_task_result_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    manifest = load_manifest(root, args.task)
+    result = validate_production_agent_result(
+        root,
+        manifest,
+        result_file=args.file,
+        document_file=args.document,
+    )
+    output = asdict(result)
+    if args.json:
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+    else:
+        print(f"Agent result validation: {result.status}")
+        print(f"Task: {result.task_id}")
+        print(f"Lifecycle: {result.lifecycle_status}")
+        print(f"Source schema: {result.normalization.source_schema or '<unknown>'}")
+        print(f"Adapter: {result.normalization.adapter}")
+        print(f"Diagnostic: {result.diagnostic_file}")
+        for item in result.normalization.errors:
+            print(f"Error: {item}")
+        for item in result.normalization.need_human_reasons:
+            print(f"Need human: {item}")
+        for item in result.normalization.warnings:
+            print(f"Warning: {item}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.ok else 1
+
+
+def cmd_agent_task_readiness(args: argparse.Namespace) -> int:
+    report = check_agent_data_pipeline_readiness(
+        args.repository,
+        evidence_file=args.evidence,
+        run_contracts=not args.skip_contracts,
+    )
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print(render_agent_data_pipeline_readiness(report))
+    return 0 if report["ready_for_data_pipeline"] else 1
 
 
 def cmd_production_status(args: argparse.Namespace) -> int:
@@ -2852,6 +3026,35 @@ def cmd_models_verify(args: argparse.Namespace) -> int:
         for warning in result.warnings:
             print(f"WARN: {warning}")
     return 0
+
+
+def cmd_models_cache_status(args: argparse.Namespace) -> int:
+    payload = cache_status_payload()
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Shared cache: {payload['shared_path']}")
+        print(f"Bytes: {payload['total_bytes']}")
+        print(f"Pending lock: {payload['pending_lock']}")
+        for profile in payload["profiles"]:
+            print(f"- {profile['profile']}: bytes={profile['bytes']} manifest_ok={profile['manifest_ok']}")
+    return 1 if payload["pending_lock"] else 0
+
+
+def cmd_models_migrate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = migrate_models_to_shared(config, dry_run=args.dry_run or not args.yes, confirmed=args.yes)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Eligible: {payload['eligible']}")
+        print(f"Legacy: {payload['legacy_path']}")
+        print(f"Shared: {payload['shared_path']}")
+        print(f"Bytes: {payload['source_bytes']}")
+        for blocker in payload["blockers"]:
+            print(f"BLOCKED: {blocker}")
+        print(f"Migrated: {payload['migrated']}")
+    return 0 if payload["eligible"] else 1
 
 
 def cmd_vector_store_verify(args: argparse.Namespace) -> int:
@@ -3886,8 +4089,19 @@ def cmd_artifacts_status(args: argparse.Namespace) -> int:
         print(f"Loose files: {result.loose_files} ({result.loose_bytes} bytes)")
         print(f"Archives: {result.archive_files} ({result.archive_bytes} bytes)")
         print(f"Committed snapshots: {result.committed_snapshot_dirs} ({result.committed_snapshot_bytes} bytes)")
+        print(f"Pending transactions: {result.pending_transactions}")
+        print(f"Retained failure snapshots: {result.retained_failure_snapshots}")
+        print(f"Reclaimable snapshot bytes: {result.reclaimable_snapshot_bytes}")
         print(f"Orphan task artifacts: {result.orphan_task_artifacts}")
         for path in result.orphan_task_files:
+            print(f"- {path}")
+        print(f"Compacted through: ch{result.compacted_through:03d}" if result.compacted_through else "Compacted through: none")
+        print(
+            "Active buffer: "
+            + (", ".join(f"ch{chapter:03d}" for chapter in result.active_buffer_chapters) or "none")
+        )
+        print(f"Archived loose duplicates: {result.archived_loose_duplicates}")
+        for path in result.archived_loose_duplicate_files:
             print(f"- {path}")
     return 0
 
@@ -3898,13 +4112,24 @@ def cmd_artifacts_compact(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
-        print("OK: artifact compaction dry-run" if result.dry_run else "OK: artifacts compacted")
+        print(
+            ("OK: artifact compaction dry-run" if result.eligible else "BLOCKED: artifact compaction dry-run")
+            if result.dry_run
+            else "OK: artifacts compacted"
+        )
+        print(f"Eligible: {result.eligible}")
+        for blocker in result.blockers:
+            print(f"BLOCKED: {blocker}")
         print(f"Through chapter: {result.through}")
         print(f"Candidates: {result.candidate_files} ({result.candidate_bytes} bytes)")
+        print(
+            f"Unique content: {result.unique_content_files} blobs ({result.unique_content_bytes} bytes); "
+            f"duplicates collapsed: {result.deduplicated_files}"
+        )
         print(f"Removed: {result.removed_files} ({result.removed_bytes} bytes)")
         print(f"Committed snapshots: {result.committed_snapshots} ({result.committed_snapshot_bytes} bytes)")
         print(f"Archives: {len(result.archive_files)}")
-    return 0
+    return 0 if result.eligible else 1
 
 
 def cmd_artifacts_verify(args: argparse.Namespace) -> int:
@@ -3914,11 +4139,59 @@ def cmd_artifacts_verify(args: argparse.Namespace) -> int:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
         print("OK: artifact archives verified" if result.ok else "ERROR: artifact archive verification failed")
+        print(f"Status: {result.status}")
         print(f"Archives: {result.archives}")
         print(f"Entries: {result.entries}")
         for error in result.errors:
             print(f"- {error}")
     return 0 if result.ok else 1
+
+
+def cmd_legacy_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = legacy_status(config, through=args.through)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Legacy migration through: {payload['through']}")
+        print(json.dumps(payload["ranges"], ensure_ascii=False, sort_keys=True))
+        for blocker in payload["blockers"]:
+            print(f"BLOCKED: {blocker}")
+        print(f"Next command: {payload['next_command']}")
+    return 0
+
+
+def cmd_legacy_backfill(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = legacy_backfill(config, through=args.through)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Created: {payload['created']}")
+        print(f"Chapter: {payload['chapter_number'] or 'none'}")
+        print(f"Next command: {payload['next_command']}")
+    return 0
+
+
+def cmd_legacy_compact(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = legacy_compact(
+        config,
+        through=args.through,
+        approved_by=args.approved_by,
+        dry_run=args.dry_run,
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Eligible: {payload['eligible']}")
+        print(f"Dry run: {payload['dry_run']}")
+        print(f"Closures created: {len(payload['closures_created'])}")
+        print(f"Archives: {len(payload['archives'])}")
+        for blocker in payload["blockers"]:
+            print(f"BLOCKED: {blocker}")
+        print(f"Next command: {payload['next_command']}")
+    return 0 if payload["eligible"] else 1
 
 
 def cmd_artifacts_restore(args: argparse.Namespace) -> int:

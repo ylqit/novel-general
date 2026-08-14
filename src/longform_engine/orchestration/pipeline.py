@@ -35,10 +35,10 @@ from longform_engine.creative import (
 )
 from longform_engine.db import sync_database
 from longform_engine.editorial import editorial_finalization_blockers
-from longform_engine.gates import gate_check
-from longform_engine.graph import update_graph, validate_graph
+from longform_engine.gates import gate_check, semantic_pacing_review_status
+from longform_engine.graph import validate_graph
 from longform_engine.intelligence import assess_chapter_direction, assess_project_readiness
-from longform_engine.memory import build_style_memory, build_tcs
+from longform_engine.memory import build_tcs
 from longform_engine.planning import event_tier_for_types, recommend_event_types, record_event_usage
 from longform_engine.quality import (
     carry_feedback,
@@ -47,7 +47,7 @@ from longform_engine.quality import (
     reader_payoff_review_status,
     record_quality_history,
 )
-from longform_engine.rag import build_chunks, build_context
+from longform_engine.rag import build_context
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 
 
@@ -1140,6 +1140,13 @@ def finalize_chapter(
         if payoff_status.get("report_file")
         else None
     )
+    pacing_status = semantic_pacing_review_status(config, chapter_number=chapter_number)
+    if pacing_status.get("required") and not pacing_status.get("passed"):
+        raise WorkflowError(
+            f"Chapter ch{chapter_number:03d} is not finalizable: semantic pacing review is missing, "
+            "failed, or stale; run "
+            f"longform-engine pacing semantic-task project.yaml --chapter {chapter_number}."
+        )
     editorial_blockers = editorial_finalization_blockers(config, chapter_number=chapter_number)
     if editorial_blockers:
         raise WorkflowError(
@@ -1182,6 +1189,11 @@ def finalize_chapter(
             draft_path,
             gate_path,
             *([payoff_output, payoff_report] if payoff_output is not None and payoff_report is not None else []),
+            *(
+                [root / str(pacing_status.get("result_file"))]
+                if pacing_status.get("required") and pacing_status.get("result_file")
+                else []
+            ),
         ],
         touched_paths=[
             final_path,
@@ -1465,7 +1477,6 @@ def write_writing_task(
     style_context = load_style_context(root)
     gate_history = load_gate_history(root, limit=5)
     creative_brief = load_creative_brief(root)
-    fanfiction_contract = load_fanfiction_writing_contract(config, root)
     tcs_path = root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json"
     tcs_payload = load_json(tcs_path, default={})
     if not isinstance(tcs_payload, dict):
@@ -1475,6 +1486,12 @@ def write_writing_task(
         chapter_number=chapter_number,
         card=card if isinstance(card, dict) else {},
         tcs=tcs_payload,
+    )
+    fanfiction_contract = load_fanfiction_writing_contract(
+        config,
+        root,
+        card=card if isinstance(card, dict) else {},
+        character_packet=character_expression_packet,
     )
     graph_constraints = card.get("graph_constraints") if isinstance(card.get("graph_constraints"), dict) else {}
     outline_anchor = card.get("outline_anchor") if isinstance(card.get("outline_anchor"), dict) else {}
@@ -1520,6 +1537,13 @@ def write_writing_task(
         card=card if isinstance(card, dict) else {},
         canon_research=canon_research,
     )
+    core_context_coverage = build_writing_core_context_coverage(
+        root,
+        card=card if isinstance(card, dict) else {},
+        tcs=tcs_payload,
+        character_packet=character_expression_packet,
+        constraint_packet=constraint_packet,
+    )
     next_command = draft_submit_command(root, chapter_number, recommended_draft, default_agent)
     payload = {
         "schema_version": 1,
@@ -1559,6 +1583,7 @@ def write_writing_task(
         "writing_brief": writing_brief,
         "beat_expansion_requirements": beat_requirements,
         "constraint_packet": constraint_packet,
+        "core_context_coverage": core_context_coverage,
         "writer_craft_brief": craft_brief,
         "humanizer_rules": {"two_pass_workflow": humanizer_rules().get("two_pass_workflow", {})},
         "gate_history": gate_history,
@@ -1659,6 +1684,13 @@ def chapter_write_context_plan(
     beat_sheet_file: Path,
 ) -> dict[str, Any]:
     policy = chapter_write_context_policy(task_json, task_markdown)
+    character_packet_file = root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json"
+    source_reasons = {
+        context_file: "bounded RAG evidence embedded into the compiled brief",
+        chapter_card_file: "chapter contract embedded into the compiled brief",
+        beat_sheet_file: "scene sequence embedded into the compiled brief",
+        character_packet_file: "voice and relationship contract embedded into the compiled brief",
+    }
     return {
         "schema": "writing_context_plan_v1",
         "required_files": [relative_path(root, path) for path in policy["required_files"]],
@@ -1672,11 +1704,22 @@ def chapter_write_context_plan(
         "max_chars": policy["max_chars"],
         "selection_reasons": {
             relative_path(root, task_markdown): "single compiled writable brief",
-            relative_path(root, context_file): "bounded RAG evidence embedded into the compiled brief",
-            relative_path(root, chapter_card_file): "chapter contract embedded into the compiled brief",
-            relative_path(root, beat_sheet_file): "scene sequence embedded into the compiled brief",
-            f"50_workbench/character_packets/ch{chapter_number:03d}.json": "voice and relationship contract embedded into the compiled brief",
+            **{relative_path(root, path): reason for path, reason in source_reasons.items()},
         },
+        "source_catalog": [
+            {
+                "path": relative_path(root, path),
+                "sha256": sha256_bytes(path.read_bytes()),
+                "selection_reason": reason,
+                "truncation_reason": (
+                    "bounded RAG digest; raw source remains optional evidence"
+                    if path == context_file and len(safe_read_text(path)) > 1_200
+                    else "none"
+                ),
+            }
+            for path, reason in source_reasons.items()
+            if path.is_file()
+        ],
         "excluded_duplicates": [
             relative_path(root, task_json),
             f"50_workbench/character_packets/ch{chapter_number:03d}.json",
@@ -1694,9 +1737,7 @@ def chapter_write_context_plan(
             relative_path(root, context_file): len(safe_read_text(context_file)),
             relative_path(root, chapter_card_file): len(safe_read_text(chapter_card_file)),
             relative_path(root, beat_sheet_file): len(safe_read_text(beat_sheet_file)),
-            f"50_workbench/character_packets/ch{chapter_number:03d}.json": len(
-                safe_read_text(root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json")
-            ),
+            relative_path(root, character_packet_file): len(safe_read_text(character_packet_file)),
         },
         "truncations": [
             {
@@ -1745,6 +1786,7 @@ def compact_chapter_card(card: Any) -> dict[str, Any]:
         "dramatic_freedom",
         "pov_character_id",
         "featured_character_ids",
+        "ability_refs",
         "characterization_focus",
         "scene_wants",
         "opposing_wants",
@@ -2783,6 +2825,15 @@ def build_constraint_packet(
     card: dict[str, Any],
     canon_research: list[dict[str, str]],
 ) -> dict[str, Any]:
+    required_abilities = select_required_abilities(
+        root,
+        card=card,
+        tcs_payload=tcs_payload,
+        graph_constraints=graph_constraints,
+    )
+    active_foreshadows = dedupe_strings(
+        as_list(card.get("promise_refs")) + as_list(tcs_payload.get("open_foreshadows"))
+    )
     return {
         "rag": {
             "source": relative_path(root, context_file),
@@ -2805,6 +2856,8 @@ def build_constraint_packet(
             "active_constraints": as_list(tcs_payload.get("active_constraints")),
         },
         "character_memory": load_character_memory_context(root, tcs_payload),
+        "required_abilities": required_abilities,
+        "active_foreshadows": active_foreshadows,
         "outline_anchor": outline_anchor,
         "reverse_brake": card.get("reverse_brake") if isinstance(card.get("reverse_brake"), dict) else {
             "forbidden_reveals": as_list(card.get("forbidden_reveals")) + as_list(outline_anchor.get("forbidden_reveals")),
@@ -2831,6 +2884,156 @@ def build_constraint_packet(
             "general": as_list(card.get("forbidden")),
             "reveals": as_list(card.get("forbidden_reveals")),
         },
+    }
+
+
+def select_required_abilities(
+    root: Path,
+    *,
+    card: dict[str, Any],
+    tcs_payload: dict[str, Any],
+    graph_constraints: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Select every chapter-relevant ability or fail on an unresolved explicit reference."""
+
+    abilities = load_json(root / "10_bible" / "abilities.json", default=[])
+    records = [item for item in abilities if isinstance(item, dict)] if isinstance(abilities, list) else []
+    by_id = {str(item.get("id")): item for item in records if str(item.get("id") or "").strip()}
+    explicit = dedupe_strings(as_list(card.get("ability_refs")))
+    unresolved = [item for item in explicit if item not in by_id]
+    if unresolved:
+        raise WorkflowError(
+            "Writing context references unknown abilities: "
+            + ", ".join(unresolved)
+            + "; repair the chapter card or ability Bible before regenerating."
+        )
+    searchable = json.dumps(
+        {
+            "card": card,
+            "active_constraints": tcs_payload.get("active_constraints") or [],
+            "graph_constraints": graph_constraints,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    selected_ids = list(explicit)
+    for item in records:
+        ability_id = str(item.get("id") or "")
+        name = str(item.get("name") or "")
+        if ability_id and (ability_id in searchable or (name and name in searchable)):
+            selected_ids.append(ability_id)
+    selected_ids = dedupe_strings(selected_ids)
+    if len(selected_ids) > 8:
+        raise WorkflowError(
+            "Writing context cannot fit all required abilities: "
+            + ", ".join(selected_ids)
+            + "; narrow the chapter ability focus before regenerating."
+        )
+    return [
+        {
+            key: by_id[ability_id].get(key)
+            for key in ("id", "name", "summary", "cost", "limit", "limits", "constraints")
+            if by_id[ability_id].get(key) not in (None, "", [])
+        }
+        for ability_id in selected_ids
+    ]
+
+
+def build_writing_core_context_coverage(
+    root: Path,
+    *,
+    card: dict[str, Any],
+    tcs: dict[str, Any],
+    character_packet: dict[str, Any],
+    constraint_packet: dict[str, Any],
+) -> dict[str, Any]:
+    """Prove that core character, relationship, ability, and foreshadow facts were not cut."""
+
+    characters = load_json(root / "10_bible" / "characters.json", default=[])
+    character_rows = [item for item in characters if isinstance(item, dict)] if isinstance(characters, list) else []
+    by_name = {
+        str(item.get("name")): str(item.get("id"))
+        for item in character_rows
+        if item.get("name") and item.get("id")
+    }
+    required_characters = dedupe_strings(
+        [card.get("pov_character_id")]
+        + as_list(card.get("featured_character_ids"))
+        + [by_name.get(str(item), str(item)) for item in as_list(tcs.get("current_characters"))]
+    )
+    represented_characters = dedupe_strings(
+        as_list(character_packet.get("featured_character_ids"))
+    )
+    missing_characters = sorted(set(required_characters) - set(represented_characters))
+
+    relationships = load_json(root / "10_bible" / "relationships.json", default=[])
+    required_relationships = sorted(
+        {
+            str(item.get("id") or "")
+            for item in relationships if isinstance(relationships, list) and isinstance(item, dict)
+            if str(item.get("source_id") or "") in represented_characters
+            and str(item.get("target_id") or "") in represented_characters
+            and str(item.get("id") or "")
+        }
+    )
+    represented_relationships = sorted(
+        {
+            str(relation.get("relationship_id") or "")
+            for contract in character_packet.get("contracts") or [] if isinstance(contract, dict)
+            for relation in contract.get("relationship_context") or [] if isinstance(relation, dict)
+            if str(relation.get("relationship_id") or "")
+        }
+    )
+    missing_relationships = sorted(set(required_relationships) - set(represented_relationships))
+
+    required_abilities = [
+        str(item.get("id") or "")
+        for item in constraint_packet.get("required_abilities") or []
+        if isinstance(item, dict) and str(item.get("id") or "")
+    ]
+    active_foreshadows = dedupe_strings(constraint_packet.get("active_foreshadows") or [])
+    declared_foreshadows = dedupe_strings(
+        as_list(card.get("promise_refs")) + as_list(tcs.get("open_foreshadows"))
+    )
+    missing_foreshadows = sorted(set(declared_foreshadows) - set(active_foreshadows))
+    if missing_characters or missing_relationships or missing_foreshadows:
+        details = []
+        if missing_characters:
+            details.append("characters=" + ",".join(missing_characters))
+        if missing_relationships:
+            details.append("relationships=" + ",".join(missing_relationships))
+        if missing_foreshadows:
+            details.append("foreshadows=" + ",".join(missing_foreshadows))
+        raise WorkflowError(
+            "Writing core context coverage is incomplete ("
+            + "; ".join(details)
+            + "); revise the chapter card/context before regenerating."
+        )
+    source_paths = (
+        root / "10_bible" / "characters.json",
+        root / "10_bible" / "relationships.json",
+        root / "10_bible" / "abilities.json",
+        root / "30_state" / "tcs" / f"ch{int(card.get('chapter_number') or 0):03d}.json",
+    )
+    return {
+        "schema": "writing_core_context_coverage_v1",
+        "required_characters": required_characters,
+        "represented_characters": represented_characters,
+        "required_relationships": required_relationships,
+        "represented_relationships": represented_relationships,
+        "required_abilities": required_abilities,
+        "active_foreshadows": active_foreshadows,
+        "complete": True,
+        "sources": [
+            {
+                "path": relative_path(root, path),
+                "sha256": sha256_bytes(path.read_bytes()),
+                "selection_reason": "core writing fact coverage",
+                "truncation_reason": "none",
+            }
+            for path in source_paths
+            if path.is_file()
+        ],
     }
 
 
@@ -2954,18 +3157,6 @@ def character_state_records(root: Path, *, limit: int) -> list[dict[str, Any]]:
     return records
 
 
-def dedupe_strings(values: list[Any]) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        text = str(value).strip()
-        if not text or text in seen:
-            continue
-        seen.add(text)
-        result.append(text)
-    return result
-
-
 def trim_text(text: str, max_chars: int) -> str:
     compact = re.sub(r"\s+", " ", str(text or "")).strip()
     if len(compact) <= max_chars:
@@ -2996,6 +3187,18 @@ def format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> str:
         else {}
     )
     quality_contract = writing.get("quality_contract") if isinstance(writing.get("quality_contract"), dict) else {}
+    character_contracts_text = json.dumps(character_packet.get("contracts", []), ensure_ascii=False)
+    if len(character_contracts_text) > 3_600:
+        raise WorkflowError(
+            "Core character contracts exceed the 3600-character writing allocation; "
+            "narrow featured characters or shorten approved contracts before regenerating."
+        )
+    voice_samples_text = json.dumps(character_packet.get("approved_voice_samples", []), ensure_ascii=False)
+    if len(voice_samples_text) > 900:
+        raise WorkflowError(
+            "Approved voice samples exceed the 900-character writing allocation; "
+            "reduce approved samples before regenerating."
+        )
     compatibility_observations = [
         item
         for item in quality_contract.get("compatibility_observations", [])
@@ -3064,8 +3267,8 @@ def format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> str:
         f"- Embodiment: {character_packet.get('embodiment_strategy', '')}",
         f"- Summary/scene policy: {character_packet.get('summary_scene_policy', '')}",
         f"- Expression profile: {json.dumps(character_packet.get('narrative_expression_profile', {}), ensure_ascii=False)}",
-        f"- Character contracts: {trim_text(json.dumps(character_packet.get('contracts', []), ensure_ascii=False), 3600)}",
-        f"- Approved samples (reference, never copy mechanically): {trim_text(json.dumps(character_packet.get('approved_voice_samples', []), ensure_ascii=False), 900)}",
+        f"- Character contracts: {character_contracts_text}",
+        f"- Approved samples (reference, never copy mechanically): {voice_samples_text}",
         f"- Avoid repeated leakage/gesture: {', '.join(as_list(character_packet.get('avoid_repetition'))) or 'none recorded'}",
         "- Distinguish characters by what they notice, conceal, demand, avoid, and physically do; dialogue volume alone is not characterization.",
         "",
@@ -3112,6 +3315,12 @@ def format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> str:
         )
     lines.extend(
         [
+            "## Core Context Coverage",
+            "",
+            f"- Complete: {bool((payload.get('core_context_coverage') or {}).get('complete'))}",
+            f"- Provenance: {json.dumps((payload.get('core_context_coverage') or {}).get('sources', []), ensure_ascii=False)}",
+            "- If any required character, relationship, ability, or active foreshadow is missing, stop instead of inventing or silently dropping it.",
+            "",
             "## Constraint Packet",
             "",
             f"- RAG digest: {trim_text(str((constraints.get('rag') or {}).get('summary', '')), 700)}",
@@ -3120,6 +3329,8 @@ def format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> str:
             f"- Graph constraints: {json.dumps(graph.get('constraints', {}), ensure_ascii=False)}",
             f"- TCS: {json.dumps(tcs, ensure_ascii=False)}",
             f"- Character memory: {json.dumps(memory, ensure_ascii=False)}",
+            f"- Required abilities: {json.dumps(constraints.get('required_abilities', []), ensure_ascii=False)}",
+            f"- Active foreshadows: {json.dumps(constraints.get('active_foreshadows', []), ensure_ascii=False)}",
             f"- Event recommendation: {json.dumps(events, ensure_ascii=False)}",
             f"- Style: {json.dumps(compact_style_context(constraints.get('style_profile')), ensure_ascii=False)}",
             "",
@@ -3158,18 +3369,67 @@ def format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def load_fanfiction_writing_contract(config: ConfigDocument, root: Path) -> dict[str, Any]:
+def load_fanfiction_writing_contract(
+    config: ConfigDocument,
+    root: Path,
+    *,
+    card: dict[str, Any] | None = None,
+    character_packet: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if str(config.data.get("creation", {}).get("mode") or "original") != "fanfiction":
         return {"enabled": False}
     design_path = root / "10_bible" / "fanfiction" / "fanfiction_bible.json"
     canon_path = root / "10_bible" / "fanfiction" / "source_canon.json"
     design = load_json(design_path, default={})
     canon = load_json(canon_path, default={})
+    card = card if isinstance(card, dict) else {}
+    character_packet = character_packet if isinstance(character_packet, dict) else {}
+    relevant_ids = {
+        str(item)
+        for item in (
+            as_list(card.get("featured_character_ids"))
+            + as_list(card.get("canon_refs"))
+            + as_list(card.get("voice_refs"))
+            + as_list(character_packet.get("featured_character_ids"))
+        )
+        if str(item).strip()
+    }
+    narrative_role_fields = {
+        key: card.get(key)
+        for key in (
+            "title",
+            "duty",
+            "chapter_duty",
+            "conflict",
+            "information",
+            "hook",
+            "reader_payoff",
+            "reader_gain",
+            "plot_obligation",
+            "scene_wants",
+            "opposing_wants",
+            "hidden_agenda",
+            "relationship_move",
+        )
+        if card.get(key) not in (None, "", [], {})
+    }
+    card_text = json.dumps(narrative_role_fields, ensure_ascii=False).casefold()
     source_summaries: list[dict[str, Any]] = []
     if isinstance(canon, dict):
         for source in canon.get("sources") or []:
             if not isinstance(source, dict):
                 continue
+            for character in source.get("characters") or []:
+                if not isinstance(character, dict):
+                    continue
+                character_id = str(character.get("id") or "")
+                names = [
+                    part.strip().casefold()
+                    for part in re.split(r"[/／|]", str(character.get("name") or ""))
+                    if part.strip()
+                ]
+                if any(name in card_text for name in names):
+                    relevant_ids.add(character_id)
             source_summaries.append(
                 {
                     "source_id": source.get("source_id"),
@@ -3195,7 +3455,11 @@ def load_fanfiction_writing_contract(config: ConfigDocument, root: Path) -> dict
         "canon_cutoff": design.get("canon_cutoff") if isinstance(design, dict) else "",
         "divergence_point": design.get("divergence_point") if isinstance(design, dict) else "",
         "ooc_tolerance": design.get("ooc_tolerance") if isinstance(design, dict) else "",
-        "voice_contracts": (design.get("character_voice_contracts") or [])[:8] if isinstance(design, dict) else [],
+        "voice_contracts": [
+            item
+            for item in (design.get("character_voice_contracts") or [])
+            if isinstance(item, dict) and str(item.get("character_id") or "") in relevant_ids
+        ][:8] if isinstance(design, dict) else [],
         "world_rule_changes": (design.get("world_rule_changes") or [])[:8] if isinstance(design, dict) else [],
         "butterfly_effects": (design.get("butterfly_effects") or [])[:8] if isinstance(design, dict) else [],
         "protected_reveals": (design.get("protected_reveals") or [])[:8] if isinstance(design, dict) else [],
@@ -3298,11 +3562,8 @@ def legacy_format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> 
             "",
             f"- RAG: `{constraint_packet.get('rag', {}).get('source', '') if isinstance(constraint_packet.get('rag'), dict) else ''}`",
             f"- Story graph facts: {json.dumps(constraint_packet.get('story_graph', {}).get('facts', []) if isinstance(constraint_packet.get('story_graph'), dict) else [], ensure_ascii=False)}",
-            f"- TCS constraints: {json.dumps(constraint_packet.get('tcs', {}), ensure_ascii=False)}",
             f"- Character memory: {json.dumps(constraint_packet.get('character_memory', {}), ensure_ascii=False)}",
-            f"- Reverse brake: {json.dumps(constraint_packet.get('reverse_brake', {}), ensure_ascii=False)}",
             f"- Event matrix: {json.dumps(constraint_packet.get('event_matrix', {}), ensure_ascii=False)}",
-            f"- Style profile: {json.dumps(constraint_packet.get('style_profile', {}), ensure_ascii=False)}",
             "",
         ]
     )

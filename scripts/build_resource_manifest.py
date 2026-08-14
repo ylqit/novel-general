@@ -20,10 +20,20 @@ RESOURCE_DIRS = (
     ROOT / "longform-novel-claude",
     ROOT / "shared",
 )
+RESOURCE_FILES = (ROOT / "pyproject.toml",)
 
 
 def build_payload() -> dict[str, object]:
     assets: list[dict[str, object]] = []
+    for path in RESOURCE_FILES:
+        data = path.read_bytes()
+        assets.append(
+            {
+                "path": path.relative_to(ROOT).as_posix(),
+                "sha256": sha256(data).hexdigest(),
+                "size": len(data),
+            }
+        )
     for directory in RESOURCE_DIRS:
         candidates = (candidate for candidate in directory.rglob("*") if candidate.is_file())
         for path in sorted(candidates, key=lambda item: item.relative_to(ROOT).as_posix().casefold()):
@@ -37,6 +47,7 @@ def build_payload() -> dict[str, object]:
                     "size": len(data),
                 }
             )
+    assets.sort(key=lambda item: str(item["path"]).casefold())
     return {
         "schema": "longform_resource_manifest_v1",
         "engine_version": project_version(),

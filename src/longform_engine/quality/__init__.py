@@ -35,6 +35,7 @@ from .review import (
     payoff_review_required_reasons,
     reader_payoff_review_status,
     reader_payoff_task,
+    reader_payoff_task_is_current,
     reader_payoff_validate,
 )
 
@@ -62,6 +63,7 @@ __all__ = [
     "payoff_review_required_reasons",
     "reader_payoff_review_status",
     "reader_payoff_task",
+    "reader_payoff_task_is_current",
     "reader_payoff_validate",
     "refresh_feedback_registry",
     "record_quality_history",

@@ -1,6 +1,6 @@
 [project]
 name = "longform-novel-engine"
-version = "0.3.1"
+version = "0.3.2"
 description = "Engineering-first AI engine for million-word Chinese longform novels."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -51,6 +51,7 @@ packages = ["src/longform_engine"]
 "longform-novel-claude" = "longform_engine/resources/longform-novel-claude"
 "shared" = "longform_engine/resources/shared"
 "resource-manifest.json" = "longform_engine/resources/resource-manifest.json"
+"pyproject.toml" = "longform_engine/resources/pyproject.toml"
 
 [tool.hatch.build.targets.sdist]
 include = [

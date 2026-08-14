@@ -26,6 +26,7 @@ jobs:
       - run: python scripts/validate_skills.py
       - run: python scripts/release_surface_guards.py
       - run: python -m pytest
+      - run: python scripts/check_agent_data_pipeline_readiness.py --json
       - run: python -m build --wheel --sdist
       - run: python scripts/audit_wheel.py
       - run: python scripts/audit_sdist.py

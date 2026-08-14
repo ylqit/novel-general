@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -491,7 +491,7 @@ def validate_temporal_edge(item: dict[str, Any], label: str, errors: list[str], 
     if from_chapter and to_chapter and to_chapter < from_chapter:
         errors.append(f"{label}.to_chapter cannot be earlier than from_chapter.")
     status = item.get("status")
-    if status is not None and str(status) not in {"active", "inactive", "planted", "paid_off", "expired", "resolved", "open", "closed", "stale"}:
+    if status is not None and str(status) not in {"planned", "active", "inactive", "planted", "paid_off", "expired", "resolved", "open", "closed", "stale"}:
         warnings.append(f"{label}.status is not a known temporal status: {status}")
     confidence = item.get("confidence")
     if confidence is not None:

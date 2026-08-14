@@ -1,0 +1,32 @@
+{
+  "schema": "authorized_project_deletion_audit_v1",
+  "status": "deleted",
+  "target_relative": "novels/benchmark-codex-original-phase6-current-v1",
+  "target_resolved": "D:\\soft\\code\\OpenGit\\novel-generator\\longform-novel-engine\\novels\\benchmark-codex-original-phase6-current-v1",
+  "validated_inside_novels": true,
+  "basename_valid": true,
+  "file_count": 3697,
+  "total_bytes": 463105315,
+  "config_sha256": "c4dd8ace42ee2ccdc68aa6999db0ab9a854455269275635ac01d9901a3fe082d",
+  "final_count": 15,
+  "finals": [
+    {"path": "40_manuscript/final/ch001.md", "sha256": "4ecd6f6c5b686a6fa76e3caac8b39a9eb4fb060cbb867781326c403eeda24f84", "bytes": 9076},
+    {"path": "40_manuscript/final/ch002.md", "sha256": "5da2b799d9271abef9294c1213162a4054ac8ebe3445fc71a225584775cd8b31", "bytes": 10133},
+    {"path": "40_manuscript/final/ch003.md", "sha256": "75eafcd54fde41289564a1f5f596288744370425c83204880f24d95e425dabfd", "bytes": 8821},
+    {"path": "40_manuscript/final/ch004.md", "sha256": "c7f07c9dd9e801ef8505ed493872217823dba5e01770fb1951e390b30934c4e2", "bytes": 7651},
+    {"path": "40_manuscript/final/ch005.md", "sha256": "60e35528bf9dadec09c91a368be6a26be5d85b7c10456f31f6202280693f5ae1", "bytes": 8735},
+    {"path": "40_manuscript/final/ch006.md", "sha256": "7267951b0d9d3f5bdfdad3dbc392403ff38372b6258e0a13b8b74a9b5cdf5c29", "bytes": 8509},
+    {"path": "40_manuscript/final/ch007.md", "sha256": "e6298bbc5712c73cce0ca34d480ed01f19f9ed757608034924373e699f23e5c9", "bytes": 6623},
+    {"path": "40_manuscript/final/ch008.md", "sha256": "4881ce3a9fd85248d2614d9c6c530a4c3fb6f65bed274e06e296081e959a2cfb", "bytes": 6845},
+    {"path": "40_manuscript/final/ch009.md", "sha256": "5cf853297ac2af8d79314adf92fdbe5fa4a7fe84c13e3fc182963488b2c4f8d0", "bytes": 8232},
+    {"path": "40_manuscript/final/ch010.md", "sha256": "018266e1e7ece23908ed01bcc45cd57d6eaa2bb9c799cb43676c1c93576628ee", "bytes": 8741},
+    {"path": "40_manuscript/final/ch011.md", "sha256": "af309895a093e9942167bc3dbe4d9132cf1aac1a2f7ca46f59c66e7f9d9a5057", "bytes": 7166},
+    {"path": "40_manuscript/final/ch012.md", "sha256": "f5aa5ec5ef3eec5e1c37c9e89f85cb6b7fe5103f04d0786034438bd7d6bd0014", "bytes": 6421},
+    {"path": "40_manuscript/final/ch013.md", "sha256": "c1374d7ffb57e542ba8e2e17e69fb3670ba4260a2e9141282df8993a6981dd07", "bytes": 6434},
+    {"path": "40_manuscript/final/ch014.md", "sha256": "f788917e9e6b1be22ce41a0749a710e49f5c2979063f76d5388f5097f9e95949", "bytes": 7005},
+    {"path": "40_manuscript/final/ch015.md", "sha256": "7d5c5d29615581ca746563e8a2e929a0270e984af71438285eaaaa96144a40d1", "bytes": 9093}
+  ],
+  "authorized_by": "user",
+  "deletion_planned_at_utc": "2026-08-13T19:55:17.6554332Z",
+  "deletion_completed_at_utc": "2026-08-13T19:56:16.5909051Z"
+}

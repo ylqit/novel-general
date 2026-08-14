@@ -8,6 +8,7 @@ import pytest
 
 from longform_engine.config import load_project_config
 from longform_engine.graph import validate_graph
+from longform_engine.memory import build_tcs, validate_tcs
 from longform_engine.rag import query
 from longform_engine.semantic import chapter_close, semantic_apply, semantic_rebuild, semantic_task, semantic_validate
 from longform_engine.storage import init_project
@@ -23,6 +24,7 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
         [
             {"id": "char_shen", "name": "沈阙"},
             {"id": "char_he", "name": "何简"},
+            {"id": "char_future", "name": "尚未登场者"},
         ],
     )
     write_json(
@@ -34,7 +36,14 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
                 "target_id": "char_he",
                 "type": "investigation_partner",
                 "stage": "试探",
-            }
+            },
+            {
+                "id": "rel_shen_future_planned",
+                "source_id": "char_shen",
+                "target_id": "char_future",
+                "type": "future_rival",
+                "stage": "尚未相识",
+            },
         ],
     )
     write_json(
@@ -58,7 +67,18 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     task = semantic_task(config, chapter_number=1)
     manifest = json.loads(Path(task.manifest_file).read_text(encoding="utf-8"))
     assert manifest["task_type"] == "chapter_semantic"
-    assert len(manifest["input_files"]) <= 7
+    assert len(manifest["input_files"]) == 3
+    assert manifest["context_policy"]["max_files"] == 3
+    assert manifest["input_files"] == [
+        "50_workbench/semantic_tasks/ch001.semantic_task.md",
+        "40_manuscript/final/ch001.md",
+        "50_workbench/semantic_tasks/ch001.semantic_context.json",
+    ]
+    context = json.loads(Path(task.context_file).read_text(encoding="utf-8"))
+    assert context["schema"] == "chapter_semantic_context_v1"
+    assert {item["id"] for item in context["stable_ids"]["characters"]} == {"char_shen", "char_he"}
+    assert "char_future" not in json.dumps(context, ensure_ascii=False)
+    assert sum((root / path).read_text(encoding="utf-8").__len__() for path in manifest["input_files"]) <= 28_000
     assert "Source Excerpt" not in Path(task.task_file).read_text(encoding="utf-8")
 
     payload = {
@@ -155,8 +175,11 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     validation = semantic_validate(config, chapter_number=1, file_path=output)
     assert validation.ok, validation.errors
     applied = semantic_apply(config, chapter_number=1, file_path=output)
+    ledger_hash_after_first_apply = sha256(Path(applied.ledger_file).read_bytes()).hexdigest()
     repeated = semantic_apply(config, chapter_number=1, file_path=output)
     assert repeated.ledger_file == applied.ledger_file
+    assert repeated.transaction_file == ""
+    assert sha256(Path(applied.ledger_file).read_bytes()).hexdigest() == ledger_hash_after_first_apply
 
     ledger = json.loads(Path(applied.ledger_file).read_text(encoding="utf-8"))
     graph = json.loads(Path(applied.graph_file).read_text(encoding="utf-8"))
@@ -171,6 +194,21 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     assert "state_history" not in character
     assert "沈阙将旧木牌" in Path(applied.summary_file).read_text(encoding="utf-8")
     assert Path(applied.tcs_file).exists()
+    tcs_path = Path(applied.tcs_file)
+    tcs_payload = json.loads(tcs_path.read_text(encoding="utf-8"))
+    assert tcs_payload["schema"] == "tcs_compact_v2"
+    assert tcs_payload["current_characters"] == ["char_he", "char_shen"]
+    assert "char_future" not in tcs_payload["current_characters"]
+    assert all(item["target"] != "char_future" for item in tcs_payload["relationship_state"])
+    assert tcs_payload["source_semantic_ledger_sha256"] == sha256(Path(applied.ledger_file).read_bytes()).hexdigest()
+    tcs_hash = sha256(tcs_path.read_bytes()).hexdigest()
+    reused = build_tcs(config, chapter_number=2)
+    assert reused.current_characters == ("char_he", "char_shen")
+    assert sha256(tcs_path.read_bytes()).hexdigest() == tcs_hash
+    assert validate_tcs(config, chapter_number=2).ok is True
+    planned_relationship = next(item for item in graph["relationships"] if item.get("id") == "rel_shen_future_planned")
+    assert planned_relationship["status"] == "planned"
+    assert planned_relationship["from_chapter"] is None
     assert not list((root / "70_runtime" / "transactions" / "s").glob("*"))
     retrieval = query(config, "旧木牌", top_k=3)
     assert retrieval.hits
@@ -185,7 +223,7 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     write_json(graph_file, materialized_graph)
     with pytest.raises(ValueError, match="story graph is not materialized"):
         chapter_close(config, chapter_number=1, approved_by="tester")
-    semantic_apply(config, chapter_number=1, file_path=output)
+    semantic_rebuild(config, through=1, approved_by="repair-owner")
     repaired_graph = json.loads(graph_file.read_text(encoding="utf-8"))
     repaired_foreshadow = json.loads(Path(applied.foreshadow_state_file).read_text(encoding="utf-8"))
     repaired_character = json.loads(Path(applied.character_files[0]).read_text(encoding="utf-8"))
@@ -199,6 +237,11 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     repeated_close = chapter_close(config, chapter_number=1, approved_by="another-user")
     assert repeated_close.closure_file == closed.closure_file
     assert repeated_close.approved_by == "tester"
+    closure_hash = sha256(Path(closed.closure_file).read_bytes()).hexdigest()
+    closed_reapply = semantic_apply(config, chapter_number=1, file_path=output)
+    assert closed_reapply.transaction_file == ""
+    assert sha256(Path(applied.ledger_file).read_bytes()).hexdigest() == ledger_hash_after_first_apply
+    assert sha256(Path(closed.closure_file).read_bytes()).hexdigest() == closure_hash
 
     ledger_hash_before_rebuild = sha256(Path(applied.ledger_file).read_bytes()).hexdigest()
     drifted_graph = json.loads(graph_file.read_text(encoding="utf-8"))

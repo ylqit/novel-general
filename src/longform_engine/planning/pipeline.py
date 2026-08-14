@@ -160,6 +160,8 @@ def recommend_event_types(config: ConfigDocument, *, chapter_number: int) -> Eve
     history = load_pacing_history(root)
     cooldown = event_cooldown_config(config)
     last_used = matrix.get("last_used") if isinstance(matrix.get("last_used"), dict) else {}
+    if not last_used:
+        last_used = event_last_used(history)
     all_types = event_type_pool(config)
     blocked: list[str] = []
     recommended: list[str] = []
@@ -484,9 +486,7 @@ def evaluate_event_matrix(
     )
 
 
-def infer_event_types_from_text(text: str) -> tuple[str, ...]:
-    lower = text.lower()
-    markers = {
+EVENT_TYPE_MARKERS = {
         "conflict_thrill": (
             "fight",
             "battle",
@@ -573,10 +573,27 @@ def infer_event_types_from_text(text: str) -> tuple[str, ...]:
             "大雪",
             "赶路",
         ),
-    }
+}
+
+
+def event_type_marker_count(text: str, event_type: str) -> int:
+    """Count lexical evidence without treating one incidental mention as an event."""
+
+    lower = text.lower()
+    count = 0
+    for word in EVENT_TYPE_MARKERS.get(event_type, ()):
+        if word.isascii():
+            count += len(re.findall(rf"(?<![a-z0-9_]){re.escape(word)}(?![a-z0-9_])", lower))
+        else:
+            count += lower.count(word)
+    return count
+
+
+def infer_event_types_from_text(text: str) -> tuple[str, ...]:
+    lower = text.lower()
     detected = [
         event_type
-        for event_type, words in markers.items()
+        for event_type, words in EVENT_TYPE_MARKERS.items()
         if any(
             re.search(rf"(?<![a-z0-9_]){re.escape(word)}(?![a-z0-9_])", lower)
             if word.isascii()

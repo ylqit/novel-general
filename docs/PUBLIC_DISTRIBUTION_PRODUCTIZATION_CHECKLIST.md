@@ -4,7 +4,7 @@
 
 唯一公开发布源：`https://github.com/ylqit/novel-general`，仓库根目录即 engine 根目录，默认分支为 `master`。
 
-当前源码包与公开稳定版均为 `v0.3.1`。协议热修复已经发布并通过真实 tag 安装验证；全新 SAO 项目重跑仍作为生产质量证据保留。文学质量领先声明继续受 Claude Code、十章对照和独立盲评证据约束。
+当前源码包为 `v0.3.2`。该版本以五章工程 smoke 作为协议与运维稳定版准入；20 章生产和文学验收延期。文学质量领先声明继续受 Claude Code、十章对照和独立盲评证据约束。
 
 ## 状态说明
 
@@ -175,6 +175,17 @@
 - [x] 本地协议与兼容测试、完整 pytest、构建审计及隔离 wheel/pipx 安装 smoke 已通过。
 - [ ] 全新 v0.3.1 SAO 项目完成第 1 章全闭环与 5 章 smoke。
 - [x] 获得明确发布确认后，annotated `v0.3.1` tag、GitHub Release、wheel 与 sdist 已公开发布。
+
+## 14. v0.3.2 Protocol And Operations Release
+
+- [x] Agent-first Prompt 角色、结果规范化、数据链路 readiness、事务清理、共享模型缓存和 v3 审计包完成实现。
+- [x] 节奏审稿控制面与领域校验绑定同一当前任务、结果路径、SHA-256、诊断文件和生命周期。
+- [x] 真实 Codex SAO 第 1-5 章均有 final、semantic ledger 和 closure，`production next` 指向第 6 章。
+- [x] 五章 benchmark complete/accepted，P0 与 canonical 污染为零，未填写文学评分。
+- [x] 真实共享 `bge-m3` 建立 24 条向量并完成无 fallback 查询；CPU 冷启动性能限制已披露。
+- [x] 20 章生产和人工文学验收明确延期，不作为本次发布阻断项。
+- [x] README 与 Release notes 不声称文学质量优于 `novel-skill`，也不保证旧项目数据兼容。
+- [ ] `v0.3.2` 最终构建、全新 pipx smoke、主分支 CI、annotated tag、Release 资产和远程 tag 重装完成。
 
 ## 本轮本地验收记录
 

@@ -1,0 +1,81 @@
+{
+  "schema": "v032_five_chapter_engineering_smoke_v1",
+  "run_id": "codex-sao-aincrad-5-v032-smoke-v1",
+  "project_id": "sao-aincrad-return-route-v032",
+  "engine_version": "0.3.2",
+  "scope": "engineering_smoke_only",
+  "chapters": [
+    {
+      "chapter": 1,
+      "final_sha256": "15684a5dd97277e981cd14f26f8b8cc050df42b551fcc8c8a5033ab137ea80d2",
+      "semantic_ledger_sha256": "d3d8e59b3b473ebe89f2515be44eb717dcfa3c9b74d0ec0f1b73f3b3134c9bca",
+      "closure_sha256": "1bcec1ec7ca1d3b6f1f0a2ec18d354ef5c16456860fac46d108704bab96c4ec3"
+    },
+    {
+      "chapter": 2,
+      "final_sha256": "bb7659f98a420cfa10fcfd8ae08709a683fc17d2724c26421ae02f73244c7ef7",
+      "semantic_ledger_sha256": "93b8f471d00dad07366191865ce8896c7cee4a58176b07767ef37652d5cac737",
+      "closure_sha256": "d66a52fedb765cfcd07328d151603e6b6eab22e7f0ef6aeadbcaef39f8bde8c4"
+    },
+    {
+      "chapter": 3,
+      "final_sha256": "ac8fbb07150949c8a111e178b570d553dfd7c66216487902538c20affe559ae9",
+      "semantic_ledger_sha256": "a1669b8b62f4f32d1fa5f75fb6a1365eff5939a0c99b01dd6c941e8c7c0bf505",
+      "closure_sha256": "c0e111e3c5a19756f61deff65983870466bb0ccd4fcf90f57705c77c918be79f"
+    },
+    {
+      "chapter": 4,
+      "final_sha256": "e2f255ede0605a1e65233ac0d0ccacf0b1b5facecb27d706d317df21b08fa87b",
+      "semantic_ledger_sha256": "e461bdf1fa4b6a058df40887940b0035955767eb512e82206ab836184e2c26d6",
+      "closure_sha256": "f3e8feb7346da2a5d97b5dfe0d54346f1b2fcd628d1d4478914f34656636d3dd"
+    },
+    {
+      "chapter": 5,
+      "final_sha256": "d8fa466e4206b1811ba3eeb76145ea797b8d820d5e2848039c126ca411e83c0e",
+      "semantic_ledger_sha256": "fc29c6aba0c3df5ca79f708775ea89cfc91186e61aa6ab185ac45e2250245f25",
+      "closure_sha256": "d4e456b25cd7891b2ab7e710246a4984085b19eb317ccfe46c2b1f5db4888733"
+    }
+  ],
+  "benchmark": {
+    "complete": true,
+    "acceptance_passed": true,
+    "source_merkle_root": "6ddab11550f60a340549c38125c1f637dc41a7af1f5ca48679e394b134903852",
+    "repair_count": 5,
+    "need_human_count": 0,
+    "p0_contradiction_count": 0,
+    "canonical_pollution_count": 0,
+    "average_context_file_count": 1,
+    "average_context_character_count": 18634.8,
+    "literary_scores_recorded": false
+  },
+  "artifacts": {
+    "verify_status": "ok",
+    "audit_archives": 3,
+    "active_buffer_chapters": [4, 5],
+    "successful_snapshot_dirs": 0,
+    "pending_transactions": 0,
+    "task_index_bytes": 79645,
+    "active_event_bytes": 65498,
+    "active_event_lines": 142
+  },
+  "semantic_rag": {
+    "profile": "bge-m3",
+    "shared_cache": true,
+    "fallback_used": false,
+    "vector_records": 24,
+    "stale_records": 0,
+    "query_top_source": "40_manuscript/final/ch005.md",
+    "query_top_semantic_score": 0.658355,
+    "query_top_rerank_score": 0.782273,
+    "cold_query_seconds_approx": 279,
+    "performance_claim": false
+  },
+  "next_chapter": 6,
+  "incidents_resolved": ["V032-P1-015", "V032-P1-016"],
+  "claims": {
+    "twenty_chapter_production_complete": false,
+    "human_literary_acceptance_complete": false,
+    "superior_to_novel_skill": false
+  },
+  "contains_manuscript_text": false
+}

@@ -281,6 +281,8 @@ def create_intelligence_task(
         root,
         input_files or intelligence_default_inputs(root, task_type, spec, scope),
     )
+    if task_type == "fanfiction_design":
+        inputs = [write_fanfiction_design_context(config, root)]
     if task_type == "chapter_direction":
         inputs = [write_chapter_direction_context(config, root, int(scope["chapter_number"]))]
     if task_type in {"fanfiction_canon", "research_synthesis", "style_analysis", "adaptation_analysis"} and not inputs:
@@ -317,7 +319,6 @@ def create_intelligence_task(
     )
     input_rel.append(relative(root, instruction))
 
-    config_arg = "project.yaml"
     range_args = scope_command_args(scope)
     input_args = (
         ""
@@ -671,6 +672,144 @@ def intelligence_default_inputs(
             ]
         )
     return [path for path in candidates if path.is_file()]
+
+
+def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
+    """Compile bounded canon and approved decisions for one fanfiction design task."""
+
+    canon_path = root / "10_bible" / "fanfiction" / "source_canon.json"
+    decisions_path = root / "10_bible" / "creative_decisions.json"
+    canon = read_json(canon_path, {})
+    decisions = read_json(decisions_path, {})
+    if not isinstance(canon, dict) or canon.get("schema") != "fanfiction_source_canon_v1":
+        raise ValueError("fanfiction_design requires an applied fanfiction source canon.")
+    if not isinstance(decisions, dict) or decisions.get("schema") != "book_ideation_decisions_v1":
+        decisions = {"decisions": {}}
+
+    def text(value: Any, limit: int) -> str:
+        normalized = " ".join(str(value or "").split())
+        return normalized if len(normalized) <= limit else normalized[: limit - 1].rstrip() + "…"
+
+    def rows(value: Any, fields: tuple[tuple[str, int], ...], limit: int) -> tuple[list[dict[str, Any]], int]:
+        records = value if isinstance(value, list) else []
+        selected: list[dict[str, Any]] = []
+        for item in records[:limit]:
+            if not isinstance(item, dict):
+                continue
+            compact: dict[str, Any] = {}
+            for field, char_limit in fields:
+                field_value = item.get(field)
+                if isinstance(field_value, list):
+                    compact[field] = [text(entry, char_limit) for entry in field_value[:5]]
+                elif isinstance(field_value, (int, float, bool)):
+                    compact[field] = field_value
+                else:
+                    compact[field] = text(field_value, char_limit)
+            selected.append(compact)
+        return selected, max(0, len(records) - len(selected))
+
+    compact_sources: list[dict[str, Any]] = []
+    omissions: dict[str, int] = {}
+    remaining_characters = 24
+    for source in canon.get("sources") or []:
+        if not isinstance(source, dict):
+            continue
+        source_id = str(source.get("source_id") or "")
+        character_limit = max(1, min(remaining_characters, 12))
+        characters, omitted_characters = rows(
+            source.get("characters"),
+            (("id", 96), ("name", 80), ("summary", 180), ("motivation", 140), ("voice_traits", 80)),
+            character_limit,
+        )
+        remaining_characters = max(0, remaining_characters - len(characters))
+        relationships, omitted_relationships = rows(
+            source.get("relationships"),
+            (("id", 96), ("source_character_id", 96), ("target_character_id", 96), ("stage", 80), ("summary", 160)),
+            16,
+        )
+        world_rules, omitted_rules = rows(source.get("world_rules"), (("id", 96), ("summary", 180)), 16)
+        abilities, omitted_abilities = rows(
+            source.get("abilities"),
+            (("id", 96), ("name", 80), ("summary", 160), ("limits", 80)),
+            12,
+        )
+        timeline, omitted_timeline = rows(
+            source.get("timeline"), (("id", 96), ("order", 0), ("summary", 160)), 16
+        )
+        events, omitted_events = rows(
+            source.get("canon_events"), (("id", 96), ("order", 0), ("summary", 160)), 16
+        )
+        unresolved, omitted_unresolved = rows(
+            source.get("unresolved_questions"), (("id", 96), ("summary", 160)), 12
+        )
+        for label, count in (
+            ("characters", omitted_characters),
+            ("relationships", omitted_relationships),
+            ("world_rules", omitted_rules),
+            ("abilities", omitted_abilities),
+            ("timeline", omitted_timeline),
+            ("canon_events", omitted_events),
+            ("unresolved_questions", omitted_unresolved),
+        ):
+            if count:
+                omissions[f"{source_id}:{label}"] = count
+        compact_sources.append(
+            {
+                "source_id": source_id,
+                "title": text(source.get("title"), 120),
+                "canon_cutoff": text(source.get("canon_cutoff"), 160),
+                "characters": characters,
+                "relationships": relationships,
+                "world_rules": world_rules,
+                "abilities": abilities,
+                "timeline": timeline,
+                "canon_events": events,
+                "unresolved_questions": unresolved,
+            }
+        )
+
+    project = config.data.get("project") if isinstance(config.data.get("project"), dict) else {}
+    fanfiction = config.data.get("fanfiction") if isinstance(config.data.get("fanfiction"), dict) else {}
+    novel = config.data.get("novel") if isinstance(config.data.get("novel"), dict) else {}
+    length = config.data.get("length") if isinstance(config.data.get("length"), dict) else {}
+    payload = {
+        "schema": "fanfiction_design_context_v1",
+        "project_contract": {
+            "title": project.get("title"),
+            "continuity_mode": fanfiction.get("continuity_mode"),
+            "configured_sources": fanfiction.get("sources") or [],
+            "novel": novel,
+            "length": {
+                "total_chapters": length.get("total_chapters"),
+                "target_total_words": length.get("target_total_words"),
+                "volume_count": length.get("volume_count"),
+            },
+        },
+        "approved_decisions": decisions.get("decisions") or {},
+        "canon": compact_sources,
+        "selection_report": {
+            "strategy": "all configured sources; bounded characters, relationships, rules, abilities, timeline, events, and unresolved questions",
+            "omitted_counts": omissions,
+        },
+        "canonical_provenance": [
+            {
+                "path": relative(root, path),
+                "sha256": sha256(path.read_bytes()).hexdigest(),
+                "authority": "canonical_recheck_required",
+            }
+            for path in (canon_path, decisions_path, root / "project.yaml")
+            if path.is_file()
+        ],
+    }
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    if len(rendered) > 16_000:
+        raise ValueError(
+            "fanfiction_design context compilation exceeds 16000 characters after deterministic selection; "
+            "reduce configured source scope or split the design decision."
+        )
+    target = root / "50_workbench" / "intelligence_context" / "fanfiction_design.project.context.json"
+    atomic_write_text(target, rendered)
+    return target
 
 
 def write_chapter_direction_context(

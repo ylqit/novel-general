@@ -394,7 +394,6 @@ def style_profile(config: ConfigDocument, *, genre: str, target_audience: str) -
     style_dir = root / "10_bible" / "style_profiles"
     style_dir.mkdir(parents=True, exist_ok=True)
     normalized_genre = normalize_key(genre or "general")
-    normalized_audience = normalize_key(target_audience or "general")
     selected = profile_for_genre(genre, target_audience)
     selected["market_contract"] = compact_effective_quality_contract(
         compile_effective_quality_contract(config, chapter_number=1)

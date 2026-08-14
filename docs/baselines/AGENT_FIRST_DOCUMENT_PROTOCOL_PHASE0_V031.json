@@ -1,0 +1,229 @@
+{
+  "schema": "agent_first_document_protocol_phase0_baseline_v1",
+  "captured_on": "2026-08-13",
+  "engine": {
+    "version": "0.3.1",
+    "head_commit": "5259cba2eab512953c9e969409279d183ce440e2",
+    "release_tag": "v0.3.1",
+    "release_commit": "a0cfe1895e15751b8a251b447575986a5d89dd62",
+    "source_tree": "87f4880a8ab346547ecab4490843c1b63848cb17",
+    "agent_tasks_sha256": "2e30940247e9d9373dc32c5e28252ab27be73e4f00752f25ce586f23ec61c2a1",
+    "production_sha256": "13a56554cf4811757a720a35155719c3d78cf6516433f8ffdfc848947928a802",
+    "manifest_schema": 2,
+    "supported_manifest_schemas": [1, 2]
+  },
+  "skills": {
+    "codex": {
+      "version": "0.3.1",
+      "git_tree": "b047204c8658aeb49e9f8da2d2313b519cf89b6f",
+      "distribution_sha256": "94784b55da6264ff2bd26edfca7180e3732d6b9f0506e2192705208a04d1673a"
+    },
+    "claude_code": {
+      "version": "0.3.1",
+      "git_tree": "fd1eb18cca2a55c33c6ecb632bd21063e9eef03e",
+      "distribution_sha256": "d908d8a575977dffe7bd9d27b3591a7854d266fe4305ce375c647eb85ef2f681"
+    }
+  },
+  "legacy_role_mapping": {
+    "task_count": 25,
+    "mapping_sha256": "bbdcc99cca4ce3010b6bc10661200d880cf44982951e329d4c5fc3c1f26564c8",
+    "hash_material": "TASK_CONTRACTS + TASK_ROLE_BRIEFS + TASK_WORK_SCOPES + TASK_OUTPUT_GUIDANCE, sorted JSON",
+    "source": "src/longform_engine/agent_tasks.py and src/longform_engine/production.py"
+  },
+  "failure_evidence": {
+    "project": "novels/sao-aincrad-return-route-v031",
+    "validation_report": {
+      "path": "70_runtime/validation/V0_3_1_SAO_20_CHAPTER_VALIDATION_REPORT.md",
+      "sha256": "4ec7414866741e539d86e2a770504c61cb5314171e36757f3d73d6d7e4f8179b",
+      "bytes": 6789
+    },
+    "issue_log": {
+      "path": "70_runtime/validation/v0.3.1_issues.jsonl",
+      "sha256": "2ce496890e31a554a1cad82561588d95baa33569b18af47afd95bb27731eb754",
+      "bytes": 10885
+    },
+    "protected_snapshot": {
+      "prefixes": [
+        "10_bible",
+        "20_outline",
+        "30_state",
+        "40_manuscript/final",
+        "60_rag",
+        "70_runtime/db"
+      ],
+      "file_count": 35,
+      "total_bytes": 499475,
+      "aggregate_sha256": "813a7a6b2baa85240fdb7603ae218d418cb58a739fc9679a68fa586ea721df78"
+    }
+  },
+  "field_ownership": {
+    "classes": {
+      "agent_judgment": "Creative prose, observations, verdicts, findings, recommendations and evidence selection supplied by the Agent candidate.",
+      "cli_known": "Task identity, scope, paths, hashes, planned facts, commands, timestamps and lifecycle values already known or recomputed by the CLI.",
+      "canonical_delta": "Candidate facts or designs that may become canonical only after strict validation and explicit apply.",
+      "presentation_only": "Role prose, labels, examples and notes that must never be parsed into canonical state."
+    },
+    "manifest_v2": {
+      "cli_known": [
+        "schema_version",
+        "task_id",
+        "task_type",
+        "chapter_number",
+        "scope",
+        "canonical_targets",
+        "requires_human_apply",
+        "input_files",
+        "context_policy",
+        "allowed_output_paths",
+        "output_schema",
+        "validate_command",
+        "apply_command",
+        "failure_next_command",
+        "hard_boundaries",
+        "status",
+        "created_at"
+      ]
+    },
+    "submission_v2": {
+      "cli_known": [
+        "schema_version",
+        "chapter_number",
+        "agent",
+        "source_file",
+        "draft_file",
+        "writing_task",
+        "source_sha256",
+        "draft_sha256",
+        "candidate_task_id",
+        "candidate_task_type",
+        "candidate_revision",
+        "candidate_source_path",
+        "candidate_source_hash",
+        "candidate_status",
+        "replaces_task_ids",
+        "word_count",
+        "submitted_at",
+        "updated_at"
+      ]
+    },
+    "schema_groups": [
+      {
+        "schemas": [
+          "markdown_chapter_only",
+          "markdown_repair_candidate",
+          "markdown_humanized_candidate",
+          "markdown_expanded_candidate"
+        ],
+        "agent_judgment": ["body"],
+        "presentation_only": ["title formatting"]
+      },
+      {
+        "schemas": [
+          "humanizer_semantic_review_v1",
+          "reader_payoff_review_v1",
+          "editorial_role_review_v1",
+          "editorial_role_review_v2",
+          "semantic_pacing_result_v1",
+          "semantic_review_result_v1",
+          "character_expression_review_v1"
+        ],
+        "cli_known": ["schema/schema_version", "chapter/scope", "source paths and hashes", "review identity and lifecycle metadata"],
+        "agent_judgment": ["verdict", "observations", "findings", "evidence selection", "recommendations", "confidence"],
+        "presentation_only": ["notes"]
+      },
+      {
+        "schemas": [
+          "book_ideation_candidate_v1",
+          "chapter_direction_candidate_v1"
+        ],
+        "cli_known": ["schema", "round/chapter", "dimension", "source hashes and trigger reasons"],
+        "agent_judgment": ["question", "options/directions and tradeoffs"],
+        "canonical_delta": ["human-approved selection and adjustments"]
+      },
+      {
+        "schemas": [
+          "book_design_candidate_v1",
+          "book_design_candidate_v2",
+          "outline_design_candidate_v1",
+          "outline_revision_candidate_v1",
+          "fanfiction_design_candidate_v1",
+          "character_expression_profile_v1"
+        ],
+        "cli_known": ["schema", "scope/range", "source hashes"],
+        "canonical_delta": ["creative contract", "documents", "stable IDs", "relationships", "chapter plans", "foreshadow plans", "expression contracts", "revision replacements"]
+      },
+      {
+        "schemas": [
+          "semantic_graph_update_v1",
+          "semantic_memory_v1",
+          "character_memory_cards_v1",
+          "chapter_semantic_bundle_v1",
+          "research_synthesis_v1",
+          "semantic_style_profile_v1",
+          "adaptation_analysis_v1",
+          "fanfiction_source_canon_v1"
+        ],
+        "cli_known": ["schema/schema_version", "chapter/scope", "source paths and hashes"],
+        "agent_judgment": ["summary", "evidence selection", "confidence"],
+        "canonical_delta": ["events", "relationships", "character state", "memory", "foreshadow", "world/timeline", "claims", "style/craft profile", "canon facts"]
+      }
+    ],
+    "presentation_fields": {
+      "presentation_only": [
+        "agent_role",
+        "work_scope",
+        "output_guidance",
+        "role labels",
+        "schema examples",
+        "writer-facing explanation"
+      ]
+    }
+  },
+  "task_inventory": [
+    {"task_type":"book_ideation","scopes":["project"],"input_classes":["project config","idea seed","reader contract","applied decisions"],"schemas":["book_ideation_candidate_v1"],"validator":"intelligence validate","apply":"intelligence apply with human approval","canonical_owner":["10_bible/creative_decisions.json","30_state/novel_state.json"]},
+    {"task_type":"book_design","scopes":["project"],"input_classes":["project config","idea seed","reader contract","creative decisions"],"schemas":["book_design_candidate_v1","book_design_candidate_v2"],"validator":"intelligence validate","apply":"intelligence apply with human approval","canonical_owner":["10_bible creative/world/power/characters/relationships/expression","30_state/novel_state.json"]},
+    {"task_type":"character_expression_design","scopes":["project"],"input_classes":["creative brief","characters","relationships"],"schemas":["character_expression_profile_v1"],"validator":"character design-validate or intelligence validate","apply":"character design-apply or intelligence apply with human approval","canonical_owner":["10_bible/character_expression.json","30_state/novel_state.json"]},
+    {"task_type":"character_expression_review","scopes":["range"],"input_classes":["declared final chapters","character and expression contracts"],"schemas":["character_expression_review_v1"],"validator":"character audit-validate or intelligence validate","apply":"character audit-apply or intelligence apply","canonical_owner":["workbench character review report only"]},
+    {"task_type":"outline_design","scopes":["project"],"input_classes":["project config","creative brief","world","characters","relationships"],"schemas":["outline_design_candidate_v1"],"validator":"intelligence validate","apply":"intelligence apply with human approval","canonical_owner":["20_outline book/volumes/chapter plan/foreshadow ledger","30_state/novel_state.json"]},
+    {"task_type":"chapter_direction","scopes":["chapter"],"input_classes":["bounded chapter card","current outline anchor","controlled feedback"],"schemas":["chapter_direction_candidate_v1"],"validator":"intelligence validate","apply":"intelligence apply with human approval","canonical_owner":["chapter card","chapter plan"]},
+    {"task_type":"outline_revision","scopes":["range"],"input_classes":["current outline","volumes","chapter plan","foreshadow ledger","state"],"schemas":["outline_revision_candidate_v1"],"validator":"intelligence validate with CLI impact recomputation","apply":"intelligence apply with human approval","canonical_owner":["20_outline selected replacements","30_state stale projection"]},
+    {"task_type":"research_synthesis","scopes":["project","range"],"input_classes":["declared research sources only"],"schemas":["research_synthesis_v1"],"validator":"intelligence validate","apply":"intelligence apply","canonical_owner":["10_bible/research_canon.jsonl"]},
+    {"task_type":"style_analysis","scopes":["project","range"],"input_classes":["declared style samples"],"schemas":["semantic_style_profile_v1"],"validator":"intelligence validate","apply":"intelligence apply","canonical_owner":["10_bible/style_profiles/current_style_profile.json"]},
+    {"task_type":"adaptation_analysis","scopes":["project","range"],"input_classes":["declared source samples"],"schemas":["adaptation_analysis_v1"],"validator":"intelligence validate","apply":"intelligence apply","canonical_owner":["10_bible/style_profiles/adaptation_profile.json"]},
+    {"task_type":"fanfiction_canon","scopes":["project"],"input_classes":["declared source files","project source declarations"],"schemas":["fanfiction_source_canon_v1"],"validator":"fanfiction canon-validate or intelligence validate","apply":"fanfiction canon-apply or intelligence apply with human approval","canonical_owner":["10_bible/fanfiction/source_canon.json","30_state/novel_state.json","provenance event"]},
+    {"task_type":"fanfiction_design","scopes":["project"],"input_classes":["source canon","project config","idea seed","reader contract"],"schemas":["fanfiction_design_candidate_v1"],"validator":"fanfiction design-validate or intelligence validate","apply":"fanfiction design-apply or intelligence apply with human approval","canonical_owner":["fanfiction Bible","book design targets","novel state","provenance event"]},
+    {"task_type":"chapter_write","scopes":["chapter"],"input_classes":["writing task","chapter card","beat","bounded current state","controlled feedback"],"schemas":["markdown_chapter_only"],"validator":"draft submit","apply":"chapter finalize with explicit approval","canonical_owner":["finalization transaction only"]},
+    {"task_type":"repair","scopes":["chapter"],"input_classes":["current candidate","gate failures","repair plan","bounded chapter contract"],"schemas":["markdown_repair_candidate"],"validator":"draft submit","apply":"chapter finalize with explicit approval","canonical_owner":["finalization transaction only"]},
+    {"task_type":"humanize","scopes":["chapter"],"input_classes":["current candidate","Humanizer rules","character packet"],"schemas":["markdown_humanized_candidate"],"validator":"creative humanize-check","apply":"draft submit","canonical_owner":["managed draft only; no direct canonical target"]},
+    {"task_type":"humanize_semantic_review","scopes":["chapter"],"input_classes":["source candidate","humanized candidate","declared canonical refs"],"schemas":["humanizer_semantic_review_v1"],"validator":"creative humanize-semantic-validate","apply":"draft submit","canonical_owner":["validation and managed draft projection only"]},
+    {"task_type":"reader_payoff_review","scopes":["chapter"],"input_classes":["review task","current draft","chapter card","gate result","payoff context"],"schemas":["reader_payoff_review_v1"],"validator":"quality payoff-validate","apply":"chapter finalize with explicit approval","canonical_owner":["finalization transaction and reward ledger"]},
+    {"task_type":"content_expand","scopes":["chapter"],"input_classes":["current candidate","expansion findings","bounded contract"],"schemas":["markdown_expanded_candidate"],"validator":"creative expand-check","apply":"draft submit","canonical_owner":["managed draft only; no direct canonical target"]},
+    {"task_type":"semantic_review","scopes":["chapter"],"input_classes":["review task","current draft","compiled canonical projection"],"schemas":["semantic_review_result_v1"],"validator":"gate semantic-validate","apply":"gate semantic-apply","canonical_owner":["gate/submission/state projection only; no final/RAG/graph/TCS mutation"]},
+    {"task_type":"pacing_review","scopes":["chapter"],"input_classes":["current chapter","pacing task context"],"schemas":["semantic_pacing_result_v1"],"validator":"pacing semantic-validate","apply":"pacing semantic-apply","canonical_owner":["gate artifacts and rebuildable SQLite projection"]},
+    {"task_type":"editorial_review","scopes":["chapter"],"input_classes":["isolated role task","role context","current draft","role-specific declared sources"],"schemas":["editorial_role_review_v1","editorial_role_review_v2"],"validator":"editorial submit-review","apply":"editorial aggregate","canonical_owner":["workbench aggregate/feedback/need-human only"]},
+    {"task_type":"graph_extract","scopes":["chapter"],"input_classes":["final chapter","current story graph"],"schemas":["semantic_graph_update_v1"],"validator":"graph semantic-validate","apply":"graph semantic-apply","canonical_owner":["30_state/story_graph.json","70_runtime/db"]},
+    {"task_type":"memory_extract","scopes":["chapter"],"input_classes":["final chapter","memory task"],"schemas":["semantic_memory_v1"],"validator":"memory semantic-validate","apply":"memory semantic-apply","canonical_owner":["60_rag/memory scenes and chapter","graph update candidate","70_runtime/db"]},
+    {"task_type":"character_memory","scopes":["chapter"],"input_classes":["final chapter","character memory context"],"schemas":["character_memory_cards_v1"],"validator":"memory character-validate","apply":"memory character-apply","canonical_owner":["60_rag/memory/characters","70_runtime/db"]},
+    {"task_type":"chapter_semantic","scopes":["chapter"],"input_classes":["final chapter","character IDs","planned threads","graph state","chapter card","prior semantic state"],"schemas":["chapter_semantic_bundle_v1"],"validator":"chapter semantic-validate","apply":"chapter semantic-apply","canonical_owner":["semantic ledger","story graph","foreshadow state","character current views","TCS","RAG","SQLite"]}
+  ],
+  "context_measurements": [
+    {"task_type":"reader_payoff_review","source":"sao-aincrad-return-route-v031/ch001 rejected registration inputs","input_count":5,"total_chars":25631,"max_files":6,"max_chars":20000,"repeated_long_line_chars":6053,"repeated_long_line_ratio":0.2362,"file_chars":[3386,2862,9929,4163,5291]},
+    {"task_type":"semantic_review","source":"sao-aincrad-return-route-v031/ch001","input_count":3,"total_chars":12706,"max_files":7,"max_chars":18000,"repeated_long_line_chars":741,"repeated_long_line_ratio":0.0583,"file_chars":[2184,2862,7660]},
+    {"task_type":"editorial_review","source":"benchmark-codex-original-phase6-current-v1/ch015/planning_chief_editor","input_count":7,"total_chars":29214,"max_files":7,"max_chars":18000,"repeated_long_line_chars":1071,"repeated_long_line_ratio":0.0367,"file_chars":[1491,947,3143,8392,594,270,14377]},
+    {"task_type":"chapter_semantic","source":"temporary SAO ch001 final projection from v0.3.1 inputs","input_count":7,"total_chars":22486,"max_files":7,"max_chars":28000,"repeated_long_line_chars":2422,"repeated_long_line_ratio":0.1077,"file_chars":[2088,2862,2995,2957,60,1595,9929]}
+  ],
+  "measurement_method": {
+    "characters": "len(UTF-8 decoded text after normal file reading)",
+    "duplicate_metric": "For manifest input order, normalize whitespace per line, ignore lines shorter than 16 characters, and count characters in long normalized lines already seen in an earlier input.",
+    "limitations": "The duplicate ratio detects exact repeated long lines, not paraphrases or semantically equivalent JSON objects."
+  },
+  "compatibility_fixtures": [
+    "tests/fixtures/agent_document_protocol_v031/manifest_v1.json",
+    "tests/fixtures/agent_document_protocol_v031/manifest_v2.json",
+    "tests/fixtures/agent_document_protocol_v031/submission_v1.json",
+    "tests/fixtures/agent_document_protocol_v031/submission_v2.json",
+    "tests/fixtures/agent_document_protocol_v031/reader_payoff_review_v1.json",
+    "tests/fixtures/agent_document_protocol_v031/chapter_semantic_bundle_v1.json"
+  ],
+  "data_pipeline_locked": true
+}

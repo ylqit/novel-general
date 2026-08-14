@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
+import json
 import re
-import sys
+
+from longform_engine.agent_protocol_readiness import protocol_surface_hash
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,10 +30,12 @@ ALLOW_LEGACY = {
 # agent_tasks.py references canonical paths only to reject them during strict
 # AgentTaskManifest validation; it must not become an apply/finalize writer.
 ALLOW_FINAL_WRITES = {
+    "src/longform_engine/artifacts.py",
     "src/longform_engine/agent_tasks.py",
     "src/longform_engine/character_expression.py",
     "src/longform_engine/orchestration/pipeline.py",
     "src/longform_engine/intelligence/pipeline.py",
+    "src/longform_engine/legacy.py",
     "src/longform_engine/revision/pipeline.py",
     "src/longform_engine/rag/pipeline.py",
     "src/longform_engine/memory/pipeline.py",
@@ -64,7 +69,14 @@ ALLOW_AGENT_TO_CANON = {
     "src/longform_engine/vectorstore/pipeline.py",
     "src/longform_engine/cli.py",
     "src/longform_engine/intelligence/pipeline.py",
+    "src/longform_engine/legacy.py",
     "src/longform_engine/semantic/pipeline.py",
+}
+
+# These modules may read current canonical evidence, but their only permitted
+# write is a fixed workbench diagnostic. They are checked separately below.
+READ_ONLY_CANONICAL_VALIDATORS = {
+    "src/longform_engine/agent_normalization.py",
 }
 
 DIRECT_LLM_PATTERNS = (
@@ -281,17 +293,31 @@ def main() -> int:
             for legacy in LEGACY_PATHS:
                 if legacy in text:
                     failures.append(f"legacy path `{legacy}` appears in {rel}")
-        if rel not in ALLOW_FINAL_WRITES and re.search(r"40_manuscript[\"'/\\ ]+[/\\]?final|40_manuscript/final", text):
+        if (
+            rel not in ALLOW_FINAL_WRITES
+            and rel not in READ_ONLY_CANONICAL_VALIDATORS
+            and re.search(r"40_manuscript[\"'/\\ ]+[/\\]?final|40_manuscript/final", text)
+        ):
             failures.append(f"final manuscript path referenced outside allowed modules: {rel}")
         if rel not in ALLOW_GRAPH_WRITES and re.search(r"story_graph\\.json.*write|write_.*story_graph|30_state/story_graph\\.json", text):
             failures.append(f"story graph write/reference outside allowed modules: {rel}")
         if rel.endswith("rag/pipeline.py") and "research_inbox" in text:
             failures.append("RAG pipeline must not reference research_inbox directly.")
-        if rel not in ALLOW_AGENT_TO_CANON and re.search(r"agent_drafts|repair_candidates|editorial_reviews/results|semantic_pacing_result", text):
+        if (
+            rel not in ALLOW_AGENT_TO_CANON
+            and rel not in READ_ONLY_CANONICAL_VALIDATORS
+            and re.search(r"agent_drafts|repair_candidates|editorial_reviews/results|semantic_pacing_result", text)
+        ):
             has_write_call = re.search(r"atomic_write_text|write_json|shutil\.copy|sync_database|INSERT\s+INTO", text)
             if has_write_call and re.search(r"40_manuscript[/\\]final|60_rag|story_graph\.json|70_runtime[/\\]db", text):
                 failures.append(f"agent output path and canonical path are coupled outside apply/finalize modules: {rel}")
+        if rel in READ_ONLY_CANONICAL_VALIDATORS:
+            failures.extend(check_read_only_canonical_validator(rel, text))
     failures.extend(check_experience_layer_guards())
+    failures.extend(check_agent_first_protocol_isolation_guards())
+    failures.extend(check_agent_data_pipeline_readiness_guards())
+    failures.extend(check_agent_first_production_pipeline_guards())
+    failures.extend(check_artifact_compaction_guards())
     failures.extend(check_public_distribution_guards())
     failures.extend(check_required_release_contract_markers())
 
@@ -380,6 +406,166 @@ def check_experience_layer_guards() -> list[str]:
     return failures
 
 
+def check_agent_first_protocol_isolation_guards() -> list[str]:
+    """Keep Phase 5 parsers isolated behind the authorized Phase 7 integration owner."""
+
+    failures: list[str] = []
+    production_path = SRC / "production.py"
+    production_text = production_path.read_text(encoding="utf-8", errors="ignore")
+    for module_name in ("agent_isolation", "agent_results"):
+        if re.search(rf"(?:from|import)\s+longform_engine\.{module_name}\b", production_text):
+            failures.append(
+                f"production.py must not import Phase 5 isolated protocol module `{module_name}` before readiness."
+            )
+
+    for relative in (
+        "src/longform_engine/agent_isolation.py",
+        "src/longform_engine/agent_results.py",
+    ):
+        path = ROOT / relative
+        if not path.is_file():
+            failures.append(f"Phase 5 isolated protocol module is missing: {relative}")
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        if re.search("|".join(DIRECT_WRITER_PATTERNS), text):
+            failures.append(f"Phase 5 isolated protocol module must remain write-free: {relative}")
+        for pattern in DIRECT_LLM_PATTERNS:
+            if re.search(pattern, text):
+                failures.append(
+                    f"Phase 5 isolated protocol module calls an external LLM pattern `{pattern}`: {relative}"
+                )
+    isolation_text = (SRC / "agent_isolation.py").read_text(encoding="utf-8", errors="ignore")
+    for marker in (
+        "LEGACY_COMPATIBILITY_TASK_TYPES",
+        "compile_isolated_agent_package",
+        "validate_isolated_agent_submission",
+        "legacy task `{task_type}` is compatibility-read-only",
+    ):
+        if marker not in isolation_text:
+            failures.append(f"Phase 5 isolation marker `{marker}` is missing from agent_isolation.py")
+    return failures
+
+
+def check_agent_first_production_pipeline_guards() -> list[str]:
+    """Require one readiness-bound owner for Phase 7 work orders and lifecycle mutation."""
+
+    failures: list[str] = []
+    integration_path = SRC / "agent_pipeline.py"
+    production_path = SRC / "production.py"
+    authorization_path = ROOT / "config" / "agent_data_pipeline_authorization.json"
+    evidence_path = ROOT / "docs" / "baselines" / "AGENT_FIRST_DOCUMENT_PROTOCOL_PHASE6_EVIDENCE.json"
+    for path in (integration_path, production_path, authorization_path, evidence_path):
+        if not path.is_file():
+            failures.append(f"Agent-first production pipeline asset is missing: {relpath(path)}")
+    if failures:
+        return failures
+
+    integration = integration_path.read_text(encoding="utf-8", errors="ignore")
+    production = production_path.read_text(encoding="utf-8", errors="ignore")
+    for marker in (
+        "require_agent_data_pipeline_readiness",
+        "compile_production_agent_package",
+        "validate_production_agent_result",
+        "controlled_feedback",
+        "agent-task result-validate",
+    ):
+        if marker not in integration:
+            failures.append(f"Phase 7 integration marker `{marker}` is missing from agent_pipeline.py")
+    for marker in (
+        "require_agent_first_production_pipeline",
+        "compile_production_agent_package",
+        "chapter_stage_task_types",
+    ):
+        if marker not in production:
+            failures.append(f"Phase 7 production marker `{marker}` is missing from production.py")
+    for pattern in DIRECT_LLM_PATTERNS:
+        if re.search(pattern, integration):
+            failures.append(f"Phase 7 integration must not call an external LLM pattern `{pattern}`")
+    try:
+        authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        failures.append(f"Phase 7 authorization JSON is unreadable: {exc}")
+        return failures
+    expected_hash = protocol_surface_hash(ROOT)
+    if authorization.get("schema") != "agent_data_pipeline_authorization_v1":
+        failures.append("Phase 7 runtime authorization schema is invalid")
+    if authorization.get("authorized") is not True:
+        failures.append("Phase 7 runtime authorization is not enabled")
+    if authorization.get("protocol_surface_sha256") != expected_hash:
+        failures.append("Phase 7 runtime authorization does not match the readiness report surface hash")
+    expected_evidence_hash = sha256(evidence_path.read_bytes()).hexdigest()
+    if authorization.get("phase6_evidence_sha256") != expected_evidence_hash:
+        failures.append("Phase 7 runtime authorization does not match the Phase 6 evidence hash")
+    return failures
+
+
+def check_artifact_compaction_guards() -> list[str]:
+    """Allow final evidence reads only behind a non-canonical archive member allowlist."""
+
+    relative = "src/longform_engine/artifacts.py"
+    path = ROOT / relative
+    if not path.is_file():
+        return [f"artifact compaction module is missing: {relative}"]
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    failures: list[str] = []
+    for marker in (
+        "chapter_artifact_archive_v3",
+        "AUDIT_MANIFEST_MEMBER",
+        "AUDIT_BLOB_PREFIX",
+        "RETAINED_EVIDENCE",
+        "ARCHIVABLE_PREFIXES",
+        "ensure_archivable_chapter_path(relative, chapter_number)",
+        "Archive entry is outside non-canonical chapter artifact lanes",
+        'scan_root == "40_manuscript/final" and re.fullmatch',
+    ):
+        if marker not in text:
+            failures.append(f"artifact compaction safety marker `{marker}` is missing")
+    restore_body = function_body(text, "restore_artifacts")
+    if "ensure_archivable_chapter_path(relative, chapter_number)" not in restore_body:
+        failures.append("artifact restore must validate every member against the chapter-lane allowlist")
+    if re.search(r"40_manuscript/final/ch\{chapter.*\.md", restore_body):
+        failures.append("artifact restore must not construct a final manuscript target")
+    return failures
+
+
+def check_agent_data_pipeline_readiness_guards() -> list[str]:
+    """Require one local/CI gate before Phase 7 can alter production routing."""
+
+    failures: list[str] = []
+    readiness_path = SRC / "agent_protocol_readiness.py"
+    script_path = ROOT / "scripts" / "check_agent_data_pipeline_readiness.py"
+    ci_path = ROOT / ".github" / "workflows" / "ci.yml"
+    for path in (readiness_path, script_path, ci_path):
+        if not path.is_file():
+            failures.append(f"Agent data-pipeline readiness guard file is missing: {relpath(path)}")
+    if failures:
+        return failures
+    readiness_text = readiness_path.read_text(encoding="utf-8", errors="ignore")
+    script_text = script_path.read_text(encoding="utf-8", errors="ignore")
+    ci_text = ci_path.read_text(encoding="utf-8", errors="ignore")
+    for marker in (
+        "agent_data_pipeline_readiness_v1",
+        "ready_for_data_pipeline",
+        "require_agent_data_pipeline_readiness",
+        "AgentDataPipelineBlocked",
+        "protocol_surface_sha256",
+        "dirty_tree_sha256",
+    ):
+        if marker not in readiness_text:
+            failures.append(f"Agent readiness marker `{marker}` is missing from agent_protocol_readiness.py")
+    if "check_agent_data_pipeline_readiness" not in script_text:
+        failures.append("local Agent readiness script does not call the shared checker")
+    if "python scripts/check_agent_data_pipeline_readiness.py --json" not in ci_text:
+        failures.append("CI does not enforce the Agent data-pipeline readiness checker")
+    for path, text in ((readiness_path, readiness_text), (script_path, script_text)):
+        for pattern in DIRECT_LLM_PATTERNS:
+            if re.search(pattern, text):
+                failures.append(
+                    f"Agent readiness guard must not call an external LLM pattern `{pattern}`: {relpath(path)}"
+                )
+    return failures
+
+
 def check_public_distribution_guards() -> list[str]:
     failures: list[str] = []
     benchmark_path = SRC / "benchmark.py"
@@ -418,6 +604,36 @@ def check_public_distribution_guards() -> list[str]:
     for marker in ("cmd_release_check", "cmd_benchmark_record", "cmd_benchmark_compare"):
         if marker not in cli_text:
             failures.append(f"public distribution CLI marker `{marker}` is missing")
+    return failures
+
+
+def check_read_only_canonical_validator(relative: str, text: str) -> list[str]:
+    """Allow canonical reads only when every write is a fixed workbench diagnostic."""
+
+    failures: list[str] = []
+    diagnostic_body = function_body(text, "write_agent_result_diagnostic")
+    required_path = '"50_workbench" / "agent_tasks" / "diagnostics"'
+    if required_path not in diagnostic_body:
+        failures.append(f"read-only canonical validator lacks a fixed diagnostic lane: {relative}")
+    if "atomic_write_text" not in diagnostic_body:
+        failures.append(f"read-only canonical validator diagnostic must use atomic write: {relative}")
+    remainder = text.replace(diagnostic_body, "")
+    remainder = re.sub(
+        r"from\s+longform_engine\.storage\s+import\s+atomic_write_text\s*",
+        "",
+        remainder,
+    )
+    if re.search("|".join(DIRECT_WRITER_PATTERNS), remainder):
+        failures.append(f"read-only canonical validator writes outside its diagnostic function: {relative}")
+    for forbidden in (
+        "apply_transaction",
+        "sync_database",
+        "update_task_status",
+        "mark_tasks_for_output",
+        "mark_tasks_for_chapter_type",
+    ):
+        if re.search(rf"\b{forbidden}\b", text):
+            failures.append(f"read-only canonical validator imports/calls `{forbidden}`: {relative}")
     return failures
 
 

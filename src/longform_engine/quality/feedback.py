@@ -299,7 +299,6 @@ def transition_feedback(
 def truncate_feedback_registry(root: Path, *, to_chapter: int) -> tuple[str, ...]:
     """Remove feedback sourced only from chapters detached by rollback."""
 
-    path = root / FEEDBACK_REGISTRY
     records = read_registry(root)
     kept = [
         item

@@ -33,23 +33,32 @@ def test_production_schedules_strict_bounded_reader_payoff_task(tmp_path):
     assert strict.ok, strict.errors
     assert manifest["output_schema"] == "reader_payoff_review_v1"
     assert manifest["allowed_output_paths"] == ["50_workbench/quality_reviews/ch001.reader_payoff.json"]
-    assert manifest["context_policy"]["max_files"] == 6
-    assert manifest["context_policy"]["max_chars"] == 20_000
-    assert len(manifest["input_files"]) <= 6
+    assert manifest["context_policy"]["max_files"] == 3
+    assert manifest["context_policy"]["max_chars"] == 15_000
+    assert manifest["input_files"] == [
+        "50_workbench/quality_reviews/ch001.reader_payoff.task.md",
+        "40_manuscript/draft/ch001.md",
+        "50_workbench/quality_reviews/ch001.reader_payoff.context.json",
+    ]
     assert "30_state/reward_ledger.jsonl" not in manifest["input_files"]
     assert "20_outline/foreshadowing_ledger.json" not in manifest["input_files"]
     assert "50_workbench/quality_reviews/ch001.reader_payoff.context.json" in manifest["input_files"]
-    assert Path(result.task_file).stat().st_size < 20_000
+    input_characters = sum(
+        len((root / path).read_text(encoding="utf-8")) for path in manifest["input_files"]
+    )
+    assert input_characters <= 15_000
     context = read_json(Path(result.context_file))
     assert context["selection"]["full_ledgers_excluded"] is True
     assert context["selection"]["previous_reward_limit"] == 1
     assert context["selection"]["related_promise_limit"] == 8
-    assert context["quality_contract"]["primary_market"] == "qidian_male"
-    assert context["quality_contract"]["contract"]["platform_promise"]
-    assert len(context["quality_contract"]["compatibility_observations"]) <= 3
+    assert len(Path(result.context_file).read_text(encoding="utf-8")) <= 6_000
+    assert context["schema"] == "reader_payoff_context_v2"
+    assert context["chapter_contract"]["platform_promise"]
+    assert context["quality_guidance"]["primary_market"] == "qidian_male"
+    assert len(context["quality_guidance"]["compatibility_observations"]) <= 3
     assert all(
         item["severity"] == "P2" and item["blocking"] is False
-        for item in context["quality_contract"]["compatibility_observations"]
+        for item in context["quality_guidance"]["compatibility_observations"]
     )
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() in Path(result.task_file).read_text(encoding="utf-8")
     assert "Compatibility-market observations are non-blocking P2 advice" in Path(result.task_file).read_text(
@@ -97,6 +106,28 @@ def test_finalize_requires_current_passing_payoff_review(tmp_path):
 
     with pytest.raises(WorkflowError, match="reader payoff review"):
         finalize_chapter(config, chapter_number=1, approved_by="human")
+
+
+def test_replacing_draft_invalidates_payoff_task_and_finalize_until_regenerated(tmp_path):
+    config, root, _text = seed_payoff_project(tmp_path)
+    task = reader_payoff_task(config, chapter_number=1)
+    output = Path(task.output_file)
+    write_json(output, valid_review_payload(root, chapter_number=1))
+    assert reader_payoff_validate(config, chapter_number=1, file_path=output).passed is True
+
+    draft = root / "40_manuscript" / "draft" / "ch001.md"
+    draft.write_text(draft.read_text(encoding="utf-8") + "\n沈阙把新证据压在账册底下。", encoding="utf-8")
+
+    action = production_next(config)
+    assert action["status"] == "ready_for_reader_payoff_task"
+    assert action["next_command"] == "longform-engine quality payoff-task project.yaml --chapter 1"
+    with pytest.raises(WorkflowError, match="reader payoff review"):
+        finalize_chapter(config, chapter_number=1, approved_by="human")
+
+    reader_payoff_task(config, chapter_number=1)
+    waiting = production_next(config)
+    assert waiting["status"] == "agent_task_awaiting_agent"
+    assert waiting["task_type"] == "reader_payoff_review"
 
 
 def test_payoff_finalize_records_observed_reward_and_structure_atomically(tmp_path):

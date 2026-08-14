@@ -18,6 +18,7 @@ from longform_engine.intelligence import (
 )
 from longform_engine.intelligence.pipeline import validate_crossover_rules
 from longform_engine.orchestration import continue_write, open_book
+from longform_engine.orchestration.pipeline import load_fanfiction_writing_contract
 from longform_engine.publication import export_publication_bundle, publication_risk_report
 from longform_engine.storage import init_project
 
@@ -296,6 +297,67 @@ def valid_character_expression() -> dict:
     }
 
 
+def test_fanfiction_design_compiles_realistic_canon_into_bounded_context(tmp_path):
+    config, root, source_path = seed_fanfiction_project(tmp_path)
+    canon = valid_canon(source_path)
+    template = canon["sources"][0]["characters"][0]
+    canon["sources"][0]["characters"] = [
+        {
+            **template,
+            "id": f"classic:character_{index:03d}",
+            "name": f"Character {index}",
+            "summary": "A source-backed character description with distinct motive and pressure. " * 8,
+            "motivation": "Protect a bounded choice while preserving canon causality. " * 5,
+        }
+        for index in range(40)
+    ]
+    canon_path = root / "10_bible" / "fanfiction" / "source_canon.json"
+    canon_path.parent.mkdir(parents=True, exist_ok=True)
+    canon_path.write_text(json.dumps(canon, ensure_ascii=False, indent=2), encoding="utf-8")
+    decisions_path = root / "10_bible" / "creative_decisions.json"
+    decisions_path.write_text(
+        json.dumps(
+            {
+                "schema": "book_ideation_decisions_v1",
+                "decisions": {
+                    "target_reader_and_reading_context": "Serial readers who expect causally earned divergence.",
+                    "core_hook": "A changed choice creates a new duty rather than free power.",
+                    "world_core_rule": "Canon constraints remain active.",
+                    "protagonist_desire_and_flaw": "Protect agency while learning not to control allies.",
+                    "long_conflict": "Competing groups disagree over who may choose the route home.",
+                    "volume_escalation": "Escalate relationships and institutions before raw power.",
+                    "ending_boundary": "Preserve the canon protagonist's protected final responsibility.",
+                    "taboos_and_unwanted_tropes": "No system shortcut, canon demotion, or prose copying.",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    assert len(canon_path.read_text(encoding="utf-8")) > 20_000
+
+    task = create_intelligence_task(config, task_type="fanfiction_design")
+    manifest = load_manifest(root, task.manifest_file)
+    validation = validate_manifest_strict(root, manifest)
+    context_path = root / "50_workbench" / "intelligence_context" / "fanfiction_design.project.context.json"
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+
+    assert validation.ok
+    assert manifest["input_files"] == [
+        "50_workbench/intelligence_context/fanfiction_design.project.context.json",
+        "50_workbench/intelligence_tasks/fanfiction_design.project.md",
+    ]
+    assert len(context_path.read_text(encoding="utf-8")) <= 16_000
+    assert context["schema"] == "fanfiction_design_context_v1"
+    assert context["selection_report"]["omitted_counts"]["classic:characters"] == 28
+    assert {item["path"] for item in context["canonical_provenance"]} == {
+        "10_bible/fanfiction/source_canon.json",
+        "10_bible/creative_decisions.json",
+        "project.yaml",
+    }
+
+
 def valid_outline() -> dict:
     return {
         "schema": "outline_design_candidate_v1",
@@ -534,6 +596,26 @@ def test_unverified_commercial_fanfiction_reaches_writing_and_export_without_rig
         "canon_fidelity_reviewer" in path
         for path in review_payload["agent_task_files"]
     )
+
+
+def test_fanfiction_writing_contract_ignores_names_in_global_forbidden_rules(tmp_path):
+    config, root, source_path = seed_fanfiction_project(tmp_path)
+    apply_fanfiction_foundation(config, root, source_path)
+
+    contract = load_fanfiction_writing_contract(
+        config,
+        root,
+        card={
+            "title": "林舟的选择",
+            "featured_character_ids": ["classic:lin_zhou"],
+            "forbidden": ["不得削弱守门人的主体性"],
+        },
+        character_packet={"featured_character_ids": ["classic:lin_zhou"]},
+    )
+
+    assert [item["character_id"] for item in contract["voice_contracts"]] == [
+        "classic:lin_zhou"
+    ]
 
 
 def test_fanfiction_manifest_and_invalid_evidence_do_not_pollute_bible(tmp_path):

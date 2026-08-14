@@ -11,6 +11,7 @@ import re
 from statistics import mean
 import subprocess
 from typing import Any
+import zipfile
 
 from longform_engine import __version__
 from longform_engine.config import ConfigDocument
@@ -472,10 +473,14 @@ def validate_benchmark(config: ConfigDocument, *, run_id: str) -> BenchmarkValid
                         )
                         continue
                     artifact_path = root / str(item.get("path") or "")
-                    if not artifact_path.is_file():
+                    actual_digest = (
+                        sha256(artifact_path.read_bytes()).hexdigest()
+                        if artifact_path.is_file()
+                        else archived_chapter_artifact_digest(root, index, expected_path)
+                    )
+                    if actual_digest is None:
                         record_errors.append(f"artifact_hashes.{artifact_name} path is missing.")
                         continue
-                    actual_digest = sha256(artifact_path.read_bytes()).hexdigest()
                     if actual_digest != item.get("sha256"):
                         record_errors.append(f"artifact_hashes.{artifact_name} SHA-256 does not match.")
         if (
@@ -818,14 +823,72 @@ def validate_record(record: Any, *, expected_chapter: int) -> list[str]:
 def collect_chapter_artifact_hashes(root: Path, chapter_number: int) -> dict[str, dict[str, str]]:
     artifacts: dict[str, dict[str, str]] = {}
     for name, path_template in CHAPTER_ARTIFACT_PATHS.items():
-        path = root / path_template.format(chapter=chapter_number)
-        if not path.is_file():
+        expected_path = path_template.format(chapter=chapter_number)
+        path = root / expected_path
+        digest = (
+            sha256(path.read_bytes()).hexdigest()
+            if path.is_file()
+            else archived_chapter_artifact_digest(root, chapter_number, expected_path)
+        )
+        if digest is None:
             continue
         artifacts[name] = {
-            "path": relative(root, path),
-            "sha256": sha256(path.read_bytes()).hexdigest(),
+            "path": expected_path,
+            "sha256": digest,
         }
     return artifacts
+
+
+def archived_chapter_artifact_digest(root: Path, chapter_number: int, expected_path: str) -> str | None:
+    archive = root / "70_runtime" / "artifacts" / "chapters" / f"ch{chapter_number:03d}.zip"
+    if not archive.is_file():
+        return None
+    try:
+        with zipfile.ZipFile(archive) as handle:
+            manifest = json.loads(handle.read("_audit/manifest.json").decode("utf-8"))
+            if (
+                not isinstance(manifest, dict)
+                or manifest.get("schema") != "chapter_artifact_archive_v3"
+                or int(manifest.get("chapter_number") or 0) != chapter_number
+            ):
+                return None
+            entries = manifest.get("entries") if isinstance(manifest.get("entries"), list) else []
+            entry = next(
+                (
+                    item
+                    for item in entries
+                    if isinstance(item, dict) and item.get("path") == expected_path
+                ),
+                None,
+            )
+            if not isinstance(entry, dict):
+                return None
+            expected_digest = str(entry.get("sha256") or "")
+            member = str(entry.get("member") or "")
+            if member:
+                if not member.startswith("_audit/blobs/") or ".." in Path(member).parts:
+                    return None
+                return expected_digest if sha256(handle.read(member)).hexdigest() == expected_digest else None
+            retained_role = str(entry.get("retained_role") or "")
+            retained = manifest.get("retained_evidence")
+            retained_item = next(
+                (
+                    item
+                    for item in retained
+                    if isinstance(item, dict)
+                    and item.get("role") == retained_role
+                    and item.get("sha256") == expected_digest
+                ),
+                None,
+            ) if isinstance(retained, list) else None
+            if not isinstance(retained_item, dict):
+                return None
+            retained_path = root / str(retained_item.get("path") or "")
+            if not retained_path.is_file():
+                return None
+            return expected_digest if sha256(retained_path.read_bytes()).hexdigest() == expected_digest else None
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile, json.JSONDecodeError):
+        return None
 
 
 def composite_score(record: dict[str, Any]) -> float:
@@ -849,7 +912,6 @@ def assess_superiority_claim(
     root: Path,
 ) -> tuple[bool, list[str], list[dict[str, Any]]]:
     report_by_id = {str(item.get("run_id")): item for item in reports}
-    run_by_id = {str(item.get("run_id")): item for item in runs}
     baselines = [run for run in runs if run.get("agent_product") == "novel-skill"]
     candidates = [run for run in runs if run.get("agent_product") in {"codex", "claude-code"}]
     global_reasons: list[str] = []

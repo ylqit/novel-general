@@ -17,7 +17,7 @@ from longform_engine.cli import write_repair_candidate_task
 from longform_engine.config import load_project_config
 from longform_engine.gates import semantic_review_apply, semantic_review_task, semantic_review_validate
 from longform_engine.orchestration import continue_write, open_book, submit_agent_draft
-from longform_engine.production import production_next
+from longform_engine.production import first_gate_action, production_next
 from longform_engine.storage import init_project
 from tests.project_fixtures import mark_project_ready
 
@@ -70,6 +70,47 @@ def test_invalid_manifest_is_rejected_before_registration_and_reported_as_orphan
     assert "50_workbench/writing_tasks/ch001.md" in status.orphan_task_files
 
 
+def test_orphan_diagnostics_follow_declared_inputs_instead_of_manifest_filename_guessing(tmp_path):
+    config, root = seed_project(tmp_path)
+    task_dir = root / "50_workbench" / "semantic_tasks"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    task_file = task_dir / "ch001.semantic_task.md"
+    context_file = task_dir / "ch001.semantic_context.json"
+    output_file = task_dir / "ch001.semantic.json"
+    task_file.write_text("# Semantic work order\n", encoding="utf-8")
+    context_file.write_text("{}\n", encoding="utf-8")
+    manifest = build_manifest(
+        root,
+        task_type="chapter_semantic",
+        chapter_number=1,
+        input_files=[task_file, context_file],
+        allowed_output_paths=[output_file],
+        output_schema="chapter_semantic_bundle_v1",
+        validate_command=(
+            "longform-engine chapter semantic-validate project.yaml --chapter 1 "
+            "--file 50_workbench/semantic_tasks/ch001.semantic.json"
+        ),
+        apply_command=(
+            "longform-engine chapter semantic-apply project.yaml --chapter 1 "
+            "--file 50_workbench/semantic_tasks/ch001.semantic.json"
+        ),
+        failure_next_command="longform-engine chapter semantic-task project.yaml --chapter 1",
+        context_policy={
+            "required_files": [task_file, context_file],
+            "max_files": 3,
+            "max_chars": 1_000,
+            "compiled_brief": task_file,
+            "selection_report": context_file,
+        },
+    )
+    write_manifest(root, manifest, task_dir / "ch001.semantic.agent_task.json")
+
+    status = artifact_status(config)
+
+    assert "50_workbench/semantic_tasks/ch001.semantic_task.md" not in status.orphan_task_files
+    assert "50_workbench/semantic_tasks/ch001.semantic_context.json" not in status.orphan_task_files
+
+
 def test_fanfiction_semantic_context_is_compiled_to_three_strict_inputs(tmp_path):
     config, root = seed_project(tmp_path)
     continue_write(config, chapter_number=1)
@@ -89,7 +130,10 @@ def test_fanfiction_semantic_context_is_compiled_to_three_strict_inputs(tmp_path
     write_json(card_path, card)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.parent.mkdir(parents=True, exist_ok=True)
-    draft.write_text(passing_text("fanfiction context"), encoding="utf-8")
+    draft.write_text(
+        passing_text("fanfiction context") + "\nKiro checks the retreat angle before answering.\n",
+        encoding="utf-8",
+    )
 
     semantic_review_task(config, chapter_number=1)
     manifest = load_manifest(root, "semantic_review:ch001:v1")
@@ -105,6 +149,10 @@ def test_fanfiction_semantic_context_is_compiled_to_three_strict_inputs(tmp_path
     assert context["selection"]["full_canonical_files_exposed"] is False
     assert "10_bible/fanfiction/source_canon.json" in context["allowed_canonical_refs"]
     assert "10_bible/fanfiction/fanfiction_bible.json" in context["allowed_canonical_refs"]
+    assert context["participant_ids"] == ["lead_ari", "canon_kiro"]
+    assert {
+        item["character_id"] for item in context["sections"]["fanfiction"]["voice_contracts"]
+    } == {"lead_ari", "canon_kiro"}
     assert context["sections"]["fanfiction"]["declared_continuity"]["continuity_mode"] == "canon_divergent"
 
 
@@ -157,6 +205,11 @@ def test_repair_candidate_supersedes_writing_and_legacy_submission_reaches_final
     normalized_submission = read_json(submission_path)
     assert normalized_submission["candidate_task_id"] == "repair:ch001:v1"
     assert normalized_submission["candidate_status"] == "validated"
+    routed = first_gate_action(root)
+    assert routed is not None
+    assert routed["next_command"] == (
+        "longform-engine chapter finalize project.yaml --chapter 1 --approved-by human"
+    )
     final_action = production_next(config)
     assert final_action["task_type"] != "chapter_write"
     assert final_action["status"] in {
@@ -289,7 +342,10 @@ def write_fanfiction_context(root: Path) -> None:
             "sources": [
                 {
                     "source_id": "sao",
-                    "characters": [{"id": "lead_ari", "name": "Ari", "voice": "conditional and concise"}],
+                    "characters": [
+                        {"id": "lead_ari", "name": "Ari", "voice": "conditional and concise"},
+                        {"id": "canon_kiro", "name": "Kiro", "voice": "technical and guarded"},
+                    ],
                     "abilities": [{"id": "ability_trace", "name": "Trace", "limit": "requires a witnessed cost"}],
                     "world_rules": [{"id": "rule_logout", "summary": "logout is unavailable"}],
                 }
@@ -302,7 +358,10 @@ def write_fanfiction_context(root: Path) -> None:
             "schema": "fanfiction_design_candidate_v1",
             "continuity_mode": "canon_divergent",
             "divergence_points": ["The first raid leader survives at a visible cost."],
-            "voice_contracts": [{"character_id": "lead_ari", "voice": "conditional and concise"}],
+            "voice_contracts": [
+                {"character_id": "lead_ari", "voice": "conditional and concise"},
+                {"character_id": "canon_kiro", "voice": "technical and guarded"},
+            ],
         },
     )
 

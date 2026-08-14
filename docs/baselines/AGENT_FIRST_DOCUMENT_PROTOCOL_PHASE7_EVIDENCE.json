@@ -1,0 +1,100 @@
+{
+  "schema": "agent_document_protocol_phase7_evidence_v1",
+  "engine_version": "0.3.1",
+  "git_commit_at_test": "5259cba2eab512953c9e969409279d183ce440e2",
+  "dirty_tree_sha256_at_test": "cfc9ffd3196d892eff26d27e38ea5ca575b96365ebc9add75a8658223a4a278b",
+  "protocol_surface_sha256": "b3dcfcbcb5d0b7e83fdc7bf015763f70ee2ff8d7c745fa4cddc1673420196b28",
+  "phase6_evidence_sha256": "50bc3eb443c859443228bddcbd0f2ef00a68e3282a071bdc3eb439f2adbc535a",
+  "commands": [
+    {
+      "id": "full_pytest",
+      "command": "python -m pytest -q",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "380 passed in 290.33s"
+    },
+    {
+      "id": "phase7_semantic_transaction",
+      "command": "python -m pytest -q tests/test_agent_document_protocol_phase7.py tests/test_semantic_knowledge.py tests/test_orchestration.py::test_semantic_apply_rolls_back_touched_paths_on_index_failure",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "8 passed"
+    },
+    {
+      "id": "humanizer_and_routing_regression",
+      "command": "python -m pytest -q tests/test_humanizer_semantic_review.py tests/test_agent_document_protocol_phase7.py tests/test_production_experience.py tests/test_agent_task_protocol.py",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "45 passed"
+    },
+    {
+      "id": "ruff",
+      "command": "python -m ruff check <Phase 7 touched Python files>",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "All checks passed!"
+    },
+    {
+      "id": "skill_reference_sync",
+      "command": "python scripts/sync_skill_references.py --check",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "Skill references are synchronized."
+    },
+    {
+      "id": "resource_manifest",
+      "command": "python scripts/build_resource_manifest.py --check",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "Resource manifest is current."
+    },
+    {
+      "id": "skill_validation",
+      "command": "python scripts/validate_skills.py",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "OK: skill packages validated"
+    },
+    {
+      "id": "release_guards",
+      "command": "python scripts/release_surface_guards.py",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "OK: release surface guards passed"
+    },
+    {
+      "id": "readiness",
+      "command": "python scripts/check_agent_data_pipeline_readiness.py --skip-contracts --json",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "ready_for_data_pipeline: true"
+    },
+    {
+      "id": "distribution_audit",
+      "command": "python -m build --wheel --sdist; python scripts/audit_wheel.py <wheel>; python scripts/audit_sdist.py <sdist>",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "wheel 141 entries and sdist 261 entries passed resource audit"
+    }
+  ],
+  "acceptance": {
+    "production_brief_integrated": true,
+    "role_result_lifecycle_integrated": true,
+    "candidate_submit_gate_explicit": true,
+    "apply_finalize_explicit": true,
+    "semantic_transaction_atomic": true,
+    "semantic_failure_rolls_back": true,
+    "controlled_feedback_only": true,
+    "chapter_stage_routing_current_candidate_only": true,
+    "phase8_production_acceptance_complete": false
+  },
+  "test_references": {
+    "control_plane_no_pollution": "tests/test_agent_document_protocol_phase7.py::test_phase7_work_order_and_result_validation_advance_only_control_plane",
+    "control_plane_rollback": "tests/test_agent_document_protocol_phase7.py::test_phase7_invalid_result_rolls_back_partial_control_plane_write",
+    "chapter_stage_routing": "tests/test_agent_document_protocol_phase7.py::test_phase7_chapter_stage_ignores_stale_candidate_tasks",
+    "controlled_feedback": "tests/test_agent_document_protocol_phase7.py::test_phase7_feedback_is_code_only_advisory_and_cannot_carry_commands",
+    "semantic_materialization": "tests/test_semantic_knowledge.py::test_semantic_bundle_apply_query_close_and_rebuild",
+    "semantic_rollback": "tests/test_orchestration.py::test_semantic_apply_rolls_back_touched_paths_on_index_failure",
+    "humanizer_pre_gate_review": "tests/test_humanizer_semantic_review.py::test_humanizer_semantic_task_is_strict_and_surfaces_in_production_next"
+  }
+}

@@ -1,0 +1,91 @@
+{
+  "schema": "agent_data_pipeline_phase6_evidence_v1",
+  "engine_version": "0.3.2",
+  "git_commit_at_test": "5259cba2eab512953c9e969409279d183ce440e2",
+  "dirty_tree_sha256_at_test": "59837f9a7f0b614c1974fdd09de745e8cc4a6b603665185a4c1074986a7ad91f",
+  "protocol_surface_sha256": "a9aaa2bc3207025b3ed347fcaf1363fa4f19a594329f6b9a6a0c8eb926868a91",
+  "role_resource_sha256": "e4016037b429d158feba7bdb4cb2f000f98b065132c937c66623e019a3879f0b",
+  "skills": {
+    "codex": {
+      "version": "0.3.2",
+      "sha256": "94784b55da6264ff2bd26edfca7180e3732d6b9f0506e2192705208a04d1673a"
+    },
+    "claude_code": {
+      "version": "0.3.2",
+      "sha256": "d908d8a575977dffe7bd9d27b3591a7854d266fe4305ce375c647eb85ef2f681"
+    }
+  },
+  "commands": [
+    {
+      "id": "full_pytest",
+      "command": "python -m pytest -q",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "416 passed in one complete Windows run"
+    },
+    {
+      "id": "skill_reference_sync",
+      "command": "python scripts/sync_skill_references.py --check",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "Skill references are synchronized."
+    },
+    {
+      "id": "resource_manifest",
+      "command": "python scripts/build_resource_manifest.py --check",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "Resource manifest is current."
+    },
+    {
+      "id": "skill_validation",
+      "command": "python scripts/validate_skills.py",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "OK: skill packages validated"
+    },
+    {
+      "id": "release_guards",
+      "command": "python scripts/release_surface_guards.py",
+      "status": "pass",
+      "exit_code": 0,
+      "summary": "OK: release surface guards passed"
+    }
+  ],
+  "realistic_payoff_fixture": {
+    "test_reference": "tests/test_agent_document_protocol_phase6.py::test_phase6_realistic_payoff_fixture_remains_three_inputs_and_under_15k",
+    "input_file_count": 3,
+    "max_files": 3,
+    "max_characters": 15000,
+    "context_characters": 4404,
+    "total_input_characters": 10161,
+    "large_card_characters": 71643,
+    "large_gate_characters": 126346,
+    "draft_characters": 3643
+  },
+  "security_tests": {
+    "prompt_injection": [
+      "tests/test_agent_document_protocol_phase5.py::test_phase5_review_isolation_and_prompt_injection_quarantine",
+      "tests/test_agent_document_protocol_phase6.py::test_phase6_author_role_cannot_self_review_and_source_injection_stays_quarantined"
+    ],
+    "role_overreach": [
+      "tests/test_agent_document_protocol_phase4.py::test_phase4_prompt_role_cannot_expand_manifest_canonical_authority",
+      "tests/test_agent_document_protocol_phase5.py::test_phase5_dedup_budget_hash_span_ref_and_overlay_boundaries"
+    ],
+    "self_review": [
+      "tests/test_agent_document_protocol_phase6.py::test_phase6_author_role_cannot_self_review_and_source_injection_stays_quarantined"
+    ],
+    "bad_evidence": [
+      "tests/test_agent_document_protocol_phase4.py::test_phase4_exact_span_and_context_hash_are_rechecked_from_current_files",
+      "tests/test_agent_document_protocol_phase5.py::test_phase5_dedup_budget_hash_span_ref_and_overlay_boundaries"
+    ],
+    "transaction_rollback": [
+      "tests/test_storage.py::test_apply_transaction_writes_report_and_rolls_back_touched_paths",
+      "tests/test_quality_contract_and_creative_interaction.py::test_chapter_direction_apply_failure_rolls_back_card_and_plan"
+    ],
+    "no_pollution": [
+      "tests/test_agent_document_protocol_phase4.py::test_phase4_cli_writes_only_controlled_diagnostic_and_keeps_canonical_and_lifecycle_unchanged",
+      "tests/test_agent_document_protocol_phase5.py::test_phase5_all_nonlegacy_tasks_and_specialist_editors_complete_in_isolation"
+    ]
+  }
+}

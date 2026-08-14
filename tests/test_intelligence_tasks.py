@@ -248,7 +248,7 @@ def apply_all_ideation_rounds(config, root: Path) -> None:
 
 
 def test_v1_manifest_is_read_and_normalized_to_v2(tmp_path):
-    config = seed_project(tmp_path)
+    seed_project(tmp_path)
     root = tmp_path / "novel"
     manifest_file = root / "50_workbench" / "agent_tasks" / "legacy.json"
     manifest_file.write_text(

@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -274,6 +275,8 @@ def test_continue_write_includes_tcs_and_semantic_gate_writes_report(tmp_path):
     tcs = build_tcs(config, chapter_number=2)
     mark_project_ready(root, config, preserve_existing_characters=True)
     complete_unified_semantic_lifecycle(root, config, 1)
+    canonical_tcs = root / "30_state" / "tcs" / "ch002.json"
+    canonical_tcs_hash = hashlib.sha256(canonical_tcs.read_bytes()).hexdigest()
     cont = continue_write(config, chapter_number=2)
 
     draft = root / "40_manuscript" / "draft" / "ch002.md"
@@ -282,6 +285,8 @@ def test_continue_write_includes_tcs_and_semantic_gate_writes_report(tmp_path):
 
     task_payload = json.loads((root / "50_workbench" / "writing_tasks" / "ch002.json").read_text(encoding="utf-8"))
     assert tcs.tcs_file.endswith("ch002.json")
+    assert hashlib.sha256(canonical_tcs.read_bytes()).hexdigest() == canonical_tcs_hash
+    assert json.loads(canonical_tcs.read_text(encoding="utf-8"))["schema"] == "tcs_compact_v2"
     assert cont.status == "task_ready"
     assert "temporal_context_state" in task_payload
     assert gate.passed is False
@@ -711,6 +716,7 @@ def seed_semantic_project(tmp_path, *, fallback=True, allow_network_download=Fal
     state["status"] = "chapter_finalized"
     (root / "30_state" / "novel_state.json").write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
     overrides = semantic_fallback_overrides() if fallback else semantic_strict_overrides(allow_network_download=allow_network_download)
+    overrides["semantic"]["models_dir"] = str(root / "70_runtime" / "models-test")
     return load_project_config(project.project_config, cli_overrides=overrides)
 
 

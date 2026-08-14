@@ -2,7 +2,10 @@ import json
 import os
 import subprocess
 import sys
+from hashlib import sha256
 from pathlib import Path
+
+import yaml
 
 from longform_engine.agent_tasks import build_manifest, update_task_status, write_manifest
 from longform_engine.config import load_project_config
@@ -48,6 +51,40 @@ def create_open_project(tmp_path: Path) -> tuple[Path, Path]:
     assert open_book.returncode == 0, open_book.stderr
     mark_project_ready(project_dir, load_project_config(project_yaml))
     return project_dir, project_yaml
+
+
+def establish_editorial_stage(project_dir: Path, project_yaml: Path, *, chapter_number: int = 1) -> Path:
+    payload = yaml.safe_load(project_yaml.read_text(encoding="utf-8"))
+    payload.setdefault("quality", {})["semantic_review_milestones"] = []
+    payload.setdefault("editorial", {})["review_mode"] = "always"
+    project_yaml.write_text(
+        yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    draft = project_dir / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    if not draft.exists():
+        draft.write_text(
+            f"# Chapter {chapter_number}\n\nAri chooses the north gate and pays the declared cost.\n",
+            encoding="utf-8",
+        )
+    gate = project_dir / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
+    gate.parent.mkdir(parents=True, exist_ok=True)
+    gate.write_text(
+        json.dumps(
+            {
+                "passed": True,
+                "severity": "PASS",
+                "failures": [],
+                "source_sha256": sha256(draft.read_bytes()).hexdigest(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return draft
 
 
 def test_empty_project_requires_open_book_then_book_ideation(tmp_path):
@@ -173,7 +210,7 @@ def test_agent_task_brief_renders_work_order_without_mutation(tmp_path):
     assert result.returncode == 0, result.stderr
     assert text_result.returncode == 0, text_result.stderr
     payload = json.loads(result.stdout)
-    assert payload["renderer"] == "agent_task_brief_v1"
+    assert payload["renderer"] == "agent_task_brief_v2"
     assert payload["read_only"] is True
     assert payload["task_id"] == "chapter_write:ch001:v1"
     assert payload["task_type"] == "chapter_write"
@@ -186,10 +223,14 @@ def test_agent_task_brief_renders_work_order_without_mutation(tmp_path):
     assert payload["apply_command"] == "longform-engine chapter finalize project.yaml --chapter 1 --approved-by human"
     assert payload["failure_next_command"] == "longform-engine repair-chapter project.yaml --chapter 1 --plan-only"
     assert {"no final", "no rag", "no graph direct", "no sqlite direct"}.issubset(set(payload["hard_boundaries"]))
-    assert payload["agent_role"].startswith("Chapter author")
-    assert payload["output_guidance"].startswith("Write Markdown chapter prose")
-    assert "Read only the manifest input_files" in payload["context_budget_rules"][0]
-    assert "40_manuscript/final/" in payload["forbidden_paths"]
+    assert payload["role_id"] == "chapter_author"
+    assert payload["role_version"]
+    assert len(payload["role_prompt_hash"]) == 64
+    assert len(payload["context_hash"]) == 64
+    assert payload["protocol_output_schema"] == "markdown_prose_only"
+    assert payload["protocol_validate_command"].startswith(
+        "longform-engine agent-task result-validate "
+    )
     assert payload["manifest_validation"]["ok"] is True
     assert "# Agent Work Order: chapter_write:ch001:v1" in payload["work_order_markdown"]
     assert "## Role And Goal" in payload["work_order_markdown"]
@@ -219,6 +260,7 @@ def test_agent_task_brief_supports_all_manifest_task_types(tmp_path):
             validate_command=spec["validate"],
             apply_command=spec["apply"],
             failure_next_command=spec["failure"],
+            role_id="serial_verifier" if task_type == "editorial_review" else "",
         )
         write_manifest(
             project_dir,
@@ -229,15 +271,22 @@ def test_agent_task_brief_supports_all_manifest_task_types(tmp_path):
     for task_type, spec in specs.items():
         result = run_cli("agent-task", "brief", str(project_yaml), f"{task_type}:ch001:v1", "--json")
 
+        if task_type in {"graph_extract", "memory_extract", "character_memory"}:
+            assert result.returncode == 1
+            assert "compatibility-read-only" in result.stderr
+            continue
         assert result.returncode == 0, result.stderr
         payload = json.loads(result.stdout)
         assert payload["task_type"] == task_type
         assert payload["allowed_output_paths"] == [spec["output"]]
         assert payload["output_schema"] == spec["schema"]
+        assert payload["output_mode"]
+        assert payload["protocol_output_schema"]
         assert payload["manifest_validation"]["ok"] is True
-        assert payload["work_scope"]
-        assert payload["agent_role"]
-        assert payload["output_guidance"]
+        assert payload["role_id"]
+        assert payload["role_version"]
+        assert len(payload["role_prompt_hash"]) == 64
+        assert len(payload["prompt_hash"]) == 64
         assert "## Hard Boundaries" in payload["work_order_markdown"]
 
 
@@ -309,11 +358,12 @@ def test_production_board_summarizes_chapter_lanes_and_reports(tmp_path):
             chapter_number=1,
             input_files=[project_dir / "project.yaml"],
             allowed_output_paths=[project_dir / spec["output"]],
-            output_schema=spec["schema"],
-            validate_command=spec["validate"],
-            apply_command=spec["apply"],
-            failure_next_command=spec["failure"],
-        )
+                output_schema=spec["schema"],
+                validate_command=spec["validate"],
+                apply_command=spec["apply"],
+                failure_next_command=spec["failure"],
+                role_id="serial_verifier" if task_type == "editorial_review" else "",
+            )
         write_manifest(
             project_dir,
             manifest,
@@ -473,7 +523,7 @@ def test_production_fixture_matrix_covers_blocking_states(tmp_path):
         task_type="pacing_review",
         chapter_number=3,
         output="50_workbench/gate_artifacts/ch003/semantic_pacing_result.json",
-        schema="semantic_pacing_result_v1",
+        schema="semantic_pacing_result_v2",
         validate=(
             "longform-engine pacing semantic-validate project.yaml --chapter 3 "
             "--file 50_workbench/gate_artifacts/ch003/semantic_pacing_result.json"
@@ -643,6 +693,7 @@ def test_production_next_editorial_task_includes_role_specific_work_order(tmp_pa
         "# Chapter 1\n\nAri checks the north gate clue while the caravan waits for an editorial pass.\n",
         encoding="utf-8",
     )
+    establish_editorial_stage(project_dir, project_yaml)
     review = run_cli("editorial", "review", str(project_yaml), "--chapter", "1", "--json")
     assert review.returncode in {0, 1}, review.stdout + review.stderr
 
@@ -767,8 +818,9 @@ def test_production_loop_runs_gate_for_existing_draft_and_pauses_on_failure(tmp_
     assert not (project_dir / "40_manuscript" / "final" / "ch001.md").exists()
 
 
-def test_production_loop_aggregates_validated_editorial_task_and_pauses_need_human(tmp_path):
+def test_production_loop_rejects_legacy_editorial_task_without_isolated_context(tmp_path):
     project_dir, project_yaml = create_open_project(tmp_path)
+    establish_editorial_stage(project_dir, project_yaml)
     result_dir = project_dir / "50_workbench" / "editorial_reviews" / "results"
     result_dir.mkdir(parents=True, exist_ok=True)
     (result_dir / "ch001.serial_verifier.normalized.json").write_text(
@@ -811,6 +863,7 @@ def test_production_loop_aggregates_validated_editorial_task_and_pauses_need_hum
         validate_command=spec["validate"],
         apply_command=spec["apply"],
         failure_next_command=spec["failure"],
+        role_id="serial_verifier",
     )
     write_manifest(
         project_dir,
@@ -829,13 +882,12 @@ def test_production_loop_aggregates_validated_editorial_task_and_pauses_need_hum
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(result.stdout)
     assert payload["status"] == "paused"
-    assert payload["pause_reason"] == "need_human"
+    assert payload["pause_reason"] == "awaiting_agent_output"
+    assert payload["next_action"]["status"] == "agent_task_awaiting_agent"
     assert payload["steps_executed"] == 1
-    assert payload["steps"][0]["action"] == "editorial_aggregate"
+    assert payload["steps"][0]["action"] == "editorial_review"
     aggregate_file = project_dir / "50_workbench" / "editorial_reviews" / "ch001.aggregate.json"
-    aggregate = json.loads(aggregate_file.read_text(encoding="utf-8"))
-    assert aggregate["accepted_roles"] == ["serial_verifier"]
-    assert aggregate["need_human"] is True
+    assert not aggregate_file.exists()
     assert not (project_dir / "40_manuscript" / "final" / "ch001.md").exists()
 
 
@@ -889,6 +941,7 @@ def write_fixture_manifest(
         apply_command=apply,
         failure_next_command=failure,
         task_id=task_id,
+        role_id="serial_verifier" if task_type == "editorial_review" else "",
     )
     write_manifest(
         project_dir,
@@ -1033,7 +1086,7 @@ def agent_task_manifest_specs() -> dict[str, dict[str, str]]:
             "failure": "longform-engine editorial need-human project.yaml --chapter 1 --reason editorial_failed",
         },
         "pacing_review": {
-            "schema": "semantic_pacing_result_v1",
+            "schema": "semantic_pacing_result_v2",
             "output": "50_workbench/gate_artifacts/ch001/semantic_pacing_result.json",
             "validate": (
                 "longform-engine pacing semantic-validate project.yaml --chapter 1 "

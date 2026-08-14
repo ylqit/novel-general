@@ -74,6 +74,35 @@ def test_release_guard_covers_experience_orchestration_contracts():
         assert marker in production
 
 
+def test_release_guard_keeps_agent_first_phase5_outside_production():
+    guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
+    production = (ROOT / "src" / "longform_engine" / "production.py").read_text(encoding="utf-8")
+
+    for marker in (
+        "check_agent_first_protocol_isolation_guards",
+        "LEGACY_COMPATIBILITY_TASK_TYPES",
+        "compile_isolated_agent_package",
+        "validate_isolated_agent_submission",
+        "Phase 5 isolated protocol module must remain write-free",
+    ):
+        assert marker in guard
+    assert "longform_engine.agent_isolation" not in production
+    assert "longform_engine.agent_results" not in production
+
+
+def test_release_guard_covers_agent_data_pipeline_readiness_gate():
+    guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
+
+    for marker in (
+        "check_agent_data_pipeline_readiness_guards",
+        "agent_data_pipeline_readiness_v1",
+        "ready_for_data_pipeline",
+        "require_agent_data_pipeline_readiness",
+        "python scripts/check_agent_data_pipeline_readiness.py --json",
+    ):
+        assert marker in guard
+
+
 def test_release_guard_covers_benchmark_and_readiness_contracts():
     guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
 

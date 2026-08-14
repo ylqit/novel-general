@@ -817,6 +817,11 @@ def build_tcs(config: ConfigDocument, *, chapter_number: int) -> TcsResult:
     if chapter_number <= 0:
         raise ValueError("chapter_number must be positive.")
     root = resolve_project_root(config)
+    tcs_dir = root / "30_state" / "tcs"
+    path = tcs_dir / f"ch{chapter_number:03d}.json"
+    existing = read_json(path, default={})
+    if reusable_semantic_tcs(root, existing, chapter_number):
+        return tcs_result_from_payload(path, existing, chapter_number)
     graph = read_json(root / "30_state" / "story_graph.json", default={})
     characters = current_characters(graph, chapter_number)
     locations = current_locations(graph, chapter_number)
@@ -843,19 +848,57 @@ def build_tcs(config: ConfigDocument, *, chapter_number: int) -> TcsResult:
         "updated_at": utc_now(),
     }
     payload.update(tcs_state_payload(root, graph, chapter_number, characters, locations, events, conflicts, foreshadows, constraints))
-    tcs_dir = root / "30_state" / "tcs"
     tcs_dir.mkdir(parents=True, exist_ok=True)
-    path = tcs_dir / f"ch{chapter_number:03d}.json"
     atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return tcs_result_from_payload(path, payload, chapter_number)
+
+
+def reusable_semantic_tcs(root: Path, payload: Any, chapter_number: int) -> bool:
+    """Return true only for a compact TCS bound to an unchanged canonical ledger."""
+
+    if not isinstance(payload, dict) or payload.get("schema") != "tcs_compact_v2":
+        return False
+    if int(payload.get("chapter_number") or 0) != chapter_number:
+        return False
+    source_path = str(payload.get("source_semantic_ledger") or "")
+    source_hash = str(payload.get("source_semantic_ledger_sha256") or "")
+    if not source_path or not source_hash:
+        return False
+    source = (root / source_path).resolve()
+    try:
+        source.relative_to((root / "30_state" / "semantic_ledger").resolve())
+    except ValueError:
+        return False
+    if not source.is_file() or hashlib.sha256(source.read_bytes()).hexdigest() != source_hash:
+        return False
+    ledger = read_json(source, default={})
+    return (
+        isinstance(ledger, dict)
+        and ledger.get("canonical") is True
+        and int(ledger.get("chapter_number") or 0) + 1 == chapter_number
+    )
+
+
+def tcs_result_from_payload(path: Path, payload: dict[str, Any], chapter_number: int) -> TcsResult:
+    open_threads = []
+    raw_open_threads = payload.get("open_foreshadows")
+    values = raw_open_threads if isinstance(raw_open_threads, list) else normalize_list(raw_open_threads)
+    for item in values:
+        if isinstance(item, dict):
+            value = str(item.get("thread_id") or item.get("thread") or "")
+        else:
+            value = str(item)
+        if value:
+            open_threads.append(value)
     return TcsResult(
         chapter_number=chapter_number,
         tcs_file=str(path),
-        current_characters=tuple(characters),
-        locations=tuple(locations),
-        recent_events=tuple(events),
-        unresolved_conflicts=tuple(conflicts),
-        open_foreshadows=tuple(foreshadows),
-        active_constraints=tuple(constraints),
+        current_characters=tuple(normalize_list(payload.get("current_characters"))),
+        locations=tuple(normalize_list(payload.get("locations"))),
+        recent_events=tuple(normalize_list(payload.get("recent_events"))),
+        unresolved_conflicts=tuple(normalize_list(payload.get("unresolved_conflicts"))),
+        open_foreshadows=tuple(open_threads),
+        active_constraints=tuple(normalize_list(payload.get("active_constraints"))),
     )
 
 
@@ -1828,6 +1871,9 @@ def current_locations(graph: Any, chapter_number: int) -> list[str]:
     for event in normalize_records(graph.get("events"))[-5:]:
         if not isinstance(event, dict):
             continue
+        number = as_int(event.get("chapter_number") or event.get("chapter"))
+        if not number or number >= chapter_number:
+            continue
         for location in normalize_list(event.get("locations") or event.get("location")):
             names.append(location)
     return dedupe([item for item in names if item])
@@ -1861,7 +1907,7 @@ def unresolved_conflicts(root: Path, graph: Any, chapter_number: int) -> list[st
         for relation in normalize_records(graph.get("relationships")):
             if not isinstance(relation, dict):
                 continue
-            if str(relation.get("status") or "active").lower() in {"resolved", "closed"}:
+            if not edge_active_for_chapter(relation, chapter_number):
                 continue
             if "conflict" in str(relation.get("type") or relation.get("relation") or "").lower():
                 lines.append(f"{relation.get('source') or relation.get('from')} -> {relation.get('target') or relation.get('to')}")
@@ -1892,6 +1938,8 @@ def active_constraints(root: Path, graph: Any, chapter_number: int) -> list[str]
         for entity in normalize_records(graph.get("entities")):
             if not isinstance(entity, dict) or str(entity.get("type") or "").lower() != "ability":
                 continue
+            if not entity_active_for_chapter(entity, chapter_number):
+                continue
             cost = entity.get("cost") or entity.get("limit") or entity.get("cooldown")
             if cost:
                 constraints.append(f"ability:{entity.get('name') or entity.get('id')} cost/limit={cost}")
@@ -1907,7 +1955,11 @@ def active_constraints(root: Path, graph: Any, chapter_number: int) -> list[str]
 def entity_active_for_chapter(entity: dict[str, Any], chapter_number: int) -> bool:
     mentions = normalize_records(entity.get("mentions"))
     if not mentions:
-        return True
+        start = as_int(entity.get("from_chapter"))
+        if not start or start >= chapter_number:
+            return False
+        status = str(entity.get("status") or "active").lower()
+        return status not in {"planned", "inactive", "expired", "paid_off", "resolved", "closed"}
     numbers = [as_int(item.get("chapter_number") or item.get("chapter")) for item in mentions if isinstance(item, dict)]
     return any(number and number < chapter_number for number in numbers)
 
@@ -1916,7 +1968,7 @@ def edge_active_for_chapter(edge: dict[str, Any], chapter_number: int) -> bool:
     start = as_int(edge.get("from_chapter")) or 1
     end = as_int(edge.get("to_chapter"))
     status = str(edge.get("status") or "active").lower()
-    if status in {"inactive", "expired", "paid_off", "resolved"}:
+    if status in {"planned", "inactive", "expired", "paid_off", "resolved", "closed"}:
         return False
     return start <= chapter_number and (not end or chapter_number <= end)
 

@@ -1,0 +1,80 @@
+{
+  "schema": "agent_first_document_protocol_phase8_evidence_v1",
+  "engine_version": "0.3.1",
+  "acceptance_scope": "protocol_and_artifact_lifecycle",
+  "chapter_one": {
+    "status": "pass",
+    "roles": [
+      "chapter_author",
+      "reader_payoff_reviewer",
+      "chapter_semantic_archivist"
+    ],
+    "explicit_boundaries": [
+      "draft_submit",
+      "payoff_validate",
+      "chapter_finalize",
+      "chapter_semantic_apply",
+      "chapter_close"
+    ],
+    "next_chapter": 2
+  },
+  "five_chapter_smoke": {
+    "status": "pass",
+    "closed_chapters": 5,
+    "p0_findings": 0,
+    "p1_findings": 0,
+    "audit_archives": 3,
+    "active_buffer": [4, 5],
+    "archived_loose_duplicates": 0,
+    "next_chapter": 6
+  },
+  "twenty_chapter_protocol_replay": {
+    "status": "pass",
+    "closed_chapters": 20,
+    "audit_archives": 18,
+    "active_buffer": [19, 20],
+    "archived_loose_duplicates": 0,
+    "next_chapter": 21,
+    "literary_evidence": false
+  },
+  "sao_agent_production": {
+    "status": "ready_not_run",
+    "preserved_failed_project": "novels/sao-aincrad-return-route-v031",
+    "reason": "Engineering fixtures do not count as real Codex-authored SAO prose or human literary acceptance."
+  },
+  "artifact_contract": {
+    "schema": "chapter_artifact_archive_v3",
+    "active_buffer_chapters": 2,
+    "retained_evidence": [
+      "final",
+      "semantic_ledger",
+      "closure"
+    ],
+    "restore_is_observable": true,
+    "transaction_reports_archived": true,
+    "draft_and_submitted_duplicates_archived": true,
+    "content_addressed_blob_deduplication": true,
+    "retained_final_hash_references": true,
+    "embedded_audit_manifest": true,
+    "dry_run_reports_deduplication": true,
+    "v2_verify_restore_compatible": true
+  },
+  "tests": [
+    "tests/test_artifacts.py",
+    "tests/test_agent_document_protocol_phase8.py"
+  ],
+  "validation": {
+    "phase8_tests": "7 passed",
+    "full_pytest": "386 passed",
+    "skill_reference_sync": "pass",
+    "resource_manifest": "pass",
+    "skill_validation": "pass",
+    "release_guards": "pass",
+    "readiness": {
+      "ready_for_data_pipeline": true,
+      "checks_passed": 8,
+      "failures": 0
+    }
+  },
+  "claim_eligible": false
+}

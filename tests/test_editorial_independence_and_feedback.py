@@ -8,6 +8,7 @@ from longform_engine.agent_tasks import list_manifests, load_manifest, validate_
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_aggregate, editorial_review, editorial_submit_review
 from longform_engine.orchestration.pipeline import build_feedback_carryover
+from longform_engine.production import editorial_task_is_current
 from longform_engine.quality import (
     carry_feedback,
     refresh_feedback_registry,
@@ -47,6 +48,9 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
         assert len(manifest["input_files"]) <= 7
         assert not any("/results/" in path for path in manifest["input_files"])
         assert validate_manifest_strict(root, manifest).ok
+        work_order = (root / manifest["context_policy"]["compiled_brief"]).read_text(encoding="utf-8")
+        assert "Each items[] object must contain: code, severity" in work_order
+        assert "stable IDs in each item's `character_ids`" in work_order
         context_path = next(path for path in manifest["input_files"] if path.endswith(".context.json"))
         context = json.loads((root / context_path).read_text(encoding="utf-8"))
         instances.add(context["reviewer_instance_id"])
@@ -203,6 +207,157 @@ def test_editorial_v2_rejects_stale_context_without_canonical_pollution(tmp_path
     assert not result_file.with_name(f"ch001.{role_id}.normalized.json").exists()
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
     assert not any((root / "60_rag").rglob("ch001*"))
+
+
+def test_partial_editorial_submissions_do_not_invalidate_peer_contexts(tmp_path):
+    config, root = seed_project(tmp_path)
+    draft = root / "40_manuscript" / "draft" / "ch001.md"
+    draft.write_text(
+        "# Chapter 1\n\nAri chooses the marked retreat route and records its cost.\n",
+        encoding="utf-8",
+    )
+    refresh_feedback_registry(
+        root,
+        chapter_number=0,
+        observations=[feedback_observation("prior_style_risk", "P2", "prior")],
+    )
+    registry = root / "50_workbench" / "quality_feedback" / "registry.jsonl"
+    registry_before = hashlib.sha256(registry.read_bytes()).hexdigest()
+    review = editorial_review(config, chapter_number=1)
+
+    for role_id in review.selected_roles:
+        context_path = (
+            root
+            / "50_workbench"
+            / "editorial_reviews"
+            / "agent_tasks"
+            / "ch001"
+            / f"{role_id}.context.json"
+        )
+        context = json.loads(context_path.read_text(encoding="utf-8"))
+        assert "50_workbench/quality_feedback/registry.jsonl" not in context[
+            "provenance_source_files"
+        ]
+        result_file = (
+            root
+            / "50_workbench"
+            / "editorial_reviews"
+            / "results"
+            / f"ch001.{role_id}.json"
+        )
+        result_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "chapter_number": 1,
+                    "role_id": role_id,
+                    "verdict": "pass",
+                    "items": [],
+                    "reviewer_instance_id": context["reviewer_instance_id"],
+                    "agent_product": "codex-app",
+                    "agent_version": "test",
+                    "context_digest_hash": context["context_digest_hash"],
+                    "independence_mode": context["independence_mode"],
+                    "review_round": context["review_round"],
+                    "confidence": 0.9,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        submitted = editorial_submit_review(
+            config,
+            chapter_number=1,
+            role=role_id,
+            file_path=result_file,
+        )
+        assert submitted.accepted is True
+        if role_id != review.selected_roles[-1]:
+            assert hashlib.sha256(registry.read_bytes()).hexdigest() == registry_before
+
+    aggregate = editorial_aggregate(config, chapter_number=1)
+    assert not aggregate.missing_roles
+    assert not aggregate.need_human
+
+
+def test_editorial_aggregate_rejects_results_for_replaced_chapter_candidate(tmp_path):
+    config, root = seed_project(tmp_path)
+    draft = root / "40_manuscript" / "draft" / "ch001.md"
+    draft.write_text("# Chapter 1\n\nAri inspects the first bounded clue.\n", encoding="utf-8")
+    review = editorial_review(config, chapter_number=1)
+    for role_id in review.selected_roles:
+        context = json.loads(
+            (
+                root
+                / "50_workbench"
+                / "editorial_reviews"
+                / "agent_tasks"
+                / "ch001"
+                / f"{role_id}.context.json"
+            ).read_text(encoding="utf-8")
+        )
+        result_file = (
+            root
+            / "50_workbench"
+            / "editorial_reviews"
+            / "results"
+            / f"ch001.{role_id}.json"
+        )
+        result_file.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "chapter_number": 1,
+                    "role_id": role_id,
+                    "verdict": "pass",
+                    "items": [],
+                    "reviewer_instance_id": context["reviewer_instance_id"],
+                    "agent_product": "codex-app",
+                    "agent_version": "test",
+                    "context_digest_hash": context["context_digest_hash"],
+                    "independence_mode": context["independence_mode"],
+                    "review_round": context["review_round"],
+                    "confidence": 0.9,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        editorial_submit_review(config, chapter_number=1, role=role_id, file_path=result_file)
+
+    first = editorial_aggregate(config, chapter_number=1)
+    first_payload = json.loads(Path(first.aggregate_file).read_text(encoding="utf-8"))
+    assert first_payload["source_sha256"] == hashlib.sha256(draft.read_bytes()).hexdigest()
+
+    draft.write_text("# Chapter 1\n\nAri inspects a replacement clue with a changed outcome.\n", encoding="utf-8")
+    stale = editorial_aggregate(config, chapter_number=1)
+    stale_payload = json.loads(Path(stale.aggregate_file).read_text(encoding="utf-8"))
+
+    assert stale.missing_roles == tuple(review.selected_roles)
+    assert stale_payload["accepted_results"] == []
+    assert len(stale_payload["stale_results"]) == len(review.selected_roles)
+    assert "stale_editorial_results" in stale.need_human_reasons
+    assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
+
+
+def test_editorial_task_currency_tracks_isolated_context_and_current_draft(tmp_path):
+    config, root = seed_project(tmp_path)
+    draft = root / "40_manuscript" / "draft" / "ch001.md"
+    draft.write_text("# Chapter 1\n\nAri follows one bounded clue.\n", encoding="utf-8")
+    editorial_review(config, chapter_number=1)
+    tasks = [
+        task
+        for task in list_manifests(root, chapter_number=1)
+        if task.get("task_type") == "editorial_review"
+    ]
+
+    assert tasks
+    assert all(editorial_task_is_current(root, 1, task) for task in tasks)
+
+    draft.write_text("# Chapter 1\n\nAri follows a replacement clue.\n", encoding="utf-8")
+
+    assert all(not editorial_task_is_current(root, 1, task) for task in tasks)
 
 
 def test_editorial_v2_requires_exact_chapter_evidence_for_blocking_finding(tmp_path):

@@ -306,14 +306,26 @@ def build_character_expression_packet(
     pov = str(card.get("pov_character_id") or "").strip()
     if pov:
         requested.insert(0, pov)
-    for value in tcs.get("current_characters") or []:
+    tcs_characters = list(tcs.get("current_characters") or [])
+    if not tcs_characters:
+        tcs_characters = [
+            str(item.get("character_id") or "")
+            for item in tcs.get("character_current") or []
+            if isinstance(item, dict)
+        ]
+    for value in tcs_characters:
         character_id = str(value)
         character_id = by_name.get(character_id, character_id)
         if character_id in by_id:
             requested.append(character_id)
     if not requested and character_rows:
         requested.append(str(character_rows[0].get("id") or ""))
-    featured = dedupe(item for item in requested if item in by_id)[:6]
+    featured = dedupe(item for item in requested if item in by_id)
+    if len(featured) > 6:
+        raise ValueError(
+            "Character expression packet cannot fit all required featured characters: "
+            f"{', '.join(featured)}; split the scene or revise the chapter card before regenerating."
+        )
     if not pov and featured:
         pov = featured[0]
 
@@ -685,11 +697,12 @@ def relationship_context(relationships: Any, character_id: str, featured: list[s
     if not isinstance(relationships, list):
         return []
     selected: list[dict[str, str]] = []
+    featured_ids = set(featured)
     for relation in relationships:
         if not isinstance(relation, dict):
             continue
         source, target = str(relation.get("source_id") or ""), str(relation.get("target_id") or "")
-        if character_id not in {source, target} or not ({source, target} & set(featured)):
+        if character_id not in {source, target} or not {source, target}.issubset(featured_ids):
             continue
         selected.append(
             {
@@ -699,7 +712,13 @@ def relationship_context(relationships: Any, character_id: str, featured: list[s
                 "stage": str(relation.get("stage") or ""),
             }
         )
-    return selected[:4]
+    if len(selected) > 4:
+        relationship_ids = ", ".join(item["relationship_id"] or "<unnamed>" for item in selected)
+        raise ValueError(
+            "Character expression packet cannot fit every active featured relationship for "
+            f"{character_id}: {relationship_ids}; narrow the featured cast or relationship focus."
+        )
+    return selected
 
 
 def dedupe(values: Iterable[str]) -> list[str]:

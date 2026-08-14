@@ -12,7 +12,11 @@ from typing import Any
 import hashlib
 import json
 import math
+import os
 import re
+import shutil
+import sys
+import uuid
 
 from longform_engine.config import ConfigDocument
 from longform_engine.storage import atomic_write_text, resolve_project_root
@@ -69,6 +73,12 @@ class ModelVerifyResult:
     warnings: tuple[str, ...]
 
 
+MODEL_CACHE_REF_SCHEMA = "semantic_model_cache_ref_v1"
+MODEL_CACHE_STATUS_SCHEMA = "semantic_model_cache_status_v1"
+MODEL_MIGRATION_SCHEMA = "semantic_model_cache_migration_v1"
+MODEL_MANIFEST_SCHEMA = "semantic_model_cache_manifest_v2"
+
+
 PROFILES: dict[str, ModelProfile] = {
     "bge-m3": ModelProfile(
         name="bge-m3",
@@ -116,13 +126,62 @@ def list_profiles() -> tuple[ModelProfile, ...]:
 
 
 def models_dir(config: ConfigDocument) -> Path:
-    """Resolve the project-local semantic model cache directory."""
+    """Resolve custom, referenced shared, legacy, or default shared model storage."""
 
     root = resolve_project_root(config)
-    semantic_config = config.data.get("semantic", {}) if isinstance(config.data.get("semantic"), dict) else {}
-    configured = semantic_config.get("models_dir") or config.data.get("rag", {}).get("models_dir") or "70_runtime/models"
-    path = Path(str(configured))
-    return path if path.is_absolute() else root / path
+    semantic = semantic_config(config)
+    rag = config.data.get("rag", {}) if isinstance(config.data.get("rag"), dict) else {}
+    configured = semantic.get("models_dir") or rag.get("models_dir")
+    if configured:
+        path = Path(str(configured)).expanduser()
+        if path.is_absolute():
+            return path.resolve()
+    reference = read_json(model_cache_reference_path(config), default={})
+    if isinstance(reference, dict) and reference.get("schema") == MODEL_CACHE_REF_SCHEMA:
+        shared_path = Path(str(reference.get("shared_path") or "")).expanduser()
+        if shared_path.is_absolute():
+            return shared_path.resolve()
+    if configured:
+        project_path = (root / Path(str(configured))).resolve()
+        if is_legacy_models_path(root, project_path) and directory_has_files(project_path):
+            return project_path
+        if not is_legacy_models_path(root, project_path):
+            return project_path
+    return shared_model_cache_root()
+
+
+def shared_model_cache_root() -> Path:
+    override = os.environ.get("LONGFORM_MODEL_CACHE")
+    if override:
+        return Path(override).expanduser().resolve()
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Caches"
+    else:
+        base = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache"))
+    return (base / "longform-novel-engine" / "models").resolve()
+
+
+def model_cache_reference_path(config: ConfigDocument) -> Path:
+    return resolve_project_root(config) / "70_runtime" / "semantic_model_cache_ref.json"
+
+
+def is_legacy_models_path(root: Path, path: Path) -> bool:
+    return path.resolve() == (root / "70_runtime" / "models").resolve()
+
+
+def cache_kind(config: ConfigDocument) -> str:
+    root = resolve_project_root(config)
+    path = models_dir(config)
+    semantic = semantic_config(config)
+    rag = config.data.get("rag", {}) if isinstance(config.data.get("rag"), dict) else {}
+    configured = semantic.get("models_dir") or rag.get("models_dir")
+    if configured and Path(str(configured)).expanduser().is_absolute():
+        return "custom_absolute"
+    if is_legacy_models_path(root, path):
+        return "legacy_project"
+    return "shared"
 
 
 def semantic_config(config: ConfigDocument) -> dict[str, Any]:
@@ -169,53 +228,67 @@ def install_model_profile(
     profile: str = "bge-m3",
     download: bool = False,
 ) -> ModelInstallResult:
-    """Create a local model manifest and optionally snapshot Hugging Face repos."""
+    """Prepare a profile in custom or shared storage with atomic publication."""
 
     chosen = selected_profile(config, profile)
     cache_root = models_dir(config)
-    embedding_path = cache_root / chosen.name / "embedding"
-    reranker_path = cache_root / chosen.name / "reranker"
-    embedding_path.mkdir(parents=True, exist_ok=True)
-    reranker_path.mkdir(parents=True, exist_ok=True)
-
     warnings: list[str] = []
     downloaded = False
-    if download and not chosen.local_only:
-        try:
-            from huggingface_hub import snapshot_download  # type: ignore
+    cache_root.mkdir(parents=True, exist_ok=True)
+    lock = cache_root / ".install.lock"
+    acquire_cache_lock(lock)
+    try:
+        profile_path = cache_root / chosen.name
+        if download and not chosen.local_only:
+            staging = cache_root / f".{chosen.name}.staging-{uuid.uuid4().hex}"
+            try:
+                embedding_staging = staging / "embedding"
+                reranker_staging = staging / "reranker"
+                embedding_staging.mkdir(parents=True)
+                reranker_staging.mkdir(parents=True)
+                from huggingface_hub import snapshot_download  # type: ignore
 
-            snapshot_download(
-                repo_id=chosen.embedding_repo,
-                local_dir=embedding_path,
-                ignore_patterns=MODEL_SNAPSHOT_IGNORE_PATTERNS,
-            )
-            snapshot_download(
-                repo_id=chosen.reranker_repo,
-                local_dir=reranker_path,
-                ignore_patterns=MODEL_SNAPSHOT_IGNORE_PATTERNS,
-            )
-            downloaded = True
-        except Exception as exc:  # pragma: no cover - depends on optional network/deps
-            warnings.append(f"Hugging Face download skipped/failed: {exc}")
-    elif download and chosen.local_only:
-        warnings.append("local-hash profile does not require download.")
+                embedding_snapshot = snapshot_download(
+                    repo_id=chosen.embedding_repo,
+                    revision="main",
+                    local_dir=embedding_staging,
+                    ignore_patterns=MODEL_SNAPSHOT_IGNORE_PATTERNS,
+                )
+                reranker_snapshot = snapshot_download(
+                    repo_id=chosen.reranker_repo,
+                    revision="main",
+                    local_dir=reranker_staging,
+                    ignore_patterns=MODEL_SNAPSHOT_IGNORE_PATTERNS,
+                )
+                write_profile_manifest(
+                    staging,
+                    chosen,
+                    embedding_revision=Path(str(embedding_snapshot)).name,
+                    reranker_revision=Path(str(reranker_snapshot)).name,
+                )
+                publish_model_profile(staging, profile_path)
+                downloaded = True
+            except Exception as exc:  # pragma: no cover - depends on optional network/deps
+                shutil.rmtree(staging, ignore_errors=True)
+                warnings.append(f"Hugging Face download skipped/failed: {exc}")
+        elif download and chosen.local_only:
+            warnings.append("local-hash profile does not require download.")
+        if chosen.local_only:
+            profile_path.mkdir(parents=True, exist_ok=True)
+            write_profile_manifest(profile_path, chosen, embedding_revision="local", reranker_revision="local")
+        embedding_path = profile_path / "embedding"
+        reranker_path = profile_path / "reranker"
+        if not download and not profile_path.exists():
+            embedding_path.mkdir(parents=True, exist_ok=True)
+            reranker_path.mkdir(parents=True, exist_ok=True)
 
-    payload = {
-        "schema_version": 1,
-        "active_profile": chosen.name,
-        "profiles": {item.name: asdict(item) for item in PROFILES.values()},
-        "installed": {
-            chosen.name: {
-                "embedding_repo": chosen.embedding_repo,
-                "reranker_repo": chosen.reranker_repo,
-                "embedding_path": str(embedding_path),
-                "reranker_path": str(reranker_path),
-                "downloaded": downloaded,
-            }
-        },
-    }
-    path = manifest_path(config)
-    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        payload = merge_model_manifest(cache_root, chosen, downloaded=downloaded)
+        path = cache_root / "semantic_models.json"
+        atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        if cache_kind(config) == "shared":
+            write_model_cache_reference(config, chosen.name, cache_root, path)
+    finally:
+        release_cache_lock(lock)
     return ModelInstallResult(
         profile=chosen.name,
         models_dir=str(cache_root),
@@ -225,6 +298,97 @@ def install_model_profile(
         reranker_path=str(reranker_path),
         warnings=tuple(warnings),
     )
+
+
+def cache_status_payload() -> dict[str, Any]:
+    root = shared_model_cache_root()
+    profiles: list[dict[str, Any]] = []
+    if root.is_dir():
+        for path in sorted(candidate for candidate in root.iterdir() if candidate.is_dir() and not candidate.name.startswith(".")):
+            profiles.append(
+                {
+                    "profile": path.name,
+                    "path": str(path),
+                    "bytes": tree_size(path),
+                    "manifest_ok": verify_profile_manifest(path),
+                }
+            )
+    return {
+        "schema": MODEL_CACHE_STATUS_SCHEMA,
+        "shared_path": str(root),
+        "exists": root.is_dir(),
+        "total_bytes": tree_size(root),
+        "profiles": profiles,
+        "pending_lock": (root / ".install.lock").exists(),
+    }
+
+
+def migrate_models_to_shared(config: ConfigDocument, *, dry_run: bool, confirmed: bool) -> dict[str, Any]:
+    root = resolve_project_root(config)
+    legacy = root / "70_runtime" / "models"
+    shared = shared_model_cache_root()
+    profile = selected_profile(config)
+    source_profile = legacy / profile.name
+    target = shared / profile.name
+    source_bytes = tree_size(legacy)
+    source_ready = source_profile.is_dir() and directory_has_files(source_profile)
+    shared_ready = target.is_dir() and verify_profile_manifest(target)
+    blockers: list[str] = []
+    if cache_kind(config) == "custom_absolute":
+        blockers.append("explicit absolute models_dir is user-managed and cannot be migrated automatically")
+    if not source_ready and not shared_ready:
+        blockers.append(f"legacy profile is missing and no valid shared profile exists: {source_profile}")
+    payload: dict[str, Any] = {
+        "schema": MODEL_MIGRATION_SCHEMA,
+        "profile": profile.name,
+        "legacy_path": str(legacy),
+        "shared_path": str(shared),
+        "source_bytes": source_bytes,
+        "dry_run": dry_run,
+        "eligible": not blockers,
+        "blockers": blockers,
+        "migrated": False,
+        "legacy_removed": False,
+        "reused_existing": False,
+        "source_present": source_ready,
+        "shared_profile_valid": shared_ready,
+        "reference_file": str(model_cache_reference_path(config)),
+    }
+    if dry_run or blockers:
+        return payload
+    if not confirmed:
+        raise ModelError("Model migration requires --yes after reviewing the dry-run.")
+    shared.mkdir(parents=True, exist_ok=True)
+    lock = shared / ".install.lock"
+    acquire_cache_lock(lock)
+    staging = shared / f".{profile.name}.migration-{uuid.uuid4().hex}"
+    try:
+        source_hash = hash_tree(source_profile, exclude_names={"profile_manifest.json"}) if source_ready else ""
+        target_hash = hash_tree(target, exclude_names={"profile_manifest.json"}) if shared_ready else ""
+        if not source_ready or (source_hash and source_hash == target_hash):
+            payload["reused_existing"] = True
+        else:
+            shutil.copytree(source_profile, staging)
+            if hash_tree(staging, exclude_names={"profile_manifest.json"}) != source_hash:
+                raise ModelError("Shared model migration hash verification failed.")
+            write_profile_manifest(staging, profile, embedding_revision="legacy", reranker_revision="legacy")
+            publish_model_profile(staging, target)
+            if hash_tree(target, exclude_names={"profile_manifest.json"}) != source_hash:
+                raise ModelError("Published shared model differs from the legacy source.")
+        manifest = merge_model_manifest(shared, profile, downloaded=True)
+        manifest_file = shared / "semantic_models.json"
+        atomic_write_text(manifest_file, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+        write_model_cache_reference(config, profile.name, shared, manifest_file)
+        if models_dir(config).resolve() != shared.resolve():
+            raise ModelError("Project model reference did not resolve to the shared cache.")
+        if legacy.exists():
+            shutil.rmtree(legacy)
+        payload["migrated"] = True
+        payload["legacy_removed"] = not legacy.exists()
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+        release_cache_lock(lock)
+    return payload
 
 
 def verify_models(config: ConfigDocument) -> ModelVerifyResult:
@@ -241,6 +405,28 @@ def verify_models(config: ConfigDocument) -> ModelVerifyResult:
     embedding_cached = profile.local_only or directory_has_files(embedding_path)
     reranker_cached = profile.local_only or directory_has_files(reranker_path)
     warnings: list[str] = []
+    reference = read_json(model_cache_reference_path(config), default={})
+    if cache_kind(config) == "shared" and isinstance(reference, dict) and reference.get("schema") == MODEL_CACHE_REF_SCHEMA:
+        expected_profile_hash = str(reference.get("profile_manifest_sha256") or "")
+        profile_manifest = models_dir(config) / profile.name / "profile_manifest.json"
+        expected_manifest_hash = str(reference.get("manifest_sha256") or "")
+        reference_mismatch = bool(
+            expected_profile_hash
+            and (not profile_manifest.is_file() or file_sha256(profile_manifest) != expected_profile_hash)
+        )
+        if not expected_profile_hash:
+            reference_mismatch = bool(
+                expected_manifest_hash and (not path.is_file() or file_sha256(path) != expected_manifest_hash)
+            )
+        if reference_mismatch:
+            warnings.append("shared model cache reference profile manifest hash does not match.")
+            embedding_cached = False
+            reranker_cached = False
+    profile_path = embedding_path.parent
+    if profile_path.is_dir() and (profile_path / "profile_manifest.json").is_file() and not verify_profile_manifest(profile_path):
+        warnings.append("semantic model profile manifest is damaged or stale.")
+        embedding_cached = False
+        reranker_cached = False
     if not path.exists() and not profile.local_only:
         warnings.append("semantic model manifest is missing.")
     if not embedding_cached:
@@ -248,8 +434,8 @@ def verify_models(config: ConfigDocument) -> ModelVerifyResult:
     if not reranker_cached:
         warnings.append("reranker model is not cached.")
 
-    embedding_loadable = profile.local_only or can_load_sentence_transformer(embedding_path)
-    reranker_loadable = profile.local_only or can_load_sentence_transformer(reranker_path)
+    embedding_loadable = profile.local_only or (embedding_cached and can_load_sentence_transformer(embedding_path))
+    reranker_loadable = profile.local_only or (reranker_cached and can_load_sentence_transformer(reranker_path))
     if embedding_cached and not embedding_loadable:
         warnings.append("embedding model is cached but not loadable in this environment.")
     if reranker_cached and not reranker_loadable:
@@ -484,6 +670,165 @@ def semantic_expanded_terms(text: str) -> list[str]:
 
 def directory_has_files(path: Path) -> bool:
     return path.exists() and any(item.is_file() for item in path.rglob("*"))
+
+
+def acquire_cache_lock(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as exc:
+        raise ModelError(f"Shared model cache is locked by another operation: {path}") from exc
+    with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps({"pid": os.getpid()}, ensure_ascii=False) + "\n")
+
+
+def release_cache_lock(path: Path) -> None:
+    if path.exists():
+        path.unlink()
+
+
+def hash_tree(path: Path, *, exclude_names: set[str] | None = None) -> str:
+    excluded = exclude_names or set()
+    digest = hashlib.sha256()
+    if not path.exists():
+        return digest.hexdigest()
+    for item in sorted((candidate for candidate in path.rglob("*") if candidate.is_file()), key=lambda value: value.as_posix()):
+        if item.name in excluded:
+            continue
+        digest.update(item.relative_to(path).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        with item.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tree_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    total = 0
+    for item in path.rglob("*"):
+        if item.is_file():
+            try:
+                total += item.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def profile_file_manifest(path: Path) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
+    for item in sorted((candidate for candidate in path.rglob("*") if candidate.is_file()), key=lambda value: value.as_posix()):
+        if item.name == "profile_manifest.json":
+            continue
+        files.append(
+            {
+                "path": item.relative_to(path).as_posix(),
+                "size": item.stat().st_size,
+                "sha256": file_sha256(item),
+            }
+        )
+    return files
+
+
+def write_profile_manifest(
+    path: Path,
+    profile: ModelProfile,
+    *,
+    embedding_revision: str,
+    reranker_revision: str,
+) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": "semantic_model_profile_manifest_v1",
+        "profile": profile.name,
+        "repositories": {
+            "embedding": {"repo": profile.embedding_repo, "revision": embedding_revision},
+            "reranker": {"repo": profile.reranker_repo, "revision": reranker_revision},
+        },
+        "files": profile_file_manifest(path),
+    }
+    target = path / "profile_manifest.json"
+    atomic_write_text(target, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return target
+
+
+def verify_profile_manifest(path: Path) -> bool:
+    payload = read_json(path / "profile_manifest.json", default={})
+    if not isinstance(payload, dict) or payload.get("schema") != "semantic_model_profile_manifest_v1":
+        return False
+    expected = payload.get("files")
+    if not isinstance(expected, list):
+        return False
+    return expected == profile_file_manifest(path)
+
+
+def publish_model_profile(staging: Path, target: Path) -> None:
+    backup = target.with_name(f".{target.name}.backup-{uuid.uuid4().hex}")
+    try:
+        if target.exists():
+            target.replace(backup)
+        staging.replace(target)
+        if backup.exists():
+            shutil.rmtree(backup)
+    except Exception:
+        if target.exists() and backup.exists():
+            shutil.rmtree(target, ignore_errors=True)
+        if backup.exists() and not target.exists():
+            backup.replace(target)
+        raise
+
+
+def merge_model_manifest(cache_root: Path, profile: ModelProfile, *, downloaded: bool) -> dict[str, Any]:
+    path = cache_root / "semantic_models.json"
+    current = read_json(path, default={})
+    installed = dict(current.get("installed") or {}) if isinstance(current, dict) else {}
+    profile_path = cache_root / profile.name
+    profile_manifest = profile_path / "profile_manifest.json"
+    installed[profile.name] = {
+        "embedding_repo": profile.embedding_repo,
+        "reranker_repo": profile.reranker_repo,
+        "embedding_path": str(profile_path / "embedding"),
+        "reranker_path": str(profile_path / "reranker"),
+        "downloaded": downloaded or directory_has_files(profile_path / "embedding"),
+        "profile_manifest_sha256": (
+            hashlib.sha256(profile_manifest.read_bytes()).hexdigest() if profile_manifest.is_file() else ""
+        ),
+    }
+    return {
+        "schema": MODEL_MANIFEST_SCHEMA,
+        "schema_version": 2,
+        "active_profile": profile.name,
+        "profiles": {item.name: asdict(item) for item in PROFILES.values()},
+        "installed": installed,
+    }
+
+
+def write_model_cache_reference(config: ConfigDocument, profile: str, shared: Path, manifest: Path) -> Path:
+    profile_manifest = shared / profile / "profile_manifest.json"
+    payload = {
+        "schema": MODEL_CACHE_REF_SCHEMA,
+        "profile": profile,
+        "repo_revision": "recorded-in-profile-manifest",
+        "shared_path": str(shared.resolve()),
+        "manifest_path": str(manifest.resolve()),
+        "manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        "profile_manifest_sha256": (
+            hashlib.sha256(profile_manifest.read_bytes()).hexdigest() if profile_manifest.is_file() else ""
+        ),
+    }
+    target = model_cache_reference_path(config)
+    atomic_write_text(target, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return target
 
 
 def read_json(path: Path, *, default: Any) -> Any:

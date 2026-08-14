@@ -126,6 +126,11 @@ def test_continue_write_creates_agent_writing_task_by_default(tmp_path):
     assert task["feedback_carryover"]["source_files"] == []
     assert "Writing Task ch001" in task_md
     assert "## Feedback Carryover" in task_md
+    assert "- TCS constraints:" not in task_md
+    assert "- Reverse brake:" not in task_md
+    assert "- Style profile:" not in task_md
+    assert "## Temporal Context State" in task_md
+    assert "## Reverse Brake" in task_md
     assert report["artifacts"]["writing_task_markdown"].endswith("ch001.md")
 
     state = json.loads((root / "30_state" / "novel_state.json").read_text(encoding="utf-8"))

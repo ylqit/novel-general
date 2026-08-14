@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+from hashlib import sha256
 import json
 import re
 from pathlib import Path
 from typing import Any
 
+from longform_engine.agent_pipeline import (
+    compile_production_agent_package,
+    production_package_payload,
+    require_agent_first_production_pipeline,
+)
 from longform_engine.agent_tasks import HARD_BOUNDARIES, list_manifests, load_manifest, status_summary, validate_manifest_strict
 from longform_engine.config import ConfigDocument
 from longform_engine.creative import expand_check, humanize_check, humanize_semantic_validate
@@ -17,8 +23,14 @@ from longform_engine.editorial import (
     editorial_review_required_reasons,
     editorial_submit_review,
 )
-from longform_engine.editorial.pipeline import role_definition
-from longform_engine.gates import gate_check, semantic_pacing_validate, semantic_review_validate
+from longform_engine.editorial.pipeline import context_digest_hash, role_definition
+from longform_engine.gates import (
+    gate_check,
+    semantic_pacing_review_status,
+    semantic_pacing_task_is_current,
+    semantic_pacing_validate,
+    semantic_review_validate,
+)
 from longform_engine.graph import semantic_graph_validate
 from longform_engine.intelligence import (
     assess_chapter_direction,
@@ -28,7 +40,12 @@ from longform_engine.intelligence import (
 )
 from longform_engine.memory import character_validate, semantic_validate
 from longform_engine.orchestration import continue_write, open_book, submit_agent_draft
-from longform_engine.quality import reader_payoff_review_status, reader_payoff_task, reader_payoff_validate
+from longform_engine.quality import (
+    reader_payoff_review_status,
+    reader_payoff_task,
+    reader_payoff_task_is_current,
+    reader_payoff_validate,
+)
 from longform_engine.semantic import semantic_task as chapter_semantic_task
 from longform_engine.semantic import semantic_validate as chapter_semantic_validate
 from longform_engine.storage import resolve_project_root
@@ -120,47 +137,6 @@ TASK_WORK_SCOPES = {
     "semantic_review": "Review high-risk chapter semantics with exact prose spans and canonical references.",
 }
 
-TASK_ROLE_BRIEFS = {
-    "book_ideation": "Creative facilitator. Ask one decisive question and present two or three options with honest tradeoffs.",
-    "fanfiction_canon": "Canon archivist. Preserve source names, relationships, rules, voices, and timeline as cited paraphrased facts.",
-    "fanfiction_design": "Fanfiction architect. Design continuity, divergence causality, voice contracts, original contribution, and crossover rules.",
-    "book_design": "Book architect. Propose the reader contract, world, power system, characters, and relationships.",
-    "character_expression_design": (
-        "Character-performance architect. Define reusable perception, decision, speech, embodiment, mask, and contrast contracts."
-    ),
-    "character_expression_review": (
-        "Independent character-performance reviewer. Audit voice fit, swapability, embodied presence, and expository dialogue with exact spans."
-    ),
-    "outline_design": "Longform outline architect. Build a coherent book, volume, chapter, and foreshadowing plan.",
-    "chapter_direction": "Chapter story editor. Offer distinct causal directions without writing prose or changing the chapter card.",
-    "outline_revision": "Continuity-aware outline editor. Revise the declared range and enumerate stale downstream artifacts.",
-    "research_synthesis": "Research synthesizer. Return cited claims grounded only in declared source files.",
-    "style_analysis": "Style analyst. Describe semantic craft choices while preserving the existing statistical fingerprint.",
-    "adaptation_analysis": "Adaptation analyst. Extract structure and techniques without reproducing sample prose.",
-    "chapter_write": "Chapter author. Turn the declared task package into publishable Chinese web-novel prose.",
-    "repair": "Repair author. Rewrite only the failed chapter candidate according to gate and repair evidence.",
-    "humanize": "Humanizer. Remove AI-flavored prose patterns while preserving canon facts and scene intent.",
-    "humanize_semantic_review": (
-        "Independent Humanizer semantic-preservation reviewer. Compare source and candidate; "
-        "cite exact spans and declared canonical constraints."
-    ),
-    "reader_payoff_review": (
-        "Independent reader-payoff reviewer. Verify what the reader actually gains and pays for, "
-        "with exact spans and a non-prescriptive craft observation."
-    ),
-    "content_expand": "Expansion writer. Add scene substance, dialogue, action, and texture without filler.",
-    "graph_extract": "Semantic graph extractor. Return evidence-backed graph update JSON only.",
-    "memory_extract": "Semantic memory extractor. Return scene/chapter memory JSON only.",
-    "character_memory": "Character memory curator. Return character state cards with evidence only.",
-    "chapter_semantic": (
-        "Chapter semantic archivist. Read the final chapter once and return exact-span facts for digest, scenes, "
-        "relationships, character state, foreshadowing, world state, timeline, and retrieval routing."
-    ),
-    "editorial_review": "Editorial role reviewer. Return one role-specific structured review JSON only.",
-    "pacing_review": "Semantic pacing reader. Judge reader pressure, escalation, tail hook, and reverse-brake risk.",
-    "semantic_review": "Semantic continuity reviewer. Cite exact chapter spans and declared canonical state for every finding.",
-}
-
 TASK_OUTPUT_GUIDANCE = {
     "book_ideation": "Write JSON matching book_ideation_candidate_v1 with one explicit human selection.",
     "fanfiction_canon": "Write JSON matching fanfiction_source_canon_v1 with source hashes and evidence spans.",
@@ -201,7 +177,7 @@ TASK_OUTPUT_GUIDANCE = {
         "Write JSON matching editorial_role_review_v2, including the isolated context digest, "
         "reviewer instance, Agent product/version, review round, independence mode, and confidence."
     ),
-    "pacing_review": "Write JSON matching semantic_pacing_result_v1 at the gate artifact path.",
+    "pacing_review": "Write JSON matching semantic_pacing_result_v2 at the gate artifact path.",
     "semantic_review": "Write JSON matching semantic_review_result_v1 at the declared gate artifact path.",
 }
 
@@ -238,13 +214,14 @@ NEED_HUMAN_REASON_LABELS = {
 def production_next(config: ConfigDocument) -> dict[str, Any]:
     """Return the highest-priority safe next production action."""
 
+    require_agent_first_production_pipeline()
     root = resolve_project_root(config)
     action = (
         first_need_human_action(root)
-        or project_readiness_action(config, root)
-        or chapter_direction_action(config, root)
         or chapter_semantic_lifecycle_action(root)
         or chapter_workflow_action(config, root)
+        or project_readiness_action(config, root)
+        or chapter_direction_action(config, root)
         or first_active_agent_task(root)
         or first_draft_without_gate_action(root)
         or first_writing_task_action(root)
@@ -325,54 +302,71 @@ def production_status(config: ConfigDocument) -> dict[str, Any]:
     )
 
 
-def agent_task_brief(config: ConfigDocument, task: str | Path) -> dict[str, Any]:
-    """Render one AgentTaskManifest as a read-only work order."""
+def agent_task_brief(
+    config: ConfigDocument,
+    task: str | Path,
+    *,
+    host: str = "codex",
+) -> dict[str, Any]:
+    """Render one readiness-authorized, role-isolated Agent work order."""
 
     root = resolve_project_root(config)
     manifest = load_manifest(root, task)
     entry = manifest_entry(root, task, manifest)
     validation = validate_manifest_strict(root, manifest, strict=True)
-    task_type = str(manifest.get("task_type") or "")
-    chapter_number = int(manifest.get("chapter_number") or 0)
+    if not validation.ok:
+        raise ValueError("Agent task contract is invalid: " + "; ".join(validation.errors))
+    package = compile_production_agent_package(root, manifest, host=host)
+    integrated = production_package_payload(package)
     payload = {
         "schema_version": 1,
-        "renderer": "agent_task_brief_v1",
+        "renderer": "agent_task_brief_v2",
         "read_only": True,
         "manifest_file": str(entry.get("manifest_file") or manifest_file_from_task(root, task)),
-        "task_id": str(manifest.get("task_id") or ""),
-        "task_type": task_type,
-        "chapter_number": chapter_number,
-        "scope": manifest.get("scope") or {"kind": "chapter", "chapter_number": chapter_number},
+        "task_id": package.task_id,
+        "task_type": package.task_type,
+        "chapter_number": int(manifest.get("chapter_number") or 0),
+        "scope": manifest.get("scope") or {},
         "canonical_targets": as_string_list(manifest.get("canonical_targets")),
         "requires_human_apply": bool(manifest.get("requires_human_apply")),
         "status": str(manifest.get("status") or ""),
-        "work_scope": TASK_WORK_SCOPES.get(task_type, "Complete only the declared Agent task."),
-        "input_files": as_string_list(manifest.get("input_files")),
-        "context_policy": dict(manifest.get("context_policy") or {}),
+        "input_files": [item.path for item in package.context.sources],
+        "context_policy": dict(package.context.effective_manifest.get("context_policy") or {}),
+        "context_hash": package.context.context_hash,
         "allowed_output_paths": as_string_list(manifest.get("allowed_output_paths")),
         "output_schema": str(manifest.get("output_schema") or ""),
-        "validate_command": ensure_longform_prefix(str(manifest.get("validate_command") or "")),
-        "apply_command": ensure_longform_prefix(str(manifest.get("apply_command") or "")),
-        "failure_next_command": ensure_longform_prefix(str(manifest.get("failure_next_command") or "")),
+        "protocol_output_schema": package.output_contract.output_schema,
+        "output_mode": package.output_contract.output_mode,
+        "protocol_validate_command": (
+            f"longform-engine agent-task result-validate project.yaml {package.task_id} "
+            f"--file {package.output_contract.companion_output_path or package.output_contract.primary_output_path}"
+            + (
+                f" --document {package.output_contract.primary_output_path}"
+                if package.output_contract.companion_output_path
+                else ""
+            )
+        ),
+        "validate_command": ensure_longform_prefix(package.output_contract.validate_command),
+        "apply_command": ensure_longform_prefix(package.output_contract.apply_or_finalize_command),
+        "failure_next_command": ensure_longform_prefix(package.output_contract.failure_next_command),
         "hard_boundaries": as_string_list(manifest.get("hard_boundaries")) or list(HARD_BOUNDARIES),
-        "agent_role": TASK_ROLE_BRIEFS.get(task_type, "Host Agent. Complete only the declared task."),
-        "output_guidance": TASK_OUTPUT_GUIDANCE.get(task_type, "Write only the declared output artifact."),
-        "context_budget_rules": list(CONTEXT_BUDGET_RULES),
-        "forbidden_paths": list(WORK_ORDER_FORBIDDEN_PATHS),
+        "role_id": package.role_id,
+        "role_version": package.role_version,
+        "role_prompt_hash": package.role_prompt_hash,
+        "independence_mode": package.independence_mode,
+        "project_overlay_hash": package.project_overlay_hash,
+        "prompt_hash": package.prompt_hash,
+        "host": package.host_work_order.host,
         "manifest_validation": {
             "strict": True,
-            "ok": validation.ok,
-            "errors": list(validation.errors),
+            "ok": True,
+            "errors": [],
             "warnings": list(validation.warnings),
         },
-        "completion_report_template": [
-            "Output written:",
-            "Validation command run:",
-            "Validation result:",
-            "Next command:",
-        ],
+        "result_template": package.result_template,
+        "pipeline": integrated,
+        "work_order_markdown": package.host_work_order.markdown,
     }
-    payload["work_order_markdown"] = render_agent_task_work_order(payload)
     return payload
 
 
@@ -480,7 +474,6 @@ def production_loop(
 def loop_decision(root: Path, action: dict[str, Any], *, no_apply: bool) -> dict[str, Any]:
     status = str(action.get("status") or "")
     task_type = str(action.get("task_type") or "")
-    chapter_number = int(action.get("chapter_number") or 0)
     if status == "ready_for_open_book":
         return {"kind": "execute", "action": "open_book", "command": action.get("next_command")}
     if status == "ready_for_intelligence_task":
@@ -850,94 +843,6 @@ def manifest_file_from_task(root: Path, task: str | Path) -> str:
     return relative_path(root, task_path)
 
 
-def render_agent_task_work_order(payload: dict[str, Any]) -> str:
-    context_policy = payload.get("context_policy") if isinstance(payload.get("context_policy"), dict) else {}
-    lines = [
-        f"# Agent Work Order: {payload.get('task_id') or 'unknown'}",
-        "",
-        "## Role And Goal",
-        "",
-        f"- Agent role: {payload.get('agent_role') or ''}",
-        f"- Work scope: {payload.get('work_scope') or ''}",
-        f"- Output goal: {payload.get('output_guidance') or ''}",
-        "",
-        "## Task Contract",
-        f"- Task id: `{payload.get('task_id') or ''}`",
-        f"- Task type: `{payload.get('task_type') or ''}`",
-        f"- Chapter: `{payload.get('chapter_number') or ''}`",
-        f"- Scope: `{json.dumps(payload.get('scope') or {}, ensure_ascii=False)}`",
-        f"- Requires human apply: `{bool(payload.get('requires_human_apply'))}`",
-        f"- Status: `{payload.get('status') or ''}`",
-        f"- Manifest: `{payload.get('manifest_file') or ''}`",
-        "",
-        "## Context Budget",
-        *markdown_plain_list(payload.get("context_budget_rules") or []),
-        f"- Maximum files: `{context_policy.get('max_files', '')}`",
-        f"- Maximum compiled characters: `{context_policy.get('max_chars', '')}`",
-        f"- Compiled brief: `{context_policy.get('compiled_brief', '')}`",
-        f"- Selection report: `{context_policy.get('selection_report', '') or 'embedded in the compiled brief'}`",
-        "",
-        "## Required Input Files",
-        *markdown_list(context_policy.get("required_files") or []),
-        "",
-        "## Optional Input Files",
-        *markdown_list(context_policy.get("optional_files") or []),
-        "",
-        "## Forbidden Context Paths",
-        *markdown_list(context_policy.get("forbidden_paths") or []),
-        "",
-        "## Allowed Output Paths",
-        *markdown_list(payload.get("allowed_output_paths") or []),
-        "",
-        "## Canonical Targets (CLI Apply Only)",
-        *markdown_list(payload.get("canonical_targets") or []),
-        "",
-        "## Output Schema",
-        f"- `{payload.get('output_schema') or ''}`",
-        "",
-        "## Commands",
-        f"- Validate command: `{payload.get('validate_command') or ''}`",
-        f"- Apply command: `{payload.get('apply_command') or ''}`",
-        f"- Failure next command: `{payload.get('failure_next_command') or ''}`",
-        "",
-        "## Hard Boundaries",
-        *markdown_list(payload.get("hard_boundaries") or []),
-        "",
-        "## Forbidden Direct Writes",
-        *markdown_list(payload.get("forbidden_paths") or []),
-        "",
-        "## Manifest Validation",
-        f"- Strict validation ok: `{bool((payload.get('manifest_validation') or {}).get('ok'))}`",
-    ]
-    errors = (payload.get("manifest_validation") or {}).get("errors") or []
-    warnings = (payload.get("manifest_validation") or {}).get("warnings") or []
-    if errors:
-        lines.extend(["- Errors:", *markdown_list(errors, indent="  ")])
-    if warnings:
-        lines.extend(["- Warnings:", *markdown_list(warnings, indent="  ")])
-    lines.extend(
-        [
-            "",
-            "## Completion Report",
-            *markdown_list(payload.get("completion_report_template") or []),
-            "",
-            "Only write the declared output path. After writing, run the validate command and report the result.",
-            "Do not run the apply/finalize command unless the user explicitly asks for that state transition.",
-        ]
-    )
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def markdown_list(items: list[Any], *, indent: str = "") -> list[str]:
-    if not items:
-        return [f"{indent}- none"]
-    return [f"{indent}- `{item}`" for item in items]
-
-
-def markdown_plain_list(items: list[Any], *, indent: str = "") -> list[str]:
-    if not items:
-        return [f"{indent}- none"]
-    return [f"{indent}- {item}" for item in items]
 
 
 def max_known_chapter(root: Path) -> int:
@@ -1277,6 +1182,8 @@ def readable_need_human_reasons(reasons: list[str]) -> list[dict[str, str]]:
 
 
 def role_from_editorial_task(task: dict[str, Any]) -> str:
+    if str(task.get("task_type") or "") == "editorial_review" and str(task.get("role_id") or "").strip():
+        return str(task["role_id"])
     task_id = str(task.get("task_id") or "")
     match = re.match(r"editorial_review:([^:]+):ch\d{3}:v\d+", task_id)
     if match:
@@ -1445,6 +1352,8 @@ def first_need_human_action(root: Path) -> dict[str, Any] | None:
         chapter_number = int(payload.get("chapter_number") or chapter_from_name(path.name) or 0)
         if chapter_number <= 0:
             continue
+        if not editorial_aggregate_is_current(root, chapter_number, payload):
+            continue
         missing_roles = as_string_list(payload.get("missing_roles"))
         active_roles = {
             role_from_editorial_task(task)
@@ -1497,6 +1406,7 @@ def first_active_agent_task(root: Path) -> dict[str, Any] | None:
         task
         for task in list_manifests(root)
         if str(task.get("status") or "") in {"awaiting_agent", "submitted", "validated", "invalid"}
+        and str((task.get("scope") or {}).get("kind") or "") != "chapter"
     ]
     if not tasks:
         return None
@@ -1520,6 +1430,11 @@ def agent_task_action(root: Path, task: dict[str, Any]) -> dict[str, Any]:
             waiting_for="cli_task_regeneration",
             task_id=str(manifest.get("task_id") or task.get("task_id") or ""),
             task_type=task_type,
+            role_id=str(manifest.get("role_id") or ""),
+            role_version=str(manifest.get("role_version") or ""),
+            role_prompt_hash=str(manifest.get("role_prompt_hash") or ""),
+            independence_mode=str(manifest.get("independence_mode") or ""),
+            project_overlay_hash=str(manifest.get("project_overlay_hash") or ""),
             input_files=as_string_list(manifest.get("input_files")),
             context_policy=dict(manifest.get("context_policy") or {}),
             allowed_output_paths=as_string_list(manifest.get("allowed_output_paths")),
@@ -1561,6 +1476,11 @@ def agent_task_action(root: Path, task: dict[str, Any]) -> dict[str, Any]:
         waiting_for=waiting_for_task_status(task_type, status),
         task_id=str(manifest.get("task_id") or task.get("task_id") or ""),
         task_type=task_type,
+        role_id=str(manifest.get("role_id") or ""),
+        role_version=str(manifest.get("role_version") or ""),
+        role_prompt_hash=str(manifest.get("role_prompt_hash") or ""),
+        independence_mode=str(manifest.get("independence_mode") or ""),
+        project_overlay_hash=str(manifest.get("project_overlay_hash") or ""),
         input_files=as_string_list(manifest.get("input_files")),
         context_policy=dict(manifest.get("context_policy") or {}),
         allowed_output_paths=as_string_list(manifest.get("allowed_output_paths")),
@@ -1593,16 +1513,51 @@ def chapter_workflow_action(config: ConfigDocument, root: Path) -> dict[str, Any
             chapter_from_name(path.parent.name)
             for path in (root / "50_workbench" / "gate_artifacts").glob("ch*/gate_result.json")
         }
+        | {
+            int(task.get("chapter_number") or 0)
+            for task in list_manifests(root)
+            if str((task.get("scope") or {}).get("kind") or "") == "chapter"
+        }
     )
     for chapter_number in chapter_numbers:
         if chapter_number <= 0 or final_chapter_exists(root, chapter_number):
             continue
         stage = derive_chapter_stage(config, root, chapter_number)
         stage_name = str(stage.get("stage") or "")
+        allowed_types = chapter_stage_task_types(stage_name)
+        stage_tasks = active_chapter_tasks(root, chapter_number, allowed_types)
+        if stage_name == "payoff_pending" and not reader_payoff_task_is_current(
+            config,
+            chapter_number=chapter_number,
+        ):
+            return reader_payoff_action(config, root)
+        if stage_name == "pacing_pending":
+            stage_tasks = [
+                task
+                for task in stage_tasks
+                if semantic_pacing_task_is_current(root, chapter_number, task)
+            ]
+        if stage_name == "editorial_pending":
+            stage_tasks = [
+                task
+                for task in stage_tasks
+                if editorial_task_is_current(root, chapter_number, task)
+            ]
+        if stage_tasks:
+            return agent_task_action(root, sorted(stage_tasks, key=task_sort_key)[0])
+        if stage_name == "gate_pending":
+            command = f"longform-engine gate-check project.yaml --chapter {chapter_number}"
+            return base_action(
+                status="awaiting_gate",
+                chapter_number=chapter_number,
+                blocked_by="current_candidate_without_gate",
+                waiting_for="gate_check",
+                next_command=command,
+                validate_command=command,
+                human_summary=f"ch{chapter_number:03d} current candidate needs deterministic gate-check.",
+                sources=as_string_list(stage.get("sources")),
+            )
         if stage_name == "semantic_review_pending":
-            tasks = active_chapter_tasks(root, chapter_number, {"semantic_review"})
-            if tasks:
-                return agent_task_action(root, sorted(tasks, key=task_sort_key)[0])
             command = f"longform-engine gate semantic-task project.yaml --chapter {chapter_number}"
             return base_action(
                 status="ready_for_semantic_review_task",
@@ -1617,15 +1572,39 @@ def chapter_workflow_action(config: ConfigDocument, root: Path) -> dict[str, Any
             )
         if stage_name == "payoff_pending":
             return reader_payoff_action(config, root)
+        if stage_name == "pacing_pending":
+            return base_action(
+                status="ready_for_pacing_review",
+                chapter_number=chapter_number,
+                blocked_by="semantic_pacing_review_required",
+                waiting_for="cli",
+                task_type="pacing_review",
+                output_schema="semantic_pacing_result_v2",
+                next_command=f"longform-engine pacing semantic-task project.yaml --chapter {chapter_number}",
+                failure_next_command=f"longform-engine pacing semantic-task project.yaml --chapter {chapter_number}",
+                human_summary=f"ch{chapter_number:03d} requires a current-draft semantic pacing review.",
+                sources=as_string_list(stage.get("sources")),
+            )
         if stage_name == "editorial_pending":
             return editorial_review_action(config, root)
         if stage_name == "ready_to_finalize":
             return first_gate_action(root)
         if stage_name == "repair_pending":
-            replacements = active_chapter_tasks(root, chapter_number, {"repair", "humanize", "content_expand"})
-            if replacements:
-                return agent_task_action(root, sorted(replacements, key=task_sort_key)[0])
             return first_gate_action(root)
+        if stage_name == "writing_pending":
+            draft = root / MANUSCRIPT_DIR / "draft" / f"ch{chapter_number:03d}.md"
+            if draft.exists():
+                command = f"longform-engine gate-check project.yaml --chapter {chapter_number}"
+                return base_action(
+                    status="awaiting_gate",
+                    chapter_number=chapter_number,
+                    blocked_by="draft_without_gate",
+                    waiting_for="gate_check",
+                    next_command=command,
+                    validate_command=command,
+                    human_summary=f"ch{chapter_number:03d} has a draft and needs gate-check.",
+                    sources=[relative_path(root, draft)],
+                )
     return None
 
 
@@ -1643,8 +1622,26 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
         return {"stage": "finalized_needs_semantic_bundle", "sources": [relative_path(root, final)]}
     if final.exists():
         return {"stage": "finalized_needs_close", "sources": [relative_path(root, ledger)]}
+    pre_gate_reviews = active_chapter_tasks(
+        root,
+        chapter_number,
+        {"humanize_semantic_review"},
+    )
+    if pre_gate_reviews:
+        return {
+            "stage": "pre_gate_candidate_review",
+            "sources": [str(item.get("manifest_file") or "") for item in pre_gate_reviews],
+        }
     gate = read_json(gate_path)
     if gate_path.is_file() and isinstance(gate, dict) and gate:
+        source_hash = str(gate.get("source_sha256") or "")
+        current_hash = sha256(draft.read_bytes()).hexdigest() if draft.is_file() else ""
+        if source_hash and source_hash != current_hash:
+            return {
+                "stage": "gate_pending",
+                "sources": [relative_path(root, draft), relative_path(root, gate_path)],
+                "reason": "gate_source_stale",
+            }
         semantic = gate.get("agent_semantic_review")
         declared_stage = str(gate.get("workflow_stage") or "")
         failures = gate.get("failures") if isinstance(gate.get("failures"), list) else []
@@ -1665,6 +1662,9 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
             payoff = reader_payoff_review_status(config, chapter_number=chapter_number)
             if payoff.get("required") and not payoff.get("passed"):
                 return {"stage": "payoff_pending", "sources": [relative_path(root, gate_path)]}
+            pacing = semantic_pacing_review_status(config, chapter_number=chapter_number)
+            if pacing.get("required") and not pacing.get("passed"):
+                return {"stage": "pacing_pending", "sources": [relative_path(root, gate_path)]}
             reasons = editorial_review_required_reasons(config, chapter_number=chapter_number)
             if reasons:
                 aggregate = read_json(
@@ -1672,6 +1672,7 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
                 )
                 editorial_complete = (
                     isinstance(aggregate, dict)
+                    and editorial_aggregate_is_current(root, chapter_number, aggregate)
                     and aggregate.get("need_human") is not True
                     and not aggregate.get("missing_roles")
                     and int(aggregate.get("result_count") or 0) > 0
@@ -1681,7 +1682,7 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
             return {"stage": "ready_to_finalize", "sources": [relative_path(root, gate_path)]}
         return {"stage": "repair_pending", "sources": [relative_path(root, gate_path)]}
     if draft.exists():
-        return {"stage": "writing_pending", "sources": [relative_path(root, draft)]}
+        return {"stage": "gate_pending", "sources": [relative_path(root, draft)]}
     return {"stage": "writing_pending", "sources": []}
 
 
@@ -1692,6 +1693,25 @@ def active_chapter_tasks(root: Path, chapter_number: int, task_types: set[str]) 
         if str(task.get("task_type") or "") in task_types
         and str(task.get("status") or "") in {"awaiting_agent", "submitted", "validated", "invalid"}
     ]
+
+
+def chapter_stage_task_types(stage: str) -> set[str]:
+    """Return the only Agent roles allowed to compete within one evidence-derived chapter stage."""
+
+    return {
+        "writing_pending": {"chapter_direction", "chapter_write"},
+        "pre_gate_candidate_review": {"humanize_semantic_review"},
+        "gate_pending": set(),
+        "repair_pending": {"repair", "humanize", "content_expand", "humanize_semantic_review"},
+        "semantic_review_pending": {"semantic_review"},
+        "payoff_pending": {"reader_payoff_review"},
+        "pacing_pending": {"pacing_review"},
+        "editorial_pending": {"editorial_review", "character_expression_review"},
+        "ready_to_finalize": set(),
+        "finalized_needs_semantic_bundle": {"chapter_semantic"},
+        "finalized_needs_close": set(),
+        "closed": set(),
+    }.get(stage, set())
 
 
 def chapter_semantic_lifecycle_action(root: Path) -> dict[str, Any] | None:
@@ -1761,7 +1781,7 @@ def reader_payoff_action(config: ConfigDocument, root: Path) -> dict[str, Any] |
         status = reader_payoff_review_status(config, chapter_number=chapter_number)
         if not status.get("required") or status.get("passed"):
             continue
-        if any(
+        if reader_payoff_task_is_current(config, chapter_number=chapter_number) and any(
             task.get("task_type") == "reader_payoff_review"
             and str(task.get("status") or "") in {"awaiting_agent", "submitted", "validated", "invalid"}
             for task in list_manifests(root, chapter_number=chapter_number)
@@ -1820,6 +1840,7 @@ def editorial_review_action(config: ConfigDocument, root: Path) -> dict[str, Any
         )
         if (
             isinstance(aggregate, dict)
+            and editorial_aggregate_is_current(root, chapter_number, aggregate)
             and aggregate.get("need_human") is not True
             and not aggregate.get("missing_roles")
             and int(aggregate.get("result_count") or 0) > 0
@@ -1830,6 +1851,7 @@ def editorial_review_action(config: ConfigDocument, root: Path) -> dict[str, Any
             for task in list_manifests(root, chapter_number=chapter_number)
             if task.get("task_type") == "editorial_review"
             and str(task.get("status") or "") in {"awaiting_agent", "submitted", "validated", "invalid"}
+            and editorial_task_is_current(root, chapter_number, task)
         ]
         if tasks:
             continue
@@ -1881,12 +1903,24 @@ def first_gate_action(root: Path) -> dict[str, Any] | None:
                 task for task in validated_candidates if str(task.get("status") or "") == "validated"
             ]
             candidate_apply = ""
+            candidate_already_submitted = False
             if len(validated_candidates) == 1:
                 candidate_manifest = load_manifest(root, str(validated_candidates[0].get("task_id") or ""))
-                candidate_apply = str(candidate_manifest.get("apply_command") or "")
-            next_command = candidate_apply or str(
-                payload.get("next_command")
-                or f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
+                candidate_already_submitted = submitted_candidate_matches_passed_gate(
+                    root,
+                    chapter_number=chapter_number,
+                    task_id=str(candidate_manifest.get("task_id") or ""),
+                    gate=payload,
+                )
+                if not candidate_already_submitted:
+                    candidate_apply = str(candidate_manifest.get("apply_command") or "")
+            finalize_command = (
+                f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
+            )
+            next_command = (
+                finalize_command
+                if candidate_already_submitted
+                else candidate_apply or str(payload.get("next_command") or finalize_command)
             )
             return base_action(
                 status="awaiting_finalize",
@@ -1899,6 +1933,78 @@ def first_gate_action(root: Path) -> dict[str, Any] | None:
                 sources=[relative_path(root, path)],
             )
     return None
+
+
+def submitted_candidate_matches_passed_gate(
+    root: Path,
+    *,
+    chapter_number: int,
+    task_id: str,
+    gate: dict[str, Any],
+) -> bool:
+    """Return whether a validated task is already the submitted, gate-passed candidate."""
+
+    submission = read_json(
+        root / MANUSCRIPT_DIR / "draft" / f"ch{chapter_number:03d}.submission.json"
+    )
+    if not isinstance(submission, dict):
+        return False
+    gate_hash = str(gate.get("source_sha256") or "")
+    submission_hash = str(submission.get("draft_sha256") or submission.get("source_sha256") or "")
+    return bool(
+        task_id
+        and str(submission.get("candidate_task_id") or "") == task_id
+        and str(submission.get("candidate_status") or "") in {"submitted", "validated"}
+        and gate_hash
+        and gate_hash == submission_hash
+    )
+
+
+def editorial_aggregate_is_current(
+    root: Path,
+    chapter_number: int,
+    aggregate: dict[str, Any],
+) -> bool:
+    """Bind v2+ editorial aggregates to the exact current chapter candidate."""
+
+    schema_version = int(aggregate.get("schema_version") or 1)
+    if schema_version < 2:
+        return True
+    source_hash = str(aggregate.get("source_sha256") or "")
+    if not source_hash:
+        return False
+    chapter = root / MANUSCRIPT_DIR / FINAL_LANE / f"ch{chapter_number:03d}.md"
+    if not chapter.is_file():
+        chapter = root / MANUSCRIPT_DIR / "draft" / f"ch{chapter_number:03d}.md"
+    return chapter.is_file() and sha256(chapter.read_bytes()).hexdigest() == source_hash
+
+
+def editorial_task_is_current(root: Path, chapter_number: int, task: dict[str, Any]) -> bool:
+    """Bind an editorial role task to its isolated context and current chapter bytes."""
+
+    manifest = load_manifest(root, str(task.get("task_id") or task.get("manifest_file") or ""))
+    context_paths = [
+        root / str(item)
+        for item in manifest.get("input_files") or []
+        if str(item).replace("\\", "/").startswith(
+            f"50_workbench/editorial_reviews/agent_tasks/ch{chapter_number:03d}/"
+        )
+        and str(item).endswith(".context.json")
+    ]
+    if len(context_paths) != 1 or not context_paths[0].is_file():
+        return False
+    context = read_json(context_paths[0])
+    if not isinstance(context, dict) or context.get("schema") != "editorial_context_isolation_v1":
+        return False
+    provenance = [
+        root / str(item)
+        for item in context.get("provenance_source_files") or context.get("declared_source_files") or []
+        if str(item).strip()
+    ]
+    draft = root / MANUSCRIPT_DIR / "draft" / f"ch{chapter_number:03d}.md"
+    if draft not in provenance or any(not path.is_file() for path in provenance):
+        return False
+    return context_digest_hash(root, provenance) == str(context.get("context_digest_hash") or "")
 
 
 def first_draft_without_gate_action(root: Path) -> dict[str, Any] | None:
@@ -1971,6 +2077,11 @@ def base_action(
     human_summary: str,
     task_id: str = "",
     task_type: str = "",
+    role_id: str = "",
+    role_version: str = "",
+    role_prompt_hash: str = "",
+    independence_mode: str = "",
+    project_overlay_hash: str = "",
     input_files: list[str] | None = None,
     context_policy: dict[str, Any] | None = None,
     allowed_output_paths: list[str] | None = None,
@@ -1994,6 +2105,11 @@ def base_action(
         "waiting_for": waiting_for,
         "task_id": task_id,
         "task_type": task_type,
+        "role_id": role_id,
+        "role_version": role_version,
+        "role_prompt_hash": role_prompt_hash,
+        "independence_mode": independence_mode,
+        "project_overlay_hash": project_overlay_hash,
         "input_files": input_files or [],
         "context_policy": context_policy or {},
         "allowed_output_paths": allowed_output_paths or [],

@@ -5,6 +5,7 @@ import pytest
 
 from longform_engine import __version__
 from longform_engine.distribution import (
+    distribution_version_payload,
     doctor_payload,
     install_skills,
     skill_status_payload,
@@ -26,7 +27,7 @@ def test_version_and_bundled_resource_manifest_are_aligned():
     manifest = load_resource_manifest()
     asset_paths = [item["path"] for item in manifest["assets"]]
 
-    assert __version__ == "0.3.1"
+    assert __version__ == "0.3.2"
     assert manifest["engine_version"] == __version__
     for prefix in ("config/", "templates/", "longform-novel-codex/", "longform-novel-claude/", "shared/"):
         group = [path for path in asset_paths if path.startswith(prefix)]
@@ -85,13 +86,31 @@ def test_doctor_json_contract_reports_actionable_checks(monkeypatch, tmp_path):
     install_skills("all")
     monkeypatch.setattr("longform_engine.distribution.importlib.util.find_spec", lambda _name: None)
 
+    monkeypatch.setattr("longform_engine.distribution.importlib_metadata.version", lambda _name: __version__)
     payload = doctor_payload("all")
 
     assert payload["schema"] == "doctor_v1"
-    assert payload["engine_version"] == "0.3.1"
+    assert payload["engine_version"] == "0.3.2"
     checks = {item["name"]: item for item in payload["checks"]}
+    assert checks["distribution_version"]["ok"]
     assert checks["bundled_resources"]["ok"]
     assert checks["skill_codex"]["ok"]
     assert checks["skill_claude-code"]["ok"]
     assert f"@v{__version__}" in checks["semantic_dependencies"]["next_command"]
     json.dumps(payload)
+
+
+def test_distribution_version_mismatch_blocks_doctor_with_one_reinstall_command(monkeypatch, tmp_path):
+    configure_skill_roots(monkeypatch, tmp_path)
+    install_skills("all")
+    monkeypatch.setattr("longform_engine.distribution.importlib_metadata.version", lambda _name: "0.3.0")
+    monkeypatch.setattr("longform_engine.distribution.importlib.util.find_spec", lambda _name: object())
+
+    versions = distribution_version_payload("all")
+    payload = doctor_payload("all")
+    check = next(item for item in payload["checks"] if item["name"] == "distribution_version")
+
+    assert not versions["ok"]
+    assert versions["mismatches"] == {"distribution_metadata": "0.3.0"}
+    assert check["next_command"] == versions["next_command"]
+    assert not payload["ok"]

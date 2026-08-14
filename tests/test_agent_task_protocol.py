@@ -1,8 +1,11 @@
 import json
 from pathlib import Path
+import pytest
 
+from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_tasks import (
     AGENT_TASK_STATUSES,
+    AgentTaskContractError,
     build_manifest,
     list_manifests,
     load_manifest,
@@ -15,7 +18,7 @@ from longform_engine.cli import write_repair_candidate_task
 from longform_engine.config import load_project_config
 from longform_engine.creative import expand_task, humanize_task
 from longform_engine.editorial import editorial_aggregate, editorial_review, editorial_submit_review
-from longform_engine.gates import gate_check, semantic_pacing_apply, semantic_pacing_task, semantic_pacing_validate
+from longform_engine.gates import GateError, gate_check, semantic_pacing_apply, semantic_pacing_task, semantic_pacing_validate
 from longform_engine.graph import semantic_graph_task
 from longform_engine.memory import character_task, semantic_task as memory_semantic_task
 from longform_engine.orchestration import WorkflowError, continue_write, finalize_chapter, open_book, plan_chapter, submit_agent_draft
@@ -181,26 +184,19 @@ def test_editorial_submit_review_aggregates_need_human_without_canon_pollution(t
         encoding="utf-8",
     )
     review = editorial_review(config, chapter_number=1)
-    result_file = root / "50_workbench" / "editorial_reviews" / "results" / "ch001.serial_verifier.json"
-    result_file.write_text(
-        json.dumps(
+    result_file = write_editorial_role_result(
+        root / "50_workbench" / "editorial_reviews" / "results",
+        chapter_number=1,
+        role="serial_verifier",
+        verdict="needs_revision",
+        items=[
             {
-                "schema_version": 1,
-                "chapter_number": 1,
-                "role_id": "serial_verifier",
-                "verdict": "needs_revision",
-                "items": [
-                    {
-                        "code": "logic_continuity_risk",
-                        "severity": "P1",
-                        "message": "Relationship stage changes without evidence.",
-                        "evidence": ["logic break remains unresolved"],
-                    }
-                ],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+                "code": "logic_continuity_risk",
+                "severity": "P1",
+                "message": "Relationship stage changes without evidence.",
+                "evidence": ["logic break remains unresolved"],
+            }
+        ],
     )
 
     submitted = editorial_submit_review(config, chapter_number=1, role="serial_verifier", file_path=result_file)
@@ -351,19 +347,27 @@ def test_editorial_unresolved_p1_blocks_chapter_finalize(tmp_path):
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
 
-def test_semantic_pacing_apply_updates_gate_only_and_blocks_on_p1(tmp_path):
+def test_semantic_pacing_apply_updates_gate_only_and_blocks_on_p1(tmp_path, monkeypatch):
+    authorize_agent_pipeline(monkeypatch)
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
     plan_chapter(config, chapter_number=1)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_text("PACING_AGENT"), encoding="utf-8")
     gate_check(config, chapter_number=1)
     task = semantic_pacing_task(config, chapter_number=1)
+    task_payload = json.loads(Path(task.task_json).read_text(encoding="utf-8"))
+    manifest = load_manifest(root, task.manifest_file)
+    assert "input_files" not in task_payload
+    assert task_payload["planning_context"]["source_catalog"]
+    assert manifest["input_files"] == [
+        "50_workbench/gate_artifacts/ch001/semantic_pacing_task.md",
+        "40_manuscript/draft/ch001.md",
+        "50_workbench/gate_artifacts/ch001/semantic_pacing_task.json",
+    ]
     result_file = root / "50_workbench" / "gate_artifacts" / "ch001" / "semantic_pacing_result.json"
-    result_file.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "chapter_number": 1,
+    output = json.loads(Path(task.task_json).read_text(encoding="utf-8"))["output_schema"]
+    output.update(
+        {
                 "verdict": "fail",
                 "tier": "fast",
                 "tail_hook_quality": "weak",
@@ -372,16 +376,19 @@ def test_semantic_pacing_apply_updates_gate_only_and_blocks_on_p1(tmp_path):
                         "code": "tail_hook_collapses",
                         "severity": "P1",
                         "message": "The ending answers the pressure instead of raising a new one.",
-                        "evidence": "unresolved clue alive",
+                        "evidence": "# Chapter",
+                        "recommendation": "Restore one concrete unresolved pressure at the ending.",
                     }
                 ],
                 "warnings": [],
-            },
-            ensure_ascii=False,
-        ),
+        }
+    )
+    result_file.write_text(
+        json.dumps(output, ensure_ascii=False),
         encoding="utf-8",
     )
 
+    protocol = validate_production_agent_result(root, manifest, result_file=result_file)
     validation = semantic_pacing_validate(config, chapter_number=1, file_path=result_file)
     status_after_validate = status_summary(root, chapter_number=1)
     applied = semantic_pacing_apply(config, chapter_number=1, file_path=result_file)
@@ -390,6 +397,8 @@ def test_semantic_pacing_apply_updates_gate_only_and_blocks_on_p1(tmp_path):
 
     assert task.output_file == str(result_file)
     assert strict.ok, strict.errors
+    assert protocol.ok is True
+    assert protocol.normalization.source_schema == "semantic_pacing_result_v2"
     assert validation.ok is True
     assert status_after_validate["by_status"]["validated"] >= 1
     assert load_manifest(root, task.manifest_file)["status"] == "applied"
@@ -401,11 +410,15 @@ def test_semantic_pacing_apply_updates_gate_only_and_blocks_on_p1(tmp_path):
     assert reports
     assert "50_workbench/gate_artifacts/ch001" in reports[-1]["touched_paths"]
     assert reports[-1]["metadata"]["gate_artifact_only"] is True
+    repeated = semantic_pacing_apply(config, chapter_number=1, file_path=result_file)
+    assert repeated.applied is True
+    assert len(transaction_payloads(root, "pacing semantic-apply")) == len(reports)
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
     assert not any(json.loads((root / "30_state" / "story_graph.json").read_text(encoding="utf-8")).get(key) for key in ("entities", "events"))
 
 
-def test_semantic_pacing_invalid_validate_updates_lifecycle_without_gate_pollution(tmp_path):
+def test_semantic_pacing_invalid_validate_updates_lifecycle_without_gate_pollution(tmp_path, monkeypatch):
+    authorize_agent_pipeline(monkeypatch)
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
     plan_chapter(config, chapter_number=1)
@@ -417,8 +430,10 @@ def test_semantic_pacing_invalid_validate_updates_lifecycle_without_gate_polluti
     result_file.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "chapter_number": 1,
+                "source_path": "40_manuscript/draft/ch001.md",
+                "source_sha256": "stale",
                 "verdict": "maybe",
                 "tier": "too_fast",
                 "issues": [{"code": "", "severity": "P9", "message": ""}],
@@ -429,10 +444,16 @@ def test_semantic_pacing_invalid_validate_updates_lifecycle_without_gate_polluti
         encoding="utf-8",
     )
 
+    protocol = validate_production_agent_result(
+        root,
+        load_manifest(root, task.manifest_file),
+        result_file=result_file,
+    )
     validation = semantic_pacing_validate(config, chapter_number=1, file_path=result_file)
     gate_after = json.loads((root / "50_workbench" / "gate_artifacts" / "ch001" / "gate_result.json").read_text(encoding="utf-8"))
 
     assert validation.ok is False
+    assert protocol.ok is False
     assert status_summary(root, chapter_number=1)["by_status"]["invalid"] >= 1
     assert load_manifest(root, task.manifest_file)["status"] == "invalid"
     assert "verdict must be pass" in "; ".join(validation.errors)
@@ -441,20 +462,96 @@ def test_semantic_pacing_invalid_validate_updates_lifecycle_without_gate_polluti
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
 
-def test_strict_manifest_validation_rejects_unknown_type_and_canonical_output(tmp_path):
+def test_required_semantic_pacing_blocks_finalize_until_current_v2_result_is_applied(tmp_path, monkeypatch):
+    authorize_agent_pipeline(monkeypatch)
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    bad_type = build_manifest(
+    open_book(config)
+    mark_project_ready(root, config)
+    config.data.setdefault("quality", {}).setdefault("semantic_pacing", {})["review_mode"] = "required"
+    continue_write(config, chapter_number=1)
+    draft_path = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
+    draft_path.write_text(passing_text("PACING_REQUIRED"), encoding="utf-8")
+    submitted = submit_agent_draft(config, chapter_number=1, file_path=draft_path, agent="codex")
+    assert submitted.passed is True
+
+    action = production_next(config)
+    assert action["status"] == "ready_for_pacing_review"
+    assert action["next_command"] == "longform-engine pacing semantic-task project.yaml --chapter 1"
+    with pytest.raises(WorkflowError, match="semantic pacing review is missing, failed, or stale"):
+        finalize_chapter(config, chapter_number=1, approved_by="human")
+
+    task = semantic_pacing_task(config, chapter_number=1)
+    result_file = Path(task.output_file)
+    output = json.loads(Path(task.task_json).read_text(encoding="utf-8"))["output_schema"]
+    output.update({"verdict": "pass", "tier": "medium", "issues": [], "warnings": []})
+    result_file.write_text(json.dumps(output, ensure_ascii=False), encoding="utf-8")
+    assert validate_production_agent_result(
         root,
-        task_type="mystery_task",
-        chapter_number=1,
-        input_files=[root / "project.yaml"],
-        allowed_output_paths=[root / "50_workbench" / "agent_drafts" / "ch001.codex.md"],
-        output_schema="markdown_chapter_only",
-        validate_command="longform-engine draft submit project.yaml --chapter 1 --file 50_workbench/agent_drafts/ch001.codex.md --agent codex",
-        apply_command="longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
-        failure_next_command="longform-engine repair-chapter project.yaml --chapter 1 --plan-only",
-    )
+        load_manifest(root, task.manifest_file),
+        result_file=result_file,
+    ).ok is True
+    assert semantic_pacing_validate(config, chapter_number=1, file_path=result_file).ok is True
+    semantic_pacing_apply(config, chapter_number=1, file_path=result_file)
+
+    action = production_next(config)
+    assert action["status"] == "awaiting_finalize"
+    finalized = finalize_chapter(config, chapter_number=1, approved_by="human")
+    assert Path(finalized.final_file).is_file()
+
+
+def test_semantic_pacing_domain_validation_requires_current_control_plane_binding(tmp_path, monkeypatch):
+    authorize_agent_pipeline(monkeypatch)
+    config = seed_project(tmp_path)
+    root = tmp_path / "novel"
+    plan_chapter(config, chapter_number=1)
+    draft = root / "40_manuscript" / "draft" / "ch001.md"
+    draft.write_text(passing_text("PACING_CONTROL_PLANE"), encoding="utf-8")
+    gate_check(config, chapter_number=1)
+    task = semantic_pacing_task(config, chapter_number=1)
+    manifest = load_manifest(root, task.manifest_file)
+    result_file = Path(task.output_file)
+    output = json.loads(Path(task.task_json).read_text(encoding="utf-8"))["output_schema"]
+    output.update({"verdict": "pass", "tier": "medium", "event_types": [], "issues": [], "warnings": []})
+    result_file.write_text(json.dumps(output, ensure_ascii=False), encoding="utf-8")
+    gate_file = root / "50_workbench" / "gate_artifacts" / "ch001" / "gate_result.json"
+    gate_before = gate_file.read_bytes()
+
+    direct = semantic_pacing_validate(config, chapter_number=1, file_path=result_file)
+    assert direct.ok is False
+    assert "Run `longform-engine agent-task result-validate ...` first" in "; ".join(direct.errors)
+    assert load_manifest(root, task.manifest_file)["status"] == "awaiting_agent"
+    assert gate_file.read_bytes() == gate_before
+
+    protocol = validate_production_agent_result(root, manifest, result_file=result_file)
+    assert protocol.ok is True
+    bound = load_manifest(root, task.manifest_file)["current_result"]
+    assert bound["path"] == "50_workbench/gate_artifacts/ch001/semantic_pacing_result.json"
+    assert bound["sha256"] == protocol.normalization.result_sha256
+    result_file.write_text(json.dumps(output | {"notes": "changed after validation"}, ensure_ascii=False), encoding="utf-8")
+    tampered = semantic_pacing_validate(config, chapter_number=1, file_path=result_file)
+    assert tampered.ok is False
+    assert "changed after control-plane validation" in "; ".join(tampered.errors)
+    with pytest.raises(GateError, match="control-plane lifecycle"):
+        semantic_pacing_apply(config, chapter_number=1, file_path=result_file)
+    assert gate_file.read_bytes() == gate_before
+
+
+def test_strict_manifest_validation_rejects_unknown_type_and_canonical_output(tmp_path):
+    seed_project(tmp_path)
+    root = tmp_path / "novel"
+    with pytest.raises(AgentTaskContractError, match="No Prompt role is registered"):
+        build_manifest(
+            root,
+            task_type="mystery_task",
+            chapter_number=1,
+            input_files=[root / "project.yaml"],
+            allowed_output_paths=[root / "50_workbench" / "agent_drafts" / "ch001.codex.md"],
+            output_schema="markdown_chapter_only",
+            validate_command="longform-engine draft submit project.yaml --chapter 1 --file 50_workbench/agent_drafts/ch001.codex.md --agent codex",
+            apply_command="longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
+            failure_next_command="longform-engine repair-chapter project.yaml --chapter 1 --plan-only",
+        )
     canonical_output = build_manifest(
         root,
         task_type="graph_extract",
@@ -467,18 +564,15 @@ def test_strict_manifest_validation_rejects_unknown_type_and_canonical_output(tm
         failure_next_command="longform-engine graph semantic-task project.yaml --chapter 1",
     )
 
-    unknown_result = validate_manifest_strict(root, bad_type)
     canonical_result = validate_manifest_strict(root, canonical_output)
 
-    assert unknown_result.ok is False
-    assert any("task_type must be one of" in item for item in unknown_result.errors)
     assert canonical_result.ok is False
     assert any("canonical state" in item for item in canonical_result.errors)
     assert any("50_workbench/graph_updates/" in item for item in canonical_result.errors)
 
 
 def test_agent_task_lifecycle_supports_superseded_and_rolled_back_events(tmp_path):
-    config = seed_project(tmp_path)
+    seed_project(tmp_path)
     root = tmp_path / "novel"
     manifest = build_manifest(
         root,
@@ -530,6 +624,19 @@ def seed_project(tmp_path):
     )
 
 
+def authorize_agent_pipeline(monkeypatch) -> None:
+    def authorization():
+        return {
+            "schema": "agent_data_pipeline_authorization_v1",
+            "authorized": True,
+            "engine_version": "0.3.2",
+            "protocol_surface_sha256": "f" * 64,
+            "phase6_evidence_sha256": "e" * 64,
+        }
+    monkeypatch.setattr("longform_engine.agent_pipeline.require_agent_first_production_pipeline", authorization)
+    monkeypatch.setattr("longform_engine.production.require_agent_first_production_pipeline", authorization)
+
+
 def passing_text(marker: str) -> str:
     sentence = f"{marker} Ari keeps the promise, pays a cost, and leaves one unresolved clue at the gate? "
     return "# Chapter\n\n" + sentence * 45 + "\n"
@@ -545,16 +652,33 @@ def write_editorial_role_result(
     suffix: str = "",
 ) -> Path:
     result_dir.mkdir(parents=True, exist_ok=True)
+    root = result_dir.parents[2]
+    context_path = (
+        root
+        / "50_workbench"
+        / "editorial_reviews"
+        / "agent_tasks"
+        / f"ch{chapter_number:03d}"
+        / f"{role}.context.json"
+    )
+    context = json.loads(context_path.read_text(encoding="utf-8"))
     name = f"ch{chapter_number:03d}.{role}{'.' + suffix if suffix else ''}.json"
     path = result_dir / name
     path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "chapter_number": chapter_number,
                 "role_id": role,
                 "verdict": verdict,
                 "items": items,
+                "reviewer_instance_id": context["reviewer_instance_id"],
+                "agent_product": "pytest",
+                "agent_version": "test",
+                "context_digest_hash": context["context_digest_hash"],
+                "independence_mode": context["independence_mode"],
+                "review_round": context["review_round"],
+                "confidence": 0.9,
             },
             ensure_ascii=False,
         ),

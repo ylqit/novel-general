@@ -1,6 +1,8 @@
 from pathlib import Path
 import json
 
+import pytest
+
 from longform_engine.config import load_project_config
 from longform_engine.storage import StorageError, acquire_project_lock, apply_transaction, atomic_write_text, init_project, snapshot_project
 
@@ -100,6 +102,8 @@ def test_apply_transaction_writes_report_and_rolls_back_touched_paths(tmp_path):
     assert reports
     applied = json.loads(reports[-1].read_text(encoding="utf-8"))
     assert applied["status"] == "applied"
+    assert applied["schema"] == "canonical_write_transaction_report_v2"
+    assert applied["cleanup_complete"] is True
     assert applied["metadata"]["applied"] == 1
     assert applied["boundary"]["rollback_restores_touched_paths"] is True
     assert "/objects/" in applied["snapshots"][0]["snapshot_path"].replace("\\", "/")
@@ -128,7 +132,46 @@ def test_apply_transaction_writes_report_and_rolls_back_touched_paths(tmp_path):
     assert rollback_reports
     rollback = json.loads(rollback_reports[-1].read_text(encoding="utf-8"))
     assert rollback["status"] == "rolled_back"
+    assert rollback["cleanup_complete"] is True
     assert rollback["error"]["message"] == "simulate apply failure"
     assert before_rollback != before
     assert existing.read_text(encoding="utf-8") == before_rollback
     assert not created.exists()
+
+
+def test_apply_transaction_uses_sqlite_backup_and_never_copies_runtime_db_directory(tmp_path):
+    import sqlite3
+
+    config = load_project_config(template="qidian-longform")
+    project = init_project(config, output=tmp_path / "novel")
+    root = project.root
+    database = root / "70_runtime" / "db" / "longform_engine.sqlite"
+    vector = root / "70_runtime" / "db" / "vector_store.sqlite"
+    for path, value in ((database, "canonical"), (vector, "vector")):
+        with sqlite3.connect(path) as connection:
+            connection.execute("CREATE TABLE state (value TEXT NOT NULL)")
+            connection.execute("INSERT INTO state VALUES (?)", (value,))
+
+    with pytest.raises(RuntimeError, match="database failure"):
+        with apply_transaction(
+            root,
+            command="chapter semantic-apply",
+            chapter_number=1,
+            touched_paths=[root / "70_runtime" / "db"],
+        ):
+            for path in (database, vector):
+                with sqlite3.connect(path) as connection:
+                    connection.execute("UPDATE state SET value = 'broken'")
+            raise RuntimeError("database failure")
+
+    values = []
+    for path in (database, vector):
+        with sqlite3.connect(path) as connection:
+            values.append(connection.execute("SELECT value FROM state").fetchone()[0])
+    assert values == ["canonical", "vector"]
+    report_path = sorted((root / "70_runtime" / "transactions").glob("*semantic_apply_ch001.rollback.json"))[-1]
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert len(report["sqlite_backups"]) == 2
+    assert report["snapshots"] == []
+    assert report["cleanup_complete"] is True
+    assert not (root / report["snapshot_dir"]).exists()

@@ -1,0 +1,7 @@
+{
+    "schema":  "agent_data_pipeline_authorization_v1",
+    "authorized":  true,
+    "engine_version":  "0.3.2",
+    "protocol_surface_sha256":  "a9aaa2bc3207025b3ed347fcaf1363fa4f19a594329f6b9a6a0c8eb926868a91",
+    "phase6_evidence_sha256":  "8321595c2d00f07c476053a312fd1895a7cab7f3234a7bb6f7ab53eb327667b6"
+}

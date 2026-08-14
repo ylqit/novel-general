@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from hashlib import sha256
+from importlib import metadata as importlib_metadata
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import uuid
-from typing import Any, Iterable
+from typing import Any
 
 from longform_engine import __version__
 from longform_engine.config import ConfigError, load_project_config
@@ -27,6 +29,64 @@ TOOL_SPECS = {
     "codex": ("longform-novel-codex", ".codex", "LONGFORM_CODEX_SKILL_ROOT"),
     "claude-code": ("longform-novel-claude", ".claude", "LONGFORM_CLAUDE_SKILL_ROOT"),
 }
+
+
+def distribution_reinstall_command() -> str:
+    return (
+        'python -m pipx install --force '
+        f'"longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v{__version__}"'
+    )
+
+
+def _pyproject_version() -> str | None:
+    path = resource_root() / "pyproject.toml"
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8")
+    match = re.search(r'^version\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def _installed_distribution_version() -> str | None:
+    try:
+        return importlib_metadata.version("longform-novel-engine")
+    except importlib_metadata.PackageNotFoundError:
+        return None
+
+
+def distribution_version_payload(tool: str) -> dict[str, Any]:
+    skill_versions = {
+        name: inspect_skill(name).installed_version
+        for name in selected_tools(tool)
+    }
+    versions = {
+        "pyproject": _pyproject_version(),
+        "module": __version__,
+        "distribution_metadata": _installed_distribution_version(),
+        "cli": __version__,
+        "skills": skill_versions,
+    }
+    comparable = [versions["pyproject"], versions["module"], versions["distribution_metadata"], versions["cli"]]
+    comparable.extend(skill_versions.values())
+    mismatches = {
+        name: value
+        for name, value in {
+            "pyproject": versions["pyproject"],
+            "module": versions["module"],
+            "distribution_metadata": versions["distribution_metadata"],
+            "cli": versions["cli"],
+            **{f"skill_{name}": value for name, value in skill_versions.items()},
+        }.items()
+        if value != __version__
+    }
+    return {
+        "schema": "distribution_version_v1",
+        "expected_version": __version__,
+        "versions": versions,
+        "ok": bool(comparable) and not mismatches,
+        "mismatches": mismatches,
+        "next_command": "" if not mismatches else distribution_reinstall_command(),
+    }
 
 
 @dataclass(frozen=True)
@@ -281,6 +341,16 @@ def _verify_bundled_resources() -> tuple[bool, str]:
 def doctor_payload(tool: str, *, project: str | None = None) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     checks.append(_check("python", sys.version_info >= (3, 10), sys.version.split()[0], "Install Python 3.10 or newer."))
+    distribution_versions = distribution_version_payload(tool)
+    version_detail = json.dumps(distribution_versions["versions"], ensure_ascii=False, sort_keys=True)
+    checks.append(
+        _check(
+            "distribution_version",
+            bool(distribution_versions["ok"]),
+            version_detail,
+            str(distribution_versions["next_command"]),
+        )
+    )
     try:
         resources_ok, detail = _verify_bundled_resources()
     except Exception as exc:
@@ -294,7 +364,7 @@ def doctor_payload(tool: str, *, project: str | None = None) -> dict[str, Any]:
             "semantic_dependencies",
             not missing_modules,
             "installed" if not missing_modules else "missing: " + ", ".join(missing_modules),
-            f'python -m pipx install --force "longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v{__version__}"',
+            distribution_reinstall_command(),
         )
     )
 
@@ -314,6 +384,24 @@ def doctor_payload(tool: str, *, project: str | None = None) -> dict[str, Any]:
                     model_ok,
                     f"status={model_result.status}; download_required={model_result.download_required}",
                     f"longform-engine models install {project} --profile {model_result.profile} --download",
+                )
+            )
+            from longform_engine.artifacts import artifact_status
+
+            artifact_result = artifact_status(config)
+            transaction_ok = artifact_result.pending_transactions == 0
+            transaction_detail = (
+                f"pending={artifact_result.pending_transactions}; "
+                f"reclaimable_snapshots={artifact_result.committed_snapshot_dirs}; "
+                f"reclaimable_bytes={artifact_result.reclaimable_snapshot_bytes}; "
+                f"retained_failure_snapshots={artifact_result.retained_failure_snapshots}"
+            )
+            checks.append(
+                _check(
+                    "transaction_lifecycle",
+                    transaction_ok,
+                    transaction_detail,
+                    f"longform-engine artifacts status {project} --json",
                 )
             )
             from longform_engine.vectorstore import healthcheck as vector_healthcheck
@@ -344,6 +432,7 @@ def doctor_payload(tool: str, *, project: str | None = None) -> dict[str, Any]:
         "engine_version": __version__,
         "requested_tool": tool,
         "project": project,
+        "distribution_version": distribution_versions,
         "ok": all(check["ok"] for check in checks),
         "checks": checks,
     }

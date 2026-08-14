@@ -6,13 +6,28 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
+import gzip
+from hashlib import sha256
 import json
 import re
 
+from longform_engine.roles import (
+    ROLE_METADATA_FIELDS,
+    RoleRegistryError,
+    load_role_registry,
+    validate_manifest_role_metadata,
+    validate_role_task_coverage,
+)
+from longform_engine.prompting import PromptCompilationError, load_project_prompt_overlay
 from longform_engine.storage import atomic_write_text
 
 
 AGENT_TASK_SCHEMA_VERSION = 2
+AGENT_TASK_INDEX_SCHEMA = "agent_task_index_v2"
+AGENT_TASK_EVENT_SCHEMA = "agent_task_event_v2"
+EVENT_SEGMENT_SCHEMA = "agent_task_event_segments_v1"
+EVENT_ROTATE_BYTES = 5 * 1024 * 1024
+EVENT_ROTATE_LINES = 10_000
 SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS = (1, 2)
 AGENT_TASK_STATUSES = (
     "awaiting_agent",
@@ -43,7 +58,7 @@ CONTEXT_BUDGETS: dict[str, tuple[int, int]] = {
     "repair": (6, 16_000),
     "humanize": (5, 14_000),
     "humanize_semantic_review": (6, 28_000),
-    "reader_payoff_review": (6, 20_000),
+    "reader_payoff_review": (3, 15_000),
     "editorial_review": (6, 18_000),
     "chapter_semantic": (7, 28_000),
 }
@@ -68,6 +83,11 @@ class AgentTaskManifest:
     schema_version: int
     task_id: str
     task_type: str
+    role_id: str
+    role_version: str
+    role_prompt_hash: str
+    independence_mode: str
+    project_overlay_hash: str
     chapter_number: int
     scope: dict[str, Any]
     canonical_targets: tuple[str, ...]
@@ -211,7 +231,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "pacing_review": {
         "scope_kinds": ("chapter",),
-        "schemas": ("semantic_pacing_result_v1",),
+        "schemas": ("semantic_pacing_result_v2",),
         "output_prefixes": ("50_workbench/gate_artifacts/",),
         "validate_prefixes": ("longform-engine pacing semantic-validate ",),
         "apply_prefixes": ("longform-engine pacing semantic-apply ",),
@@ -365,6 +385,7 @@ def build_manifest(
     canonical_targets: Iterable[str | Path] = (),
     requires_human_apply: bool = False,
     context_policy: dict[str, Any] | None = None,
+    role_id: str = "",
 ) -> dict[str, Any]:
     """Create an AgentTaskManifest v2 payload with project-relative paths."""
 
@@ -391,7 +412,12 @@ def build_manifest(
     } else "v1"
     manifest_id = task_id or f"{normalized_type}:{scope_token}:{id_revision}"
     normalized_inputs = normalize_paths(root, input_files)
-    return {
+    try:
+        registry = validate_role_task_coverage(set(TASK_CONTRACTS))
+        role = registry.resolve(normalized_type, declared_role_id=role_id)
+    except RoleRegistryError as exc:
+        raise AgentTaskContractError(f"Cannot build Agent task role contract: {exc}") from exc
+    payload = {
         "schema_version": AGENT_TASK_SCHEMA_VERSION,
         "task_id": manifest_id,
         "task_type": normalized_type,
@@ -415,12 +441,28 @@ def build_manifest(
         "status": normalized_status,
         "created_at": utc_now(),
     }
+    try:
+        overlay = load_project_prompt_overlay(root, role)
+    except PromptCompilationError as exc:
+        raise AgentTaskContractError(
+            f"Cannot build Agent task project overlay: {exc}; "
+            f"repair with `{exc.report['repair_command']}`."
+        ) from exc
+    payload.update(role.manifest_metadata(project_overlay_hash=overlay.overlay_hash))
+    return payload
 
 
 def write_manifest(root: Path, manifest: dict[str, Any], manifest_file: str | Path) -> str:
     """Persist a manifest and update the project-level read-only index."""
 
     path = resolve_under_root(root, manifest_file)
+    if manifest.get("schema_version") == AGENT_TASK_SCHEMA_VERSION:
+        missing_role_fields = [field for field in ROLE_METADATA_FIELDS if field not in manifest]
+        if missing_role_fields:
+            raise AgentTaskContractError(
+                "New AgentTaskManifest v2 cannot infer Prompt role metadata during registration; missing: "
+                + ", ".join(missing_role_fields)
+            )
     normalized = normalize_manifest(manifest)
     validate_manifest_shape(normalized)
     validation = validate_manifest_strict(root, normalized)
@@ -438,9 +480,9 @@ def register_manifest(root: Path, manifest: dict[str, Any], manifest_file: Path)
     index_path = agent_task_index_file(root)
     payload = read_json(index_path, default={})
     if not isinstance(payload, dict):
-        payload = {"schema_version": AGENT_TASK_SCHEMA_VERSION, "tasks": []}
+        payload = new_task_index()
     elif payload.get("schema_version") not in SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS:
-        payload = {"schema_version": AGENT_TASK_SCHEMA_VERSION, "tasks": []}
+        payload = new_task_index()
     tasks = payload.get("tasks")
     if not isinstance(tasks, list):
         tasks = []
@@ -457,6 +499,11 @@ def register_manifest(root: Path, manifest: dict[str, Any], manifest_file: Path)
     entry = {
         "task_id": manifest["task_id"],
         "task_type": manifest["task_type"],
+        "role_id": manifest["role_id"],
+        "role_version": manifest["role_version"],
+        "role_prompt_hash": manifest["role_prompt_hash"],
+        "independence_mode": manifest["independence_mode"],
+        "project_overlay_hash": manifest["project_overlay_hash"],
         "chapter_number": manifest["chapter_number"],
         "scope": manifest.get("scope") or {},
         "canonical_targets": list(manifest.get("canonical_targets") or []),
@@ -483,6 +530,9 @@ def register_manifest(root: Path, manifest: dict[str, Any], manifest_file: Path)
     )
     payload["updated_at"] = utc_now()
     payload["schema_version"] = AGENT_TASK_SCHEMA_VERSION
+    payload["schema"] = AGENT_TASK_INDEX_SCHEMA
+    payload.setdefault("terminal_counts", {"total": 0, "by_status": {}, "by_type": {}})
+    payload.setdefault("archived_chapters", {})
     atomic_write_text(index_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     if existing is None:
         record_task_event(
@@ -534,6 +584,7 @@ def update_task_status(
     command: str,
     artifact: str | Path = "",
     result: str | Path = "",
+    current_result: dict[str, Any] | None = None,
 ) -> AgentTaskLifecycleResult | None:
     """Move an indexed Agent task to a lifecycle status and append an event."""
 
@@ -553,7 +604,9 @@ def update_task_status(
     if selected is None:
         return None
     from_status = normalize_status(str(selected.get("status") or "awaiting_agent"))
-    if from_status == normalized_status:
+    normalized_result = normalize_current_result_binding(current_result) if current_result is not None else None
+    binding_changed = normalized_result is not None and selected.get("current_result") != normalized_result
+    if from_status == normalized_status and not binding_changed:
         return AgentTaskLifecycleResult(
             task_id=task_id,
             from_status=from_status,
@@ -561,12 +614,19 @@ def update_task_status(
             event_file=str(agent_task_events_file(root)),
         )
     selected["status"] = normalized_status
+    if normalized_result is not None:
+        selected["current_result"] = normalized_result
     selected["updated_at"] = utc_now()
     payload["updated_at"] = utc_now()
     atomic_write_text(index_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     manifest_file = selected.get("manifest_file")
     if manifest_file:
-        update_manifest_status_file(root, str(manifest_file), normalized_status)
+        update_manifest_status_file(
+            root,
+            str(manifest_file),
+            normalized_status,
+            current_result=normalized_result,
+        )
     event_file = record_task_event(
         root,
         task_id=task_id,
@@ -582,6 +642,63 @@ def update_task_status(
         to_status=normalized_status,
         event_file=str(event_file),
     )
+
+
+def validate_current_task_result(
+    root: Path,
+    *,
+    chapter_number: int,
+    task_type: str,
+    output_path: str | Path,
+    allowed_statuses: Iterable[str],
+) -> tuple[dict[str, Any] | None, tuple[str, ...]]:
+    """Verify that one current task owns and hash-binds an Agent result."""
+
+    output_text = relative_path(root, output_path)
+    normalized_type = normalize_token(task_type)
+    matches = [
+        task
+        for task in list_manifests(root, chapter_number=chapter_number)
+        if normalize_token(str(task.get("task_type") or "")) == normalized_type
+        and output_text in [str(path).replace("\\", "/") for path in task.get("allowed_output_paths") or []]
+    ]
+    if len(matches) != 1:
+        return None, (
+            f"Expected exactly one current {normalized_type} task for `{output_text}`; found {len(matches)}.",
+        )
+    task = matches[0]
+    status = normalize_status(str(task.get("status") or "awaiting_agent"))
+    allowed = {normalize_status(item) for item in allowed_statuses}
+    errors: list[str] = []
+    if status not in allowed:
+        errors.append(
+            f"Agent result control-plane status must be one of {', '.join(sorted(allowed))}; got `{status}`. "
+            "Run `longform-engine agent-task result-validate ...` first."
+        )
+    binding = task.get("current_result")
+    if not isinstance(binding, dict):
+        errors.append("Agent result has no current control-plane hash binding.")
+        return task, tuple(errors)
+    if binding.get("ok") is not True:
+        errors.append("The current Agent result failed control-plane validation.")
+    if str(binding.get("path") or "") != output_text:
+        errors.append("The control-plane result path does not match the requested domain result.")
+    path = resolve_under_root(root, output_text)
+    current_hash = sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+    if not current_hash or str(binding.get("sha256") or "") != current_hash:
+        errors.append("The Agent result changed after control-plane validation.")
+    diagnostic_text = str(binding.get("diagnostic_file") or "")
+    diagnostic = read_json(resolve_under_root(root, diagnostic_text), default={}) if diagnostic_text else {}
+    if not isinstance(diagnostic, dict):
+        diagnostic = {}
+    if (
+        diagnostic.get("ok") is not True
+        or str(diagnostic.get("task_id") or "") != str(task.get("task_id") or "")
+        or str(diagnostic.get("result_file") or "") != output_text
+        or str(diagnostic.get("result_sha256") or "") != current_hash
+    ):
+        errors.append("The Agent result diagnostic is missing, stale, or does not match the current task and file.")
+    return task, tuple(errors)
 
 
 def mark_tasks_for_output(
@@ -804,6 +921,12 @@ def status_summary(root: Path, *, chapter_number: int | None = None) -> dict[str
         task_type = str(task.get("task_type") or "unknown")
         by_status[status] = by_status.get(status, 0) + 1
         by_type[task_type] = by_type.get(task_type, 0) + 1
+    index = read_json(agent_task_index_file(root), default={})
+    archived_terminal = (
+        dict(index.get("terminal_counts") or {})
+        if chapter_number is None and isinstance(index, dict)
+        else {"total": 0, "by_status": {}, "by_type": {}}
+    )
     return {
         "schema_version": AGENT_TASK_SCHEMA_VERSION,
         "chapter_number": chapter_number,
@@ -812,6 +935,7 @@ def status_summary(root: Path, *, chapter_number: int | None = None) -> dict[str
         "by_type": by_type,
         "event_file": relative_path(root, agent_task_events_file(root)),
         "items": tasks,
+        "archived_terminal": archived_terminal,
     }
 
 
@@ -878,7 +1002,27 @@ def normalize_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         )
     scope = normalized["scope"]
     normalized["chapter_number"] = int(scope.get("chapter_number") or 0)
+    infer_legacy_role_metadata(normalized)
     return normalized
+
+
+def infer_legacy_role_metadata(manifest: dict[str, Any]) -> None:
+    """Backfill host-neutral role metadata while reading pre-Phase-1 manifests."""
+
+    if all(str(manifest.get(field) or "").strip() for field in ROLE_METADATA_FIELDS):
+        return
+    task_type = normalize_token(str(manifest.get("task_type") or ""))
+    declared_role_id = str(manifest.get("role_id") or "").strip()
+    if task_type == "editorial_review" and not declared_role_id:
+        match = re.match(r"editorial_review:([^:]+):", str(manifest.get("task_id") or ""))
+        if match:
+            declared_role_id = match.group(1)
+    try:
+        role = load_role_registry().resolve(task_type, declared_role_id=declared_role_id)
+    except RoleRegistryError as exc:
+        raise ValueError(f"Cannot infer legacy Agent task Prompt role metadata: {exc}") from exc
+    for field, value in role.manifest_metadata().items():
+        manifest.setdefault(field, value)
 
 
 def validate_manifest_shape(manifest: dict[str, Any]) -> None:
@@ -886,6 +1030,11 @@ def validate_manifest_shape(manifest: dict[str, Any]) -> None:
         "schema_version",
         "task_id",
         "task_type",
+        "role_id",
+        "role_version",
+        "role_prompt_hash",
+        "independence_mode",
+        "project_overlay_hash",
         "chapter_number",
         "scope",
         "canonical_targets",
@@ -908,6 +1057,9 @@ def validate_manifest_shape(manifest: dict[str, Any]) -> None:
         raise ValueError("Agent task manifest schema_version must be 2 after normalization.")
     if not str(manifest.get("task_id") or "").strip():
         raise ValueError("Agent task manifest task_id is required.")
+    for field in ROLE_METADATA_FIELDS:
+        if not isinstance(manifest.get(field), str) or not str(manifest.get(field) or "").strip():
+            raise ValueError(f"Agent task manifest {field} must be a non-empty string.")
     if not isinstance(manifest.get("input_files"), list):
         raise ValueError("Agent task manifest input_files must be a list.")
     if not isinstance(manifest.get("allowed_output_paths"), list):
@@ -955,6 +1107,29 @@ def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bo
 
     task_id = str(manifest.get("task_id") or "").strip()
     task_type = normalize_token(str(manifest.get("task_type") or ""))
+    try:
+        registry = validate_role_task_coverage(set(TASK_CONTRACTS))
+        errors.extend(validate_manifest_role_metadata(manifest, registry=registry))
+        role = registry.resolve(
+            task_type,
+            declared_role_id=str(manifest.get("role_id") or ""),
+        )
+        try:
+            expected_overlay_hash = load_project_prompt_overlay(root, role).overlay_hash
+        except PromptCompilationError as exc:
+            errors.append(
+                f"Project Prompt overlay is invalid: {exc}; "
+                f"repair with `{exc.report['repair_command']}`."
+            )
+        else:
+            actual_overlay_hash = str(manifest.get("project_overlay_hash") or "")
+            if actual_overlay_hash != expected_overlay_hash:
+                errors.append(
+                    "Agent task manifest project_overlay_hash drifted from the current approved overlay; "
+                    f"expected `{expected_overlay_hash}`, got `{actual_overlay_hash}`."
+                )
+    except RoleRegistryError as exc:
+        errors.append(str(exc))
     scope = manifest.get("scope") or {}
     scope_kind = str(scope.get("kind") or "")
     chapter_number = manifest.get("chapter_number")
@@ -1113,14 +1288,44 @@ def agent_task_events_file(root: Path) -> Path:
     return root / "50_workbench" / "agent_tasks" / "events.jsonl"
 
 
-def update_manifest_status_file(root: Path, manifest_file: str | Path, status: str) -> None:
+def update_manifest_status_file(
+    root: Path,
+    manifest_file: str | Path,
+    status: str,
+    *,
+    current_result: dict[str, Any] | None = None,
+) -> None:
     path = resolve_under_root(root, manifest_file)
     payload = read_json(path, default={})
     if not isinstance(payload, dict):
         return
     payload["status"] = normalize_status(status)
+    if current_result is not None:
+        payload["current_result"] = current_result
     payload["updated_at"] = utc_now()
     atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
+def normalize_current_result_binding(value: dict[str, Any]) -> dict[str, Any]:
+    required = ("ok", "path", "sha256", "diagnostic_file", "source_schema", "validated_at")
+    missing = [field for field in required if field not in value]
+    if missing:
+        raise ValueError("current_result binding missing fields: " + ", ".join(missing))
+    path = str(value.get("path") or "").replace("\\", "/")
+    diagnostic = str(value.get("diagnostic_file") or "").replace("\\", "/")
+    digest = str(value.get("sha256") or "")
+    if not path or not diagnostic or (digest and not re.fullmatch(r"[0-9a-f]{64}", digest)):
+        raise ValueError("current_result binding requires project paths and a lowercase SHA-256 digest.")
+    if value.get("ok") is True and not digest:
+        raise ValueError("A valid current_result binding requires a SHA-256 digest.")
+    return {
+        "ok": value.get("ok") is True,
+        "path": path,
+        "sha256": digest,
+        "diagnostic_file": diagnostic,
+        "source_schema": str(value.get("source_schema") or ""),
+        "validated_at": str(value.get("validated_at") or ""),
+    }
 
 
 def record_task_event(
@@ -1137,9 +1342,13 @@ def record_task_event(
     normalized_from = normalize_status(from_status) if str(from_status).strip() else ""
     path = agent_task_events_file(root)
     path.parent.mkdir(parents=True, exist_ok=True)
+    task = next((item for item in list_manifests(root) if item.get("task_id") == task_id), {})
     payload = {
+        "schema": AGENT_TASK_EVENT_SCHEMA,
         "schema_version": AGENT_TASK_SCHEMA_VERSION,
         "task_id": task_id,
+        "task_type": str(task.get("task_type") or ""),
+        "chapter_number": int(task.get("chapter_number") or 0),
         "from_status": normalized_from,
         "to_status": normalized_to,
         "command": command,
@@ -1149,7 +1358,164 @@ def record_task_event(
     }
     with path.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    rotate_project_events(root)
     return path
+
+
+def new_task_index() -> dict[str, Any]:
+    return {
+        "schema": AGENT_TASK_INDEX_SCHEMA,
+        "schema_version": AGENT_TASK_SCHEMA_VERSION,
+        "tasks": [],
+        "terminal_counts": {"total": 0, "by_status": {}, "by_type": {}},
+        "archived_chapters": {},
+        "updated_at": utc_now(),
+    }
+
+
+def read_task_events(root: Path) -> list[dict[str, Any]]:
+    path = agent_task_events_file(root)
+    if not path.is_file():
+        return []
+    events: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            normalized = dict(payload)
+            normalized.setdefault("schema", AGENT_TASK_EVENT_SCHEMA)
+            normalized.setdefault("schema_version", AGENT_TASK_SCHEMA_VERSION)
+            if "chapter_number" not in normalized or "task_type" not in normalized:
+                task = next(
+                    (item for item in list_manifests(root) if item.get("task_id") == normalized.get("task_id")),
+                    {},
+                )
+                normalized.setdefault("chapter_number", int(task.get("chapter_number") or 0))
+                normalized.setdefault("task_type", str(task.get("task_type") or ""))
+            events.append(normalized)
+    return events
+
+
+def task_archive_projection(root: Path, chapter_number: int) -> dict[str, Any]:
+    tasks = list_manifests(root, chapter_number=chapter_number)
+    task_ids = {str(item.get("task_id") or "") for item in tasks}
+    events = [
+        item
+        for item in read_task_events(root)
+        if int(item.get("chapter_number") or 0) == chapter_number
+        or str(item.get("task_id") or "") in task_ids
+    ]
+    return {
+        "schema": "chapter_agent_task_projection_v1",
+        "chapter_number": chapter_number,
+        "tasks": tasks,
+        "events": events,
+    }
+
+
+def compact_task_projection(root: Path, *, through: int, archive_refs: dict[int, str]) -> dict[str, Any]:
+    index_path = agent_task_index_file(root)
+    payload = read_json(index_path, default={})
+    if not isinstance(payload, dict):
+        payload = new_task_index()
+    tasks = [dict(item) for item in payload.get("tasks", []) if isinstance(item, dict)]
+    archived = [item for item in tasks if 0 < int(item.get("chapter_number") or 0) <= through]
+    retained = [item for item in tasks if item not in archived]
+    counts = payload.get("terminal_counts") if isinstance(payload.get("terminal_counts"), dict) else {}
+    by_status = dict(counts.get("by_status") or {})
+    by_type = dict(counts.get("by_type") or {})
+    for item in archived:
+        status = str(item.get("status") or "unknown")
+        task_type = str(item.get("task_type") or "unknown")
+        by_status[status] = int(by_status.get(status) or 0) + 1
+        by_type[task_type] = int(by_type.get(task_type) or 0) + 1
+    archived_chapters = dict(payload.get("archived_chapters") or {})
+    for chapter_number, archive in archive_refs.items():
+        chapter_tasks = [item for item in archived if int(item.get("chapter_number") or 0) == chapter_number]
+        if not chapter_tasks and str(chapter_number) in archived_chapters:
+            continue
+        archived_chapters[str(chapter_number)] = {
+            "archive": archive,
+            "task_count": len(chapter_tasks),
+        }
+    payload.update(
+        {
+            "schema": AGENT_TASK_INDEX_SCHEMA,
+            "schema_version": AGENT_TASK_SCHEMA_VERSION,
+            "tasks": retained,
+            "terminal_counts": {
+                "total": int(counts.get("total") or 0) + len(archived),
+                "by_status": by_status,
+                "by_type": by_type,
+            },
+            "archived_chapters": archived_chapters,
+            "updated_at": utc_now(),
+        }
+    )
+    atomic_write_text(index_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+    events = read_task_events(root)
+    retained_events = [item for item in events if int(item.get("chapter_number") or 0) == 0 or int(item.get("chapter_number") or 0) > through]
+    event_path = agent_task_events_file(root)
+    atomic_write_text(
+        event_path,
+        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in retained_events),
+    )
+    return {
+        "archived_tasks": len(archived),
+        "retained_tasks": len(retained),
+        "archived_events": len(events) - len(retained_events),
+        "retained_events": len(retained_events),
+    }
+
+
+def rotate_project_events(root: Path) -> None:
+    path = agent_task_events_file(root)
+    if not path.is_file():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if path.stat().st_size < EVENT_ROTATE_BYTES and len(lines) < EVENT_ROTATE_LINES:
+        return
+    parsed: list[tuple[str, dict[str, Any]]] = []
+    for line in lines:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            parsed.append((line, payload))
+    project_lines = [line for line, payload in parsed if int(payload.get("chapter_number") or 0) == 0]
+    active_lines = [line for line, payload in parsed if int(payload.get("chapter_number") or 0) != 0]
+    if not project_lines:
+        return
+    segment_dir = root / "70_runtime" / "artifacts" / "events"
+    segment_dir.mkdir(parents=True, exist_ok=True)
+    content = ("\n".join(project_lines) + "\n").encode("utf-8")
+    digest = sha256(content).hexdigest()
+    segment = segment_dir / f"project-events-{digest[:16]}.jsonl.gz"
+    if not segment.exists():
+        with gzip.open(segment, "wb", compresslevel=9) as handle:
+            handle.write(content)
+    manifest_path = segment_dir / "segments.json"
+    manifest = read_json(manifest_path, default={})
+    if not isinstance(manifest, dict):
+        manifest = {}
+    segments = [item for item in manifest.get("segments", []) if isinstance(item, dict)]
+    record = {
+        "path": relative_path(root, segment),
+        "sha256": sha256(segment.read_bytes()).hexdigest(),
+        "content_sha256": digest,
+        "lines": len(project_lines),
+    }
+    if not any(item.get("path") == record["path"] for item in segments):
+        segments.append(record)
+    atomic_write_text(
+        manifest_path,
+        json.dumps({"schema": EVENT_SEGMENT_SCHEMA, "segments": segments}, ensure_ascii=False, indent=2) + "\n",
+    )
+    atomic_write_text(path, "".join(line + "\n" for line in active_lines))
 
 
 def normalize_status(value: str) -> str:

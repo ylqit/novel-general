@@ -68,6 +68,8 @@ draft submit
 
 每个 ZIP 配套 manifest，记录每个条目的相对路径、SHA-256 和大小。旧章逐任务 `*.agent_task.json` 随工作单归档，全局 `agent_task_index.json` 保持 loose 状态索引。归档文件不可静默改写；删除 loose file 前必须校验 ZIP、manifest、条目 hash 和待删除文件内容，恢复时拒绝覆盖内容不同的 loose file。`--dry-run` 可预览任意范围，真实 compact 只允许已有 closure 且位于最近两章活动缓冲之前的章节。
 
+`v0.3.2` 的 dry-run 明确报告 `eligible`、`blockers`、候选文件与唯一内容字节数、可回收快照字节数、`compact_through` 和两章活动缓冲。存在 blocker 时真实 compact 必须拒绝写入，不能把不可执行计划显示为成功。
+
 ```text
 longform-engine artifacts status project.yaml
 longform-engine artifacts compact project.yaml --through 13 --dry-run
@@ -78,19 +80,21 @@ longform-engine artifacts restore project.yaml --chapter 1
 
 final、章节语义账本、计划伏笔账本、图谱和当前状态视图不进入 ZIP。成功事务在 commit 后立即删除回滚快照；失败事务保留诊断证据。
 
+`artifacts verify` 使用四态结果：`ok` 表示归档和 retained evidence 完整；`pending_close` 只允许最新活动章已有 final 但尚未关闭；`migration_required` 表示旧章节已有 final 但缺语义账本或 closure；`invalid` 表示 hash、ZIP 成员、路径或 canonical 证据损坏。任务索引投影、轮转事件段和章节审计包引用也属于 verify 范围。
+
 ## 7. 旧项目兼容与十五章迁移
 
 旧 graph semantic、memory semantic、character memory 和旧摘要继续可读，相关 CLI 继续存在。新 `production next` 不再为同一 final 分别创建这些任务。
 
-十五章项目迁移必须逐章执行，不能从旧派生状态猜测新事实：
+一般旧项目迁移必须逐章执行，不能从旧派生状态猜测新事实：
 
 1. 保存 final、图谱、角色记忆、伏笔账本和 TCS 的迁移前 hash 清单。
-2. 对第 1-15 章依次运行 `chapter semantic-task ... --backfill`。
+2. 运行 `legacy status`，再通过 `legacy backfill --through N` 依次创建最早缺失章的语义任务。
 3. Agent 每次只读该章 final、章节卡、计划伏笔和前一章状态，输出统一语义包。
 4. 逐章 validate/apply；冲突进入人工处理。历史无计划伏笔只能使用 `unplanned:<stable-id>`。
-5. 执行 `chapter semantic-rebuild project.yaml --through 15 --approved-by human`，只从连续 canonical ledgers 事务化重建物化视图和派生索引，并比较迁移报告。
-6. 先运行 `artifacts compact --through 13 --dry-run`，人工确认后再真正归档。
-7. 校验第 14-15 章仍为活动工作区，`production next` 安全指向第 16 章。
+5. 运行 `legacy compact project.yaml --through N --approved-by human --dry-run`，一次性检查连续证据、重建结果、活动任务和污染边界。
+6. dry-run 可执行后再运行真实 `legacy compact`；CLI 自动生成带 migration 元数据的 closure，并保留最近两章为活动工作区。
+7. 校验 `production next` 安全指向下一章。
 
 回填任务需要真实 Agent 阅读十五章 final，本次代码实现不会伪造这些语义 JSON，也不会自动删除现有运行产物。
 

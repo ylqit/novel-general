@@ -3,9 +3,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from longform_engine import __version__
-
-
 ROOT = Path(__file__).resolve().parents[1]
 SKILLS = ("longform-novel-codex", "longform-novel-claude")
 REFERENCES = (
@@ -74,7 +71,7 @@ def test_readme_is_public_pipx_skill_package_homepage():
     for term in (
         "longform-novel-engine = Python engine + Codex skill + Claude Code skill",
         "https://github.com/ylqit/novel-general",
-        f"git+https://github.com/ylqit/novel-general.git@v{__version__}",
+        "git+https://github.com/ylqit/novel-general.git@v0.3.2",
         "longform-novel-engine[semantic]",
         "pipx",
         "PIPX_BIN_DIR",

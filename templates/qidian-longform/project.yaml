@@ -100,7 +100,7 @@ semantic:
   enabled: true
   profile: "bge-m3"
   fallback_profile: "local-hash"
-  models_dir: "70_runtime/models"
+  models_dir: ""
   allow_network_download: true
   require_real_model: true
   allow_fallback: false

@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
+from longform_engine.agent_normalization import normalize_and_validate_agent_result
 from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
 from longform_engine.config import load_project_config
 from longform_engine.creative import (
     humanize_check,
-    humanize_semantic_task,
     humanize_semantic_validate,
     humanize_task,
 )
@@ -43,6 +43,21 @@ def test_humanizer_semantic_task_is_strict_and_surfaces_in_production_next(tmp_p
     assert action["status"] == "agent_task_awaiting_agent"
     assert action["task_type"] == "humanize_semantic_review"
     assert action["task_id"] == "humanize_semantic_review:ch001:v1"
+
+
+def test_agent_first_normalizer_accepts_humanizer_semantic_review_v1(tmp_path):
+    config, root, candidate = seed_humanizer_project(tmp_path, milestones=[1])
+    humanize_check(config, chapter_number=1, file_path=candidate)
+    output = write_semantic_result(root)
+    manifest = load_manifest(root, "humanize_semantic_review:ch001:v1")
+
+    result = normalize_and_validate_agent_result(root, manifest, result_file=output)
+
+    assert result.ok is True, result.errors
+    assert result.adapter == "humanizer_semantic_review_v1"
+    assert result.source_schema == "humanizer_semantic_review_v1"
+    assert len(result.normalized_result["evidence"]) == 15
+    assert result.normalized_result["findings"] == []
 
 
 def test_humanizer_semantic_pass_allows_submit_and_applies_both_tasks(tmp_path):

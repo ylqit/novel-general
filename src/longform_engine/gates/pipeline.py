@@ -18,6 +18,7 @@ from longform_engine.agent_tasks import (
     resolve_candidate_task,
     supersede_other_candidate_tasks,
     update_task_status,
+    validate_current_task_result,
     write_manifest,
 )
 from longform_engine.config import ConfigDocument
@@ -26,7 +27,7 @@ from longform_engine.creative import creative_repair_guidance, detect_humanizer_
 from longform_engine.db import sync_database
 from longform_engine.graph import check_graph
 from longform_engine.memory import deterministic_evidence_gate_findings
-from longform_engine.planning import evaluate_event_matrix, infer_event_types_from_text
+from longform_engine.planning import evaluate_event_matrix, event_type_marker_count, infer_event_types_from_text
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 
 
@@ -153,16 +154,19 @@ def build_semantic_review_context(
     chapter_card = payloads.get(chapter_ref, {})
     if not isinstance(chapter_card, dict):
         chapter_card = {}
-    participant_ids = semantic_review_participant_ids(chapter_card)
-    canon_refs = dedupe_strings(normalize_strings(chapter_card.get("canon_refs")))
-    match_terms = dedupe_strings([*participant_ids, *canon_refs])
-
     character_payload = payloads.get("10_bible/characters.json", {})
     graph_payload = payloads.get("30_state/story_graph.json", {})
     tcs_payload = payloads.get(f"30_state/tcs/ch{chapter_number:03d}.json", {})
     anchor_payload = payloads.get("20_outline/outline_anchors.json", {})
     source_canon = payloads.get("10_bible/fanfiction/source_canon.json", {})
     fanfiction_bible = payloads.get("10_bible/fanfiction/fanfiction_bible.json", {})
+    participant_ids = semantic_review_participant_ids(
+        chapter_card,
+        source_text=source_text,
+        identity_sources=(character_payload, source_canon, fanfiction_bible),
+    )
+    canon_refs = dedupe_strings(normalize_strings(chapter_card.get("canon_refs")))
+    match_terms = dedupe_strings([*participant_ids, *canon_refs])
 
     raw_sections = {
         "chapter_contract": {
@@ -195,6 +199,7 @@ def build_semantic_review_context(
         raw_sections["fanfiction"] = {
             "source_canon_matches": semantic_review_matching_records(source_canon, match_terms),
             "design_matches": semantic_review_matching_records(fanfiction_bible, participant_ids),
+            "voice_contracts": semantic_review_voice_contracts(fanfiction_bible, participant_ids),
             "declared_continuity": semantic_review_declared_fanfiction_policy(fanfiction_bible),
         }
 
@@ -204,7 +209,7 @@ def build_semantic_review_context(
         "outline_anchor": 600,
         "characters": 1_500,
         "story_graph": 800,
-        "fanfiction": 1_600,
+        "fanfiction": 2_400,
     }
     sections: dict[str, Any] = {}
     section_selection: dict[str, dict[str, Any]] = {}
@@ -262,11 +267,52 @@ def build_semantic_review_context(
     return packet
 
 
-def semantic_review_participant_ids(chapter_card: dict[str, Any]) -> list[str]:
+def semantic_review_participant_ids(
+    chapter_card: dict[str, Any],
+    *,
+    source_text: str = "",
+    identity_sources: tuple[Any, ...] = (),
+) -> list[str]:
     values = [str(chapter_card.get("pov_character_id") or "")]
     for key in ("featured_character_ids", "voice_refs", "characterization_focus"):
         values.extend(normalize_strings(chapter_card.get(key)))
+    lowered_source = source_text.casefold()
+    for source in identity_sources:
+        for record in semantic_review_all_records(source):
+            character_id = str(
+                record.get("character_id")
+                or record.get("entity_id")
+                or record.get("id")
+                or ""
+            ).strip()
+            if not character_id:
+                continue
+            names: list[str] = []
+            for key in ("name", "display_name", "game_name", "real_name"):
+                names.extend(normalize_strings(record.get(key)))
+            names.extend(normalize_strings(record.get("aliases")))
+            aliases = [
+                part.strip()
+                for name in names
+                for part in re.split(r"[/／|]", name)
+                if len(part.strip()) >= 2
+            ]
+            if any(alias.casefold() in lowered_source for alias in aliases):
+                values.append(character_id)
     return dedupe_strings([value.strip() for value in values if value.strip()])
+
+
+def semantic_review_voice_contracts(value: Any, participant_ids: list[str]) -> list[dict[str, Any]]:
+    allowed = {item.casefold() for item in participant_ids}
+    contracts: list[dict[str, Any]] = []
+    for record in semantic_review_all_records(value):
+        character_id = str(record.get("character_id") or "").strip()
+        if character_id.casefold() not in allowed:
+            continue
+        if not any(key in record for key in ("baseline_voice", "voice", "invariants", "forbidden_shortcuts")):
+            continue
+        contracts.append(record)
+    return contracts[:8]
 
 
 def semantic_review_chapter_record(value: Any, chapter_number: int) -> Any:
@@ -421,8 +467,6 @@ def semantic_review_selection_reason(path: str, *, fanfiction: bool) -> str:
     if fanfiction and path.endswith("fanfiction_bible.json"):
         return "continuity, divergence, and voice contract"
     return "declared semantic review source"
-    gate_result: str
-    next_command: str
 
 
 @dataclass(frozen=True)
@@ -519,6 +563,7 @@ def gate_check(
         "next_command": next_command,
         "artifact_dir": str(artifact_dir),
         "source_path": relative_path(root, draft_path),
+        "source_sha256": hashlib.sha256(draft_path.read_bytes()).hexdigest(),
         "deterministic_evidence_enabled": semantic,
         "deterministic_evidence_report": str(deterministic_evidence_report) if deterministic_evidence_report else "",
         "semantic_enabled": semantic,
@@ -707,7 +752,6 @@ def semantic_review_validate(
     verdict = str(payload.get("verdict") or "").lower()
     if verdict not in {"pass", "warning", "fail"}:
         errors.append("verdict must be pass, warning, or fail.")
-    manifest = load_semantic_review_manifest(manifest_path=artifact_dir / "semantic_review_task.agent_task.json")
     context = load_json(artifact_dir / "semantic_review_context.json", default={})
     allowed_refs = {
         str(item).replace("\\", "/")
@@ -1026,7 +1070,20 @@ def pacing_review(
     detected_event_types = infer_event_types_from_text(text)
     recommended_event_types = normalize_strings(event_recommendation.get("recommended")) if event_recommendation else []
     blocked_event_types = normalize_strings(event_recommendation.get("blocked")) if event_recommendation else []
-    active_event_types = detected_event_types or tuple(recommended_event_types[:1])
+    strong_detected_event_types = tuple(
+        event_type
+        for event_type in detected_event_types
+        if event_type_marker_count(text, event_type) >= 2
+    )
+    weak_detected_event_types = tuple(
+        event_type for event_type in detected_event_types if event_type not in strong_detected_event_types
+    )
+    active_event_types = strong_detected_event_types or tuple(recommended_event_types[:1])
+    if weak_detected_event_types:
+        warnings.append(
+            "weak lexical event hints did not override the chapter plan: "
+            + ", ".join(weak_detected_event_types)
+        )
     matrix = evaluate_event_matrix(
         config,
         chapter_number=chapter_number,
@@ -1103,16 +1160,56 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
     task_json = artifact_dir / "semantic_pacing_task.json"
     task_md = artifact_dir / "semantic_pacing_task.md"
     manifest_file = artifact_dir / "semantic_pacing_task.agent_task.json"
+    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    event_matrix_path = root / "30_state" / "event_matrix.json"
+    pacing_history_path = root / "30_state" / "pacing_history.json"
+    chapter_card = load_json(card_path, default={})
+    event_matrix = load_json(event_matrix_path, default={})
+    pacing_history = load_json(pacing_history_path, default=[])
+    if not isinstance(chapter_card, dict):
+        chapter_card = {}
+    if not isinstance(event_matrix, dict):
+        event_matrix = {}
+    if not isinstance(pacing_history, list):
+        pacing_history = []
     task_payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "chapter_number": chapter_number,
         "source_path": relative_path(root, chapter_path),
-        "input_files": [
-            relative_path(root, chapter_path),
-            "30_state/event_matrix.json",
-            "30_state/pacing_history.json",
-            f"20_outline/chapter_cards/ch{chapter_number:03d}.json",
-        ],
+        "source_sha256": sha256_text(safe_read_text(chapter_path)),
+        "planning_context": {
+            "chapter_contract": {
+                key: chapter_card.get(key)
+                for key in (
+                    "chapter_duty",
+                    "duty",
+                    "conflict",
+                    "reader_gain",
+                    "cost",
+                    "topology_id",
+                    "hook_mode",
+                    "pacing_tier",
+                    "requires_tail_suspense",
+                )
+                if chapter_card.get(key) not in (None, "", [], {})
+            },
+            "event_recommendation": chapter_card.get("event_recommendation")
+            or event_matrix.get("latest_recommendation")
+            or {},
+            "recent_pacing": pacing_history[-5:],
+            "source_catalog": [
+                {
+                    "path": relative_path(root, path),
+                    "sha256": sha256_text(safe_read_text(path)) if path.is_file() else "",
+                    "selected_for": selected_for,
+                }
+                for path, selected_for in (
+                    (card_path, "current chapter pacing contract"),
+                    (event_matrix_path, "current event recommendation"),
+                    (pacing_history_path, "last five applied pacing records"),
+                )
+            ],
+        },
         "allowed_output_path": relative_path(root, output_file),
         "output_schema": semantic_pacing_output_template(chapter_number, chapter_path, root),
         "instructions": [
@@ -1135,6 +1232,7 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
                 f"- Apply: `longform-engine pacing semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}`",
                 "",
                 "Judge semantic pacing only. Do not mutate final/RAG/graph/TCS/SQLite or gate_result.json directly.",
+                "The task JSON already contains the bounded planning context. Do not open its source_catalog paths.",
                 "",
                 "## Output Schema",
                 "",
@@ -1153,7 +1251,7 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
         chapter_number=chapter_number,
         input_files=[task_md, chapter_path, task_json],
         allowed_output_paths=[output_file],
-        output_schema="semantic_pacing_result_v1",
+        output_schema="semantic_pacing_result_v2",
         validate_command=f"longform-engine pacing semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
         apply_command=f"longform-engine pacing semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
         failure_next_command=f"longform-engine pacing semantic-task project.yaml --chapter {chapter_number}",
@@ -1193,12 +1291,32 @@ def semantic_pacing_validate(
     path = resolve_semantic_pacing_result_path(root, artifact_dir, file_path)
     errors: list[str] = []
     warnings: list[str] = []
+    _task, control_errors = validate_current_task_result(
+        root,
+        chapter_number=chapter_number,
+        task_type="pacing_review",
+        output_path=path,
+        allowed_statuses=("submitted", "validated"),
+    )
+    errors.extend(control_errors)
     payload = load_json(path, default={})
     if not isinstance(payload, dict):
         payload = {}
         errors.append("semantic pacing result must be a JSON object.")
+    if int(payload.get("schema_version") or 0) != 2:
+        errors.append("schema_version must be 2; historical semantic pacing schemas are not accepted.")
     if int(payload.get("chapter_number") or 0) != chapter_number:
         errors.append("payload chapter_number does not match command chapter.")
+    chapter_path = chapter_text_path(root, chapter_number, source="draft")
+    if chapter_path is None:
+        errors.append(f"Current draft not found for ch{chapter_number:03d}.")
+    else:
+        expected_path = relative_path(root, chapter_path)
+        expected_hash = sha256_text(safe_read_text(chapter_path))
+        if str(payload.get("source_path") or "") != expected_path:
+            errors.append("source_path does not match the current chapter draft.")
+        if str(payload.get("source_sha256") or "") != expected_hash:
+            errors.append("source_sha256 does not match the current chapter draft.")
     verdict = str(payload.get("verdict") or "").strip().lower()
     if verdict not in {"pass", "warning", "fail"}:
         errors.append("verdict must be pass, warning, or fail.")
@@ -1235,9 +1353,11 @@ def semantic_pacing_validate(
     write_json(
         report_file,
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "chapter_number": chapter_number,
             "file": relative_path(root, path),
+            "source_path": str(payload.get("source_path") or ""),
+            "source_sha256": str(payload.get("source_sha256") or ""),
             "ok": ok,
             "errors": errors,
             "warnings": warnings,
@@ -1252,7 +1372,7 @@ def semantic_pacing_validate(
         to_status="validated" if ok else "invalid",
         command="pacing semantic-validate",
         result=report_file,
-        from_statuses=("awaiting_agent", "submitted"),
+        from_statuses=("submitted", "validated"),
     )
     return SemanticPacingValidateResult(
         chapter_number=chapter_number,
@@ -1273,11 +1393,46 @@ def semantic_pacing_apply(
 ) -> SemanticPacingApplyResult:
     """Apply validated semantic pacing findings into gate artifacts only."""
 
-    validation = semantic_pacing_validate(config, chapter_number=chapter_number, file_path=file_path)
-    if not validation.ok:
-        raise GateError("semantic pacing result did not validate; gate artifacts were not updated.")
     root = resolve_project_root(config)
     artifact_dir = gate_artifact_dir(root, chapter_number)
+    path = resolve_semantic_pacing_result_path(root, artifact_dir, file_path)
+    task, control_errors = validate_current_task_result(
+        root,
+        chapter_number=chapter_number,
+        task_type="pacing_review",
+        output_path=path,
+        allowed_statuses=("validated", "applied"),
+    )
+    if control_errors:
+        raise GateError("semantic pacing result has not passed the required control-plane lifecycle: " + "; ".join(control_errors))
+    assert task is not None
+    if str(task.get("status") or "") == "applied":
+        gate_path = artifact_dir / "gate_result.json"
+        pacing_path = artifact_dir / "pacing_review.md"
+        gate_payload = load_json(gate_path, default={})
+        pacing = gate_payload.get("semantic_pacing") if isinstance(gate_payload, dict) else {}
+        current_hash = sha256_text(safe_read_text(path))
+        if (
+            not isinstance(pacing, dict)
+            or str(pacing.get("result_sha256") or "") != current_hash
+            or not pacing_path.is_file()
+        ):
+            raise GateError("applied semantic pacing evidence is stale or incomplete; regenerate the pacing task.")
+        passed = bool(gate_payload.get("passed"))
+        next_command = "continue-write" if passed else f"repair-chapter --chapter {chapter_number} --plan-only"
+        return SemanticPacingApplyResult(
+            chapter_number=chapter_number,
+            applied=True,
+            result_file=str(path),
+            validation_file=str(artifact_dir / "semantic_pacing_validation.json"),
+            gate_result=str(gate_path),
+            pacing_review=str(pacing_path),
+            escalated_failures=len(semantic_pacing_gate_items(load_json(path, default={}))[0]),
+            next_command=next_command,
+        )
+    validation = semantic_pacing_validate(config, chapter_number=chapter_number, file_path=path)
+    if not validation.ok:
+        raise GateError("semantic pacing result did not validate; gate artifacts were not updated.")
     path = Path(validation.file)
     payload = load_json(path, default={})
     if not isinstance(payload, dict):
@@ -1329,6 +1484,9 @@ def semantic_pacing_apply(
                 "semantic_pacing": {
                     "verdict": payload.get("verdict"),
                     "tier": payload.get("tier"),
+                    "source_path": payload.get("source_path"),
+                    "source_sha256": payload.get("source_sha256"),
+                    "result_sha256": sha256_text(safe_read_text(path)),
                     "tail_hook_quality": payload.get("tail_hook_quality", ""),
                     "issues": payload.get("issues", []),
                 },
@@ -2500,9 +2658,10 @@ def markdown_report(title: str, issues: list[str], warnings: list[str]) -> str:
 
 def semantic_pacing_output_template(chapter_number: int, source: Path, root: Path) -> dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "chapter_number": chapter_number,
         "source_path": relative_path(root, source),
+        "source_sha256": sha256_text(safe_read_text(source)),
         "verdict": "pass",
         "tier": "medium",
         "event_types": [],
@@ -2519,6 +2678,75 @@ def semantic_pacing_output_template(chapter_number: int, source: Path, root: Pat
         "warnings": [],
         "notes": "",
     }
+
+
+def semantic_pacing_review_status(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+) -> dict[str, Any]:
+    """Return whether a required pacing review was applied to the current draft bytes."""
+
+    root = resolve_project_root(config)
+    quality = config.data.get("quality", {}) if isinstance(config.data.get("quality"), dict) else {}
+    pacing_config = quality.get("semantic_pacing") if isinstance(quality.get("semantic_pacing"), dict) else {}
+    mode = str(pacing_config.get("review_mode") or "off").strip().lower()
+    card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
+    required = mode == "required" or (
+        mode == "risk_based"
+        and (
+            str(quality.get("assurance_mode") or "balanced") == "strict"
+            or bool(card.get("requires_semantic_pacing_review"))
+        )
+    )
+    if not required:
+        return {"required": False, "passed": True, "reason": "not_required", "review_mode": mode}
+    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    result = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "semantic_pacing_result.json"
+    gate_path = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
+    draft_hash = sha256_text(safe_read_text(draft)) if draft.is_file() else ""
+    payload = load_json(result, default={})
+    gate = load_json(gate_path, default={})
+    applied = gate.get("semantic_pacing") if isinstance(gate, dict) else None
+    passed = bool(
+        draft_hash
+        and isinstance(payload, dict)
+        and int(payload.get("schema_version") or 0) == 2
+        and str(payload.get("source_path") or "") == relative_path(root, draft)
+        and str(payload.get("source_sha256") or "") == draft_hash
+        and isinstance(applied, dict)
+        and str(applied.get("source_path") or "") == relative_path(root, draft)
+        and str(applied.get("source_sha256") or "") == draft_hash
+        and str(applied.get("result_sha256") or "") == sha256_text(safe_read_text(result))
+        and str(applied.get("verdict") or "") in {"pass", "warning"}
+        and gate.get("passed") is True
+    )
+    return {
+        "required": True,
+        "passed": passed,
+        "reason": "applied" if passed else "semantic_pacing_missing_failed_or_stale",
+        "review_mode": mode,
+        "result_file": relative_path(root, result),
+        "gate_result": relative_path(root, gate_path),
+    }
+
+
+def semantic_pacing_task_is_current(root: Path, chapter_number: int, task: dict[str, Any]) -> bool:
+    """Return whether a pacing task packet was compiled for the current draft bytes."""
+
+    if str(task.get("task_type") or "") != "pacing_review":
+        return False
+    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    task_json = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "semantic_pacing_task.json"
+    if not draft.is_file() or not task_json.is_file():
+        return False
+    payload = load_json(task_json, default={})
+    return bool(
+        isinstance(payload, dict)
+        and int(payload.get("schema_version") or 0) == 2
+        and str(payload.get("source_path") or "") == relative_path(root, draft)
+        and str(payload.get("source_sha256") or "") == sha256_text(safe_read_text(draft))
+    )
 
 
 def semantic_review_output_template(chapter_number: int, source: Path, root: Path) -> dict[str, Any]:
@@ -2645,11 +2873,6 @@ def resolve_review_source(root: Path, chapter_number: int, source_path: str) -> 
         if path is not None
     }
     return candidate if candidate in allowed and candidate.exists() else None
-
-
-def load_semantic_review_manifest(*, manifest_path: Path) -> dict[str, Any]:
-    payload = load_json(manifest_path, default={})
-    return payload if isinstance(payload, dict) else {}
 
 
 def is_canonical_reference(path: str) -> bool:
