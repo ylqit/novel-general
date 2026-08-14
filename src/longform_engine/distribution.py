@@ -127,13 +127,14 @@ def skill_source(tool: str) -> Path:
 
 def tree_hash(root: Path) -> str:
     digest = sha256()
-    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+    paths = (candidate for candidate in root.rglob("*") if candidate.is_file())
+    for path in sorted(paths, key=lambda item: item.relative_to(root).as_posix().casefold()):
         if path.name == METADATA_NAME:
             continue
         relative = path.relative_to(root).as_posix()
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        digest.update(resource_integrity_bytes(path))
         digest.update(b"\0")
     return digest.hexdigest()
 

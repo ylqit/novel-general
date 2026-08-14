@@ -1,3 +1,4 @@
+from hashlib import sha256
 import json
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from longform_engine.distribution import (
     doctor_payload,
     install_skills,
     skill_status_payload,
+    tree_hash,
     uninstall_skills,
     update_skills,
 )
@@ -47,6 +49,18 @@ def test_version_and_bundled_resource_manifest_are_aligned(tmp_path):
 
     assert resource_integrity_bytes(unix_text) == resource_integrity_bytes(windows_text)
     assert resource_integrity_bytes(binary) == b"a\r\nb\r"
+
+    tree = tmp_path / "skill"
+    (tree / "references").mkdir(parents=True)
+    (tree / "SKILL.md").write_bytes(b"role\r\n")
+    (tree / "references" / "contract.md").write_bytes(b"contract\n")
+    expected = sha256()
+    for relative in ("references/contract.md", "SKILL.md"):
+        expected.update(relative.encode("utf-8"))
+        expected.update(b"\0")
+        expected.update(resource_integrity_bytes(tree / relative))
+        expected.update(b"\0")
+    assert tree_hash(tree) == expected.hexdigest()
 
 
 def test_skill_lifecycle_is_owned_hashed_and_atomic(monkeypatch, tmp_path):

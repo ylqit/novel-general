@@ -76,7 +76,7 @@ class ApplyTransaction:
         self.report_file = unique_report_path(self.report_dir / f"{self.base_name}.json")
         self.rollback_file = self.report_file.with_name(f"{self.report_file.stem}.rollback.json")
         snapshot_id = sha256(self.report_file.stem.encode("utf-8")).hexdigest()[:12]
-        self.snapshot_dir = self.report_dir / "s" / snapshot_id
+        self.snapshot_dir = self.root / "70_runtime" / "tx" / snapshot_id
         self._snapshots: list[dict[str, Any]] = []
         self._sqlite_backups: list[dict[str, Any]] = []
         self._filesystem_paths, self._sqlite_paths = partition_transaction_paths(self.root, self.touched_paths)
@@ -515,7 +515,7 @@ def resolve_project_transaction_path(root: Path, path: str | Path) -> Path:
 
 def snapshot_transaction_path(root: Path, snapshot_dir: Path, path: Path) -> dict[str, Any]:
     relative = project_relative_path(root, path)
-    object_name = f"{sha256(relative.encode('utf-8')).hexdigest()[:20]}_{path.name}"
+    object_name = sha256(relative.encode("utf-8")).hexdigest()[:20]
     snapshot = snapshot_dir / "objects" / object_name
     item = {
         "path": relative,
