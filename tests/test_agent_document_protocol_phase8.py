@@ -27,7 +27,7 @@ from tests.project_fixtures import (
 AUTHORIZATION = {
     "schema": "agent_data_pipeline_authorization_v1",
     "authorized": True,
-    "engine_version": "0.4.0.dev0",
+    "engine_version": "0.4.0",
     "protocol_surface_sha256": "f" * 64,
     "phase6_evidence_sha256": "e" * 64,
 }

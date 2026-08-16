@@ -85,7 +85,7 @@ The large unused card, gate, and quality-contract material is not duplicated int
 
 Verified command results:
 
-- Complete pytest: `375 passed`.
+- Complete v0.4.0 pytest: `435 passed in 590.55s`.
 - Skill reference synchronization: passed.
 - Resource manifest check: passed.
 - Skill validation: passed.

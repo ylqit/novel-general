@@ -119,7 +119,7 @@ def test_phase6_current_readiness_json_is_reproducible_and_complete():
     assert first["blocking_reasons"] == []
     assert first["provenance"]["git_commit"]
     assert len(first["provenance"]["dirty_tree_sha256"]) == 64
-    assert first["provenance"]["engine_version"] == "0.4.0.dev0"
+    assert first["provenance"]["engine_version"] == "0.4.0"
     assert len(first["provenance"]["role_resource_sha256"]) == 64
     assert len(first["provenance"]["protocol_surface_sha256"]) == 64
     assert first["test_evidence"]["commands"][0]["id"] == "full_pytest"

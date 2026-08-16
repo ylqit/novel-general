@@ -2,8 +2,8 @@
   "assets": [
     {
       "path": "config/agent_data_pipeline_authorization.json",
-      "sha256": "41ad9b8bc4e70d0b9e0adb56011f16c3905b30dd252256ad621c131bd6f05e54",
-      "size": 319
+      "sha256": "05474deccb01f4484d1b6796cd2e20b125d03e8cc470f291527d2f432c2086a6",
+      "size": 314
     },
     {
       "path": "config/agent_roles/prompts/adaptation_analyst.md",
@@ -222,8 +222,8 @@
     },
     {
       "path": "config/release-channel.json",
-      "sha256": "df65985760868d788a7de3df7d6dba79cfc9e41ff0dcf2fb449be0dd63fbd4f5",
-      "size": 219
+      "sha256": "747f4396a30a8a895bd8939db46ef3d72199e708754c32f48eeb0bb26300fd6a",
+      "size": 244
     },
     {
       "path": "config/story_facets/narrative_forms.yaml",
@@ -332,8 +332,8 @@
     },
     {
       "path": "pyproject.toml",
-      "sha256": "18aec61aa93df3be8cd41ddbc087319638757af74b5c9594af28747199ed6fdb",
-      "size": 2070
+      "sha256": "4c68eca1e9bbcb8aa714facd9d6ee828f182f587e108e21e9e0c1b3e97d05f7a",
+      "size": 2065
     },
     {
       "path": "shared/artifact_reporting.md",
@@ -366,7 +366,7 @@
       "size": 4070
     }
   ],
-  "engine_version": "0.4.0.dev0",
+  "engine_version": "0.4.0",
   "hash_policy": "text-lf-v1",
   "schema": "longform_resource_manifest_v1"
 }

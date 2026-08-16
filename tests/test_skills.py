@@ -71,7 +71,7 @@ def test_readme_is_public_pipx_skill_package_homepage():
     for term in (
         "longform-novel-engine = Python engine + Codex skill + Claude Code skill",
         "https://github.com/ylqit/novel-general",
-        "git+https://github.com/ylqit/novel-general.git@v0.3.2",
+        "git+https://github.com/ylqit/novel-general.git@v0.4.0",
         "longform-novel-engine[semantic]",
         "pipx",
         "PIPX_BIN_DIR",

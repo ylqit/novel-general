@@ -1,9 +1,10 @@
 {
   "schema": "release_channel_v1",
-  "development_version": "0.4.0.dev0",
-  "public_stable_version": "0.3.2",
-  "status": "development",
-  "release_blockers": [
+  "development_version": "0.4.0",
+  "public_stable_version": "0.4.0",
+  "status": "stable",
+  "release_blockers": [],
+  "deferred_quality_evidence": [
     "two_mixed_profile_five_chapter_blind_reviews"
   ]
 }

@@ -1,17 +1,17 @@
 {
   "schema": "agent_data_pipeline_phase6_evidence_v1",
-  "engine_version": "0.4.0.dev0",
-  "git_commit_at_test": "25c8718e1aa973c7a5a2c6d7fbae5dda2bf411b6",
-  "dirty_tree_sha256_at_test": "16452266e6cec0844270330980778c3e6e603aa437d25730c58565bf319f16e3",
-  "protocol_surface_sha256": "910852f2897fb20c3a5debc1ae4bf3709983448ba922bc60a62b65d4131e1b97",
+  "engine_version": "0.4.0",
+  "git_commit_at_test": "5bd185c7abea71b573dc265fadacb3b6cad968c1",
+  "dirty_tree_sha256_at_test": "d03d02ad6c95bd2df3edefd39cd433c27ccb7869c6a442ce61ff0e2c0c07ae95",
+  "protocol_surface_sha256": "36da0cdc5b8411b314b915b3abe56693a37bcda68719a8d51d37eec998f60db8",
   "role_resource_sha256": "90054b5972cb679a378a05678b8a73c09a2f4a6a486462444903a00e132d4da0",
   "skills": {
     "codex": {
-      "version": "0.4.0.dev0",
+      "version": "0.4.0",
       "sha256": "94784b55da6264ff2bd26edfca7180e3732d6b9f0506e2192705208a04d1673a"
     },
     "claude_code": {
-      "version": "0.4.0.dev0",
+      "version": "0.4.0",
       "sha256": "d908d8a575977dffe7bd9d27b3591a7854d266fe4305ce375c647eb85ef2f681"
     }
   },
@@ -21,7 +21,7 @@
       "command": "python -m pytest -q",
       "status": "pass",
       "exit_code": 0,
-      "summary": "435 passed in 740.04s"
+      "summary": "435 passed in 590.55s"
     },
     {
       "id": "skill_reference_sync",
