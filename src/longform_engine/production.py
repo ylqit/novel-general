@@ -13,8 +13,22 @@ from longform_engine.agent_pipeline import (
     compile_production_agent_package,
     production_package_payload,
     require_agent_first_production_pipeline,
+    validate_production_agent_result,
 )
-from longform_engine.agent_tasks import HARD_BOUNDARIES, list_manifests, load_manifest, status_summary, validate_manifest_strict
+from longform_engine.agent_protocols import HARD_BOUNDARIES, output_protocol_for_task
+from longform_engine.agent_tasks import (
+    list_manifests,
+    load_manifest,
+    manifest_chapter_number,
+    manifest_commands,
+    manifest_context,
+    manifest_input_paths,
+    manifest_output,
+    manifest_policy,
+    manifest_role,
+    status_summary,
+    validate_manifest_strict,
+)
 from longform_engine.config import ConfigDocument
 from longform_engine.completion import fast_completion_marker
 from longform_engine.creative import expand_check, humanize_check, humanize_semantic_validate
@@ -32,7 +46,6 @@ from longform_engine.gates import (
     semantic_pacing_validate,
     semantic_review_validate,
 )
-from longform_engine.graph import semantic_graph_validate
 from longform_engine.intelligence import (
     assess_chapter_direction,
     assess_project_readiness,
@@ -40,7 +53,6 @@ from longform_engine.intelligence import (
     validate_intelligence_candidate,
 )
 from longform_engine.lengths import compile_length_forecast
-from longform_engine.memory import character_validate, semantic_validate
 from longform_engine.orchestration import continue_write, open_book, submit_agent_draft
 from longform_engine.quality import (
     reader_payoff_review_status,
@@ -48,32 +60,31 @@ from longform_engine.quality import (
     reader_payoff_task_is_current,
     reader_payoff_validate,
 )
+from longform_engine.roles import load_role_registry, session_directive
 from longform_engine.semantic import semantic_task as chapter_semantic_task
 from longform_engine.semantic import semantic_validate as chapter_semantic_validate
 from longform_engine.storage import resolve_project_root
 
 
 TASK_WAITING_FOR = {
-    "book_ideation": "human_selected_creative_decision_json",
+    "book_ideation": "human_selected_creative_decision_markdown",
     "fanfiction_canon": "fanfiction_source_canon_json",
-    "fanfiction_design": "fanfiction_design_json",
-    "book_design": "book_design_json",
-    "outline_design": "outline_design_json",
-    "outline_extension": "outline_extension_json",
-    "chapter_direction": "human_selected_chapter_direction_json",
-    "outline_revision": "outline_revision_json",
+    "fanfiction_design": "fanfiction_design_markdown",
+    "book_design": "book_design_markdown",
+    "outline_design": "outline_design_markdown",
+    "outline_extension": "outline_extension_markdown",
+    "chapter_direction": "human_selected_chapter_direction_markdown",
+    "outline_revision": "outline_revision_markdown",
     "research_synthesis": "research_synthesis_json",
-    "style_analysis": "style_analysis_json",
-    "adaptation_analysis": "adaptation_analysis_json",
+    "style_analysis": "style_analysis_markdown",
+    "adaptation_analysis": "adaptation_analysis_markdown",
+    "design_semantic_compile": "canonical_delta_json",
     "chapter_write": "agent_draft",
     "repair": "repair_candidate",
     "humanize": "humanized_candidate",
     "humanize_semantic_review": "humanizer_semantic_review_json",
     "reader_payoff_review": "reader_payoff_review_json",
     "content_expand": "expanded_candidate",
-    "graph_extract": "semantic_graph_json",
-    "memory_extract": "semantic_memory_json",
-    "character_memory": "character_memory_json",
     "editorial_review": "editorial_role_json",
     "pacing_review": "semantic_pacing_json",
     "semantic_review": "semantic_review_json",
@@ -91,6 +102,7 @@ TASK_PRIORITY = {
     "research_synthesis": 4,
     "style_analysis": 5,
     "adaptation_analysis": 6,
+    "design_semantic_compile": 7,
     "chapter_write": 10,
     "repair": 20,
     "humanize": 21,
@@ -99,9 +111,6 @@ TASK_PRIORITY = {
     "semantic_review": 29,
     "pacing_review": 30,
     "reader_payoff_review": 31,
-    "graph_extract": 32,
-    "memory_extract": 33,
-    "character_memory": 34,
     "editorial_review": 40,
 }
 
@@ -110,100 +119,11 @@ STATUS_PRIORITY = {
     "awaiting_agent": 2,
     "submitted": 3,
     "validated": 4,
+    "approved": 5,
 }
 
 MANUSCRIPT_DIR = "40_manuscript"
 FINAL_LANE = "fin" + "al"
-
-TASK_WORK_SCOPES = {
-    "book_ideation": "Resolve exactly one human-approved project creative decision per round.",
-    "fanfiction_canon": "Extract evidence-backed source canon as a candidate without storing source prose.",
-    "fanfiction_design": "Design a canon-aware fanfiction contract and original mainline as a candidate only.",
-    "book_design": "Design project-level book foundations as a candidate only.",
-    "outline_design": "Design the book/volume/chapter outline as a candidate only.",
-    "outline_extension": "Extend only the next human-approved rolling outline window.",
-    "chapter_direction": "Offer causally distinct directions for only the declared chapter.",
-    "outline_revision": "Revise only the declared chapter range and report stale impact.",
-    "research_synthesis": "Synthesize only cited declared research inputs.",
-    "style_analysis": "Extract a semantic style profile from declared samples.",
-    "adaptation_analysis": "Extract reusable structure and craft methods without copying source prose.",
-    "chapter_write": "Write the chapter draft only.",
-    "repair": "Write one repair candidate only.",
-    "humanize": "Write one humanized candidate only.",
-    "humanize_semantic_review": "Review one Humanizer source/candidate pair for semantic preservation only.",
-    "reader_payoff_review": "Verify the chapter's observed reader gain, cost, promise progress, and craft shape.",
-    "content_expand": "Write one expanded candidate only.",
-    "graph_extract": "Extract semantic graph updates as JSON only.",
-    "memory_extract": "Extract semantic memory updates as JSON only.",
-    "character_memory": "Extract character memory cards as JSON only.",
-    "chapter_semantic": "Extract one evidence-bound chapter semantic bundle for every canonical fact lane.",
-    "editorial_review": "Write one structured editorial role review only.",
-    "pacing_review": "Write one semantic pacing review JSON only.",
-    "semantic_review": "Review high-risk chapter semantics with exact prose spans and canonical references.",
-}
-
-TASK_OUTPUT_GUIDANCE = {
-    "book_ideation": "Write JSON matching book_ideation_candidate_v1 with one explicit human selection.",
-    "fanfiction_canon": "Write JSON matching fanfiction_source_canon_v1 with source hashes and evidence spans.",
-    "fanfiction_design": "Write JSON matching fanfiction_design_candidate_v1, including a nested book_design_candidate_v2.",
-    "book_design": "Write JSON matching book_design_candidate_v2 at the declared intelligence candidate path.",
-    "character_expression_design": (
-        "Write JSON matching character_expression_profile_v1 with one complete contract per declared character."
-    ),
-    "character_expression_review": (
-        "Write JSON matching character_expression_review_v1 with hash-bound evidence for every reviewed chapter and character."
-    ),
-    "outline_design": "Write JSON matching outline_design_candidate_v2 with macro arcs and one rolling chapter window.",
-    "outline_extension": "Write JSON matching outline_extension_candidate_v1 for only the declared range.",
-    "chapter_direction": "Write JSON matching chapter_direction_candidate_v2 with two or three directions and one human selection.",
-    "outline_revision": "Write JSON matching outline_revision_candidate_v1, including impact and stale markers.",
-    "research_synthesis": "Write JSON matching research_synthesis_v1 with evidence and declared source_path citations.",
-    "style_analysis": "Write JSON matching semantic_style_profile_v1 with source hashes.",
-    "adaptation_analysis": "Write JSON matching adaptation_analysis_v1; do not include excerpts or copied source body.",
-    "chapter_write": "Write Markdown chapter prose at the allowed draft path; include only title and manuscript body.",
-    "repair": "Write a complete replacement candidate at the allowed repair path; do not patch canonical draft/final files.",
-    "humanize": "Write a full humanized candidate at the allowed repair candidate path.",
-    "humanize_semantic_review": (
-        "Write JSON matching humanizer_semantic_review_v1 with all seven preservation dimensions, "
-        "chapter contract, voice checks, and exact source/candidate spans."
-    ),
-    "chapter_semantic": (
-        "Write chapter_semantic_bundle_v1 JSON only. Every scene and delta must contain exact start/end/excerpt "
-        "evidence, stable entity IDs, and complete changed-or-unchanged coverage."
-    ),
-    "reader_payoff_review": (
-        "Write JSON matching reader_payoff_review_v1 with observed gain/cost, promise progress, "
-        "evidence spans, fake-payoff flags, and craft observation."
-    ),
-    "content_expand": "Write a full expanded candidate at the allowed repair candidate path.",
-    "graph_extract": "Write JSON matching semantic_graph_update_v1 at the allowed graph update path.",
-    "memory_extract": "Write JSON matching semantic_memory_v1 at the allowed memory task path.",
-    "character_memory": "Write JSON matching character_memory_cards_v1 at the allowed memory task path.",
-    "editorial_review": (
-        "Write JSON matching editorial_role_review_v2, including the isolated context digest, "
-        "reviewer instance, Agent product/version, review round, independence mode, and confidence."
-    ),
-    "pacing_review": "Write JSON matching semantic_pacing_result_v2 at the gate artifact path.",
-    "semantic_review": "Write JSON matching semantic_review_result_v1 at the declared gate artifact path.",
-}
-
-CONTEXT_BUDGET_RULES = (
-    "Read only the manifest input_files and the rendered work order unless the user explicitly supplies more context.",
-    "Do not scan the whole project, final manuscript corpus, runtime database, model cache, or unrelated workbench lanes.",
-    "Treat draft, repair candidate, research inbox, and validation output as non-canonical unless this work order names them.",
-    "When evidence is needed, quote or cite only from the declared input files.",
-)
-
-WORK_ORDER_FORBIDDEN_PATHS = (
-    "10_bible/",
-    "20_outline/",
-    "10_bible/research_canon.jsonl",
-    "40_manuscript/" + FINAL_LANE + "/",
-    "60_" + "rag/",
-    "30_state/" + "story_graph.json",
-    "30_state/" + "tcs/",
-    "70_runtime/" + "db/",
-)
 
 NEED_HUMAN_REASON_LABELS = {
     "unresolved_P0": "Unresolved P0 editorial issue requires human decision.",
@@ -346,44 +266,54 @@ def agent_task_brief(
         raise ValueError("Agent task contract is invalid: " + "; ".join(validation.errors))
     package = compile_production_agent_package(root, manifest, host=host)
     integrated = production_package_payload(package)
+    policy = manifest_policy(manifest)
+    output = manifest_output(manifest)
     payload = {
         "schema_version": 1,
-        "renderer": "agent_task_brief_v2",
+        "renderer": "agent_task_brief_v4",
         "read_only": True,
         "manifest_file": str(entry.get("manifest_file") or manifest_file_from_task(root, task)),
         "task_id": package.task_id,
         "task_type": package.task_type,
-        "chapter_number": int(manifest.get("chapter_number") or 0),
         "scope": manifest.get("scope") or {},
-        "canonical_targets": as_string_list(manifest.get("canonical_targets")),
-        "requires_human_apply": bool(manifest.get("requires_human_apply")),
-        "status": str(manifest.get("status") or ""),
-        "input_files": [item.path for item in package.context.sources],
-        "context_policy": dict(package.context.effective_manifest.get("context_policy") or {}),
-        "context_hash": package.context.context_hash,
-        "allowed_output_paths": as_string_list(manifest.get("allowed_output_paths")),
-        "output_schema": str(manifest.get("output_schema") or ""),
-        "protocol_output_schema": package.output_contract.output_schema,
-        "output_mode": package.output_contract.output_mode,
-        "protocol_validate_command": (
-            f"longform-engine agent-task result-validate project.yaml {package.task_id} "
-            f"--file {package.output_contract.companion_output_path or package.output_contract.primary_output_path}"
-            + (
-                f" --document {package.output_contract.primary_output_path}"
-                if package.output_contract.companion_output_path
-                else ""
-            )
+        "status": str(entry.get("status") or "awaiting_agent"),
+        "io": {
+            "inputs": [asdict(item) for item in package.context.sources],
+            "output": dict(output),
+            "context_hash": package.context.context_hash,
+        },
+        "policy": {
+            "boundary_profile": policy.get("boundary_profile") or {},
+            "canonical_targets": list(policy.get("canonical_targets") or []),
+            "requires_human_apply": bool(policy.get("requires_human_apply")),
+            "context": dict(manifest_context(package.context.effective_manifest)),
+        },
+        "budget": dict(package.prompt.payload.get("budget") or {}),
+        "executable": bool(package.prompt.payload.get("executable", True)),
+        "blocked_by": (
+            "prompt_budget_exceeded"
+            if not bool(package.prompt.payload.get("executable", True))
+            else ""
         ),
-        "validate_command": ensure_longform_prefix(package.output_contract.validate_command),
-        "apply_command": ensure_longform_prefix(package.output_contract.apply_or_finalize_command),
-        "failure_next_command": ensure_longform_prefix(package.output_contract.failure_next_command),
-        "hard_boundaries": as_string_list(manifest.get("hard_boundaries")) or list(HARD_BOUNDARIES),
-        "role_id": package.role_id,
-        "role_version": package.role_version,
-        "role_prompt_hash": package.role_prompt_hash,
-        "independence_mode": package.independence_mode,
-        "project_overlay_hash": package.project_overlay_hash,
-        "prompt_hash": package.prompt_hash,
+        "session": dict(package.session),
+        "commands": {
+            "result_validate": (
+                f"longform-engine agent-task result-validate project.yaml {package.task_id} "
+                f"--file {package.output_contract.output_path}"
+            ),
+            "validate": ensure_longform_prefix(package.output_contract.validate_command),
+            "apply": ensure_longform_prefix(package.output_contract.apply_command),
+            "failure": ensure_longform_prefix(package.output_contract.failure_command),
+        },
+        "role": {
+            "id": package.role_id,
+            "version": package.role_version,
+            "contract_hash": package.role_contract_hash,
+            "independence_mode": package.independence_mode,
+            "session_policy": str(package.session.get("policy") or ""),
+            "overlay_hash": package.project_overlay_hash,
+            "compiled_prompt_hash": package.prompt_hash,
+        },
         "host": package.host_work_order.host,
         "manifest_validation": {
             "strict": True,
@@ -395,6 +325,11 @@ def agent_task_brief(
         "pipeline": integrated,
         "work_order_markdown": package.host_work_order.markdown,
     }
+    payload["next_command"] = (
+        payload["commands"]["failure"]
+        if not payload["executable"]
+        else payload["commands"]["result_validate"]
+    )
     return payload
 
 
@@ -544,14 +479,12 @@ def loop_decision(root: Path, action: dict[str, Any], *, no_apply: bool) -> dict
         output_path = first_existing_allowed_output(root, action)
         if output_path is None:
             return {"kind": "pause", "reason": "awaiting_agent_output"}
-        if task_type in LOOP_OUTPUT_VALIDATORS:
-            return {
-                "kind": "execute",
-                "action": LOOP_OUTPUT_VALIDATORS[task_type],
-                "command": action.get("validate_command") or action.get("next_command"),
-                "output_path": output_path,
-            }
-        return {"kind": "pause", "reason": "unsupported_agent_task_validation"}
+        return {
+            "kind": "execute",
+            "action": "agent_result_validate",
+            "command": action.get("protocol_validate_command") or action.get("next_command"),
+            "output_path": output_path,
+        }
     if status == "agent_task_submitted":
         output_path = first_existing_allowed_output(root, action)
         if output_path is not None and task_type in LOOP_OUTPUT_VALIDATORS:
@@ -593,9 +526,6 @@ LOOP_OUTPUT_VALIDATORS = {
     "humanize_semantic_review": "humanize_semantic_validate",
     "reader_payoff_review": "reader_payoff_validate",
     "content_expand": "expand_check",
-    "graph_extract": "graph_semantic_validate",
-    "memory_extract": "memory_semantic_validate",
-    "character_memory": "character_memory_validate",
     "chapter_semantic": "chapter_semantic_validate",
     "editorial_review": "editorial_submit_review",
     "pacing_review": "pacing_semantic_validate",
@@ -625,6 +555,16 @@ def execute_loop_decision(
     output_path = decision.get("output_path")
     if command == "open_book":
         return serialize_loop_result(root, open_book(config))
+    if command == "agent_result_validate":
+        manifest = load_manifest(root, str(action.get("task_id") or ""))
+        return serialize_loop_result(
+            root,
+            validate_production_agent_result(
+                root,
+                manifest,
+                result_file=require_loop_output_path(output_path),
+            ),
+        )
     if command == "intelligence_task":
         return serialize_loop_result(
             root,
@@ -686,12 +626,6 @@ def execute_loop_decision(
         )
     if command == "expand_check":
         return serialize_loop_result(root, expand_check(config, chapter_number=chapter_number, file_path=require_loop_output_path(output_path)))
-    if command == "graph_semantic_validate":
-        return serialize_loop_result(root, semantic_graph_validate(config, chapter_number=chapter_number, file_path=require_loop_output_path(output_path)))
-    if command == "memory_semantic_validate":
-        return serialize_loop_result(root, semantic_validate(config, chapter_number=chapter_number, file_path=require_loop_output_path(output_path)))
-    if command == "character_memory_validate":
-        return serialize_loop_result(root, character_validate(config, chapter_number=chapter_number, file_path=require_loop_output_path(output_path)))
     if command == "chapter_semantic_validate":
         return serialize_loop_result(
             root,
@@ -847,9 +781,16 @@ def chapter_board_row(root: Path, chapter_number: int) -> dict[str, Any]:
             ),
         ),
         "expand_status": task_lane_status(root, chapter_number, tasks, ("content_expand",), ("50_workbench/repair_candidates/ch{chapter}.expanded_candidate.md",)),
-        "graph_status": task_lane_status(root, chapter_number, tasks, ("graph_extract",), ("50_workbench/graph_updates/ch{chapter}*.json",)),
-        "memory_status": task_lane_status(root, chapter_number, tasks, ("memory_extract",), ("50_workbench/memory_tasks/ch{chapter}.semantic*.json",)),
-        "character_memory_status": task_lane_status(root, chapter_number, tasks, ("character_memory",), ("50_workbench/memory_tasks/ch{chapter}.character*.json",)),
+        "chapter_semantic_status": task_lane_status(
+            root,
+            chapter_number,
+            tasks,
+            ("chapter_semantic",),
+            (
+                "50_workbench/semantic_tasks/ch{chapter}.semantic_bundle.json",
+                "30_state/semantic_ledger/ch{chapter}.json",
+            ),
+        ),
         "semantic_pacing_status": task_lane_status(root, chapter_number, tasks, ("pacing_review",), ("50_workbench/gate_artifacts/ch{chapter}/semantic_pacing_result.json", "50_workbench/gate_artifacts/ch{chapter}/semantic_pacing_validation.json")),
         "editorial": editorial_board_status(root, chapter_number, tasks),
         "agent_tasks": agent_task_board_summary(tasks),
@@ -861,7 +802,7 @@ def chapter_board_row(root: Path, chapter_number: int) -> dict[str, Any]:
 def manifest_entry(root: Path, task: str | Path, manifest: dict[str, Any]) -> dict[str, Any]:
     task_text = str(task)
     task_id = str(manifest.get("task_id") or "")
-    for entry in list_manifests(root, chapter_number=int(manifest.get("chapter_number") or 0) or None):
+    for entry in list_manifests(root, chapter_number=manifest_chapter_number(manifest) or None):
         if entry.get("task_id") == task_text or entry.get("task_id") == task_id:
             return entry
     return {}
@@ -899,7 +840,7 @@ def max_known_chapter(root: Path) -> int:
         if chapter > 0:
             chapters.add(chapter)
     for task in list_manifests(root):
-        chapter = int(task.get("chapter_number") or 0)
+        chapter = manifest_chapter_number(task)
         if chapter > 0:
             chapters.add(chapter)
     for path in (root / "70_runtime" / "transactions").glob("*.json"):
@@ -1110,8 +1051,8 @@ def editorial_role_statuses(
                 "task_id": str(task.get("task_id") or manifest.get("task_id") or ""),
                 "task_status": task_status,
                 "work_order_file": first_editorial_work_order_file(manifest),
-                "result_file": first_string(manifest.get("allowed_output_paths") or task.get("allowed_output_paths")),
-                "validate_command": ensure_longform_prefix(str(manifest.get("validate_command") or "")),
+                "result_file": str(manifest_output(manifest).get("path") or ""),
+                "validate_command": ensure_longform_prefix(str(manifest_commands(manifest).get("validate") or "")),
                 "duplicate_result": role_id in duplicate_roles,
                 "invalid_result": role_id in invalid_roles or task_status == "invalid",
                 "accepted": role_id in accepted,
@@ -1146,7 +1087,8 @@ def editorial_next_work_order(
     context = read_json(root / context_file) if context_file else {}
     if not isinstance(context, dict):
         context = {}
-    result_file = first_string(manifest.get("allowed_output_paths"))
+    output = manifest_output(manifest)
+    commands = manifest_commands(manifest)
     payload = {
         "role_id": role_id,
         "role_display_name": role.get("display_name", role_id),
@@ -1160,16 +1102,16 @@ def editorial_next_work_order(
             "task_id": str(manifest.get("task_id") or task.get("task_id") or ""),
             "work_order_file": work_order_file,
             "context_file": context_file,
-            "result_file": result_file,
-            "output_schema": str(manifest.get("output_schema") or ""),
+            "result_file": str(output.get("path") or ""),
+            "output_protocol": str(output.get("protocol") or ""),
             "reviewer_instance_id": str(context.get("reviewer_instance_id") or ""),
             "context_digest_hash": str(context.get("context_digest_hash") or ""),
             "independence_mode": str(context.get("independence_mode") or ""),
             "review_round": int(context.get("review_round") or 0),
-            "validate_command": ensure_longform_prefix(str(manifest.get("validate_command") or "")),
-            "apply_command": ensure_longform_prefix(str(manifest.get("apply_command") or "")),
-            "failure_next_command": ensure_longform_prefix(str(manifest.get("failure_next_command") or "")),
-            "hard_boundaries": as_string_list(manifest.get("hard_boundaries")) or list(HARD_BOUNDARIES),
+            "validate_command": ensure_longform_prefix(str(commands.get("validate") or "")),
+            "apply_command": ensure_longform_prefix(str(commands.get("apply") or "")),
+            "failure_next_command": ensure_longform_prefix(str(commands.get("failure") or "")),
+            "hard_boundaries": list(HARD_BOUNDARIES),
             "completion_report_template": [
                 "Role result written:",
                 "Validation command run:",
@@ -1184,14 +1126,14 @@ def editorial_next_work_order(
 
 
 def first_editorial_work_order_file(manifest: dict[str, Any]) -> str:
-    for item in as_string_list(manifest.get("input_files")):
+    for item in manifest_input_paths(manifest):
         if "50_workbench/editorial_reviews/agent_tasks/" in item and item.endswith(".md"):
             return item
     return ""
 
 
 def first_editorial_context_file(manifest: dict[str, Any]) -> str:
-    for item in as_string_list(manifest.get("input_files")):
+    for item in manifest_input_paths(manifest):
         if "50_workbench/editorial_reviews/agent_tasks/" in item and item.endswith(".context.json"):
             return item
     return ""
@@ -1213,15 +1155,16 @@ def readable_need_human_reasons(reasons: list[str]) -> list[dict[str, str]]:
 
 
 def role_from_editorial_task(task: dict[str, Any]) -> str:
-    if str(task.get("task_type") or "") == "editorial_review" and str(task.get("role_id") or "").strip():
-        return str(task["role_id"])
+    role_id = str(manifest_role(task).get("id") or "")
+    if str(task.get("task_type") or "") == "editorial_review" and role_id:
+        return role_id
     task_id = str(task.get("task_id") or "")
     match = re.match(r"editorial_review:([^:]+):ch\d{3}:v\d+", task_id)
     if match:
         return match.group(1)
-    outputs = task.get("allowed_output_paths") or []
-    if outputs:
-        name = Path(str(outputs[0])).name
+    output = str(manifest_output(task).get("path") or "")
+    if output:
+        name = Path(output).name
         match = re.match(r"ch\d{3}\.([^.]+)\.json", name)
         if match:
             return match.group(1)
@@ -1405,7 +1348,7 @@ def chapter_direction_action(config: ConfigDocument, root: Path) -> dict[str, An
     }
     if any(
         task.get("task_type") == "chapter_direction"
-        and int(task.get("chapter_number") or 0) == chapter_number
+        and manifest_chapter_number(task) == chapter_number
         and task.get("status") in active
         for task in list_manifests(root, chapter_number=chapter_number)
     ):
@@ -1507,7 +1450,14 @@ def agent_task_action(root: Path, task: dict[str, Any]) -> dict[str, Any]:
     validation = validate_manifest_strict(root, manifest, strict=True)
     status = str(task.get("status") or manifest.get("status") or "awaiting_agent")
     task_type = str(task.get("task_type") or manifest.get("task_type") or "agent_task")
-    chapter_number = int(task.get("chapter_number") or manifest.get("chapter_number") or 0)
+    chapter_number = manifest_chapter_number(manifest)
+    role = manifest_role(manifest)
+    output = manifest_output(manifest)
+    policy = manifest_policy(manifest)
+    commands = manifest_commands(manifest)
+    inputs = manifest_input_paths(manifest)
+    context = manifest_context(manifest)
+    session = session_for_manifest(manifest)
     if not validation.ok:
         action = base_action(
             status="agent_task_contract_invalid",
@@ -1516,19 +1466,20 @@ def agent_task_action(root: Path, task: dict[str, Any]) -> dict[str, Any]:
             waiting_for="cli_task_regeneration",
             task_id=str(manifest.get("task_id") or task.get("task_id") or ""),
             task_type=task_type,
-            role_id=str(manifest.get("role_id") or ""),
-            role_version=str(manifest.get("role_version") or ""),
-            role_prompt_hash=str(manifest.get("role_prompt_hash") or ""),
-            independence_mode=str(manifest.get("independence_mode") or ""),
-            project_overlay_hash=str(manifest.get("project_overlay_hash") or ""),
-            input_files=as_string_list(manifest.get("input_files")),
-            context_policy=dict(manifest.get("context_policy") or {}),
-            allowed_output_paths=as_string_list(manifest.get("allowed_output_paths")),
-            output_schema=str(manifest.get("output_schema") or ""),
-            validate_command=str(manifest.get("validate_command") or ""),
-            apply_command=str(manifest.get("apply_command") or ""),
-            failure_next_command=str(manifest.get("failure_next_command") or ""),
-            next_command=str(manifest.get("failure_next_command") or ""),
+            role_id=str(role.get("id") or ""),
+            role_version=str(role.get("version") or ""),
+            role_contract_hash=str(role.get("contract_hash") or ""),
+            independence_mode=str(role.get("independence_mode") or ""),
+            project_overlay_hash=str(role.get("overlay_hash") or ""),
+            session=session,
+            input_files=inputs,
+            context_policy=context,
+            allowed_output_paths=[str(output.get("path") or "")],
+            output_schema=str(output.get("protocol") or ""),
+            validate_command=str(commands.get("validate") or ""),
+            apply_command=str(commands.get("apply") or ""),
+            failure_next_command=str(commands.get("failure") or ""),
+            next_command=str(commands.get("failure") or ""),
             human_summary=(
                 f"ch{chapter_number:03d} {task_type} has an invalid Agent task contract and must be regenerated."
             ),
@@ -1562,22 +1513,23 @@ def agent_task_action(root: Path, task: dict[str, Any]) -> dict[str, Any]:
         waiting_for=waiting_for_task_status(task_type, status),
         task_id=str(manifest.get("task_id") or task.get("task_id") or ""),
         task_type=task_type,
-        role_id=str(manifest.get("role_id") or ""),
-        role_version=str(manifest.get("role_version") or ""),
-        role_prompt_hash=str(manifest.get("role_prompt_hash") or ""),
-        independence_mode=str(manifest.get("independence_mode") or ""),
-        project_overlay_hash=str(manifest.get("project_overlay_hash") or ""),
-        input_files=as_string_list(manifest.get("input_files")),
-        context_policy=dict(manifest.get("context_policy") or {}),
-        allowed_output_paths=as_string_list(manifest.get("allowed_output_paths")),
-        output_schema=str(manifest.get("output_schema") or ""),
-        validate_command=str(manifest.get("validate_command") or ""),
-        apply_command=str(manifest.get("apply_command") or ""),
-        failure_next_command=str(manifest.get("failure_next_command") or ""),
-        hard_boundaries=as_string_list(manifest.get("hard_boundaries")) or list(HARD_BOUNDARIES),
+        role_id=str(role.get("id") or ""),
+        role_version=str(role.get("version") or ""),
+        role_contract_hash=str(role.get("contract_hash") or ""),
+        independence_mode=str(role.get("independence_mode") or ""),
+        project_overlay_hash=str(role.get("overlay_hash") or ""),
+        session=session,
+        input_files=inputs,
+        context_policy=context,
+        allowed_output_paths=[str(output.get("path") or "")],
+        output_schema=str(output.get("protocol") or ""),
+        validate_command=str(commands.get("validate") or ""),
+        apply_command=str(commands.get("apply") or ""),
+        failure_next_command=str(commands.get("failure") or ""),
+        hard_boundaries=list(HARD_BOUNDARIES),
         scope=manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {},
-        canonical_targets=as_string_list(manifest.get("canonical_targets")),
-        requires_human_apply=bool(manifest.get("requires_human_apply")),
+        canonical_targets=as_string_list(policy.get("canonical_targets")),
+        requires_human_apply=bool(policy.get("requires_human_apply")),
         next_command=next_command,
         human_summary=agent_task_summary(chapter_number, task_type, status),
         sources=[str(task.get("manifest_file") or "")],
@@ -1600,7 +1552,7 @@ def chapter_workflow_action(config: ConfigDocument, root: Path) -> dict[str, Any
             for path in (root / "50_workbench" / "gate_artifacts").glob("ch*/gate_result.json")
         }
         | {
-            int(task.get("chapter_number") or 0)
+            manifest_chapter_number(task)
             for task in list_manifests(root)
             if str((task.get("scope") or {}).get("kind") or "") == "chapter"
         }
@@ -1665,7 +1617,7 @@ def chapter_workflow_action(config: ConfigDocument, root: Path) -> dict[str, Any
                 blocked_by="semantic_pacing_review_required",
                 waiting_for="cli",
                 task_type="pacing_review",
-                output_schema="semantic_pacing_result_v2",
+                output_schema=output_protocol_for_task("pacing_review"),
                 next_command=f"longform-engine pacing semantic-task project.yaml --chapter {chapter_number}",
                 failure_next_command=f"longform-engine pacing semantic-task project.yaml --chapter {chapter_number}",
                 human_summary=f"ch{chapter_number:03d} requires a current-draft semantic pacing review.",
@@ -1826,7 +1778,7 @@ def chapter_semantic_lifecycle_action(root: Path) -> dict[str, Any] | None:
                 blocked_by="semantic_ledger_missing",
                 waiting_for="cli",
                 task_type="chapter_semantic",
-                output_schema="chapter_semantic_bundle_v1",
+                output_schema=output_protocol_for_task("chapter_semantic"),
                 next_command=command,
                 failure_next_command=command,
                 human_summary=(
@@ -1881,7 +1833,7 @@ def reader_payoff_action(config: ConfigDocument, root: Path) -> dict[str, Any] |
             waiting_for="cli",
             task_type="reader_payoff_review",
             allowed_output_paths=[output] if output else [],
-            output_schema="reader_payoff_review_v1",
+            output_schema=output_protocol_for_task("reader_payoff_review"),
             validate_command=(
                 f"longform-engine quality payoff-validate project.yaml --chapter {chapter_number} "
                 f"--file {output}"
@@ -1999,7 +1951,7 @@ def first_gate_action(root: Path) -> dict[str, Any] | None:
                     gate=payload,
                 )
                 if not candidate_already_submitted:
-                    candidate_apply = str(candidate_manifest.get("apply_command") or "")
+                    candidate_apply = str(manifest_commands(candidate_manifest).get("apply") or "")
             finalize_command = (
                 f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
             )
@@ -2071,7 +2023,7 @@ def editorial_task_is_current(root: Path, chapter_number: int, task: dict[str, A
     manifest = load_manifest(root, str(task.get("task_id") or task.get("manifest_file") or ""))
     context_paths = [
         root / str(item)
-        for item in manifest.get("input_files") or []
+        for item in manifest_input_paths(manifest)
         if str(item).replace("\\", "/").startswith(
             f"50_workbench/editorial_reviews/agent_tasks/ch{chapter_number:03d}/"
         )
@@ -2142,7 +2094,7 @@ def first_writing_task_action(root: Path) -> dict[str, Any] | None:
             task_type="chapter_write",
             input_files=inputs,
             allowed_output_paths=[relative_path(root, draft_path)],
-            output_schema="markdown_chapter_only",
+            output_schema=output_protocol_for_task("chapter_write"),
             validate_command=ensure_longform_prefix(next_command),
             apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
             failure_next_command=f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only",
@@ -2165,9 +2117,10 @@ def base_action(
     task_type: str = "",
     role_id: str = "",
     role_version: str = "",
-    role_prompt_hash: str = "",
+    role_contract_hash: str = "",
     independence_mode: str = "",
     project_overlay_hash: str = "",
+    session: dict[str, Any] | None = None,
     input_files: list[str] | None = None,
     context_policy: dict[str, Any] | None = None,
     allowed_output_paths: list[str] | None = None,
@@ -2194,9 +2147,10 @@ def base_action(
         "task_type": task_type,
         "role_id": role_id,
         "role_version": role_version,
-        "role_prompt_hash": role_prompt_hash,
+        "role_contract_hash": role_contract_hash,
         "independence_mode": independence_mode,
         "project_overlay_hash": project_overlay_hash,
+        "session": session or {},
         "input_files": input_files or [],
         "context_policy": context_policy or {},
         "allowed_output_paths": allowed_output_paths or [],
@@ -2217,6 +2171,20 @@ def base_action(
     }
 
 
+def session_for_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    role_projection = manifest_role(manifest)
+    role = load_role_registry().resolve(
+        str(manifest.get("task_type") or ""),
+        declared_role_id=str(role_projection.get("id") or ""),
+    )
+    return session_directive(
+        role,
+        task_type=str(manifest.get("task_type") or ""),
+        scope=manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {},
+        task_id=str(manifest.get("task_id") or ""),
+    )
+
+
 def task_sort_key(task: dict[str, Any]) -> tuple[int, int, int, str, str]:
     status = str(task.get("status") or "")
     task_type = str(task.get("task_type") or "")
@@ -2224,7 +2192,7 @@ def task_sort_key(task: dict[str, Any]) -> tuple[int, int, int, str, str]:
     if status == "validated" and task_type == "chapter_write":
         task_priority = 999
     return (
-        int(task.get("chapter_number") or 0),
+        manifest_chapter_number(task),
         STATUS_PRIORITY.get(status, 99),
         task_priority,
         str(task.get("updated_at") or task.get("created_at") or ""),
@@ -2233,11 +2201,29 @@ def task_sort_key(task: dict[str, Any]) -> tuple[int, int, int, str, str]:
 
 
 def command_for_task_status(manifest: dict[str, Any], status: str) -> str:
+    commands = manifest_commands(manifest)
     if status == "invalid":
-        return str(manifest.get("failure_next_command") or "")
+        return str(commands.get("failure") or "")
     if status == "validated":
-        return str(manifest.get("apply_command") or "")
-    return str(manifest.get("validate_command") or "")
+        return str(commands.get("apply") or "")
+    if status == "approved" and str(manifest.get("task_type") or "") in {
+        "book_ideation",
+        "book_design",
+        "character_expression_design",
+        "outline_design",
+        "outline_extension",
+        "chapter_direction",
+        "outline_revision",
+        "style_analysis",
+        "adaptation_analysis",
+        "fanfiction_design",
+    }:
+        document = str(manifest_output(manifest).get("path") or "")
+        return (
+            "longform-engine intelligence compile-task project.yaml "
+            f"--task-type {manifest.get('task_type')} --document {document}"
+        )
+    return str(commands.get("validate") or "")
 
 
 def waiting_for_task_status(task_type: str, status: str) -> str:
@@ -2247,6 +2233,8 @@ def waiting_for_task_status(task_type: str, status: str) -> str:
         return "validation"
     if status == "validated":
         return "apply_command"
+    if status == "approved":
+        return "semantic_compilation"
     return TASK_WAITING_FOR.get(task_type, "agent_output")
 
 
@@ -2260,6 +2248,8 @@ def agent_task_summary(chapter_number: int, task_type: str, status: str) -> str:
         return f"{subject} has validated {task_type}; run the declared apply command."
     if status == "invalid":
         return f"{subject} has invalid {task_type}; regenerate or follow failure command."
+    if status == "approved":
+        return f"{subject} has approved {task_type} Markdown; create its semantic compilation task."
     return f"{subject} is blocked by {task_type}."
 
 

@@ -2,42 +2,56 @@ schema: story_facet_registry_v1
 kind: premise_devices
 profiles:
   transmigration:
+    prompt_adapter: >-
+      穿越冲突来自旧身份经验与新身体、语言、社会关系和生存规则之间的错位，而不只是主角知道剧情。用习惯失手、称谓误判、身体反馈、知识试验失败和对原身份关系的应对证明错位；推进要让先验知识解决有限问题，同时因干预和信息缺口逐步贬值。适应会形成新能力，也会制造暴露风险与身份债务。人物冷静或快速接受不等于缺少震动，只要其应对在行为和关系中可见；百科式全知且从不误判才属于失真。
     requirements: ["Prior knowledge, identity discontinuity, and adaptation costs must be bounded."]
     preferences: ["Let remembered knowledge be incomplete, actionable, and vulnerable to divergence."]
     risks: ["Wiki-memory protagonist", "Missing identity shock"]
     review_questions: ["What did prior knowledge fail to solve or make more dangerous?"]
     conflicts: []
   rebirth:
+    prompt_adapter: >-
+      重生冲突由旧人生记忆、当前人格变化和干预后的因果偏移共同形成，记得结果不等于掌握过程。用记忆核验、提前行动引起的他人变化、旧创伤触发和新代价证明优势边界；推进时每次成功干预都应降低部分未来确定性，并迫使人物重选是否重复旧路。准确记住未受影响的私人事实不算全知。只有世界已明显分歧后，主角仍无证据精确预报所有人的选择，才应判为完美记忆失真。
     requirements: ["Memory advantage and changed causality must be tracked separately."]
     preferences: ["Make intervention reduce future certainty."]
     risks: ["Perfect future recall"]
     review_questions: ["Which prior fact became unreliable after intervention?"]
     conflicts: []
   system:
+    prompt_adapter: >-
+      系统冲突由权限边界、信息盲区、任务代价和角色自身价值发生摩擦，不是面板不断发放答案。用结算条件、失败反馈、权限拒绝、奖励副作用和角色违抗任务证明规则；推进要让系统提供机会或压力，却把价值选择留给人物。临时新增权限必须有来源并改变后续风险。界面清晰提示已建立规则不算替代叙事，只有它直接裁决真相、动机和最优选择，使人物无需判断时才构成失真。
     requirements: ["System permissions, costs, information limits, and failure states must be explicit."]
     preferences: ["Keep choices meaningful outside interface rewards."]
     risks: ["Mission panel replacing character motivation"]
     review_questions: ["Would the character still have a reason to act without the reward?"]
     conflicts: ["premise_devices:no_system"]
   no_system:
+    prompt_adapter: >-
+      无系统前提把冲突交给人物经历、世界规则、组织资源与关系后果，任何优势都要有可追溯来源。场景证据应来自学习、调查、交易、身体实践和他人反馈，而非突然出现的界面裁决；推进依赖人物自己设定目标、评估风险并承担错误。正文中的菜单、游戏 HUD 或作者用于整理的状态表不自动等于系统。只有一个未声明的外部权威能够发布任务、判定真相或凭空发奖，才违反该前提。
     requirements: ["Capability and motivation must arise from character, setting, and relationships."]
     preferences: []
     risks: []
     review_questions: ["Did an undeclared interface-like authority enter the story?"]
     conflicts: ["premise_devices:system"]
   time_loop:
+    prompt_adapter: >-
+      时间循环的冲突由固定重置范围、信息保留差、尝试次数和不可逆心理或外部代价组成。用记忆核验、重复动作的小偏差、角色策略变化和重置后仍残留的痕迹证明规则；推进要求每轮改动一个假设，并让失败重组对人物与关系的理解。重复过程可以压缩，关键差异必须落场。相似场景并非机械复演，只有策略、信息和意义都未改变，或失败完全不留成本时才失真。
     requirements: ["Reset scope, retained information, variation, and psychological cost must be tracked."]
     preferences: ["Use repetition to alter meaning rather than replay scenes."]
     risks: ["Cost-free retry"]
     review_questions: ["What irreversible consequence survived the reset?"]
     conflicts: []
   infinite_flow:
+    prompt_adapter: >-
+      无限流冲突由副本进入条件、局部规则、失败后果、离开方法和跨副本保留债务共同构成。用初次试探、规则惩罚、队伍分工、通关取舍和返回后的资源或关系变化证明边界；推进要让每个副本既完成局部问题，又改变长期主线。类型与氛围可以大幅切换，不应因此误判割裂。只有副本之间不保留任何人物变化、风险或信息，且规则只在结尾临时公布时，才退化为 disconnected anthology。
     requirements: ["Instance rules, transfer rules, persistent state, and return conditions must be explicit."]
     preferences: ["Let each instance alter the longline rather than reset it."]
     risks: ["Disconnected scenario anthology"]
     review_questions: ["What persistent debt or relationship crossed the boundary?"]
     conflicts: []
   identity_swap:
+    prompt_adapter: >-
+      身份置换冲突来自身体习惯、社会记忆、账户权限、亲密关系和暴露风险，角色不能只换名字就接管另一人生。用惯用手、口味、称呼、工作流程、熟人试探和无法回答的私人往事证明错位；推进要让维持秘密消耗行动并改变关系。喜剧误会可以暂时缓冲压力，但其后仍应留下怀疑或补救。角色凭共享经历掌握部分信息不算瞬间精通，只有无证据复制全部技能与情感史才失真。
     requirements: ["Access, habits, social recognition, and exposure risk must constrain the new identity."]
     preferences: ["Show identity through failed expectations and embodied adjustment."]
     risks: ["Instant mastery of another life"]

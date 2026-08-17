@@ -2,7 +2,7 @@
 
 公开发行源：`https://github.com/ylqit/novel-general`。普通用户使用 pipx 安装 engine，再由 `longform-engine skills` 管理内置的自包含 Skill；无需手工复制 `shared/`，也无需 OpenAI、Anthropic 或 provider API key。
 
-`v0.4.0` 是破坏性项目协议升级，不读取 v0.3.x 项目配置；请创建新项目。升级 engine 后必须同步更新 Skill 并重新运行 doctor。
+`v0.4.1` 是破坏性项目协议升级，不读取 v0.3.x 或 v0.4.0 项目配置；请创建新项目。升级 engine 后必须同步更新 Skill 并重新运行 doctor。
 
 ## Public Install
 
@@ -13,8 +13,8 @@ py -3 -m pip install --user --upgrade pipx
 py -3 -m pipx ensurepath
 $env:PIPX_BIN_DIR = if ($env:PIPX_BIN_DIR) { $env:PIPX_BIN_DIR } else { Join-Path $env:USERPROFILE ".local\bin" }
 $env:PATH = "$env:PIPX_BIN_DIR;$env:PATH"
-py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.4.0'
-longform-engine skills install --tool all
+py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.4.1'
+longform-engine skills install --tool all --force
 longform-engine doctor --tool all
 ```
 
@@ -25,8 +25,8 @@ python3 -m pip install --user --upgrade pipx
 python3 -m pipx ensurepath
 export PIPX_BIN_DIR="${PIPX_BIN_DIR:-$HOME/.local/bin}"
 export PATH="$PIPX_BIN_DIR:$PATH"
-python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.4.0'
-longform-engine skills install --tool all
+python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.4.1'
+longform-engine skills install --tool all --force
 longform-engine doctor --tool all
 ```
 

@@ -6,11 +6,11 @@
 
 ## Phase 1. Unified Semantic Contract
 
-- [x] 新增 `chapter_semantic_bundle_v1`。
+- [x] Agent 输出收敛为 `canonical_delta_v1`，CLI 内存规范化并持久化内部 `chapter_semantic_bundle_v1`。
 - [x] 包含 final 路径/hash、语义摘要、因果、收益、代价、场景、事件和精确证据 span。
 - [x] 包含 relationship、character、foreshadow、world、timeline deltas。
 - [x] 包含检索标签、实体 ID、focus 和 changed/unchanged coverage。
-- [x] 语义任务 manifest 明确 input files、唯一 output、schema、validate/apply/failure command 和 canonical targets。
+- [x] 语义任务 manifest 明确 input files、唯一 output、`canonical_delta_v1`、validate/apply/failure command 和 canonical targets。
 - [x] 任务最多声明 7 个输入文件，不在 Markdown 中重复嵌入 final 正文。
 
 ## Phase 2. Strict Validation

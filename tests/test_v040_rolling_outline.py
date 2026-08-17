@@ -2,12 +2,21 @@ import json
 from hashlib import sha256
 from pathlib import Path
 
+from longform_engine.agent_pipeline import validate_production_agent_result
+from longform_engine.agent_protocols import (
+    CANONICAL_DELTA_SCHEMA,
+    DESIGN_DOCUMENT_SCHEMA,
+    DESIGN_REQUIRED_HEADINGS,
+)
 from longform_engine.agent_tasks import load_manifest, validate_manifest_strict
 from longform_engine.config import load_project_config
 from longform_engine.intelligence import (
-    apply_intelligence_candidate,
+    apply_compiled_design,
+    approve_design_document,
     assess_chapter_direction,
+    create_design_compile_task,
     create_intelligence_task,
+    validate_design_compile_delta,
     validate_intelligence_candidate,
 )
 from longform_engine.lengths import compile_length_forecast
@@ -28,6 +37,100 @@ def seed_project(tmp_path: Path):
     config = load_project_config(project.project_config)
     open_book(config)
     return config, project.root
+
+
+def write_design_candidate(root: Path, task, task_type: str, payload: dict) -> Path:
+    candidate = root / task.candidate_file
+    def scalar_lines(value) -> list[str]:
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        if isinstance(value, list):
+            return [line for item in value for line in scalar_lines(item)]
+        if isinstance(value, dict):
+            return [line for item in value.values() for line in scalar_lines(item)]
+        return []
+
+    facts = scalar_lines({key: value for key, value in payload.items() if key != "schema"})
+    sections: list[str] = []
+    for index, heading in enumerate(DESIGN_REQUIRED_HEADINGS[task_type]):
+        body = ["本节决定已经由用户审阅。"]
+        if index == 0:
+            body.extend(f"- {fact}" for fact in facts)
+        sections.extend((f"## {heading}", "", *body, ""))
+    candidate.write_text(f"# {task_type} 设计文档\n\n" + "\n".join(sections), encoding="utf-8")
+    control = validate_production_agent_result(
+        root,
+        load_manifest(root, task.manifest_file),
+        result_file=candidate,
+    )
+    assert control.ok, control.normalization.errors
+    return candidate
+
+
+def apply_design_candidate(config, root: Path, task_type: str, candidate: Path, payload: dict):
+    approval = validate_intelligence_candidate(config, task_type=task_type, file_path=candidate)
+    assert approval.ok, approval.errors
+    approve_design_document(
+        config,
+        task_type=task_type,
+        document_path=candidate,
+        approved_by="human",
+    )
+    compile_task = create_design_compile_task(
+        config,
+        task_type=task_type,
+        document_path=candidate,
+    )
+    delta = root / compile_task.candidate_file
+    changes = {key: value for key, value in payload.items() if key != "schema"}
+    for cli_field in {
+        "book_ideation": ("round", "dimension"),
+        "chapter_direction": ("chapter_number", "chapter_card_sha256", "trigger_reasons"),
+        "outline_revision": ("from_chapter", "to_chapter"),
+    }.get(task_type, ()):
+        changes.pop(cli_field, None)
+    text = candidate.read_text(encoding="utf-8")
+    source = candidate.relative_to(root).as_posix()
+    delta.write_text(
+        json.dumps(
+            {
+                "schema": CANONICAL_DELTA_SCHEMA,
+                "delta_type": "design_document",
+                "coverage": {key: "changed" for key in changes},
+                "changes": changes,
+                "evidence": {
+                    f"/changes/{key.replace('~', '~0').replace('/', '~1')}": [
+                        f"{source}@0:{len(text)}"
+                    ]
+                    for key in changes
+                },
+                "uncertainties": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    control = validate_production_agent_result(
+        root,
+        load_manifest(root, compile_task.task_id),
+        result_file=delta,
+    )
+    assert control.ok, control.normalization.errors
+    validation = validate_design_compile_delta(
+        config,
+        task_type=task_type,
+        document_path=candidate,
+        delta_path=delta,
+    )
+    assert validation.ok, validation.errors
+    return apply_compiled_design(
+        config,
+        task_type=task_type,
+        document_path=candidate,
+        delta_path=delta,
+        approved_by="human",
+    )
 
 
 def direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> dict:
@@ -96,12 +199,12 @@ def direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> 
 def test_outline_design_persists_macro_budget_and_only_one_detailed_window(tmp_path):
     config, root = seed_project(tmp_path)
     task = create_intelligence_task(config, task_type="outline_design")
-    candidate = root / task.candidate_file
-    candidate.write_text(json.dumps(build_outline_candidate(config), ensure_ascii=False), encoding="utf-8")
+    payload = build_outline_candidate(config)
+    candidate = write_design_candidate(root, task, "outline_design", payload)
 
     validation = validate_intelligence_candidate(config, task_type="outline_design", file_path=candidate)
     assert validation.ok, validation.errors
-    apply_intelligence_candidate(config, task_type="outline_design", file_path=candidate, approved_by="human")
+    apply_design_candidate(config, root, "outline_design", candidate, payload)
 
     plan = json.loads((root / "20_outline" / "chapter_plan.json").read_text(encoding="utf-8"))
     window = json.loads((root / "20_outline" / "planning_window.json").read_text(encoding="utf-8"))
@@ -115,24 +218,36 @@ def test_outline_design_persists_macro_budget_and_only_one_detailed_window(tmp_p
 def test_outline_extension_uses_bounded_context_and_appends_atomically(tmp_path):
     config, root = seed_project(tmp_path)
     outline_task = create_intelligence_task(config, task_type="outline_design")
-    outline_file = root / outline_task.candidate_file
-    outline_file.write_text(json.dumps(build_outline_candidate(config)), encoding="utf-8")
-    apply_intelligence_candidate(config, task_type="outline_design", file_path=outline_file, approved_by="human")
+    outline_payload = build_outline_candidate(config)
+    outline_file = write_design_candidate(
+        root,
+        outline_task,
+        "outline_design",
+        outline_payload,
+    )
+    apply_design_candidate(config, root, "outline_design", outline_file, outline_payload)
 
     task = create_intelligence_task(config, task_type="outline_extension", from_chapter=21, to_chapter=40)
     manifest = load_manifest(root, task.task_id)
     strict = validate_manifest_strict(root, manifest)
     context = root / "50_workbench" / "intelligence_context" / "outline_extension.ch021-ch040.context.json"
     assert strict.ok
-    assert len(manifest["input_files"]) == 2
-    assert len(context.read_text(encoding="utf-8")) <= 18_000
-    assert json.loads(context.read_text(encoding="utf-8"))["selection"]["full_history_exposed"] is False
+    assert len(manifest["io"]["inputs"]) == 2
+    context_payload = json.loads(context.read_text(encoding="utf-8"))
+    assert context_payload["selection"]["full_history_exposed"] is False
+    assert context_payload["selection"]["budget_profile"] == "standard"
+    assert context_payload["selection"]["estimated_units"] > 0
 
-    candidate = root / task.candidate_file
-    candidate.write_text(json.dumps(build_outline_extension_candidate(config, 21, 40)), encoding="utf-8")
+    extension_payload = build_outline_extension_candidate(config, 21, 40)
+    candidate = write_design_candidate(
+        root,
+        task,
+        "outline_extension",
+        extension_payload,
+    )
     validation = validate_intelligence_candidate(config, task_type="outline_extension", file_path=candidate)
     assert validation.ok, validation.errors
-    apply_intelligence_candidate(config, task_type="outline_extension", file_path=candidate, approved_by="human")
+    apply_design_candidate(config, root, "outline_extension", candidate, extension_payload)
     plan = json.loads((root / "20_outline" / "chapter_plan.json").read_text(encoding="utf-8"))
     assert [item["chapter_number"] for item in plan] == list(range(1, 41))
 
@@ -163,13 +278,18 @@ def test_every_chapter_requires_a_human_selected_scene_direction(tmp_path):
 
     task = create_intelligence_task(config, task_type="chapter_direction", chapter_number=1)
     manifest = load_manifest(root, task.task_id)
-    assert manifest["output_schema"] == "chapter_direction_candidate_v2"
-    assert len(manifest["input_files"]) == 2
-    candidate = root / task.candidate_file
-    candidate.write_text(json.dumps(direction_candidate(root, 1, status["reasons"]), ensure_ascii=False), encoding="utf-8")
+    assert manifest["io"]["output"]["protocol"] == DESIGN_DOCUMENT_SCHEMA
+    assert len(manifest["io"]["inputs"]) == 2
+    direction_payload = direction_candidate(root, 1, status["reasons"])
+    candidate = write_design_candidate(
+        root,
+        task,
+        "chapter_direction",
+        direction_payload,
+    )
     validation = validate_intelligence_candidate(config, task_type="chapter_direction", file_path=candidate)
     assert validation.ok, validation.errors
-    apply_intelligence_candidate(config, task_type="chapter_direction", file_path=candidate, approved_by="human")
+    apply_design_candidate(config, root, "chapter_direction", candidate, direction_payload)
     card = json.loads((root / "20_outline" / "chapter_cards" / "ch001.json").read_text(encoding="utf-8"))
     assert card["direction_selection"]["status"] == "applied"
     assert card["scene_chain"][0]["desire_collision"]
@@ -179,10 +299,9 @@ def test_every_chapter_requires_a_human_selected_scene_direction(tmp_path):
 def test_two_million_character_project_keeps_outline_extension_context_bounded(tmp_path):
     config, root = seed_project(tmp_path)
     task = create_intelligence_task(config, task_type="outline_design")
-    candidate = root / task.candidate_file
     initial = build_outline_candidate(config)
-    candidate.write_text(json.dumps(initial, ensure_ascii=False), encoding="utf-8")
-    apply_intelligence_candidate(config, task_type="outline_design", file_path=candidate, approved_by="human")
+    candidate = write_design_candidate(root, task, "outline_design", initial)
+    apply_design_candidate(config, root, "outline_design", candidate, initial)
 
     base = initial["chapter_plan"][0]
     plan = [
@@ -221,4 +340,5 @@ def test_two_million_character_project_keeps_outline_extension_context_bounded(t
     assert len(context["recent_chapter_plan"]) == 8
     assert context["recent_chapter_plan"][0]["chapter_number"] == 660
     assert context["selection"]["full_history_exposed"] is False
-    assert len(context_path.read_text(encoding="utf-8")) <= 18_000
+    assert context["selection"]["budget_profile"] == "standard"
+    assert context["selection"]["estimated_units"] > 0

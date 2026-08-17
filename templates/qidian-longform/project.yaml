@@ -66,6 +66,11 @@ writing:
     draft_dir: "50_workbench/agent_drafts"
     require_submit_command: true
     default_agent: "codex"
+    context:
+      mode: "adaptive"
+      host_profile: "standard"
+      capacity_override_units: null
+      overflow_policy: "split_context"
   template_dry_run:
     enabled: false
 

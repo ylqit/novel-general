@@ -145,29 +145,26 @@ def record_quality_history(
 ) -> dict[str, str]:
     """Upsert reward v2 and structure history after an explicit chapter finalize."""
 
-    planned = review.get("planned", {}) if isinstance(review, dict) else {}
-    observed = review.get("observed", {}) if isinstance(review, dict) else {}
-    evidence = review.get("evidence_spans", []) if isinstance(review, dict) else []
-    craft = review.get("craft_observation", {}) if isinstance(review, dict) else {}
+    observed = review.get("_cli_observed", {}) if isinstance(review, dict) else {}
+    evidence = observed.get("evidence_spans", []) if isinstance(observed, dict) else []
     reward = {
         "schema": "reader_reward_entry_v2",
         "chapter_number": chapter_number,
         "chapter_duty": str(
-            planned.get("chapter_duty")
-            or card.get("chapter_duty")
+            card.get("chapter_duty")
             or card.get("duty")
             or ""
         ),
-        "planned_gain": str(planned.get("reader_gain") or card.get("reader_gain") or card.get("reader_payoff") or ""),
+        "planned_gain": str(card.get("reader_gain") or card.get("reader_payoff") or ""),
         "observed_gain": str(observed.get("reader_gain") or ""),
-        "duty_fulfilled": observed.get("duty_fulfilled") if isinstance(observed.get("duty_fulfilled"), bool) else None,
-        "planned_cost": str(planned.get("cost") or card.get("cost") or ""),
+        "duty_fulfilled": bool(observed.get("reader_gain")) if review else None,
+        "planned_cost": str(card.get("cost") or ""),
         "observed_cost": str(observed.get("cost") or ""),
-        "promise_progress": sanitize_promise_progress(observed.get("promise_progress")),
+        "promise_progress": [],
         "evidence_source_hash": sha256_text(final_text),
         "evidence_spans": sanitize_evidence_spans(evidence),
-        "topology_id": str(craft.get("topology_id") or card.get("topology_id") or ""),
-        "ending_mode": str(craft.get("ending_mode") or infer_ending_mode(final_text)),
+        "topology_id": str(card.get("topology_id") or ""),
+        "ending_mode": infer_ending_mode(final_text),
         "observation_status": "semantic_reviewed" if review else "not_required",
         "finalized": True,
         "recorded_at": utc_now(),

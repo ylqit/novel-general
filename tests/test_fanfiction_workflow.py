@@ -3,18 +3,27 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
-
-from longform_engine.agent_tasks import load_manifest, validate_manifest_strict
+from longform_engine.agent_pipeline import validate_production_agent_result
+from longform_engine.agent_protocols import (
+    CANONICAL_DELTA_SCHEMA,
+    DESIGN_DOCUMENT_SCHEMA,
+    DESIGN_REQUIRED_HEADINGS,
+)
+from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
 from longform_engine.config import load_project_config
 from longform_engine.creative import humanize_check, humanize_task
 from longform_engine.editorial import editorial_review
 from longform_engine.gates.pipeline import check_fanfiction_source_reproduction
 from longform_engine.intelligence import (
+    apply_compiled_design,
     apply_intelligence_candidate,
+    approve_design_document,
     assess_chapter_direction,
     assess_project_readiness,
+    create_design_compile_task,
     create_intelligence_task,
     fanfiction_status,
+    validate_design_compile_delta,
     validate_intelligence_candidate,
 )
 from longform_engine.intelligence.pipeline import validate_crossover_rules
@@ -349,7 +358,7 @@ def test_fanfiction_design_compiles_realistic_canon_into_bounded_context(tmp_pat
     context = json.loads(context_path.read_text(encoding="utf-8"))
 
     assert validation.ok
-    assert manifest["input_files"] == [
+    assert [item["path"] for item in manifest["io"]["inputs"]] == [
         "50_workbench/intelligence_context/fanfiction_design.project.context.json",
         "50_workbench/intelligence_tasks/fanfiction_design.project.md",
     ]
@@ -395,6 +404,154 @@ def canonical_snapshot(root: Path) -> dict[str, bytes]:
     return snapshot
 
 
+def write_design_candidate(path: Path, task_type: str, payload: dict) -> None:
+    def scalar_lines(value) -> list[str]:
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        if isinstance(value, list):
+            return [line for item in value for line in scalar_lines(item)]
+        if isinstance(value, dict):
+            return [line for item in value.values() for line in scalar_lines(item)]
+        return []
+
+    facts = scalar_lines({key: value for key, value in payload.items() if key != "schema"})
+    sections: list[str] = []
+    for index, heading in enumerate(DESIGN_REQUIRED_HEADINGS[task_type]):
+        body = ["本节内容已经由用户审阅。"]
+        if index == 0:
+            body.extend(f"- {fact}" for fact in facts)
+        sections.extend((f"## {heading}", "", *body, ""))
+    path.write_text(f"# {task_type} 设计文档\n\n" + "\n".join(sections), encoding="utf-8")
+
+
+def compile_design_output(config, root: Path, task_type: str, candidate: Path, payload: dict):
+    assert validate_intelligence_output(config, root, task_type, candidate).ok
+    approve_design_document(
+        config,
+        task_type=task_type,
+        document_path=candidate,
+        approved_by="human",
+    )
+    compile_task = create_design_compile_task(
+        config,
+        task_type=task_type,
+        document_path=candidate,
+    )
+    delta = root / compile_task.candidate_file
+    source = candidate.relative_to(root).as_posix()
+    text = candidate.read_text(encoding="utf-8")
+    changes = {key: value for key, value in payload.items() if key != "schema"}
+    for cli_field in {
+        "book_ideation": ("round", "dimension"),
+        "chapter_direction": ("chapter_number", "chapter_card_sha256", "trigger_reasons"),
+        "outline_revision": ("from_chapter", "to_chapter"),
+    }.get(task_type, ()):
+        changes.pop(cli_field, None)
+    delta.write_text(
+        json.dumps(
+            {
+                "schema": CANONICAL_DELTA_SCHEMA,
+                "delta_type": "design_document",
+                "coverage": {key: "changed" for key in changes},
+                "changes": changes,
+                "evidence": {
+                    f"/changes/{key.replace('~', '~0').replace('/', '~1')}": [
+                        f"{source}@0:{len(text)}"
+                    ]
+                    for key in changes
+                },
+                "uncertainties": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    control = validate_production_agent_result(
+        root,
+        load_manifest(root, compile_task.task_id),
+        result_file=delta,
+    )
+    assert control.ok, control.normalization.errors
+    validation = validate_design_compile_delta(
+        config,
+        task_type=task_type,
+        document_path=candidate,
+        delta_path=delta,
+    )
+    return delta, validation
+
+
+def apply_design_output(config, root: Path, task_type: str, candidate: Path, payload: dict) -> None:
+    delta, validation = compile_design_output(config, root, task_type, candidate, payload)
+    assert validation.ok, validation.errors
+    applied = apply_compiled_design(
+        config,
+        task_type=task_type,
+        document_path=candidate,
+        delta_path=delta,
+        approved_by="human",
+    )
+    assert applied.status == "applied"
+
+
+def write_canon_delta(path: Path, payload: dict, source_path: Path) -> None:
+    source_text = source_path.read_text(encoding="utf-8")
+    source_rel = "50_workbench/fanfiction_sources/classic.txt"
+    evidence_ref = f"{source_rel}@0:{min(48, len(source_text))}"
+    collections = (
+        "characters",
+        "relationships",
+        "world_rules",
+        "abilities",
+        "timeline",
+        "terminology",
+        "canon_events",
+        "unresolved_questions",
+    )
+    source = payload["sources"][0]
+    compact_source = {"source_id": source["source_id"]}
+    evidence: dict[str, list[str]] = {}
+    for collection in collections:
+        compact_source[collection] = []
+        for index, record in enumerate(source[collection]):
+            compact_source[collection].append(
+                {key: value for key, value in record.items() if key != "evidence_refs"}
+            )
+            evidence[f"/changes/sources/0/{collection}/{index}"] = [evidence_ref]
+    path.write_text(
+        json.dumps(
+            {
+                "schema": CANONICAL_DELTA_SCHEMA,
+                "delta_type": "fanfiction_canon",
+                "coverage": {"source_canon": "changed"},
+                "changes": {"sources": [compact_source]},
+                "evidence": evidence,
+                "uncertainties": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def validate_intelligence_output(config, root: Path, task_type: str, candidate: Path):
+    task = next(
+        item
+        for item in reversed(list_manifests(root))
+        if item.get("task_type") == task_type
+        and candidate.relative_to(root).as_posix() == (item.get("io") or {}).get("output", {}).get("path")
+    )
+    control = validate_production_agent_result(
+        root,
+        load_manifest(root, task["task_id"]),
+        result_file=candidate,
+    )
+    assert control.ok, control.normalization.errors
+    return validate_intelligence_candidate(config, task_type=task_type, file_path=candidate)
+
+
 def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
     canon_task = create_intelligence_task(
         config,
@@ -402,12 +559,8 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
         input_files=[source_path],
     )
     canon_candidate = root / canon_task.candidate_file
-    canon_candidate.write_text(json.dumps(valid_canon(source_path), ensure_ascii=False), encoding="utf-8")
-    assert validate_intelligence_candidate(
-        config,
-        task_type="fanfiction_canon",
-        file_path=canon_candidate,
-    ).ok
+    write_canon_delta(canon_candidate, valid_canon(source_path), source_path)
+    assert validate_intelligence_output(config, root, "fanfiction_canon", canon_candidate).ok
     apply_intelligence_candidate(
         config,
         task_type="fanfiction_canon",
@@ -428,76 +581,48 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
     for round_number, dimension in enumerate(dimensions, start=1):
         ideation_task = create_intelligence_task(config, task_type="book_ideation")
         ideation_candidate = root / ideation_task.candidate_file
-        ideation_candidate.write_text(
-            json.dumps(
+        ideation_payload = {
+            "schema": "book_ideation_candidate_v1",
+            "round": round_number,
+            "question": f"Choose {dimension}.",
+            "options": [
                 {
-                    "schema": "book_ideation_candidate_v1",
-                    "round": round_number,
-                    "dimension": dimension,
-                    "question": f"Choose {dimension}.",
-                    "options": [
-                        {
-                            "id": "canon_focused",
-                            "proposal": f"Canon-aware decision for {dimension}.",
-                            "tradeoffs": ["Higher fidelity.", "Narrower divergence."],
-                        },
-                        {
-                            "id": "original_focused",
-                            "proposal": f"Original-mainline decision for {dimension}.",
-                            "tradeoffs": ["More novelty.", "Higher continuity burden."],
-                        },
-                    ],
-                    "selection": {
-                        "mode": "selected_option",
-                        "option_id": "canon_focused",
-                        "answer": "",
-                    },
+                    "id": "canon_focused",
+                    "proposal": f"Canon-aware decision for {dimension}.",
+                    "tradeoffs": ["Higher fidelity.", "Narrower divergence."],
                 },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
+                {
+                    "id": "original_focused",
+                    "proposal": f"Original-mainline decision for {dimension}.",
+                    "tradeoffs": ["More novelty.", "Higher continuity burden."],
+                },
+            ],
+            "selection": {
+                "mode": "selected_option",
+                "option_id": "canon_focused",
+                "answer": "",
+            },
+        }
+        write_design_candidate(
+            ideation_candidate,
+            "book_ideation",
+            ideation_payload,
         )
-        assert validate_intelligence_candidate(
-            config,
-            task_type="book_ideation",
-            file_path=ideation_candidate,
-        ).ok
-        apply_intelligence_candidate(
-            config,
-            task_type="book_ideation",
-            file_path=ideation_candidate,
-            approved_by="human",
+        apply_design_output(
+            config, root, "book_ideation", ideation_candidate, ideation_payload
         )
 
     design_task = create_intelligence_task(config, task_type="fanfiction_design")
     design_candidate = root / design_task.candidate_file
-    design_candidate.write_text(json.dumps(valid_design(), ensure_ascii=False), encoding="utf-8")
-    assert validate_intelligence_candidate(
-        config,
-        task_type="fanfiction_design",
-        file_path=design_candidate,
-    ).ok
-    apply_intelligence_candidate(
-        config,
-        task_type="fanfiction_design",
-        file_path=design_candidate,
-        approved_by="human",
-    )
+    design_payload = valid_design()
+    write_design_candidate(design_candidate, "fanfiction_design", design_payload)
+    apply_design_output(config, root, "fanfiction_design", design_candidate, design_payload)
 
     outline_task = create_intelligence_task(config, task_type="outline_design")
     outline_candidate = root / outline_task.candidate_file
-    outline_candidate.write_text(json.dumps(valid_outline(config), ensure_ascii=False), encoding="utf-8")
-    assert validate_intelligence_candidate(
-        config,
-        task_type="outline_design",
-        file_path=outline_candidate,
-    ).ok
-    apply_intelligence_candidate(
-        config,
-        task_type="outline_design",
-        file_path=outline_candidate,
-        approved_by="human",
-    )
+    outline_payload = valid_outline(config)
+    write_design_candidate(outline_candidate, "outline_design", outline_payload)
+    apply_design_output(config, root, "outline_design", outline_candidate, outline_payload)
 
     direction_task = create_intelligence_task(
         config,
@@ -549,44 +674,33 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
         "ending_mode": "changed_problem",
         "main_risks": ["Canon terminology could replace visible consequence."],
     }
-    direction_candidate.write_text(
-        json.dumps(
+    direction_payload = {
+        "schema": "chapter_direction_candidate_v2",
+        "chapter_number": 1,
+        "chapter_card_sha256": sha256(card_path.read_bytes()).hexdigest(),
+        "trigger_reasons": reasons,
+        "directions": [
             {
-                "schema": "chapter_direction_candidate_v2",
-                "chapter_number": 1,
-                "chapter_card_sha256": sha256(card_path.read_bytes()).hexdigest(),
-                "trigger_reasons": reasons,
-                "directions": [
-                    {
-                        "id": "test_gate",
-                        "title": "Test the gate",
-                        "chapter_duty": "Turn the first divergence into a costly choice.",
-                        **direction,
-                    },
-                    {
-                        "id": "trust_keeper",
-                        "title": "Trust the keeper",
-                        "chapter_duty": "Trade immediate agency for one protected canon fact.",
-                        **{**direction, "character_cost": "Lin Zhou accepts the keeper's binding condition."},
-                    },
-                ],
-                "selection": {"direction_id": "test_gate", "user_adjustments": {}},
+                "id": "test_gate",
+                "title": "Test the gate",
+                "chapter_duty": "Turn the first divergence into a costly choice.",
+                **direction,
             },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+            {
+                "id": "trust_keeper",
+                "title": "Trust the keeper",
+                "chapter_duty": "Trade immediate agency for one protected canon fact.",
+                **{**direction, "character_cost": "Lin Zhou accepts the keeper's binding condition."},
+            },
+        ],
+        "selection": {"direction_id": "test_gate", "user_adjustments": {}},
+    }
+    write_design_candidate(
+        direction_candidate,
+        "chapter_direction",
+        direction_payload,
     )
-    assert validate_intelligence_candidate(
-        config,
-        task_type="chapter_direction",
-        file_path=direction_candidate,
-    ).ok
-    apply_intelligence_candidate(
-        config,
-        task_type="chapter_direction",
-        file_path=direction_candidate,
-        approved_by="human",
-    )
+    apply_design_output(config, root, "chapter_direction", direction_candidate, direction_payload)
 
     readiness = assess_project_readiness(config)
     assert readiness.ready
@@ -602,10 +716,11 @@ def test_unverified_commercial_fanfiction_reaches_writing_and_export_without_rig
     assert status["rights_warnings"][0]["blocking"] is False
 
     writing = continue_write(config, chapter_number=1)
-    manifest = load_manifest(root, "chapter_write:ch001:v1")
+    manifest = load_manifest(root, "chapter_write:ch001:v4")
     assert validate_manifest_strict(root, manifest).ok
-    assert len(manifest["input_files"]) <= 7
-    assert manifest["input_files"] == ["50_workbench/writing_tasks/ch001.md"]
+    inputs = [item["path"] for item in manifest["io"]["inputs"]]
+    assert len(inputs) <= 7
+    assert inputs == ["50_workbench/writing_tasks/ch001.md"]
     writing_payload = json.loads(Path(writing.writing_task_json).read_text(encoding="utf-8"))
     assert "10_bible/fanfiction/source_canon.json" in writing_payload["context_plan"]["excluded_duplicates"]
     card = json.loads(Path(writing.chapter_card).read_text(encoding="utf-8"))
@@ -626,7 +741,7 @@ def test_unverified_commercial_fanfiction_reaches_writing_and_export_without_rig
     assert risk["unverified_rights_blocks_export"] is False
     assert risk["commercial_intent_blocks_export"] is False
     assert "Rights" not in (root / exported.bundle_file).read_text(encoding="utf-8")
-    assert {"reader_quality_reviewer", "canon_fidelity_reviewer"} <= editorial_roles
+    assert {"reader_experience_editor", "canon_fidelity_reviewer"} <= editorial_roles
     assert any(
         "canon_fidelity_reviewer" in path
         for path in review_payload["agent_task_files"]
@@ -660,16 +775,20 @@ def test_fanfiction_manifest_and_invalid_evidence_do_not_pollute_bible(tmp_path)
     assert validate_manifest_strict(root, manifest).ok
     before = (root / "10_bible" / "creative_brief.json").read_bytes()
     candidate = root / task.candidate_file
-    payload = valid_canon(source_path)
-    payload["sources"][0]["evidence"][0]["source_hash"] = "bad"
-    candidate.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    write_canon_delta(candidate, valid_canon(source_path), source_path)
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    first_pointer = next(iter(payload["evidence"]))
+    payload["evidence"][first_pointer] = [
+        "50_workbench/fanfiction_sources/classic.txt@0:9999"
+    ]
+    candidate.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    validation = validate_intelligence_candidate(
-        config,
-        task_type="fanfiction_canon",
-        file_path=candidate,
+    control = validate_production_agent_result(
+        root,
+        manifest,
+        result_file=candidate,
     )
-    assert not validation.ok
+    assert not control.ok
     assert not (root / "10_bible" / "fanfiction" / "source_canon.json").exists()
     assert (root / "10_bible" / "creative_brief.json").read_bytes() == before
 
@@ -683,14 +802,10 @@ def test_fanfiction_canon_rejects_source_prose_reconstructed_across_fields(tmp_p
     midpoint = len(source_text) // 2
     payload["sources"][0]["world_rules"][0]["summary"] = source_text[:midpoint]
     payload["sources"][0]["unresolved_questions"][0]["summary"] = source_text[midpoint:]
-    candidate.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    write_canon_delta(candidate, payload, source_path)
     before = canonical_snapshot(root)
 
-    validation = validate_intelligence_candidate(
-        config,
-        task_type="fanfiction_canon",
-        file_path=candidate,
-    )
+    validation = validate_intelligence_output(config, root, "fanfiction_canon", candidate)
 
     assert not validation.ok
     assert any("reconstructs source prose" in error for error in validation.errors)
@@ -706,7 +821,8 @@ def test_invalid_fanfiction_design_does_not_pollute_canonical_state(tmp_path):
         input_files=[source_path],
     )
     canon_candidate = root / canon_task.candidate_file
-    canon_candidate.write_text(json.dumps(valid_canon(source_path), ensure_ascii=False), encoding="utf-8")
+    write_canon_delta(canon_candidate, valid_canon(source_path), source_path)
+    assert validate_intelligence_output(config, root, "fanfiction_canon", canon_candidate).ok
     apply_intelligence_candidate(
         config,
         task_type="fanfiction_canon",
@@ -717,13 +833,15 @@ def test_invalid_fanfiction_design_does_not_pollute_canonical_state(tmp_path):
     design_candidate = root / design_task.candidate_file
     payload = valid_design()
     payload["character_voice_contracts"] = []
-    design_candidate.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    write_design_candidate(design_candidate, "fanfiction_design", payload)
     before = canonical_snapshot(root)
 
-    validation = validate_intelligence_candidate(
+    _delta, validation = compile_design_output(
         config,
-        task_type="fanfiction_design",
-        file_path=design_candidate,
+        root,
+        "fanfiction_design",
+        design_candidate,
+        payload,
     )
 
     assert not validation.ok

@@ -12,7 +12,10 @@ from longform_engine.artifacts import verify_event_segments
 def write_index(root: Path, tasks: list[dict]) -> Path:
     path = root / "50_workbench" / "agent_tasks" / "agent_task_index.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"schema_version": 1, "tasks": tasks}) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps({"schema_version": 4, "schema": "agent_task_index_v4", "tasks": tasks}) + "\n",
+        encoding="utf-8",
+    )
     return path
 
 
@@ -20,7 +23,7 @@ def test_two_million_character_projection_keeps_only_project_and_recent_two_chap
     root = tmp_path / "novel"
     tasks = [
         {
-            "task_id": "book_design:project:v1",
+            "task_id": "book_design:project:v4",
             "task_type": "book_design",
             "chapter_number": 0,
             "status": "applied",
@@ -31,7 +34,7 @@ def test_two_million_character_projection_keeps_only_project_and_recent_two_chap
         for lane in ("chapter_write", "semantic_review", "chapter_semantic"):
             tasks.append(
                 {
-                    "task_id": f"{lane}:ch{chapter:03d}:v1",
+                    "task_id": f"{lane}:ch{chapter:03d}:v4",
                     "task_type": lane,
                     "chapter_number": chapter,
                     "status": "applied",
@@ -44,8 +47,9 @@ def test_two_million_character_projection_keeps_only_project_and_recent_two_chap
         "".join(
             json.dumps(
                 {
-                    "schema_version": 1,
-                    "task_id": f"chapter_write:ch{chapter:03d}:v1",
+                    "schema_version": 4,
+                    "schema": "agent_task_event_v4",
+                    "task_id": f"chapter_write:ch{chapter:03d}:v4",
                     "from_status": "validated",
                     "to_status": "applied",
                 }
@@ -63,7 +67,7 @@ def test_two_million_character_projection_keeps_only_project_and_recent_two_chap
     )
     payload = json.loads(index.read_text(encoding="utf-8"))
 
-    assert payload["schema"] == "agent_task_index_v2"
+    assert payload["schema"] == "agent_task_index_v4"
     assert result["archived_tasks"] == 665 * 3
     assert {int(item["chapter_number"]) for item in payload["tasks"]} == {0, 666, 667}
     assert payload["terminal_counts"]["total"] == 665 * 3
@@ -77,7 +81,7 @@ def test_project_event_rotation_writes_gzip_hash_manifest(monkeypatch, tmp_path)
         root,
         [
             {
-                "task_id": "book_design:project:v1",
+                "task_id": "book_design:project:v4",
                 "task_type": "book_design",
                 "chapter_number": 0,
                 "status": "applied",
@@ -91,7 +95,7 @@ def test_project_event_rotation_writes_gzip_hash_manifest(monkeypatch, tmp_path)
     for _ in range(3):
         record_task_event(
             root,
-            task_id="book_design:project:v1",
+            task_id="book_design:project:v4",
             from_status="validated",
             to_status="applied",
             command="test",

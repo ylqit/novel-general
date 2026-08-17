@@ -10,11 +10,31 @@ from pathlib import Path
 import re
 from typing import Any, Iterable
 
+from longform_engine.agent_protocols import (
+    CANONICAL_DELTA_SCHEMA,
+    DESIGN_REQUIRED_HEADINGS,
+    DESIGN_DOCUMENT_SCHEMA,
+    EVIDENCE_REVIEW_SCHEMA,
+    VALIDATION_REPORT_SCHEMA,
+    AgentProtocolError,
+    build_validation_report,
+    canonical_delta_domain_payload,
+    output_protocol_for_task,
+    parse_design_document,
+    validate_canonical_delta,
+    validate_evidence_review,
+    validate_review_evidence_for_source,
+)
 from longform_engine.agent_tasks import (
     build_manifest,
     list_manifests,
+    manifest_chapter_number,
+    manifest_commands,
+    manifest_input_paths,
+    manifest_output,
     mark_tasks_for_output,
     mark_tasks_for_chapter_type,
+    validate_current_task_result,
     write_manifest,
 )
 from longform_engine.character_expression import (
@@ -27,6 +47,7 @@ from longform_engine.character_expression import (
 )
 from longform_engine.config import ConfigDocument
 from longform_engine.lengths import compile_length_forecast
+from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.story_profiles import BUILTIN_MARKET_IDS, active_story_facets, compile_story_profile
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 
@@ -45,6 +66,12 @@ INTELLIGENCE_TASK_TYPES = (
     "research_synthesis",
     "style_analysis",
     "adaptation_analysis",
+)
+
+DESIGN_INTELLIGENCE_TASK_TYPES = tuple(
+    task_type
+    for task_type in INTELLIGENCE_TASK_TYPES
+    if output_protocol_for_task(task_type) == DESIGN_DOCUMENT_SCHEMA
 )
 
 TASK_SPECS: dict[str, dict[str, Any]] = {
@@ -275,6 +302,15 @@ class IntelligenceApplyResult:
 
 
 @dataclass(frozen=True)
+class DesignApprovalResult:
+    task_type: str
+    document_file: str
+    approval_file: str
+    document_sha256: str
+    next_command: str
+
+
+@dataclass(frozen=True)
 class ProjectReadinessResult:
     ready: bool
     stage: str
@@ -327,7 +363,10 @@ def create_intelligence_task(
     )
     instruction = root / "50_workbench" / "intelligence_tasks" / f"{base}.md"
     candidate_base = f"{task_type}.{token}" if task_type == "book_ideation" else base
-    candidate = root / "50_workbench" / "intelligence_candidates" / f"{candidate_base}.candidate.json"
+    output_protocol = output_protocol_for_task(task_type)
+    document_requires_human = output_protocol == DESIGN_DOCUMENT_SCHEMA
+    candidate_suffix = ".candidate.md" if output_protocol == DESIGN_DOCUMENT_SCHEMA else ".candidate.json"
+    candidate = root / "50_workbench" / "intelligence_candidates" / f"{candidate_base}{candidate_suffix}"
     manifest_file = root / "50_workbench" / "agent_tasks" / f"{base}.manifest.json"
     input_rel = [relative(root, path) for path in inputs]
     instruction_context = dict(scope)
@@ -358,7 +397,7 @@ def create_intelligence_task(
         candidate=relative(root, candidate),
         range_args=range_args,
         input_args=input_args,
-        requires_human=bool(spec["human"]),
+        requires_human=bool(spec["human"]) or document_requires_human,
     )
     manifest = build_manifest(
         root,
@@ -367,32 +406,20 @@ def create_intelligence_task(
         scope=scope,
         input_files=input_rel,
         allowed_output_paths=(candidate,),
-        output_schema=str(spec["schema"]),
+        output_schema=output_protocol_for_task(task_type),
         validate_command=validate_command,
         apply_command=apply_command,
         failure_next_command=failure_command,
         canonical_targets=intelligence_canonical_targets(root, task_type, scope),
-        requires_human_apply=bool(spec["human"]),
+        requires_human_apply=bool(spec["human"]) or document_requires_human,
         context_policy={
             "required_files": [instruction],
             "optional_files": inputs,
             "compiled_brief": instruction,
             "selection_report": instruction,
-            "max_files": (
-                5 if task_type == "book_ideation"
-                else 6 if task_type == "chapter_direction"
-                else max(7, len(input_rel)) if task_type == "character_expression_review"
-                else 7
-            ),
-            "max_chars": (
-                12_000 if task_type == "book_ideation"
-                else 16_000 if task_type == "chapter_direction"
-                else 80_000 if task_type == "character_expression_review"
-                else 20_000
-            ),
         },
         task_id=(
-            f"book_ideation:project:round{round_number:02d}:v1"
+            f"book_ideation:project:round{round_number:02d}:v4"
             if task_type == "book_ideation"
             else None
         ),
@@ -418,31 +445,70 @@ def validate_intelligence_candidate(
     spec = require_spec(task_type)
     candidate = resolve_candidate(root, file_path)
     errors: list[str] = []
-    payload = load_candidate(candidate, errors)
     manifest = manifest_for_output(root, task_type, candidate)
     if manifest is None:
         errors.append("candidate is not declared by an active AgentTaskManifest.")
-    if payload is not None:
-        validate_payload(config, root, task_type, spec, payload, manifest, errors)
+    else:
+        _task, control_errors = validate_current_task_result(
+            root,
+            chapter_number=manifest_chapter_number(manifest),
+            task_type=task_type,
+            output_path=candidate,
+            allowed_statuses=("submitted", "validated"),
+        )
+        errors.extend(control_errors)
+    protocol = output_protocol_for_task(task_type)
+    if protocol == DESIGN_DOCUMENT_SCHEMA:
+        try:
+            parse_design_document(candidate.read_text(encoding="utf-8"), expected_type=task_type)
+        except (OSError, UnicodeError, AgentProtocolError) as exc:
+            errors.append(f"candidate does not satisfy {DESIGN_DOCUMENT_SCHEMA}: {exc}")
+    else:
+        payload = load_candidate(
+            config,
+            root,
+            candidate,
+            errors,
+            task_type=task_type,
+            spec=spec,
+            manifest=manifest,
+        )
+        if payload is not None:
+            validate_payload(config, root, task_type, spec, payload, manifest, errors)
 
     report = root / "50_workbench" / "intelligence_validations" / f"{candidate.stem}.validation.json"
     ok = not errors
-    report_payload = {
-        "schema": "intelligence_validation_v1",
-        "task_type": task_type,
-        "candidate_file": relative(root, candidate),
-        "ok": ok,
-        "errors": errors,
-        "canonical_mutated": False,
-        "next_command": (
-            f"longform-engine intelligence apply project.yaml --task-type {task_type} --file {relative(root, candidate)}"
+    if ok and protocol == DESIGN_DOCUMENT_SCHEMA:
+        next_command = (
+            "longform-engine intelligence approve project.yaml "
+            f"--task-type {task_type} --document {relative(root, candidate)} --approved-by human"
+        )
+    elif ok:
+        next_command = (
+            f"longform-engine intelligence apply project.yaml --task-type {task_type} "
+            f"--delta {relative(root, candidate)}"
             + (" --approved-by human" if spec["human"] else "")
-            if ok
-            else str((manifest or {}).get("failure_next_command") or f"longform-engine intelligence task project.yaml --task-type {task_type}")
-        ),
-    }
+        )
+    else:
+        next_command = str(
+            manifest_commands(manifest or {}).get("failure")
+            or f"longform-engine intelligence task project.yaml --task-type {task_type}"
+        )
+    report_payload = build_validation_report(
+        ok=ok,
+        stage="intelligence_validate",
+        subject=relative(root, candidate),
+        errors=errors,
+        blockers=errors,
+        provenance={
+            "task_type": task_type,
+            "result_sha256": sha256(candidate.read_bytes()).hexdigest() if candidate.is_file() else "",
+            "canonical_mutated": False,
+        },
+        next_command=next_command,
+    )
     atomic_write_text(report, json.dumps(report_payload, ensure_ascii=False, indent=2) + "\n")
-    manifest_chapter = int((manifest or {}).get("chapter_number") or 0)
+    manifest_chapter = manifest_chapter_number(manifest or {})
     mark_tasks_for_output(
         root,
         chapter_number=manifest_chapter,
@@ -471,16 +537,34 @@ def apply_intelligence_candidate(
 ) -> IntelligenceApplyResult:
     root = resolve_project_root(config)
     spec = require_spec(task_type)
+    if output_protocol_for_task(task_type) == DESIGN_DOCUMENT_SCHEMA:
+        raise ValueError(
+            "design_document_v1 cannot be applied directly; approve the Markdown, compile a "
+            "canonical_delta_v1, then apply with --document and --delta."
+        )
     candidate = resolve_candidate(root, file_path)
     validation = validate_intelligence_candidate(config, task_type=task_type, file_path=candidate)
     if not validation.ok:
         raise ValueError("Intelligence candidate is invalid: " + "; ".join(validation.errors))
     if spec["human"] and approved_by != "human":
         raise ValueError(f"{task_type} apply requires --approved-by human.")
-    payload = json.loads(candidate.read_text(encoding="utf-8"))
-    touched = apply_targets(root, task_type, payload)
-    scope = manifest_for_output(root, task_type, candidate) or {}
-    task_chapter = int(scope.get("chapter_number") or 0)
+    load_errors: list[str] = []
+    manifest = manifest_for_output(root, task_type, candidate)
+    payload = load_candidate(
+        config,
+        root,
+        candidate,
+        load_errors,
+        task_type=task_type,
+        spec=spec,
+        manifest=manifest,
+    )
+    if payload is None or load_errors:
+        raise ValueError("Validated intelligence candidate could not be reloaded: " + "; ".join(load_errors))
+    scope = manifest or {}
+    manifest_scope = scope.get("scope") if isinstance(scope.get("scope"), dict) else {}
+    touched = apply_targets(root, task_type, payload, scope=manifest_scope)
+    task_chapter = manifest_chapter_number(scope)
     with apply_transaction(
         root,
         command=f"intelligence apply {task_type}",
@@ -494,7 +578,7 @@ def apply_intelligence_candidate(
             "requires_human_apply": bool(spec["human"]),
         },
     ) as transaction:
-        write_targets(config, root, task_type, payload)
+        write_targets(config, root, task_type, payload, scope=manifest_scope)
     mark_tasks_for_chapter_type(
         root,
         chapter_number=task_chapter,
@@ -513,6 +597,547 @@ def apply_intelligence_candidate(
         transaction_report=relative(root, transaction.report_file),
         next_command="longform-engine production next project.yaml",
     )
+
+
+def approve_design_document(
+    config: ConfigDocument,
+    *,
+    task_type: str,
+    document_path: str | Path,
+    approved_by: str,
+) -> DesignApprovalResult:
+    if task_type not in DESIGN_INTELLIGENCE_TASK_TYPES:
+        raise ValueError(f"{task_type} is not a design_document_v1 task.")
+    if approved_by != "human":
+        raise ValueError("Design document approval requires --approved-by human.")
+    root = resolve_project_root(config)
+    document = resolve_candidate(root, document_path)
+    validation = validate_intelligence_candidate(
+        config,
+        task_type=task_type,
+        file_path=document,
+    )
+    if not validation.ok:
+        raise ValueError("Design document is invalid: " + "; ".join(validation.errors))
+    manifest = manifest_for_output(root, task_type, document)
+    if manifest is None:
+        raise ValueError("Design document is not bound to an active Agent task.")
+    document_hash = sha256(document.read_bytes()).hexdigest()
+    approval = design_approval_path(root, document)
+    approval_payload = {
+        "schema": "design_document_approval_v1",
+        "task_id": str(manifest.get("task_id") or ""),
+        "task_type": task_type,
+        "document_path": relative(root, document),
+        "document_sha256": document_hash,
+        "approved_by": approved_by,
+        "approved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    atomic_write_text(approval, json.dumps(approval_payload, ensure_ascii=False, indent=2) + "\n")
+    mark_tasks_for_output(
+        root,
+        chapter_number=manifest_chapter_number(manifest),
+        output_path=document,
+        to_status="approved",
+        command="intelligence approve",
+        result=approval,
+        from_statuses=("validated", "approved"),
+    )
+    return DesignApprovalResult(
+        task_type=task_type,
+        document_file=relative(root, document),
+        approval_file=relative(root, approval),
+        document_sha256=document_hash,
+        next_command=(
+            "longform-engine intelligence compile-task project.yaml "
+            f"--task-type {task_type} --document {relative(root, document)}"
+        ),
+    )
+
+
+def create_design_compile_task(
+    config: ConfigDocument,
+    *,
+    task_type: str,
+    document_path: str | Path,
+) -> IntelligenceTaskResult:
+    if task_type not in DESIGN_INTELLIGENCE_TASK_TYPES:
+        raise ValueError(f"{task_type} is not a design_document_v1 task.")
+    root = resolve_project_root(config)
+    document = resolve_candidate(root, document_path)
+    approval = load_design_approval(root, task_type, document)
+    source_manifest = manifest_for_output(root, task_type, document)
+    if source_manifest is None:
+        raise ValueError("Approved design document has no active source task.")
+    source_task = next(
+        (
+            item
+            for item in list_manifests(root)
+            if item.get("task_id") == source_manifest.get("task_id")
+        ),
+        {},
+    )
+    if source_task.get("status") != "approved":
+        raise ValueError("Design document must be approved before semantic compilation.")
+    scope = dict(source_manifest.get("scope") or {})
+    token = scope_token(scope)
+    base = f"design_semantic_compile.{task_type}.{token}"
+    instruction = root / "50_workbench" / "intelligence_tasks" / f"{base}.md"
+    delta = root / "50_workbench" / "intelligence_candidates" / f"{base}.delta.json"
+    manifest_file = root / "50_workbench" / "agent_tasks" / f"{base}.manifest.json"
+    instruction_text = render_design_compile_instruction(
+        task_type=task_type,
+        document=relative(root, document),
+        document_hash=str(approval["document_sha256"]),
+        domain_schema=str(TASK_SPECS[task_type]["schema"]),
+        output=relative(root, delta),
+    )
+    atomic_write_text(instruction, instruction_text)
+    document_rel = relative(root, document)
+    delta_rel = relative(root, delta)
+    scope_args = scope_command_args(scope)
+    validate_command = (
+        "longform-engine intelligence compile-validate project.yaml "
+        f"--task-type {task_type} --document {document_rel} --delta {delta_rel}"
+    )
+    apply_command = (
+        "longform-engine intelligence apply project.yaml "
+        f"--task-type {task_type} --document {document_rel} --delta {delta_rel} --approved-by human"
+    )
+    manifest = build_manifest(
+        root,
+        task_type="design_semantic_compile",
+        chapter_number=int(scope.get("chapter_number") or 0) or None,
+        scope=scope,
+        input_files=(instruction, document),
+        allowed_output_paths=(delta,),
+        output_schema=CANONICAL_DELTA_SCHEMA,
+        validate_command=validate_command,
+        apply_command=apply_command,
+        failure_next_command=(
+            "longform-engine intelligence compile-task project.yaml "
+            f"--task-type {task_type} --document {document_rel}{scope_args}"
+        ),
+        canonical_targets=design_apply_targets(root, task_type, scope),
+        requires_human_apply=True,
+        context_policy={
+            "required_files": [instruction, document],
+            "optional_files": [],
+            "compiled_brief": instruction,
+            "selection_report": instruction,
+            "trigger_codes": [task_type],
+        },
+        task_id=f"design_semantic_compile:{task_type}:{token}:v4",
+    )
+    written = write_manifest(root, manifest, manifest_file)
+    return IntelligenceTaskResult(
+        task_type="design_semantic_compile",
+        task_id=str(manifest["task_id"]),
+        manifest_file=relative(root, written),
+        instruction_file=relative(root, instruction),
+        candidate_file=delta_rel,
+        next_command=f"longform-engine agent-task brief project.yaml {manifest['task_id']}",
+    )
+
+
+def validate_design_compile_delta(
+    config: ConfigDocument,
+    *,
+    task_type: str,
+    document_path: str | Path,
+    delta_path: str | Path,
+) -> IntelligenceValidationResult:
+    if task_type not in DESIGN_INTELLIGENCE_TASK_TYPES:
+        raise ValueError(f"{task_type} is not a design_document_v1 task.")
+    root = resolve_project_root(config)
+    document = resolve_candidate(root, document_path)
+    delta = resolve_candidate(root, delta_path)
+    errors: list[str] = []
+    approval = load_design_approval(root, task_type, document, errors=errors)
+    manifest = manifest_for_output(root, "design_semantic_compile", delta)
+    if manifest is None:
+        errors.append("delta is not declared by an active design_semantic_compile task.")
+    else:
+        _task, control_errors = validate_current_task_result(
+            root,
+            chapter_number=manifest_chapter_number(manifest),
+            task_type="design_semantic_compile",
+            output_path=delta,
+            allowed_statuses=("submitted", "validated"),
+        )
+        errors.extend(control_errors)
+    payload: dict[str, Any] = {}
+    try:
+        loaded = json.loads(delta.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            raise ValueError("delta must be a JSON object")
+        payload = loaded
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        errors.append(f"delta is not valid UTF-8 JSON: {exc}")
+    if payload:
+        errors.extend(validate_canonical_delta(payload, task_type="design_semantic_compile"))
+        if payload.get("uncertainties"):
+            errors.append("canonical delta uncertainties must be resolved before apply.")
+        evidence_records, evidence_errors = validate_review_evidence_for_source(
+            {"findings": [{"evidence_ids": item} for item in (payload.get("evidence") or {}).values()]},
+            source_path=relative(root, document),
+            source_text=document.read_text(encoding="utf-8"),
+        )
+        errors.extend(evidence_errors)
+        errors.extend(validate_delta_evidence_completeness(payload))
+        errors.extend(validate_delta_document_grounding(payload, evidence_records))
+        try:
+            domain_payload = canonical_delta_domain_payload(
+                payload,
+                task_type="design_semantic_compile",
+                domain_schema=str(TASK_SPECS[task_type]["schema"]),
+                cli_fields=design_cli_fields(config, root, task_type, manifest),
+            )
+        except AgentProtocolError as exc:
+            errors.append(str(exc))
+        else:
+            validate_payload(
+                config,
+                root,
+                task_type,
+                TASK_SPECS[task_type],
+                domain_payload,
+                manifest,
+                errors,
+            )
+    report = root / "50_workbench" / "intelligence_validations" / f"{delta.stem}.validation.json"
+    ok = not errors
+    next_command = (
+        "longform-engine intelligence apply project.yaml "
+        f"--task-type {task_type} --document {relative(root, document)} "
+        f"--delta {relative(root, delta)} --approved-by human"
+        if ok
+        else str(
+            manifest_commands(manifest or {}).get("failure")
+            or "longform-engine intelligence compile-task project.yaml "
+            f"--task-type {task_type} --document {relative(root, document)}"
+        )
+    )
+    report_payload = build_validation_report(
+        ok=ok,
+        stage="intelligence_compile_validate",
+        subject=relative(root, delta),
+        errors=errors,
+        blockers=errors,
+        provenance={
+            "task_type": task_type,
+            "document_path": relative(root, document),
+            "document_sha256": approval.get("document_sha256", "") if isinstance(approval, dict) else "",
+            "delta_sha256": sha256(delta.read_bytes()).hexdigest() if delta.is_file() else "",
+            "canonical_mutated": False,
+        },
+        next_command=next_command,
+    )
+    atomic_write_text(report, json.dumps(report_payload, ensure_ascii=False, indent=2) + "\n")
+    mark_tasks_for_output(
+        root,
+        chapter_number=manifest_chapter_number(manifest or {}),
+        output_path=delta,
+        to_status="validated" if ok else "invalid",
+        command="intelligence compile-validate",
+        result=report,
+        from_statuses=("submitted", "validated", "invalid"),
+    )
+    return IntelligenceValidationResult(
+        task_type=task_type,
+        ok=ok,
+        candidate_file=relative(root, delta),
+        report_file=relative(root, report),
+        errors=tuple(errors),
+        next_command=next_command,
+    )
+
+
+def apply_compiled_design(
+    config: ConfigDocument,
+    *,
+    task_type: str,
+    document_path: str | Path,
+    delta_path: str | Path,
+    approved_by: str,
+) -> IntelligenceApplyResult:
+    if approved_by != "human":
+        raise ValueError("Compiled design apply requires --approved-by human.")
+    root = resolve_project_root(config)
+    document = resolve_candidate(root, document_path)
+    delta = resolve_candidate(root, delta_path)
+    validation = validate_design_compile_delta(
+        config,
+        task_type=task_type,
+        document_path=document,
+        delta_path=delta,
+    )
+    if not validation.ok:
+        raise ValueError("Compiled design delta is invalid: " + "; ".join(validation.errors))
+    manifest = manifest_for_output(root, "design_semantic_compile", delta)
+    if manifest is None:
+        raise ValueError("Compiled design delta has no current task.")
+    raw_delta = json.loads(delta.read_text(encoding="utf-8"))
+    domain_payload = canonical_delta_domain_payload(
+        raw_delta,
+        task_type="design_semantic_compile",
+        domain_schema=str(TASK_SPECS[task_type]["schema"]),
+        cli_fields=design_cli_fields(config, root, task_type, manifest),
+    )
+    scope = dict(manifest.get("scope") or {})
+    canonical_document = design_document_target(root, task_type, scope)
+    canonical_delta = design_delta_target(root, task_type, scope)
+    touched = design_apply_targets(root, task_type, scope, payload=domain_payload)
+    with apply_transaction(
+        root,
+        command=f"intelligence apply compiled {task_type}",
+        chapter_number=int(scope.get("chapter_number") or 0) or None,
+        source_paths=(document, delta),
+        touched_paths=tuple(touched),
+        metadata={
+            "task_type": task_type,
+            "compile_task_id": str(manifest.get("task_id") or ""),
+            "approved_by": approved_by,
+            "document_sha256": sha256(document.read_bytes()).hexdigest(),
+        },
+    ) as transaction:
+        atomic_write_text(canonical_document, document.read_text(encoding="utf-8").rstrip() + "\n")
+        write_json(
+            canonical_delta,
+            {
+                "schema": "approved_design_delta_v1",
+                "task_type": task_type,
+                "scope": scope,
+                "document_path": relative(root, canonical_document),
+                "document_sha256": sha256(document.read_bytes()).hexdigest(),
+                "delta": raw_delta,
+            },
+        )
+        write_targets(config, root, task_type, domain_payload, scope=scope)
+    mark_tasks_for_chapter_type(
+        root,
+        chapter_number=int(scope.get("chapter_number") or 0),
+        task_types=("design_semantic_compile", task_type),
+        to_status="applied",
+        command="intelligence apply compiled",
+        artifact=delta,
+        result=transaction.report_file,
+        from_statuses=("validated", "approved"),
+    )
+    return IntelligenceApplyResult(
+        task_type=task_type,
+        status="applied",
+        candidate_file=relative(root, delta),
+        touched_paths=tuple(relative(root, path) for path in touched),
+        transaction_report=relative(root, transaction.report_file),
+        next_command="longform-engine production next project.yaml",
+    )
+
+
+def design_approval_path(root: Path, document: Path) -> Path:
+    return root / "50_workbench" / "intelligence_approvals" / f"{document.stem}.approval.json"
+
+
+def load_design_approval(
+    root: Path,
+    task_type: str,
+    document: Path,
+    *,
+    errors: list[str] | None = None,
+) -> dict[str, Any]:
+    target = errors if errors is not None else []
+    path = design_approval_path(root, document)
+    payload = read_json(path, {})
+    if not isinstance(payload, dict) or payload.get("schema") != "design_document_approval_v1":
+        target.append("design document has no valid human approval record.")
+    else:
+        if payload.get("task_type") != task_type:
+            target.append("design approval task_type does not match the requested compilation.")
+        if payload.get("document_path") != relative(root, document):
+            target.append("design approval points to a different document.")
+        current_hash = sha256(document.read_bytes()).hexdigest() if document.is_file() else ""
+        if payload.get("document_sha256") != current_hash:
+            target.append("design document changed after approval; revalidate and approve it again.")
+        if payload.get("approved_by") != "human":
+            target.append("design approval must be recorded by human.")
+    if target and errors is None:
+        raise ValueError(" ".join(target))
+    return payload if isinstance(payload, dict) else {}
+
+
+def render_design_compile_instruction(
+    *,
+    task_type: str,
+    document: str,
+    document_hash: str,
+    domain_schema: str,
+    output: str,
+) -> str:
+    return "\n".join(
+        (
+            "# 设计文档语义编译任务",
+            "",
+            f"- 原设计任务：`{task_type}`",
+            f"- 已批准文档：`{document}`",
+            f"- 文档 SHA-256：`{document_hash}`",
+            f"- CLI 内部领域 schema：`{domain_schema}`",
+            f"- 唯一输出：`{output}`",
+            "",
+            "## 编译职责",
+            "只把已批准 Markdown 中明确成立的事实编译为 canonical_delta_v1。",
+            "changes 使用目标领域字段，但不要写 schema、路径、hash、章节范围、命令或时间。",
+            "evidence 必须使用 /changes/... JSON Pointer 映射到 document@start:end。",
+            "备选方案、被否决内容、示例和分析理由不能作为已批准事实。",
+            "任何稳定 ID、窗口、关系或语义存在歧义时写入 uncertainties；CLI 将阻止 apply。",
+            "",
+        )
+    )
+
+
+def design_cli_fields(
+    config: ConfigDocument,
+    root: Path,
+    task_type: str,
+    manifest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    scope = (manifest or {}).get("scope") if isinstance((manifest or {}).get("scope"), dict) else {}
+    if task_type == "chapter_direction":
+        chapter_number = int(scope.get("chapter_number") or 0)
+        card = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+        return {
+            "chapter_number": chapter_number,
+            "chapter_card_sha256": sha256(card.read_bytes()).hexdigest() if card.is_file() else "",
+            "trigger_reasons": assess_chapter_direction(config, chapter_number)["reasons"],
+        }
+    if task_type == "outline_revision":
+        return {
+            "from_chapter": int(scope.get("from_chapter") or 0),
+            "to_chapter": int(scope.get("to_chapter") or 0),
+        }
+    if task_type == "book_ideation":
+        return {
+            "round": next_book_ideation_round(root),
+            "dimension": next_book_ideation_dimension(root),
+        }
+    return {}
+
+
+def validate_delta_evidence_completeness(payload: dict[str, Any]) -> list[str]:
+    changes = payload.get("changes") if isinstance(payload.get("changes"), dict) else {}
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    errors: list[str] = []
+    for key in changes:
+        escaped = str(key).replace("~", "~0").replace("/", "~1")
+        prefix = f"/changes/{escaped}"
+        if not any(pointer == prefix or pointer.startswith(prefix + "/") for pointer in evidence):
+            errors.append(f"change field `{key}` has no evidence pointer.")
+    return errors
+
+
+def validate_delta_document_grounding(
+    payload: dict[str, Any],
+    evidence_records: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Require machine facts to be textually present in their bound Markdown evidence."""
+
+    evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+    errors: list[str] = []
+    for pointer, evidence_ids in evidence.items():
+        value = json_pointer_value(payload, str(pointer))
+        if value is None:
+            continue
+        excerpts = "\n".join(
+            str(evidence_records.get(str(evidence_id), {}).get("excerpt") or "")
+            for evidence_id in evidence_ids if str(evidence_id)
+        )
+        compact_excerpt = normalize_grounding_text(excerpts)
+        for scalar in design_fact_scalars(value):
+            if normalize_grounding_text(scalar) not in compact_excerpt:
+                errors.append(
+                    f"delta fact `{scalar[:80]}` at `{pointer}` is absent from its Markdown evidence."
+                )
+                if len(errors) >= 20:
+                    return errors
+    return errors
+
+
+def json_pointer_value(payload: dict[str, Any], pointer: str) -> Any:
+    current: Any = payload
+    if not pointer.startswith("/"):
+        return None
+    for token in pointer.split("/")[1:]:
+        key = token.replace("~1", "/").replace("~0", "~")
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        elif isinstance(current, list) and key.isdigit() and int(key) < len(current):
+            current = current[int(key)]
+        else:
+            return None
+    return current
+
+
+def design_fact_scalars(value: Any) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if len(text) >= 2 else []
+    if isinstance(value, list):
+        return [item for child in value for item in design_fact_scalars(child)]
+    if isinstance(value, dict):
+        return [item for child in value.values() for item in design_fact_scalars(child)]
+    return []
+
+
+def normalize_grounding_text(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "")).casefold()
+
+
+def design_document_target(root: Path, task_type: str, scope: dict[str, Any]) -> Path:
+    token = scope_token(scope)
+    if task_type == "chapter_direction":
+        return root / "20_outline" / "chapter_directions" / f"{token}.md"
+    if task_type in {"outline_design", "outline_extension", "outline_revision"}:
+        return root / "20_outline" / "design_documents" / f"{task_type}.{token}.md"
+    return root / "10_bible" / "design_documents" / f"{task_type}.{token}.md"
+
+
+def design_delta_target(root: Path, task_type: str, scope: dict[str, Any]) -> Path:
+    return root / "30_state" / "design_deltas" / f"{task_type}.{scope_token(scope)}.json"
+
+
+def design_apply_targets(
+    root: Path,
+    task_type: str,
+    scope: dict[str, Any],
+    *,
+    payload: dict[str, Any] | None = None,
+) -> list[Path]:
+    if payload is None:
+        targets = [root / item for item in TASK_SPECS[task_type]["targets"]]
+        if task_type == "chapter_direction":
+            chapter = int(scope.get("chapter_number") or 0)
+            targets.extend(
+                (
+                    root / "20_outline" / "chapter_cards" / f"ch{chapter:03d}.json",
+                    root / "20_outline" / "chapter_cards" / f"ch{chapter:03d}.md",
+                    root / "20_outline" / "chapter_plan.json",
+                )
+            )
+        if task_type == "outline_revision":
+            targets.append(
+                root
+                / "20_outline"
+                / "revise_reports"
+                / f"agent_revision_ch{int(scope.get('from_chapter') or 0):03d}-ch{int(scope.get('to_chapter') or 0):03d}.json"
+            )
+    else:
+        targets = apply_targets(root, task_type, payload, scope=scope)
+    targets.extend(
+        (
+            design_document_target(root, task_type, scope),
+            design_delta_target(root, task_type, scope),
+        )
+    )
+    return list(dict.fromkeys(targets))
 
 
 def require_spec(task_type: str) -> dict[str, Any]:
@@ -1128,8 +1753,11 @@ def write_outline_extension_context(
         },
     }
     rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    if len(rendered) > 18_000:
-        raise ValueError("Compiled outline extension context exceeds 18000 characters.")
+    budget = resolve_context_budget_contract(root)
+    payload["selection"]["estimated_units"] = estimate_text_units(rendered, budget.estimator)
+    payload["selection"]["budget_profile"] = budget.profile
+    payload["selection"]["capacity_units"] = budget.capacity_units
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     target = (
         root / "50_workbench" / "intelligence_context" /
         f"outline_extension.ch{start:03d}-ch{end:03d}.context.json"
@@ -1143,6 +1771,8 @@ def intelligence_canonical_targets(
     task_type: str,
     scope: dict[str, Any],
 ) -> tuple[str, ...]:
+    if task_type in DESIGN_INTELLIGENCE_TASK_TYPES:
+        return tuple(relative(root, path) for path in design_apply_targets(root, task_type, scope))
     if task_type == "chapter_direction":
         chapter_number = int(scope["chapter_number"])
         return (
@@ -1273,31 +1903,297 @@ def resolve_candidate(root: Path, file_path: str | Path) -> Path:
 
 def manifest_for_output(root: Path, task_type: str, candidate: Path) -> dict[str, Any] | None:
     output = relative(root, candidate)
-    active = {"awaiting_agent", "submitted", "validated", "invalid"}
+    active = {"awaiting_agent", "submitted", "validated", "approved", "invalid"}
     for entry in reversed(list_manifests(root)):
-        if entry.get("task_type") == task_type and entry.get("status") in active and output in entry.get("allowed_output_paths", []):
+        if (
+            entry.get("task_type") == task_type
+            and entry.get("status") in active
+            and output == manifest_output(entry).get("path")
+        ):
             manifest_path = root / str(entry.get("manifest_file") or "")
             try:
                 payload = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 return None
-            return payload if isinstance(payload, dict) else None
+            if not isinstance(payload, dict):
+                return None
+            from longform_engine.agent_tasks import normalize_manifest
+
+            return normalize_manifest(payload)
     return None
 
 
-def load_candidate(path: Path, errors: list[str]) -> dict[str, Any] | None:
+def load_candidate(
+    config: ConfigDocument,
+    root: Path,
+    path: Path,
+    errors: list[str],
+    *,
+    task_type: str,
+    spec: dict[str, Any],
+    manifest: dict[str, Any] | None,
+) -> dict[str, Any] | None:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8").lstrip("\ufeff")
     except FileNotFoundError:
         errors.append(f"candidate file does not exist: {path}")
         return None
-    except json.JSONDecodeError as exc:
-        errors.append(f"candidate is not valid JSON: {exc}")
+    protocol = output_protocol_for_task(task_type)
+    try:
+        if protocol == DESIGN_DOCUMENT_SCHEMA:
+            raise AgentProtocolError(
+                "design_document_v1 is authoritative Markdown and must use approve -> compile-task"
+            )
+        else:
+            payload = json.loads(text)
+            if protocol == CANONICAL_DELTA_SCHEMA:
+                raw_delta = payload
+                payload = canonical_delta_domain_payload(
+                    raw_delta,
+                    task_type=task_type,
+                    domain_schema=str(spec["schema"]),
+                )
+                payload = hydrate_canonical_delta_domain_payload(
+                    config,
+                    root,
+                    task_type=task_type,
+                    delta=raw_delta,
+                    domain_payload=payload,
+                    manifest=manifest,
+                )
+            elif protocol == EVIDENCE_REVIEW_SCHEMA:
+                review_errors = validate_evidence_review(payload)
+                if review_errors:
+                    raise AgentProtocolError("; ".join(review_errors))
+    except (json.JSONDecodeError, AgentProtocolError) as exc:
+        errors.append(f"candidate does not satisfy {protocol}: {exc}")
         return None
     if not isinstance(payload, dict):
-        errors.append("candidate must be a JSON object.")
+        errors.append("candidate must normalize to an object.")
         return None
     return payload
+
+
+def hydrate_canonical_delta_domain_payload(
+    config: ConfigDocument,
+    root: Path,
+    *,
+    task_type: str,
+    delta: dict[str, Any],
+    domain_payload: dict[str, Any],
+    manifest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Derive CLI-owned evidence fields without expanding the Agent protocol."""
+
+    if task_type == "fanfiction_canon":
+        return hydrate_fanfiction_canon_delta(config, root, delta, domain_payload, manifest)
+    if task_type == "research_synthesis":
+        return hydrate_research_delta(root, delta, domain_payload, manifest)
+    return domain_payload
+
+
+def hydrate_fanfiction_canon_delta(
+    config: ConfigDocument,
+    root: Path,
+    delta: dict[str, Any],
+    payload: dict[str, Any],
+    manifest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if any(field in payload for field in ("continuity_mode",)):
+        raise AgentProtocolError("fanfiction canon changes must not repeat CLI-known continuity_mode")
+    configured = config.data.get("fanfiction")
+    configured = configured if isinstance(configured, dict) else {}
+    configured_sources = {
+        str(item.get("source_id")): item
+        for item in configured.get("sources") or []
+        if isinstance(item, dict) and item.get("source_id")
+    }
+    sources = payload.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise AgentProtocolError("fanfiction canon changes.sources must be a non-empty list")
+    evidence_map = delta.get("evidence") if isinstance(delta.get("evidence"), dict) else {}
+    hydrated_sources: list[dict[str, Any]] = []
+    fact_collections = (
+        "characters",
+        "relationships",
+        "world_rules",
+        "abilities",
+        "timeline",
+        "terminology",
+        "canon_events",
+        "unresolved_questions",
+    )
+    for source_index, raw_source in enumerate(sources):
+        if not isinstance(raw_source, dict):
+            raise AgentProtocolError(f"fanfiction canon sources[{source_index}] must be an object")
+        forbidden = {"title", "creator", "canon_cutoff", "source_files", "source_hashes", "evidence"}
+        repeated = sorted(forbidden & set(raw_source))
+        if repeated:
+            raise AgentProtocolError(
+                "fanfiction canon changes must not repeat CLI-owned fields: " + ", ".join(repeated)
+            )
+        source_id = str(raw_source.get("source_id") or "")
+        source_config = configured_sources.get(source_id)
+        if not isinstance(source_config, dict):
+            raise AgentProtocolError(f"fanfiction canon source_id is not configured: {source_id}")
+        source_pointer = f"/changes/sources/{source_index}"
+        raw_refs = sorted(
+            {
+                ref
+                for pointer, refs in evidence_map.items()
+                if pointer == source_pointer or pointer.startswith(source_pointer + "/")
+                for ref in refs
+            }
+        )
+        if not raw_refs:
+            raise AgentProtocolError(f"fanfiction canon sources[{source_index}] has no evidence")
+        resolved = [resolve_delta_evidence(root, ref, manifest) for ref in raw_refs]
+        evidence_ids = {
+            item["ref"]: f"{source_id}:e{index:03d}"
+            for index, item in enumerate(resolved, start=1)
+        }
+        hydrated = dict(raw_source)
+        hydrated.update(
+            {
+                "title": str(source_config.get("title") or ""),
+                "creator": str(source_config.get("creator") or ""),
+                "canon_cutoff": str(source_config.get("canon_cutoff") or ""),
+                "source_files": sorted({item["path"] for item in resolved}),
+                "source_hashes": {
+                    path: next(item["sha256"] for item in resolved if item["path"] == path)
+                    for path in sorted({item["path"] for item in resolved})
+                },
+                "evidence": [
+                    {
+                        "evidence_id": evidence_ids[item["ref"]],
+                        "source_path": item["path"],
+                        "source_hash": item["sha256"],
+                        "evidence_span": {"start": item["start"], "end": item["end"]},
+                    }
+                    for item in resolved
+                ],
+            }
+        )
+        for collection in fact_collections:
+            records = hydrated.get(collection)
+            if not isinstance(records, list):
+                continue
+            for record_index, record in enumerate(records):
+                if not isinstance(record, dict):
+                    continue
+                if "evidence_refs" in record:
+                    raise AgentProtocolError(
+                        f"fanfiction canon {collection}[{record_index}] repeats evidence_refs"
+                    )
+                pointer = f"{source_pointer}/{collection}/{record_index}"
+                refs = delta_refs_for_pointer(evidence_map, pointer)
+                if not refs:
+                    raise AgentProtocolError(f"fanfiction canon `{pointer}` has no evidence mapping")
+                record["evidence_refs"] = [evidence_ids[ref] for ref in refs]
+        hydrated_sources.append(hydrated)
+    return {
+        **payload,
+        "continuity_mode": str(configured.get("continuity_mode") or ""),
+        "sources": hydrated_sources,
+    }
+
+
+def hydrate_research_delta(
+    root: Path,
+    delta: dict[str, Any],
+    payload: dict[str, Any],
+    manifest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    repeated = sorted({"source_files", "source_hashes"} & set(payload))
+    if repeated:
+        raise AgentProtocolError(
+            "research changes must not repeat CLI-owned fields: " + ", ".join(repeated)
+        )
+    claims = payload.get("claims")
+    if not isinstance(claims, list):
+        raise AgentProtocolError("research changes.claims must be a list")
+    evidence_map = delta.get("evidence") if isinstance(delta.get("evidence"), dict) else {}
+    hydrated_claims: list[dict[str, Any]] = []
+    resolved_all: list[dict[str, Any]] = []
+    for index, raw_claim in enumerate(claims):
+        if not isinstance(raw_claim, dict):
+            raise AgentProtocolError(f"research changes.claims[{index}] must be an object")
+        forbidden = {"source_path", "source_hash", "evidence_span", "evidence"}
+        repeated = sorted(forbidden & set(raw_claim))
+        if repeated:
+            raise AgentProtocolError(
+                f"research changes.claims[{index}] repeats CLI-owned evidence fields: "
+                + ", ".join(repeated)
+            )
+        pointer = f"/changes/claims/{index}"
+        refs = delta_refs_for_pointer(evidence_map, pointer)
+        if len(refs) != 1:
+            raise AgentProtocolError(f"research `{pointer}` must map to exactly one evidence span")
+        resolved = resolve_delta_evidence(root, refs[0], manifest)
+        resolved_all.append(resolved)
+        hydrated_claims.append(
+            {
+                **raw_claim,
+                "source_path": resolved["path"],
+                "source_hash": resolved["sha256"],
+                "evidence_span": {"start": resolved["start"], "end": resolved["end"]},
+                "evidence": resolved["text"],
+            }
+        )
+    paths = sorted({item["path"] for item in resolved_all})
+    return {
+        **payload,
+        "source_files": paths,
+        "source_hashes": {
+            path: next(item["sha256"] for item in resolved_all if item["path"] == path)
+            for path in paths
+        },
+        "claims": hydrated_claims,
+    }
+
+
+def delta_refs_for_pointer(evidence_map: dict[str, Any], pointer: str) -> list[str]:
+    return sorted(
+        {
+            str(ref)
+            for evidence_pointer, refs in evidence_map.items()
+            if evidence_pointer == pointer or evidence_pointer.startswith(pointer + "/")
+            for ref in refs
+        }
+    )
+
+
+def resolve_delta_evidence(
+    root: Path,
+    reference: str,
+    manifest: dict[str, Any] | None,
+) -> dict[str, Any]:
+    match = re.fullmatch(r"(.+)@(\d+):(\d+)", str(reference))
+    if not match:
+        raise AgentProtocolError(f"invalid evidence ID `{reference}`; expected project/path@start:end")
+    relative_source = match.group(1).replace("\\", "/")
+    declared = set(manifest_input_paths(manifest or {}))
+    if relative_source not in declared:
+        raise AgentProtocolError(f"evidence source is not declared by the manifest: {relative_source}")
+    source = (root / relative_source).resolve()
+    try:
+        source.relative_to(root.resolve())
+    except ValueError as exc:
+        raise AgentProtocolError(f"evidence source escapes project root: {relative_source}") from exc
+    if not source.is_file():
+        raise AgentProtocolError(f"evidence source does not exist: {relative_source}")
+    text = source.read_text(encoding="utf-8").lstrip("\ufeff")
+    start, end = int(match.group(2)), int(match.group(3))
+    if start < 0 or end <= start or end > len(text):
+        raise AgentProtocolError(f"evidence span is outside source content: {reference}")
+    return {
+        "ref": str(reference),
+        "path": relative_source,
+        "sha256": sha256(source.read_bytes()).hexdigest(),
+        "start": start,
+        "end": end,
+        "text": text[start:end],
+    }
 
 
 def validate_payload(
@@ -1309,8 +2205,9 @@ def validate_payload(
     manifest: dict[str, Any] | None,
     errors: list[str],
 ) -> None:
-    if payload.get("schema") != spec["schema"]:
-        errors.append(f"schema must be {spec['schema']}.")
+    protocol = output_protocol_for_task(task_type)
+    if protocol != EVIDENCE_REVIEW_SCHEMA and payload.get("schema") != spec["schema"]:
+        errors.append(f"schema must normalize to {spec['schema']}.")
     validators = {
         "book_ideation": lambda value, target: validate_book_ideation(root, value, target),
         "fanfiction_canon": lambda value, target: validate_fanfiction_canon(config, value, target),
@@ -1323,11 +2220,7 @@ def validate_payload(
             )
         ),
         "character_expression_review": lambda value, target: target.extend(
-            validate_character_expression_review(
-                root,
-                value,
-                manifest_inputs=(manifest or {}).get("input_files", []),
-            )
+            validate_evidence_review(value)
         ),
         "outline_design": lambda value, target: validate_outline_design(config, value, target),
         "outline_extension": lambda value, target: validate_outline_extension(
@@ -1431,7 +2324,7 @@ def validate_chapter_direction(
     }
     require_keys(payload, required, required, errors)
     chapter_number = payload.get("chapter_number")
-    manifest_chapter = int((manifest or {}).get("chapter_number") or 0)
+    manifest_chapter = manifest_chapter_number(manifest or {})
     if not isinstance(chapter_number, int) or chapter_number <= 0:
         errors.append("chapter_number must be a positive integer.")
         return
@@ -2227,7 +3120,7 @@ def validate_sources(
     if not isinstance(sources, list) or not sources:
         errors.append("source_files must be a non-empty list.")
         return
-    declared = set(str(item) for item in (manifest or {}).get("input_files", []))
+    declared = set(manifest_input_paths(manifest or {}))
     hashes = payload.get("source_hashes") if isinstance(payload.get("source_hashes"), dict) else {}
     for index, item in enumerate(sources):
         source = str(item)
@@ -2274,7 +3167,7 @@ def validate_fanfiction_source_evidence(
     manifest: dict[str, Any] | None,
     errors: list[str],
 ) -> None:
-    declared = set(str(item) for item in (manifest or {}).get("input_files", []))
+    declared = set(manifest_input_paths(manifest or {}))
     for source_index, source in enumerate(payload.get("sources") or []):
         if not isinstance(source, dict):
             continue
@@ -2797,7 +3690,13 @@ def walk_strings(value: Any) -> Iterable[str]:
             yield from walk_strings(child)
 
 
-def apply_targets(root: Path, task_type: str, payload: dict[str, Any]) -> list[Path]:
+def apply_targets(
+    root: Path,
+    task_type: str,
+    payload: dict[str, Any],
+    *,
+    scope: dict[str, Any] | None = None,
+) -> list[Path]:
     spec = TASK_SPECS[task_type]
     targets = [root / item for item in spec["targets"]]
     if task_type == "chapter_direction":
@@ -2814,7 +3713,12 @@ def apply_targets(root: Path, task_type: str, payload: dict[str, Any]) -> list[P
             if optional in payload:
                 targets.append(root / "10_bible" / f"{optional}.json")
     if task_type == "character_expression_review":
-        targets.append(root / "50_workbench" / "character_reviews" / character_review_report_name(payload))
+        targets.append(
+            root
+            / "50_workbench"
+            / "character_reviews"
+            / character_review_report_name(scope or {})
+        )
     if task_type == "fanfiction_design":
         book_design = payload.get("book_design") if isinstance(payload.get("book_design"), dict) else {}
         for optional in ("factions", "locations"):
@@ -2825,7 +3729,14 @@ def apply_targets(root: Path, task_type: str, payload: dict[str, Any]) -> list[P
     return targets
 
 
-def write_targets(config: ConfigDocument, root: Path, task_type: str, payload: dict[str, Any]) -> None:
+def write_targets(
+    config: ConfigDocument,
+    root: Path,
+    task_type: str,
+    payload: dict[str, Any],
+    *,
+    scope: dict[str, Any] | None = None,
+) -> None:
     if task_type == "book_ideation":
         write_book_ideation_decision(root, payload)
         return
@@ -2839,7 +3750,10 @@ def write_targets(config: ConfigDocument, root: Path, task_type: str, payload: d
         mark_project_intelligence_applied(root, "character_expression_design", payload)
         return
     if task_type == "character_expression_review":
-        write_json(root / "50_workbench" / "character_reviews" / character_review_report_name(payload), payload)
+        write_json(
+            root / "50_workbench" / "character_reviews" / character_review_report_name(scope or {}),
+            payload,
+        )
         return
     if task_type == "fanfiction_canon":
         canonical = dict(payload)
@@ -3200,89 +4114,90 @@ def revision_report_name(payload: dict[str, Any]) -> str:
     return f"agent_revision_ch{int(payload['from_chapter']):03d}-ch{int(payload['to_chapter']):03d}.json"
 
 
-def character_review_report_name(payload: dict[str, Any]) -> str:
-    scope = payload.get("scope") if isinstance(payload.get("scope"), dict) else {}
+def character_review_report_name(scope: dict[str, Any]) -> str:
     return f"review_ch{int(scope.get('from_chapter') or 0):03d}-ch{int(scope.get('to_chapter') or 0):03d}.json"
 
 
 def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, Any], inputs: list[str], output: str) -> str:
     requirements = {
         "book_ideation": (
-            "Ask exactly one core question for the declared dimension. Return two or three materially different "
-            "options with explicit tradeoffs. selection must record the user's explicit option or provided answer; "
-            "do not infer consent or answer additional dimensions."
+            "只推动当前维度的一个真实创作决定；给出二至三个有实质差异的选项与代价，"
+            "记录用户明确决定，不替用户默选，也不顺带决定其他维度。"
         ),
         "fanfiction_canon": (
-            "Extract paraphrased canon facts with source-scoped ids and evidence hash/span records. Preserve names, "
-            "relationships, world rules, abilities, terminology, timeline, and unresolved canon questions. Do not "
-            "store source prose in the output and do not infer rights status."
+            "用来源命名空间 ID 和可回读 span 转述 canon 事实，覆盖人物、关系、规则、能力、术语、"
+            "时间线与未解决问题；不保存连续原文，不自行判断授权状态。"
         ),
         "fanfiction_design": (
-            "Design the declared fanfiction form, divergence causality, voice contracts, original mainline, original "
-            "contribution, protected reveals, and nested book_design. Canon divergence is allowed when declared and "
-            "causally supported. Crossover rules must explain namespace, power conversion, and conflict resolution."
+            "建立同人形态、分歧因果、人物声音、原创主线、原创贡献和保护揭露。已声明且有因果支持的"
+            "分歧不是 OOC；联动作品必须说明命名空间、力量换算与规则冲突。"
         ),
         "book_design": (
-            "creative_brief.design_decisions must define core_hook, world_rule, protagonist_desire, "
-            "long_conflict, volume_escalation, and ending_boundary. Every character needs stable id, name, "
-            "goal, flaw, and at least three arc_stages. Return book_design_candidate_v2 with the narrative "
-            "expression profile and a complete character expression contract for every character."
+            "明确读者承诺、核心卖点、世界规则、主角欲望与缺陷、长期冲突、升级方式和结局边界。"
+            "每个重要人物都要有稳定 ID、目标、缺陷、关系与可观察的人物弧。"
         ),
         "character_expression_design": (
-            "Define a genre-neutral narrative expression profile and one complete contract per declared character. "
-            "Differentiate perception, decisions, speech register, conversation tactics, emotional leakage, physical "
-            "presence, masks, private wants, contradictions, and contrasts. Examples are evidence, not phrases to copy."
+            "把人物设定转成可观察合同：感知偏向、决策习惯、语言层级、对话策略、情绪泄漏、"
+            "身体反应、社会面具、私欲、矛盾与对照；示例只用于校准，不能当口头禅模板。"
         ),
         "character_expression_review": (
-            "Review every chapter in the declared range for voice fit, dialogue swapability, character-as-function, "
-            "embodied presence, narrator over-explanation, and dialogue-as-exposition. Cite at least one exact hash-bound "
-            "source span for every chapter and every reviewed character, including pass verdicts."
+            "逐章检查声音匹配、对白可互换、人物工具化、具身存在、叙述者代替人物解释和说明式对白。"
+            "问题结论必须引用 hash 绑定的精确 span；证据不足时明确 insufficient。"
         ),
         "outline_design": (
-            "Budget the complete book as story arcs and volumes by content characters, but detail only the configured "
-            "rolling horizon. Every chapter row must name its arc, volume, featured characters, scene wants, "
-            "relationship move, and no more than three selected story facets. Foreshadowing uses arc_id plus a "
-            "0..1 progress_window; do not invent a fixed final chapter count."
+            "按正文字符预算全书故事弧和卷，只细化滚动窗口。每章说明故事弧、卷、章节职责、登场人物、"
+            "场景欲望、关系变化和最多三个活跃分面；伏笔使用 arc_id 与进度窗口，不虚构固定终章数。"
         ),
         "outline_extension": (
-            "Extend only the declared rolling chapter range. Continue existing arc, volume, character, relationship, "
-            "and promise causality. Return no earlier chapter rows. Foreshadow updates remain arc-relative and the "
-            "human selection is required before apply."
+            "只扩展声明的滚动章节范围，承接既有故事弧、人物、关系和承诺因果，不重复早期章节。"
+            "伏笔继续使用故事弧进度窗口，应用前必须有人明确批准。"
         ),
         "outline_revision": (
-            "Return full replacement structures. impact.stale_chapters and stale_artifacts must match files that "
-            "currently exist inside the declared chapter range; CLI recomputes both lists."
+            "明确修改目标、完整替换内容、依赖影响与保留项。stale 影响只能涉及声明范围内的现有文件，"
+            "CLI 会根据真实依赖重新计算。"
         ),
         "chapter_direction": (
-            "Return two or three causally distinct chapter directions. Each direction must state chapter duty, "
-            "book/volume/protagonist goal, scene chain, named cast desires, dialogue ownership, embodiment and useful "
-            "interiority, conflict, information release, local payoff, cost, mainline/character arc/foreshadow/relationship "
-            "moves, ending mode, and risks. selection must record the human's explicit choice."
+            "给出二至三个因果路径不同的方向，分别说明全书/卷/主角目标、本章职责、场景链、具名人物欲望、"
+            "对白归属、具身反应、有效心理、冲突、信息、收益、代价、主线/人物弧/伏笔/关系变化与风险。"
         ),
         "research_synthesis": (
-            "Include source_hashes. Every claim needs source_hash and evidence_span {start,end}; evidence must be "
-            "the exact UTF-8 character slice from the declared source."
+            "每条 claim 都必须绑定声明来源的 hash 与 UTF-8 字符 span，证据必须与原文切片完全一致。"
         ),
         "adaptation_analysis": (
-            "Store abstract techniques only. Do not quote, reconstruct, split, or lightly paraphrase source prose "
-            "across output fields; CLI runs exact and n-gram similarity checks."
+            "只保留抽象结构和技法，不引用、重构、跨字段拆分或轻改来源正文；CLI 会执行精确与 n-gram 检查。"
         ),
-    }.get(task_type, "Use only declared sources and return the exact output schema.")
+    }.get(task_type, "只使用声明来源，并严格遵守唯一输出协议。")
+    protocol = output_protocol_for_task(task_type)
+    output_rule = {
+        DESIGN_DOCUMENT_SCHEMA: (
+            "只写纯 Markdown，不写 YAML front matter、JSON sidecar 或 CLI 已知字段。必需标题："
+            + "、".join(DESIGN_REQUIRED_HEADINGS.get(task_type, ()))
+        ),
+        CANONICAL_DELTA_SCHEMA: (
+            "只写 canonical_delta_v1 JSON。changes 只保存有证据的领域增量，evidence 使用 JSON Pointer 映射；"
+            "路径、hash、scope、角色和时间由 CLI 提供。"
+        ),
+        EVIDENCE_REVIEW_SCHEMA: (
+            "只写 evidence_review_v1 JSON。coverage 使用维度状态映射，证据 ID 使用 source_ref@start:end；"
+            "不要回填任务、路径、hash、角色、scope 或时间。"
+        ),
+    }[protocol]
     return "\n".join((
-        f"# {task_type} Agent Task",
+        f"# {task_type} Agent 工作单",
         "",
-        f"Output schema: `{spec['schema']}`",
-        f"Scope: `{json.dumps(scope, ensure_ascii=False)}`",
-        f"Allowed output: `{output}`",
+        f"Agent 输出协议：`{protocol}`",
+        f"任务范围：`{json.dumps(scope, ensure_ascii=False)}`",
+        f"唯一允许输出：`{output}`",
         "",
-        "Read only:",
+        "只读输入：",
         *(f"- `{item}`" for item in inputs),
         "",
-        "Validation requirements:",
+        "校验要求：",
         f"- {requirements}",
+        f"- {output_rule}",
         "",
-        "Do not write Bible, outline, research canon, final, RAG, graph, TCS, or SQLite directly.",
-        "Return JSON only. The CLI validates before any explicit apply.",
+        "不得直接写 Bible、outline、research canon、final、RAG、graph、TCS 或 SQLite。",
+        "CLI 只在内存中规范化唯一输出，并在显式 apply 前完成验证。",
         "",
     ))
 
@@ -3295,23 +4210,18 @@ def intelligence_commands(
     input_args: str,
     requires_human: bool,
 ) -> tuple[str, str, str]:
+    if output_protocol_for_task(task_type) == DESIGN_DOCUMENT_SCHEMA:
+        return (
+            f"longform-engine intelligence validate project.yaml --task-type {task_type} --file {candidate}",
+            "longform-engine intelligence approve project.yaml "
+            f"--task-type {task_type} --document {candidate} --approved-by human",
+            f"longform-engine intelligence task project.yaml --task-type {task_type}{range_args}{input_args}",
+        )
     if task_type == "fanfiction_canon":
         return (
             f"longform-engine fanfiction canon-validate project.yaml --file {candidate}",
             f"longform-engine fanfiction canon-apply project.yaml --file {candidate} --approved-by human",
             f"longform-engine fanfiction canon-task project.yaml{input_args}",
-        )
-    if task_type == "fanfiction_design":
-        return (
-            f"longform-engine fanfiction design-validate project.yaml --file {candidate}",
-            f"longform-engine fanfiction design-apply project.yaml --file {candidate} --approved-by human",
-            "longform-engine fanfiction design-task project.yaml",
-        )
-    if task_type == "character_expression_design":
-        return (
-            f"longform-engine character design-validate project.yaml --file {candidate}",
-            f"longform-engine character design-apply project.yaml --file {candidate} --approved-by human",
-            "longform-engine character design-task project.yaml",
         )
     if task_type == "character_expression_review":
         return (

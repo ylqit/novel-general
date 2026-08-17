@@ -10,11 +10,14 @@ import hashlib
 import json
 import re
 
+from longform_engine.agent_protocols import output_protocol_for_task
 from longform_engine.agent_tasks import (
     AgentTaskContractError,
     CHAPTER_CANDIDATE_TASK_TYPES,
     build_manifest,
     list_manifests,
+    manifest_chapter_number,
+    manifest_commands,
     mark_tasks_for_chapter_type,
     mark_tasks_for_output,
     resolve_candidate_task,
@@ -42,6 +45,7 @@ from longform_engine.intelligence import assess_chapter_direction, assess_projec
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.memory import build_tcs
 from longform_engine.planning import event_tier_for_types, recommend_event_types, record_event_usage
+from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.quality import (
     carry_feedback,
     compact_effective_quality_contract,
@@ -975,7 +979,7 @@ def submit_agent_draft(
         f"chapter finalize --chapter {chapter_number} --approved-by human"
         if gate.passed
         else (
-            f"agent-task brief project.yaml semantic_review:ch{chapter_number:03d}:v1"
+            f"agent-task brief project.yaml semantic_review:ch{chapter_number:03d}:v4"
             if semantic_review_pending
             else f"repair-chapter --chapter {chapter_number} --plan-only"
         )
@@ -1487,7 +1491,7 @@ def write_writing_task(
                     chapter_number=chapter_number,
                     input_files=[task_markdown],
                     allowed_output_paths=[recommended_draft],
-                    output_schema="markdown_chapter_only",
+                    output_schema=output_protocol_for_task("chapter_write"),
                     validate_command=draft_submit_command(root, chapter_number, recommended_draft, default_agent),
                     apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
                     failure_next_command=f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only",
@@ -1659,28 +1663,34 @@ def write_writing_task(
         ),
         "created_at": utc_now(),
     }
+    payload["agent_task_manifest"] = relative_path(root, manifest_file)
+    markdown = format_writing_task_markdown(root, payload)
+    payload["context_plan"]["compiled_characters"] = len(markdown)
+    contract = resolve_context_budget_contract(root)
+    payload["context_plan"]["estimated_units"] = estimate_text_units(markdown, contract.estimator)
+    payload["context_plan"]["budget_profile"] = contract.profile
+    payload["context_plan"]["capacity_units"] = contract.capacity_units
+    payload["context_plan"]["budget_status"] = (
+        "advisory" if payload["context_plan"]["estimated_units"] > contract.input_soft_units
+        else "within_soft_target"
+    )
+    markdown = format_writing_task_markdown(root, payload)
+    payload["context_plan"]["estimated_units"] = estimate_text_units(markdown, contract.estimator)
+    markdown = format_writing_task_markdown(root, payload)
+    write_json(task_json, payload)
+    atomic_write_text(task_markdown, markdown)
     manifest = build_manifest(
         root,
         task_type="chapter_write",
         chapter_number=chapter_number,
         input_files=[task_markdown],
         allowed_output_paths=[recommended_draft],
-        output_schema="markdown_chapter_only",
+        output_schema=output_protocol_for_task("chapter_write"),
         validate_command=next_command,
         apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
         failure_next_command=f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only",
         context_policy=chapter_write_context_policy(task_json, task_markdown),
     )
-    payload["agent_task_manifest"] = relative_path(root, manifest_file)
-    markdown = format_writing_task_markdown(root, payload)
-    payload["context_plan"]["compiled_characters"] = len(markdown)
-    payload["context_plan"]["within_budget"] = len(markdown) <= int(payload["context_plan"]["max_chars"])
-    if not payload["context_plan"]["within_budget"]:
-        raise WorkflowError(
-            f"Compiled writing brief exceeds context budget: {len(markdown)} > {payload['context_plan']['max_chars']}."
-        )
-    write_json(task_json, payload)
-    atomic_write_text(task_markdown, markdown)
     write_manifest(root, manifest, manifest_file)
     return {
         "task_json": str(task_json),
@@ -1706,8 +1716,6 @@ def chapter_write_context_policy(
         "optional_files": [],
         "compiled_brief": task_markdown,
         "selection_report": task_json,
-        "max_files": 7,
-        "max_chars": 20_000,
     }
 
 
@@ -1737,8 +1745,8 @@ def chapter_write_context_plan(
             "research inbox unless explicitly promoted and declared",
             "query cache and runtime database",
         ],
-        "max_files": policy["max_files"],
-        "max_chars": policy["max_chars"],
+        "budget_mode": "adaptive",
+        "overflow_policy": "split_context",
         "selection_reasons": {
             relative_path(root, task_markdown): "single compiled writable brief",
             **{relative_path(root, path): reason for path, reason in source_reasons.items()},
@@ -2282,9 +2290,7 @@ AUTO_WRITE_TASK_WAIT_STATUS = {
     "repair": "awaiting_repair_candidate",
     "humanize": "awaiting_repair_candidate",
     "content_expand": "awaiting_repair_candidate",
-    "graph_extract": "awaiting_semantic_output",
-    "memory_extract": "awaiting_semantic_output",
-    "character_memory": "awaiting_semantic_output",
+    "chapter_semantic": "awaiting_semantic_output",
     "pacing_review": "awaiting_semantic_output",
     "editorial_review": "awaiting_editorial_result",
 }
@@ -2295,9 +2301,7 @@ AUTO_WRITE_TASK_WAIT_PRIORITY = {
     "humanize": 21,
     "content_expand": 22,
     "pacing_review": 30,
-    "graph_extract": 31,
-    "memory_extract": 32,
-    "character_memory": 33,
+    "chapter_semantic": 31,
     "editorial_review": 40,
 }
 
@@ -2309,7 +2313,8 @@ def auto_write_agent_task_blocker(root: Path, chapter_number: int) -> tuple[str,
     task = waiting[0]
     task_type = str(task.get("task_type") or "agent_task")
     status = AUTO_WRITE_TASK_WAIT_STATUS.get(task_type, "awaiting_agent_output")
-    next_command = str(task.get("validate_command") or task.get("apply_command") or task.get("failure_next_command") or "")
+    commands = manifest_commands(task)
+    next_command = str(commands.get("validate") or commands.get("apply") or commands.get("failure") or "")
     reason = (
         f"ch{chapter_number:03d} has awaiting Agent task {task.get('task_id')} "
         f"({task_type}); scheduler paused until the declared output is written and validated."
@@ -2374,15 +2379,16 @@ def latest_agent_task(tasks: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def compact_agent_task(task: dict[str, Any]) -> dict[str, Any]:
+    commands = manifest_commands(task)
     return {
         "task_id": str(task.get("task_id") or ""),
         "task_type": str(task.get("task_type") or ""),
         "status": str(task.get("status") or ""),
-        "chapter_number": int(task.get("chapter_number") or 0),
+        "chapter_number": manifest_chapter_number(task),
         "manifest_file": str(task.get("manifest_file") or ""),
-        "validate_command": str(task.get("validate_command") or ""),
-        "apply_command": str(task.get("apply_command") or ""),
-        "failure_next_command": str(task.get("failure_next_command") or ""),
+        "validate_command": str(commands.get("validate") or ""),
+        "apply_command": str(commands.get("apply") or ""),
+        "failure_next_command": str(commands.get("failure") or ""),
         "updated_at": str(task.get("updated_at") or ""),
     }
 
@@ -3208,17 +3214,7 @@ def format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> str:
     )
     quality_contract = writing.get("quality_contract") if isinstance(writing.get("quality_contract"), dict) else {}
     character_contracts_text = json.dumps(character_packet.get("contracts", []), ensure_ascii=False)
-    if len(character_contracts_text) > 3_600:
-        raise WorkflowError(
-            "Core character contracts exceed the 3600-character writing allocation; "
-            "narrow featured characters or shorten approved contracts before regenerating."
-        )
     voice_samples_text = json.dumps(character_packet.get("approved_voice_samples", []), ensure_ascii=False)
-    if len(voice_samples_text) > 900:
-        raise WorkflowError(
-            "Approved voice samples exceed the 900-character writing allocation; "
-            "reduce approved samples before regenerating."
-        )
     compatibility_observations = [
         item
         for item in quality_contract.get("compatibility_observations", [])
@@ -3236,7 +3232,8 @@ def format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> str:
         "",
         f"- Required: {', '.join(f'`{item}`' for item in context_plan.get('required_files', [])) or 'none'}",
         f"- Optional evidence: {', '.join(f'`{item}`' for item in context_plan.get('optional_files', [])) or 'none'}",
-        f"- Budget: {context_plan.get('max_files', 7)} files / {context_plan.get('max_chars', 20000)} characters",
+        f"- Budget: adaptive `{context_plan.get('budget_profile', 'standard')}` profile; "
+        f"estimated `{context_plan.get('estimated_units', 0)}` engine units",
         "- Do not scan the project. Do not read excluded duplicates or undeclared drafts/inbox/runtime data.",
         "",
         "## Writable Brief",

@@ -2,42 +2,56 @@ schema: story_facet_registry_v1
 kind: narrative_forms
 profiles:
   light_novel:
+    prompt_adapter: >-
+      轻小说的冲突主要通过角色间的即时反应、身份落差、选择尴尬和关系节拍被感知，而不是靠旁白总结设定。场景证据包括可辨识的对白目的、视觉动作、有限内心和反应后的关系变化；内心活动应改变下一句或下一步。推进可轻快，但每场仍要留下信息、选择或关系增量。短句、夸张反应和喜剧停顿本身不是 AI 味，只有无署名同声对白、重复眼前事实或笑点取消后果时才应修复。
     requirements: ["Character presence, readable scene movement, and socially legible reactions must carry exposition."]
     preferences: ["Use visual beats, distinctive dialogue, and selective interiority."]
     risks: ["All speakers using the same clipped rhythm", "Dialogue without attribution"]
     review_questions: ["Could dialogue and reactions identify the active character without labels?"]
     conflicts: []
   ensemble:
+    prompt_adapter: >-
+      群像冲突来自成员目标彼此不完全兼容，以及资源、信息和责任分配的不对称，不是单纯增加登场人数。用非主角主动提出方案、拒绝命令、隐瞒信息或承担独立后果证明能动性；推进时轮换谁改变局势，同时保留共同主线锚点。人物退场后其决定仍应影响团队。群像不要求平均戏份，也不要求每章轮到所有人；只要关键成员在所属弧线拥有独立因果，就不应因本章篇幅偏少误报为工具人。
     requirements: ["Recurring characters need stable identities, private goals, and independent causal effects."]
     preferences: ["Rotate agency without erasing the mainline."]
     risks: ["Supporting cast reduced to role labels"]
     review_questions: ["Which non-protagonist choice changed the chapter?"]
     conflicts: ["narrative_forms:single_lead_only"]
   single_lead:
+    prompt_adapter: >-
+      单主角形式以一个稳定的欲望、选择与后果链组织读者注意力，但外界冲突仍由他人的目标和制度阻力产生。场景应清楚显示主角观察了什么、选择了什么、误判了什么，以及配角如何以自身利益回应；这些回应再限制主角下一步。推进可以暂时离开主线处理关系余波，只要因果最终回到主角。配角偶尔抢走场面不等于变成共主角，只有长期独立承担主线决策且主角不再是因果锚点时才需要重判形式。
     requirements: ["The main causal line remains anchored to one lead while supporting characters retain agency."]
     preferences: ["Keep viewpoint and reader orientation stable."]
     risks: ["The world waiting for the lead to act"]
     review_questions: ["Did the lead make a consequential choice in the chapter?"]
     conflicts: []
   single_lead_only:
+    prompt_adapter: >-
+      唯一主角模式要求全书关键选择、不可逆代价和终局责任最终由主角承担，冲突则可由任何配角主动制造。用主角不可转让的决定权、视角信息和责任回收证明中心性，同时让配角保留欲望、局部行动与拒绝权。推进时可以让他人救援或暂时领先，但不能替主角完成核心弧线。配角有高光不等于共主角；只有其独立决定持续改写全书方向且不再受主角因果链统合时，才应进入人工确认。
     requirements: ["Only the lead may carry independent plot agency."]
     preferences: []
     risks: ["Functional supporting cast"]
     review_questions: ["Did another character accidentally become a co-lead?"]
     conflicts: ["narrative_forms:ensemble"]
   multi_pov:
+    prompt_adapter: >-
+      多视角冲突来自人物掌握的信息、价值判断和行动半径不同，而不是把同一故事重复讲几遍。每次切换要以稳定场景边界建立谁能感知什么，并用其偏见、遗漏或独有行动提供新的因果入口；推进后应改变读者对事件的解释或风险判断。必要的短重叠可用于展示误解，不必一律删除。若换视角只透露作者方便信息、重复已知内容或越过该人物认知权限，才属于无效切换或跳头。
     requirements: ["Every viewpoint change must alter access, bias, or causal understanding."]
     preferences: ["Use stable scene-level viewpoint boundaries."]
     risks: ["Head hopping", "Repeated information"]
     review_questions: ["Did each viewpoint provide unique dramatic value?"]
     conflicts: []
   episodic:
+    prompt_adapter: >-
+      单元剧的冲突由当期可识别的问题、限定场域和临时人物关系承载，同时受长期角色弧线约束。用问题建立、关键选择、局部收束和离场后遗留物证明一个单元完整；推进至少留下人物、关系、资源、知识或承诺的一项持续变化。案件结束可以恢复日常秩序，但不能抹除已有成长。轻量日常单元只要改变旧关系的位置就不算填充，真正失真是每次收束后所有人都回到同一初始状态。
     requirements: ["Each unit needs a local closure and a persistent state change."]
     preferences: ["Carry character or promise consequences across units."]
     risks: ["Resetting relationships after every unit"]
     review_questions: ["What remained changed after the local case ended?"]
     conflicts: []
   road_novel:
+    prompt_adapter: >-
+      公路叙事的冲突由移动本身造成：路线限制、陌生地方规则、同伴距离和离开旧身份的代价不断变化。用补给、天气、交通方式、临时落脚者和离站选择证明地点作用；每一站应回答“为什么这件事只能在此刻此地发生”，并改变资源、关系或自我认知。无功能的路途可以压缩。景色描写若承担人物感知与决策并非导游词，只有地点可任意替换且到达前后状态相同才算失真。
     requirements: ["Travel must change relationships, resources, knowledge, or identity."]
     preferences: ["Let locations create different pressures rather than scenic inventory."]
     risks: ["Tour-guide exposition"]

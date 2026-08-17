@@ -1,0 +1,22 @@
+schema: agent_context_profile_registry_v1
+default_profile: standard
+minimum_capacity_units: 8000
+profiles:
+  compact:
+    capacity_units: 24000
+  standard:
+    capacity_units: 48000
+  large:
+    capacity_units: 96000
+allocation:
+  control_soft_ratio: 0.12
+  control_hard_ratio: 0.20
+  input_soft_ratio: 0.45
+  input_hard_ratio: 0.55
+  minimum_output_and_handoff_ratio: 0.25
+estimator:
+  schema: conservative_text_unit_estimator_v1
+  cjk_unit_weight: 1.50
+  ascii_alnum_unit_weight: 0.35
+  other_visible_unit_weight: 0.60
+  safety_multiplier: 1.15

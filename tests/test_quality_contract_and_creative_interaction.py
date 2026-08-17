@@ -3,13 +3,21 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
-
-from longform_engine.agent_tasks import load_manifest, validate_manifest_strict
+from longform_engine.agent_pipeline import validate_production_agent_result
+from longform_engine.agent_protocols import (
+    CANONICAL_DELTA_SCHEMA,
+    DESIGN_DOCUMENT_SCHEMA,
+    DESIGN_REQUIRED_HEADINGS,
+)
+from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
 from longform_engine.config import ConfigError, load_project_config
 from longform_engine.intelligence import (
-    apply_intelligence_candidate,
+    apply_compiled_design,
+    approve_design_document,
     assess_chapter_direction,
+    create_design_compile_task,
     create_intelligence_task,
+    validate_design_compile_delta,
     validate_intelligence_candidate,
 )
 from longform_engine.orchestration import open_book
@@ -26,6 +34,94 @@ def seed_project(tmp_path: Path):
     config = load_project_config(project.project_config)
     open_book(config)
     return config, project.root
+
+
+def write_design_candidate(path: Path, task_type: str, payload: dict) -> None:
+    def scalar_lines(value) -> list[str]:
+        if isinstance(value, str):
+            return [value] if value.strip() else []
+        if isinstance(value, list):
+            return [line for item in value for line in scalar_lines(item)]
+        if isinstance(value, dict):
+            return [line for item in value.values() for line in scalar_lines(item)]
+        return []
+
+    facts = scalar_lines({key: value for key, value in payload.items() if key != "schema"})
+    sections: list[str] = []
+    for index, heading in enumerate(DESIGN_REQUIRED_HEADINGS[task_type]):
+        body = ["本节决定已经由用户审阅。"]
+        if index == 0:
+            body.extend(f"- {fact}" for fact in facts)
+        sections.extend((f"## {heading}", "", *body, ""))
+    path.write_text(f"# {task_type} 设计文档\n\n" + "\n".join(sections), encoding="utf-8")
+
+
+def validate_intelligence_output(config, root: Path, manifest: dict, candidate: Path):
+    control = validate_production_agent_result(root, manifest, result_file=candidate)
+    assert control.ok, control.normalization.errors
+    return validate_intelligence_candidate(
+        config,
+        task_type=str(manifest["task_type"]),
+        file_path=candidate,
+    )
+
+
+def prepare_design_delta(config, root: Path, task_type: str, candidate: Path, payload: dict) -> Path:
+    manifest = next(
+        load_manifest(root, item["task_id"])
+        for item in reversed(list_manifests(root))
+        if item.get("task_type") == task_type
+        and candidate.relative_to(root).as_posix() == (item.get("io") or {}).get("output", {}).get("path")
+    )
+    assert validate_intelligence_output(config, root, manifest, candidate).ok
+    approve_design_document(
+        config,
+        task_type=task_type,
+        document_path=candidate,
+        approved_by="human",
+    )
+    compile_task = create_design_compile_task(
+        config,
+        task_type=task_type,
+        document_path=candidate,
+    )
+    delta = root / compile_task.candidate_file
+    changes = {key: value for key, value in payload.items() if key != "schema"}
+    for cli_field in {
+        "book_ideation": ("round", "dimension"),
+        "chapter_direction": ("chapter_number", "chapter_card_sha256", "trigger_reasons"),
+        "outline_revision": ("from_chapter", "to_chapter"),
+    }.get(task_type, ()):
+        changes.pop(cli_field, None)
+    text = candidate.read_text(encoding="utf-8")
+    source = candidate.relative_to(root).as_posix()
+    delta.write_text(
+        json.dumps(
+            {
+                "schema": CANONICAL_DELTA_SCHEMA,
+                "delta_type": "design_document",
+                "coverage": {key: "changed" for key in changes},
+                "changes": changes,
+                "evidence": {
+                    f"/changes/{key.replace('~', '~0').replace('/', '~1')}": [
+                        f"{source}@0:{len(text)}"
+                    ]
+                    for key in changes
+                },
+                "uncertainties": [],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    control = validate_production_agent_result(
+        root,
+        load_manifest(root, compile_task.task_id),
+        result_file=delta,
+    )
+    assert control.ok, control.normalization.errors
+    return delta
 
 
 def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> dict:
@@ -244,9 +340,10 @@ def test_book_ideation_invalid_selection_does_not_pollute_bible_or_state(tmp_pat
     brief = agent_task_brief(config, task.task_id)
     candidate = root / task.candidate_file
     state_before = (root / "30_state" / "novel_state.json").read_bytes()
-    candidate.write_text(
-        json.dumps(
-            {
+    write_design_candidate(
+        candidate,
+        "book_ideation",
+        {
                 "schema": "book_ideation_candidate_v1",
                 "round": 1,
                 "dimension": "target_reader_and_reading_context",
@@ -257,28 +354,39 @@ def test_book_ideation_invalid_selection_does_not_pollute_bible_or_state(tmp_pat
                 ],
                 "selection": {"mode": "selected_option", "option_id": "missing", "answer": ""},
             },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
     )
 
-    validation = validate_intelligence_candidate(
+    delta = prepare_design_delta(config, root, "book_ideation", candidate, {
+        "schema": "book_ideation_candidate_v1",
+        "round": 1,
+        "dimension": "target_reader_and_reading_context",
+        "question": "谁会在什么场景下连续阅读？",
+        "options": [
+            {"id": "option_a", "proposal": "通勤追更", "tradeoffs": ["进入快", "余波短"]},
+            {"id": "option_b", "proposal": "夜间沉浸", "tradeoffs": ["氛围深", "进入慢"]},
+        ],
+        "selection": {"mode": "selected_option", "option_id": "missing", "answer": ""},
+    })
+    validation = validate_design_compile_delta(
         config,
         task_type="book_ideation",
-        file_path=candidate,
+        document_path=candidate,
+        delta_path=delta,
     )
 
     assert not validation.ok
     assert "selection.option_id" in " ".join(validation.errors)
     assert not (root / "10_bible" / "creative_decisions.json").exists()
     assert (root / "30_state" / "novel_state.json").read_bytes() == state_before
-    assert manifest["requires_human_apply"] is True
-    assert manifest["canonical_targets"] == [
+    assert manifest["policy"]["requires_human_apply"] is True
+    assert set(manifest["policy"]["canonical_targets"]) == {
         "10_bible/creative_decisions.json",
         "30_state/novel_state.json",
-    ]
-    assert manifest["context_policy"]["max_files"] == 5
-    assert manifest["context_policy"]["max_chars"] == 12_000
+        "10_bible/design_documents/book_ideation.project.md",
+        "30_state/design_deltas/book_ideation.project.json",
+    }
+    assert manifest["policy"]["context"]["budget_profile"] == "standard"
+    assert manifest["policy"]["context"]["capacity_units"] == 48_000
     assert brief["manifest_validation"]["ok"] is True
 
 
@@ -297,44 +405,76 @@ def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
     manifest = load_manifest(root, task_id)
     assert validate_manifest_strict(root, manifest).ok
     assert manifest["scope"] == {"kind": "chapter", "chapter_number": 1}
-    assert manifest["context_policy"]["max_files"] == 6
-    assert manifest["context_policy"]["max_chars"] == 16_000
-    assert manifest["requires_human_apply"] is True
-    candidate = root / manifest["allowed_output_paths"][0]
+    assert manifest["policy"]["context"]["budget_profile"] == "standard"
+    assert manifest["policy"]["context"]["capacity_units"] == 48_000
+    assert manifest["policy"]["requires_human_apply"] is True
+    candidate = root / manifest["io"]["output"]["path"]
     card = root / "20_outline" / "chapter_cards" / "ch001.json"
     plan = root / "20_outline" / "chapter_plan.json"
     before = {"card": card.read_bytes(), "plan": plan.read_bytes()}
 
-    invalid = valid_direction_candidate(root, 1, next_action["trigger_reasons"])
-    invalid["chapter_card_sha256"] = "0" * 64
-    candidate.write_text(json.dumps(invalid, ensure_ascii=False), encoding="utf-8")
-    invalid_result = validate_intelligence_candidate(
+    valid = valid_direction_candidate(root, 1, next_action["trigger_reasons"])
+    write_design_candidate(candidate, "chapter_direction", valid)
+    delta = prepare_design_delta(config, root, "chapter_direction", candidate, valid)
+    valid_delta_bytes = delta.read_bytes()
+    invalid_payload = json.loads(delta.read_text(encoding="utf-8"))
+    invalid_payload["changes"]["chapter_card_sha256"] = "0" * 64
+    source = candidate.relative_to(root).as_posix()
+    invalid_payload["evidence"]["/changes/chapter_card_sha256"] = [
+        f"{source}@0:{len(candidate.read_text(encoding='utf-8'))}"
+    ]
+    delta.write_text(json.dumps(invalid_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    control = validate_production_agent_result(
+        root,
+        next(
+            load_manifest(root, item["task_id"])
+            for item in reversed(list_manifests(root))
+            if item.get("task_type") == "design_semantic_compile"
+        ),
+        result_file=delta,
+    )
+    assert control.ok, control.normalization.errors
+    invalid_result = validate_design_compile_delta(
         config,
         task_type="chapter_direction",
-        file_path=candidate,
+        document_path=candidate,
+        delta_path=delta,
     )
     assert not invalid_result.ok
     assert card.read_bytes() == before["card"]
     assert plan.read_bytes() == before["plan"]
 
-    valid = valid_direction_candidate(root, 1, next_action["trigger_reasons"])
-    candidate.write_text(json.dumps(valid, ensure_ascii=False), encoding="utf-8")
-    validated = validate_intelligence_candidate(
+    delta.write_bytes(valid_delta_bytes)
+    control = validate_production_agent_result(
+        root,
+        next(
+            load_manifest(root, item["task_id"])
+            for item in reversed(list_manifests(root))
+            if item.get("task_type") == "design_semantic_compile"
+        ),
+        result_file=delta,
+    )
+    assert control.ok, control.normalization.errors
+    validated = validate_design_compile_delta(
         config,
         task_type="chapter_direction",
-        file_path=candidate,
+        document_path=candidate,
+        delta_path=delta,
     )
     assert validated.ok, validated.errors
     with pytest.raises(ValueError, match="approved-by human"):
-        apply_intelligence_candidate(
+        apply_compiled_design(
             config,
             task_type="chapter_direction",
-            file_path=candidate,
+            document_path=candidate,
+            delta_path=delta,
+            approved_by="agent",
         )
-    applied = apply_intelligence_candidate(
+    applied = apply_compiled_design(
         config,
         task_type="chapter_direction",
-        file_path=candidate,
+        document_path=candidate,
+        delta_path=delta,
         approved_by="human",
     )
     applied_card = json.loads(card.read_text(encoding="utf-8"))
@@ -374,30 +514,31 @@ def test_chapter_direction_apply_failure_rolls_back_card_and_plan(tmp_path, monk
     task = create_intelligence_task(config, task_type="chapter_direction", chapter_number=1)
     candidate = root / task.candidate_file
     reasons = assess_chapter_direction(config, 1)["reasons"]
-    candidate.write_text(
-        json.dumps(valid_direction_candidate(root, 1, reasons), ensure_ascii=False),
-        encoding="utf-8",
-    )
-    assert validate_intelligence_candidate(
+    direction = valid_direction_candidate(root, 1, reasons)
+    write_design_candidate(candidate, "chapter_direction", direction)
+    delta = prepare_design_delta(config, root, "chapter_direction", candidate, direction)
+    assert validate_design_compile_delta(
         config,
         task_type="chapter_direction",
-        file_path=candidate,
+        document_path=candidate,
+        delta_path=delta,
     ).ok
     card = root / "20_outline" / "chapter_cards" / "ch001.json"
     plan = root / "20_outline" / "chapter_plan.json"
     before = {"card": card.read_bytes(), "plan": plan.read_bytes()}
 
-    def fail_after_partial_write(project_config, project_root, task_type, payload):
+    def fail_after_partial_write(project_config, project_root, task_type, payload, *, scope=None):
         card.write_text('{"partial": true}', encoding="utf-8")
         plan.write_text("[]", encoding="utf-8")
         raise RuntimeError("injected direction apply failure")
 
     monkeypatch.setattr(intelligence_pipeline, "write_targets", fail_after_partial_write)
     with pytest.raises(RuntimeError, match="injected direction apply failure"):
-        apply_intelligence_candidate(
+        apply_compiled_design(
             config,
             task_type="chapter_direction",
-            file_path=candidate,
+            document_path=candidate,
+            delta_path=delta,
             approved_by="human",
         )
 

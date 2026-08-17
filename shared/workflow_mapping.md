@@ -41,9 +41,8 @@ open-book
 -> quality payoff-task / payoff-validate after gate pass when required
 -> chapter finalize only after gate pass or valid waiver and a current required payoff review
 -> reward_ledger v2 / structure_history written only inside finalize
--> chapter semantic-task: Agent reads final once and writes chapter_semantic_bundle_v1
+-> chapter semantic-task: Agent reads final once and writes canonical_delta_v1
 -> chapter semantic-validate / explicit semantic-apply
--> optional chapter semantic-rebuild --through N after a completed legacy backfill range
 -> graph / character current view / foreshadow state / TCS / RAG / SQLite materialized atomically
 -> chapter close --approved-by human
 -> compact audit artifacts outside the two-chapter active buffer
@@ -75,12 +74,16 @@ Rights status and commercial intent are advisory only. Names, relationships, wor
 ```text
 /工程下一步 -> production next
 -> /工程工单 -> agent-task brief for the selected AgentTaskManifest
--> Agent reads only the work order and declared input_files
--> Agent writes only allowed_output_paths
+-> Agent reads only the work order and manifest io.inputs
+-> Agent writes only io.output.path using io.output.protocol
 -> validate or draft submit
 -> production next
 -> apply/finalize/semantic-apply/chapter-close only after explicit user command
 ```
+
+`production next` 与 `agent-task brief` 会返回 `session.policy/action/scope/first_command`。开书和卷级规划可继续项目协调会话；每章 `chapter_write` 必须新开作者会话，`repair` 可继续本章作者会话；Humanizer、所有独立审稿和 final 后语义档案必须新开隔离会话。CLI 不自动创建 Codex/Claude 子进程，也不读取聊天历史作为 canonical。
+
+上下文预算按项目 `writing.agent.context` 自适应。文件数和字符数只用于诊断；工作单显示 engine unit 估算、顺序读取批次与阻断原因。范围/项目证据可以顺序拆分，章节正文始终由一个作者任务完整输出；核心事实无法装入时停止在 `prompt_budget_exceeded`，不得静默截断。
 
 ## Five-Step Chapter Loop
 
@@ -91,7 +94,7 @@ Rights status and commercial intent are advisory only. Names, relationships, wor
 4. /工程验稿 -> gate-check, including pacing precheck artifacts and reverse_brake_report.md
 5. /工程收益审稿 -> payoff-task / payoff-validate when production next requires it
 6. /工程定稿 -> chapter finalize, or repair/waiver/branch/rollback when a gate or payoff review blocks
-7. /工程章节语义任务 -> one final read and one chapter_semantic_bundle_v1
+7. /工程章节语义任务 -> one final read and one canonical_delta_v1; CLI materializes the internal semantic ledger
 8. /工程章节语义应用 -> atomically materialize knowledge, then /工程关闭章节
 ```
 
@@ -112,7 +115,7 @@ creative brief --init/--validate
 
 ```text
 editorial review
--> planning_chief_editor / writing_agent / character_editor / anti_ai_editor / serial_verifier / reader_quality_reviewer / executive_editor task files
+-> planning_chief_editor / scene_prose_editor / character_editor / anti_ai_editor / reader_experience_editor / canon_fidelity_reviewer task files
 -> canon_fidelity_reviewer task for fanfiction
 -> record severity_counts, review_round, unresolved_items, conditional_pass_streak, need_human_reasons
 -> editorial batch-review every configured range

@@ -2,48 +2,64 @@ schema: story_facet_registry_v1
 kind: plot_engines
 profiles:
   progression:
+    prompt_adapter: >-
+      成长冲突由能力缺口、资源竞争、训练选择和新增责任承载，不把敌人依次排成数值台阶。用失败动作、训练取舍、首次实战、旁人重新估价和能力副作用证明变化；推进遵循“获得—试用—代价—整合—重新承担”。每次成长至少改变一种可做选择和一种风险，而非只换称号。熟练角色快速掌握同源技巧不应误判为无过程成长，除非新能力跳过既定边界、没有学习证据也没有后果。
     requirements: ["Growth must change capability, responsibility, or vulnerability."]
     preferences: ["Alternate acquisition, testing, cost, and consolidation."]
     risks: ["Inventory-like upgrades", "Unpaid power growth"]
     review_questions: ["What did the character pay or become responsible for?"]
     conflicts: []
   survival:
+    prompt_adapter: >-
+      生存冲突由逼近威胁、有限资源、时间窗口和不可靠退路共同构成，核心不是持续受伤而是资源如何迫使选择。用库存变化、体力衰退、路线封闭、错误预警和队员分配证明压力；推进要回答保谁、舍什么、信谁以及失败后还剩哪条路。危险不能只由旁白宣布，胜利也必须改变下一轮条件。安静章若在修复装备、重建信任或争夺分配权，就不应因缺少追杀被误判为没有生存推进。
     requirements: ["Threat, resources, escape choices, and consequences must stay concrete."]
     preferences: ["Keep survival decisions local and observable."]
     risks: ["Abstract danger", "Disposable unnamed survivors"]
     review_questions: ["Which choice changed who could survive and at what cost?"]
     conflicts: []
   revenge:
+    prompt_adapter: >-
+      复仇冲突由目标身份、责任证据、追索代价和主人公仍不愿跨越的道德边界支撑。用查证、试探、误伤风险、盟友反对和对手留下的后果推进，使新事实改变复仇对象、方法或意义；愤怒必须落成当前行动与明确拒绝。报复成功后还要处理空缺、罪责或新债。人物为保护他人而暂缓行动不算主线消失，只要这一选择提高追索成本并保留下一步。
     requirements: ["The target, grievance, moral boundary, and cost of pursuit must evolve."]
     preferences: ["Let new evidence complicate the original grievance."]
     risks: ["Static anger as a substitute for agency"]
     review_questions: ["Did revenge force a meaningful choice rather than repeat a slogan?"]
     conflicts: []
   mystery:
+    prompt_adapter: >-
+      悬疑冲突由表面问题、证据缺口、多个可竞争解释和错误行动的风险承载。让线索能被看见、解释能推动行动、反证能迫使修正，按“证据—解释—行动—反证—重组”推进；读者可晚于侦探知道答案，但不能被剥夺阶段判断所需材料。误导应来自同一事实的合理异读。视角受限导致暂时未知不算隐瞒，只有解答依赖从未出现且仅作者掌握的关键条件或纯巧合时才失效。
     requirements: ["Evidence, inference, error, and correction must be independently traceable."]
     preferences: ["Change the meaning of known facts instead of hiding required facts."]
     risks: ["Author-only information", "Coincidental solution"]
     review_questions: ["Can the reader locate the evidence supporting the latest inference?"]
     conflicts: []
   political_intrigue:
+    prompt_adapter: >-
+      权谋冲突由资源控制、制度权限、秘密、联盟成本与各方底线形成，不以“谁更聪明”单轴解释。用座次、文书、任命、延迟回应、公开表态和私下交换证明筹码；推进要让每次试探改变信息分布，每次协议生成可追踪债务。礼貌、沉默和退让都应对应约束而非神秘气场。处于劣势的一方策略性让步不算降智，除非其放弃核心利益却没有时间、证据或外部压力解释。
     requirements: ["Every faction must have resources, constraints, and an agenda independent of the protagonist."]
     preferences: ["Make agreements create future obligations."]
     risks: ["Universal incompetence around the protagonist"]
     review_questions: ["What did each side gain, risk, or conceal?"]
     conflicts: []
   war:
+    prompt_adapter: >-
+      战争冲突由指挥意图、情报延迟、补给能力、地形和民众代价共同决定，个人勇武只能改变局部窗口。用传令误差、队形变化、弹药或粮秣消耗、伤员处理和撤退争论把战略落到场景；推进需从决策追到执行，再追到政治与生活后果。大规模非关键战斗可以用战报压缩。只有决定胜负的转折既无现场证据，也无法由资源、时间和选择回溯时，才属于概述替代戏剧。
     requirements: ["Logistics, command, information delay, and civilian cost must affect outcomes."]
     preferences: ["Connect strategic decisions to individual consequences."]
     risks: ["Battle summary without embodied stakes"]
     review_questions: ["Did the outcome follow resources, information, and choices?"]
     conflicts: []
   business:
+    prompt_adapter: >-
+      商业冲突由客户真实需求、现金流、产能、合同责任和利益相关者议价形成，利润数字不能单独证明成功。用订单履约、退货、回款周期、人员负荷、供应中断和谈判条款作为场景证据；推进要让承诺在执行中兑现、缩水或反噬。商业爽点可以来自提前判断和组织能力。为叙事省略常规报表不算失真，只有机构突然失去流程与议价能力，或收益没有运营来源时才需要阻断。
     requirements: ["Value, cash flow, leverage, and stakeholder reaction must be traceable."]
     preferences: ["Use negotiation and execution rather than unexplained success."]
     risks: ["Numbers without operational reality"]
     review_questions: ["What real constraint did the business decision change?"]
     conflicts: []
   romance:
+    prompt_adapter: >-
+      言情冲突由双方独立欲望、现实边界、信息误读与承担意愿共同形成，关系不是主线奖品。用谁先暴露脆弱、谁拒绝了什么、谁修正旧判断以及行动后的生活成本证明推进；亲密变化应落到信任、承诺或未来安排。误会必须有信息与性格原因，并允许双方拒绝。没有争吵的甜蜜日常若改变关系认知并非无效，反之仅靠宣称心动却无行动变化才是空转。
     requirements: ["Both sides need independent desires, boundaries, and consequential choices."]
     preferences: ["Advance intimacy through action, misreading, repair, and changed trust."]
     risks: ["A relationship existing only to reward the protagonist"]

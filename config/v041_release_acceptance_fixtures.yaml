@@ -1,0 +1,431 @@
+schema: v041_release_acceptance_fixtures_v1
+
+shared:
+  host: codex
+  chapter_count: 5
+  review_dimensions:
+    - mainline_visibility
+    - character_agency
+    - dialogue_attribution
+    - scene_causality
+    - reader_payoff
+    - anti_ai_expression
+
+original_scenarios:
+  - id: eastern_fantasy_progression
+    story_profile:
+      setting: [eastern_fantasy]
+      plot_engines: [progression, survival]
+      narrative_forms: [single_protagonist]
+      premise_devices: []
+      relationship_modes: [mentor_student, rivalry]
+      tone: [adventure, suspense]
+  - id: urban_investigation
+    story_profile:
+      setting: [urban]
+      plot_engines: [investigation, career]
+      narrative_forms: [single_protagonist]
+      premise_devices: []
+      relationship_modes: [team, rivalry]
+      tone: [suspense]
+  - id: contemporary_romance
+    story_profile:
+      setting: [urban]
+      plot_engines: [romance, career]
+      narrative_forms: [dual_viewpoint]
+      premise_devices: []
+      relationship_modes: [romance, family]
+      tone: [warm, humorous]
+  - id: historical_wuxia
+    story_profile:
+      setting: [historical, wuxia]
+      plot_engines: [investigation, political_intrigue]
+      narrative_forms: [ensemble]
+      premise_devices: []
+      relationship_modes: [team, rivalry, mentor_student]
+      tone: [adventure, suspense]
+  - id: science_fiction_infinite_flow
+    story_profile:
+      setting: [science_fiction]
+      plot_engines: [survival, mystery]
+      narrative_forms: [ensemble]
+      premise_devices: [infinite_flow]
+      relationship_modes: [team, rivalry]
+      tone: [suspense, dark]
+  - id: original_game_light_novel
+    story_profile:
+      setting: [game_fantasy]
+      plot_engines: [survival, progression]
+      narrative_forms: [light_novel, ensemble]
+      premise_devices: [transmigration]
+      relationship_modes: [team, friendship, romance]
+      tone: [adventure, humorous]
+
+fanfiction_scenario:
+  id: sao_fanfiction_fresh_20
+  chapter_count: 20
+  creation_mode: fanfiction
+  continuity_mode: canon_divergent
+  required_reviews:
+    - canon_fidelity
+    - character_expression
+    - semantic_continuity
+    - reader_payoff
+    - anti_ai_expression
+
+prompt_selection_cases:
+  - task_type: chapter_write
+    role_id: chapter_author
+    quality_focus: [dialogue]
+    expected_playbook: dialogue_and_subtext
+  - task_type: chapter_write
+    role_id: chapter_author
+    quality_focus: [opening]
+    expected_playbook: opening_and_mainline
+  - task_type: editorial_review
+    role_id: character_editor
+    quality_focus: [interiority]
+    expected_playbook: interiority_and_emotion
+
+professional_prompt_calibration:
+  roles:
+    adaptation_analyst:
+      positive: "从样本归纳出倒计时如何改变角色选择，并说明迁移到慢节奏题材时需要替换压力载体。"
+      negative: "复述来源剧情并把角色名替换成新名字。"
+      boundary: "通用三幕结构可记录，但只有与样本证据和适用条件绑定时才算可迁移技法。"
+    anti_ai_editor:
+      positive: "指出两处动作后重复总结，并引用两段证据说明它们如何抹平人物差异。"
+      negative: "因为出现常见连接词就判定整章具有 AI 味。"
+      boundary: "卷首必要回顾若恢复关键前置状态且不重复后文，不构成功能重复。"
+    book_architect:
+      positive: "把生存卖点连接到主角控制欲缺陷、反复冲突来源和结局中的选择权。"
+      negative: "只列世界观、升级境界和人物标签，没有可持续冲突引擎。"
+      boundary: "题材熟悉并不免除目标阶梯，但世界细节可延后到剧情需要时确定。"
+    canon_fidelity_reviewer:
+      positive: "先确认分歧点，再判断原角色改变立场是否有触发、抵抗和关系代价。"
+      negative: "只要剧情与原作不同就报告 OOC。"
+      boundary: "喜剧夸张可以短暂偏离日常表现，但不能取消角色核心判断与拒绝权。"
+    chapter_author:
+      positive: "角色为争取撤离时间隐瞒伤势，选择改变队伍路线并留下信任代价。"
+      negative: "旁白说明所有人的性格和计划，人物没有现场选择。"
+      boundary: "无关键选择的赶路可以压缩，但压缩必须落到新条件或下一场冲突。"
+    canonical_semantic_archivist:
+      positive: "把正文明确发生的承诺变化绑定到唯一 span，并将不确定推断放入 uncertainties。"
+      negative: "根据人物语气推断其已改变阵营并直接写入关系状态。"
+      boundary: "设计文档中的候选方向只有在人工批准后才能编译为 canonical delta。"
+    chapter_story_editor:
+      positive: "提供救人、追凶、保全证据三种会关闭不同机会的方向，并分别说明人物代价。"
+      negative: "给出三个都以击败敌人为结果、只换地点的伪选项。"
+      boundary: "方向可共享同一开场，但关键选择和后续条件必须真正不同。"
+    character_editor:
+      positive: "用对白目的、拒绝项和行动后果证明配角正在争取自己的利益。"
+      negative: "因为角色没有口头禅就判断人物不鲜明。"
+      boundary: "临时服从不等于工具人，需检查角色是否仍有判断、保留信息或后续反应。"
+    character_performance_architect:
+      positive: "同一角色面对上级用条件句拖延，面对亲密者则隐藏代价并用行动补偿。"
+      negative: "用冷静、毒舌、外冷内热三个标签代替行为合同。"
+      boundary: "成长可以改变阈值，但必须保留可追踪的旧习惯、触发和关系差异。"
+    character_performance_reviewer:
+      positive: "比较两个相似压力场景，证明角色的信息策略和决策阈值无触发地同时漂移。"
+      negative: "根据一处不同词汇就报告跨章人物失真。"
+      boundary: "伪装、疲劳和关系阶段变化可造成合理偏离，证据不足时必须 insufficient。"
+    continuity_outline_editor:
+      positive: "改动揭露章节时同时标出受影响的误导、关系前置、伏笔窗口和后续陈旧章节。"
+      negative: "只替换目标章节标题，不计算任何依赖。"
+      boundary: "局部措辞调整无需扩大影响范围，但改变事实前置状态必须重新计算依赖。"
+    creative_facilitator:
+      positive: "围绕主角为何不能离开提供责任、身体限制和利益绑定三种不同代价。"
+      negative: "用稳妥、激进、折中包装同一个方案并替用户选择折中。"
+      boundary: "用户已明确决定时只记录后果，不为了形式重复发问。"
+    expansion_writer:
+      positive: "把一句谈判失败扩成筹码试探、拒绝和资源损失完整场景。"
+      negative: "增加天气、服装和重复心理，却不改变任何条件。"
+      boundary: "气氛停留只有在提高误判、关系压力或选择成本时才属于有效扩写。"
+    fanfiction_architect:
+      positive: "从获救分歧推导政治债务、原关系重排和三卷后的反噬。"
+      negative: "让所有原角色立即认同原创主角以证明分歧成功。"
+      boundary: "保留原作事件骨架可以成立，但必须由新选择产生不同过程或后果。"
+    fanfiction_canon_archivist:
+      positive: "区分原著与补充作品命名空间，记录截止点、来源 hash、span 和冲突事实。"
+      negative: "凭百科印象补齐来源没有出现的角色动机。"
+      boundary: "多个来源互相冲突时并列保存并标记 unresolved，不擅自裁定。"
+    humanizer:
+      positive: "将抽象紧张改为角色反复确认门闩并缩短回答，同时保持线索和选择不变。"
+      negative: "随机替换同义词、拆短句并新增戏剧性背叛。"
+      boundary: "有意整齐或抒情的段落不是天然 AI 味，只有遮蔽人物与场景功能时才改。"
+    humanizer_semantic_reviewer:
+      positive: "逐项核对双稿中的人物知识、关系结果、能力代价和受保护线索。"
+      negative: "只因两稿主题相似就认定语义等价。"
+      boundary: "等价走位和感官替换可接受，但改变谁看见证据会改变知识状态。"
+    longform_outline_architect:
+      positive: "按卷承诺与字数预算只细化未来二十章，每章职责改变不同后续条件。"
+      negative: "一次生成六百个继续调查、遭遇强敌式占位章节。"
+      boundary: "预测章数可重估，但已批准结局边界和活动伏笔窗口不能消失。"
+    planning_chief_editor:
+      positive: "发现章节卡的读者收益与上游承诺无关，并指出它会中断哪条阶段因果链。"
+      negative: "因为本章没有战斗或悬崖就判定计划失败。"
+      boundary: "余波章可不推进外部危机，但必须改变人物、关系、计划或读者认知。"
+    reader_payoff_reviewer:
+      positive: "正文让主角获得调查权限却失去同伴信任，收益和代价均有场景证据。"
+      negative: "直接把章节卡写的计划收益当作正文已经兑现。"
+      boundary: "延迟兑现可接受，但本章应产生可识别的推进、改写或有代价等待。"
+    reader_experience_editor:
+      positive: "指出开篇三场对话后仍无法复述主角当前任务，并定位被说明替代的行动入口。"
+      negative: "因世界真相尚未公开就判断读者完全无法理解。"
+      boundary: "悬疑可以隐藏答案，但不能隐藏人物此刻为何行动和不行动的损失。"
+    repair_author:
+      positive: "把对白归属 finding 映射到受影响轮次，只重排动作和称谓并保护线索结果。"
+      negative: "借修章更换幕后真凶并增加主角能力。"
+      boundary: "多个 finding 共享场景根因时可合并重构，但必须逐项回归保护内容。"
+    research_synthesizer:
+      positive: "将主张绑定来源 hash 和精确 span，并分别记录支持、反证和适用范围。"
+      negative: "用没有定位的二手总结直接写成研究事实。"
+      boundary: "来源可信但结论互斥时保留冲突，不通过多数来源替代事实判断。"
+    scene_prose_editor:
+      positive: "证明关键关系决裂只被一句他们争吵后分开概述，并要求恢复选择与余波场景。"
+      negative: "要求每段叙述压缩都改成完整对话。"
+      boundary: "移动和重复劳动可概述，承担章节核心转折的过程不能被概述替代。"
+    semantic_continuity_reviewer:
+      positive: "确认角色从未获得密道信息，却在正文中据此决策，并引用知识状态与正文 span。"
+      negative: "把角色谎言与世界事实不一致直接判为 canonical 冲突。"
+      boundary: "梦境、猜测和不可靠叙述无法分层时返回 insufficient，而非 clean pass。"
+    semantic_pacing_reviewer:
+      positive: "区分连续两章同为担忧复述造成的职责重复，与关系决定后的必要安静余波。"
+      negative: "用句长、对白比例或是否悬崖判断节奏。"
+      boundary: "两个慢章可分别承担关系决定和计划重构，只要状态变化不同。"
+    semantic_style_analyst:
+      positive: "区分可统计的句段节奏与语义上的视角距离，并记录样本范围和置信度。"
+      negative: "根据一个段落宣布全书必须模仿某位著名作者。"
+      boundary: "短样本只能形成暂定 profile，不能把偶发表达固化为风格规则。"
+  playbooks:
+    opening_and_mainline:
+      positive: "主角为保住住处接下危险委托，当前目标、动机、损失与长期疑问同时可见。"
+      negative: "十段世界史后才用旁白宣布主角必须变强。"
+      boundary: "终局答案可以延迟，但当前行动理由和不行动损失必须可复述。"
+    scene_causality:
+      positive: "谈判受阻迫使角色暴露底线，资源损失又改变下一场路线。"
+      negative: "用争论许久后他们决定出发概述章节核心转折。"
+      boundary: "无关键选择的路程可以压缩，关键失败和策略改变必须成场。"
+    character_agency:
+      positive: "配角拒绝安全方案以保护自己的承诺，并迫使主角重新谈条件。"
+      negative: "配角只负责赞同、惊讶和递交线索。"
+      boundary: "暂时服从可以成立，但人物应保留判断、代价或后续反应。"
+    dialogue_and_subtext:
+      positive: "上级回避价格并追问期限，下属用损失数字逼其公开承担责任。"
+      negative: "四个人轮流用相同分析句解释设定，回答互不相接。"
+      boundary: "混战短喊若行动对象唯一可不加标签，归属产生相反解释时必须修复。"
+    interiority_and_emotion:
+      positive: "失忆者因叫错名字而改变应对，并在下一场继续回避旧称呼。"
+      negative: "动作后补一句他非常愤怒，随后选择完全不受影响。"
+      boundary: "克制人物可以少独白，但注意对象和决策阈值仍应留下痕迹。"
+    world_rules_and_exposition:
+      positive: "能力在救人时触发限制并消耗稀缺资源，规则通过失败后果被证明。"
+      negative: "角色在安全房间完整朗读能力等级和世界百科。"
+      boundary: "教学场景允许集中信息，但仍需由学员目标、错误和反馈组织。"
+    relationship_dynamics:
+      positive: "一方为保护秘密拒绝合作，另一方改用公开承诺交换有限信任。"
+      negative: "作者宣布两人关系升温，但边界、选择和承诺都没有变化。"
+      boundary: "关系可以暂时无进展，前提是停滞本身产生压力或新认识。"
+    foreshadow_and_mystery:
+      positive: "异常账目先形成表面问题，后续证据推翻首个解释并改变调查方向。"
+      negative: "登记神秘符号后十章没有回响，却称其为伏笔。"
+      boundary: "红鲱鱼可以错误，但必须由当时可见证据支持且最终能被复核。"
+    serial_pacing:
+      positive: "战后慢章通过伤员分配改变队伍权力，并兑现战斗留下的代价。"
+      negative: "每章末尾突然出现更大敌人，旧承诺从不兑现。"
+      boundary: "连续慢章可以承担不同职责，不能仅凭速度相似判重复。"
+    anti_ai_expression:
+      positive: "删除动作后的同义总结，让角色不同的信息策略承担紧张感。"
+      negative: "随机拆短句、替换连接词并给所有人增加口语病。"
+      boundary: "排比和总结句可有意使用，只有重复替代新信息或人物时才修复。"
+    ensemble_and_viewpoint:
+      positive: "切换视角带来独有误判和资源决定，并改变主线方案。"
+      negative: "换视角重复上一场事实，只为展示每个人都很担心。"
+      boundary: "单主角结构也可让配角离场行动，不必为了群像强制平均篇幅。"
+    fanfiction_canon:
+      positive: "AU 改变成长环境，但保留角色价值排序、拒绝方式和变化代价。"
+      negative: "保留姓名外貌，却让所有原角色失去目标并服务原创主角。"
+      boundary: "与原作不同不自动 OOC，需先检查声明分歧和蝴蝶效应。"
+  facets:
+    setting:
+      xuanhuan:
+        positive: "越阶取胜消耗不可恢复的根基，并暴露高阶势力注意。"
+        negative: "临时宣布新境界让主角无代价击败强敌。"
+        boundary: "奇遇可带来跃迁，但必须重写后续资源、责任或风险结构。"
+      xianxia:
+        positive: "突破要求时间、灵材和因果承诺，选择某条道途关闭另一机会。"
+        negative: "把修行只写成数值上涨和装备列表。"
+        boundary: "顿悟可以迅速，但需有前置经验、认知变化和后续承受。"
+      wuxia:
+        positive: "角色为守门派承诺放弃最优招式，胜负同时改变江湖声望。"
+        negative: "武功高低完全等同数值，门派与承诺没有作用。"
+        boundary: "招式名称可以类型化，关键在意图、距离、代价和身份后果。"
+      urban:
+        positive: "角色绕过审批获得资源，却承担合规和同事关系风险。"
+        negative: "堆砌专业术语而没有权限、利益和现实反馈。"
+        boundary: "职业流程可压缩，但改变结果的权限节点必须准确可见。"
+      history:
+        positive: "受交通和身份限制，消息延迟迫使角色在不完整信息下决策。"
+        negative: "人物用现代制度和即时通信解决古代冲突。"
+        boundary: "架空历史可以改变制度，但必须先声明并保持因果一致。"
+      science_fiction:
+        positive: "技术假设在能源不足时失效，并引发组织和伦理后果。"
+        negative: "设备在剧情需要时临时拥有未声明功能。"
+        boundary: "软科幻不要求公式，但核心假设、约束和失效条件仍需稳定。"
+      game_fantasy:
+        positive: "玩家利用已知机制撤退，失败反馈同时改变 NPC 的信任判断。"
+        negative: "系统面板替角色完成选择，NPC 只等待玩家触发。"
+        boundary: "数值可显示，但只有改变策略、资源或关系时才值得进入场景。"
+    plot_engines:
+      progression:
+        positive: "新能力经历获得、试用失败、代价承担和责任整合。"
+        negative: "连续升级只改变数字，不改变选择和风险。"
+        boundary: "快速成长可以成立，但越快越需要明确限制和后续责任。"
+      survival:
+        positive: "有限药品迫使队伍公开谁优先获救，并改变领导关系。"
+        negative: "危险只靠旁白宣布，资源和退路始终充足。"
+        boundary: "暂时安全不是失去求生压力，只要倒计时或分配矛盾仍在。"
+      revenge:
+        positive: "新证据迫使主角在惩罚仇敌与保护无辜证人之间选择。"
+        negative: "用愤怒口号替代调查、行动和道德代价。"
+        boundary: "复仇对象可以明确，但追索方法和边界仍需持续产生冲突。"
+      mystery:
+        positive: "线索支持首个解释，反证出现后人物调整行动而非作者硬翻答案。"
+        negative: "结局凭此前不存在的证据宣布真凶。"
+        boundary: "侦探可以误判，读者应能回看当时证据理解误判来源。"
+      political_intrigue:
+        positive: "礼貌让步换取可兑现筹码，同时形成未来政治债。"
+        negative: "所谓权谋只靠对手突然降智接受空头承诺。"
+        boundary: "沉默也可成为行动，但必须改变信息、立场或责任归属。"
+      war:
+        positive: "情报延迟和补给缺口使正确命令在执行层产生意外损失。"
+        negative: "战争规模只由伤亡数字和英雄口号表现。"
+        boundary: "个人英雄行为可以改变局部战局，不能无因果抹除组织和后勤。"
+      business:
+        positive: "合同让步换来现金流，却引发交付能力和竞争者反应。"
+        negative: "主角提出点子后市场自动成功且无人执行。"
+        boundary: "商业爽感可以快速兑现，但需至少呈现一个资源或执行约束。"
+      romance:
+        positive: "双方因不同边界作出行动，误读被后果和新承诺逐步修正。"
+        negative: "一方持续拒绝却被叙述成默认同意。"
+        boundary: "误会可以驱动剧情，但不能依赖角色拒绝一次正常澄清就能解决。"
+    narrative_forms:
+      light_novel:
+        positive: "互动节拍让角色目的和关系变化自然带出设定，心理改变下一句回应。"
+        negative: "连续碎短句和吐槽没有应答关系，也不改变事件。"
+        boundary: "高对白密度可以成立，但说话目的、归属和场景后果不能丢失。"
+      ensemble:
+        positive: "不同成员以专长和私欲改变方案，能动性随冲突而轮换。"
+        negative: "所有配角依次赞同主角并贡献一次工具能力。"
+        boundary: "群像不要求平均篇幅，要求关键成员的选择能改变共同处境。"
+      single_lead:
+        positive: "稳定跟随主角认知，同时让离场配角的决定通过后果反作用主线。"
+        negative: "视角集中被写成只有主角具有目标和判断。"
+        boundary: "配角离场行动无需直接展示，但其结果不能像作者便利一样凭空出现。"
+      single_lead_only:
+        positive: "关键选择由主角承担，其他人物仍保有专业能力和拒绝权。"
+        negative: "为了唯一主角地位让全队失去常识和行动能力。"
+        boundary: "主角可拥有唯一职责，但不能垄断所有信息、技能和道德判断。"
+      multi_pov:
+        positive: "新视角揭示此前不可见的利益和误判，并形成不同后续选择。"
+        negative: "换人称重复同一事件和同一结论。"
+        boundary: "同一事件可重访，但新视角必须改变解释、责任或行动条件。"
+      episodic:
+        positive: "单元案件闭环，同时留下角色承诺和资源变化进入下一单元。"
+        negative: "每个单元结束后人物和世界完全重置。"
+        boundary: "日常单元可以轻微增量，但至少应改变关系位置或读者认识。"
+      road_novel:
+        positive: "新地点改变补给、规则与身份风险，迫使队伍重谈路线。"
+        negative: "地点只是景点清单，人物选择和关系保持不变。"
+        boundary: "短暂停留可用于恢复，但环境仍应提供不可替代的压力或认识。"
+    premise_devices:
+      transmigration:
+        positive: "旧知识只解决局部问题，身份错位和习惯失效持续制造应对成本。"
+        negative: "穿越后立即适应，现代知识自动解决全部制度与技术问题。"
+        boundary: "主角可以接受现实很快，但身体、社会关系和知识可靠度仍需处理。"
+      rebirth:
+        positive: "改变旧事件后未来记忆贬值，新结果迫使主角承担未知代价。"
+        negative: "前世记忆永久准确，所有人按原轨迹等待主角利用。"
+        boundary: "少数稳定锚点可保留，但其适用范围和变化反馈必须明确。"
+      system:
+        positive: "系统给出任务但不替角色判断，奖励伴随权限、资源或关系后果。"
+        negative: "系统自动解释世界、选择最优方案并承担失败。"
+        boundary: "强系统可以主导外部压力，但人物仍需决定服从、利用或拒绝。"
+      no_system:
+        positive: "任务、反馈和成长来自人物、组织与世界规则的可追踪因果。"
+        negative: "没有面板却由旁白像系统一样发布目标和奖励。"
+        boundary: "组织可以正式派发任务，但需具备自身利益、权限和执行后果。"
+      time_loop:
+        positive: "每轮新信息改变人物关系，无法重置的记忆负担不断提高选择成本。"
+        negative: "机械重复流程，只增加攻略正确答案。"
+        boundary: "部分过程可以蒙太奇，但关键差异、失败证据和不可逆代价必须成场。"
+      infinite_flow:
+        positive: "副本选择留下跨本债务和队伍裂痕，长期弧不被结算界面清空。"
+        negative: "副本只是互不相关的题材展示，人物每次恢复初始状态。"
+        boundary: "单元规则可以完全变化，但入口、失败、退出和跨本携带必须明确。"
+      identity_swap:
+        positive: "旧习惯与社会记忆暴露身份错位，角色必须管理权限和关系风险。"
+        negative: "交换后所有熟人立即接受，身体与知识差异没有后果。"
+        boundary: "喜剧误认可以夸张，但持续关系必须回应身份不匹配。"
+    relationship_modes:
+      romance:
+        positive: "双方分别拥有目标和拒绝权，关系推进改变边界与承诺。"
+        negative: "占有、单方付出或强迫被自动解释为爱情。"
+        boundary: "不对等关系可以作为冲突存在，但正文不能抹除弱势方的判断。"
+      friendship:
+        positive: "朋友既提供支持也公开反对危险决定，并承担共同承诺。"
+        negative: "友情只表现为称兄道弟和无条件服从。"
+        boundary: "朋友可以短暂疏远，关键是分歧是否改变信任和后续行动。"
+      family:
+        positive: "照顾行为同时包含控制与旧债，角色在爱和边界间作选择。"
+        negative: "用血缘身份自动证明亲密或道德正确。"
+        boundary: "家庭冲突无需和解，但必须保留共同历史与现实责任。"
+      team:
+        positive: "成员拥有不同信息、专长和决策权，协作会暴露责任摩擦。"
+        negative: "队伍只是主角能力的延伸，成员无法改变方案。"
+        boundary: "临时指挥集中可以合理，但专业成员仍应能报告风险和拒绝错误命令。"
+      rivalry:
+        positive: "对手按独立标准成长，胜负改变双方策略而非单向衬托。"
+        negative: "对手反复挑衅并降智，只为展示主角升级。"
+        boundary: "阶段性碾压可以存在，但对手需保留学习、反制或退出能力。"
+      master_disciple:
+        positive: "传授知识同时保留权力边界，弟子最终用独立判断修正师门方案。"
+        negative: "师父只负责送技能，弟子永远服从且不承担判断。"
+        boundary: "严格师徒关系可以不平等，但控制、责任和独立过程必须可见。"
+    tone:
+      adventure:
+        positive: "路线选择带来新风险和认知，地点改变下一步策略。"
+        negative: "不断更换地图，却没有未知、代价或人物变化。"
+        boundary: "恢复段可以降低风险，但应整理发现或重定目标。"
+      suspense:
+        positive: "读者知道缺失信息为何危险，证据逐步约束可能答案。"
+        negative: "用含混句和故意省略人物已知事实制造神秘。"
+        boundary: "答案可以隐藏，当前可追问问题和风险必须明确。"
+      lighthearted:
+        positive: "互动错位缓解压力并暴露关系，笑点后仍保留事件真实后果。"
+        negative: "刚发生伤亡便用无关玩笑清空所有情绪。"
+        boundary: "角色以幽默自我防御可以成立，但需留下被压住的反应或代价。"
+      humorous:
+        positive: "身份预期与实际行动错位，笑点改变人物关系和场面方向。"
+        negative: "靠重复网络梗和角色降智制造笑声。"
+        boundary: "夸张可以暂时脱离写实尺度，但不能取消长期人物判断。"
+      dark:
+        positive: "制度压力缩小选择空间，人物仍通过代价不同的选项暴露价值。"
+        negative: "连续增加伤亡和背叛，却不改变人物信念或行动。"
+        boundary: "短暂希望不会破坏黑暗基调，反而可提高后续失去的意义。"
+      unrelieved_dark:
+        positive: "每个节点都让希望、关系或选择空间进一步收窄，并留下不可逆后果。"
+        negative: "随机虐待人物而没有因果累积和价值冲突。"
+        boundary: "微小温情可以存在，但必须使随后损失、背叛或选择更具体。"
+      hot_blooded:
+        positive: "爆发建立在前置行动、共同风险和明确承诺上，胜利后有人承担代价。"
+        negative: "靠口号和围观惊叹替代准备、行动与风险。"
+        boundary: "强情绪宣言可以成立，但必须回应此前选择并推动下一行动。"
+      warm:
+        positive: "人物记住具体需求、承担劳动并尊重对方边界，温暖中仍允许分歧。"
+        negative: "用互相安慰和集体微笑宣布关系很好。"
+        boundary: "照顾失败也可表现温暖，只要人物愿意修正并承担后果。"
+      tragic:
+        positive: "人物在可理解选择与现实约束间失去重要事物，结局留下不可撤销变化。"
+        negative: "随机死亡只为刺激读者，前置选择和主题均无关系。"
+        boundary: "可避免性与命定感可以并存，关键是当时选择为何合理且代价如何累积。"

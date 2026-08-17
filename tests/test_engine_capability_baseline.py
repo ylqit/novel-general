@@ -152,11 +152,11 @@ def test_editorial_research_gap_and_batch_agent_mode(tmp_path):
     assert review_payload["agent_task_files"]
     assert all((root / path).exists() for path in review_payload["agent_task_files"])
     role_ids = {role["id"] for role in review_payload["editorial_team"]}
-    assert role_ids == {"writing_agent", "anti_ai_editor", "executive_editor"}
+    assert role_ids == {"scene_prose_editor", "anti_ai_editor"}
     assert review_payload["severity_counts"]["P0"] == 1
     assert review_payload["review_round"] == 1
     assert "unresolved_P0" in review_payload["need_human_reasons"]
-    assert (root / "50_workbench" / "editorial_reviews" / "agent_tasks" / "ch001" / "executive_editor.md").exists()
+    assert (root / "50_workbench" / "editorial_reviews" / "agent_tasks" / "ch001" / "scene_prose_editor.md").exists()
     assert status.need_human is True
     assert "medieval gate tax" in " ".join(gaps.gaps)
     assert batch.status == "awaiting_agent_draft"

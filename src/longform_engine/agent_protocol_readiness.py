@@ -1,191 +1,424 @@
-"""Read-only readiness gate for the Agent-first production data pipeline."""
+"""Read-only structural readiness gate for the Agent-first data pipeline."""
 
 from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterable
-import json
 import re
-import subprocess
-import sys
+
+import yaml
 
 from longform_engine import __version__
-from longform_engine.agent_isolation import assert_phase5_coverage
+from longform_engine.agent_isolation import assert_current_protocol_coverage
+from longform_engine.agent_protocols import AGENT_OUTPUT_PROTOCOLS
+from longform_engine.agent_tasks import (
+    AGENT_TASK_EVENT_SCHEMA,
+    AGENT_TASK_INDEX_SCHEMA,
+    AGENT_TASK_SCHEMA_VERSION,
+    SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS,
+    TASK_CONTRACTS,
+)
 from longform_engine.distribution import tree_hash
-from longform_engine.roles import reject_duplicate_json_keys
+from longform_engine.resources import resource_root
+from longform_engine.prompting import estimate_text_units, load_context_profile_registry
+from longform_engine.roles import (
+    GENERIC_TRIGGER_SIGNALS,
+    PLAYBOOK_PROFESSIONAL_SECTIONS,
+    ROLE_PROFESSIONAL_SECTIONS,
+    ROLE_REGISTRY_SCHEMA,
+    SESSION_POLICIES,
+    load_role_registry,
+)
+from longform_engine.story_profiles import load_facet_registries
 
 
-SCHEMA = "agent_data_pipeline_readiness_v1"
-EVIDENCE_SCHEMA = "agent_data_pipeline_phase6_evidence_v1"
-DEFAULT_CHECKLIST = Path("docs/AGENT_FIRST_DOCUMENT_PROTOCOL_AND_DATA_PIPELINE_CHECKLIST.md")
-DEFAULT_EVIDENCE = Path("docs/baselines/AGENT_FIRST_DOCUMENT_PROTOCOL_PHASE6_EVIDENCE.json")
-DEFAULT_REPORT = Path("docs/baselines/AGENT_FIRST_DOCUMENT_PROTOCOL_PHASE6_READINESS.json")
-SELF_REFERENTIAL_FILES = frozenset({DEFAULT_EVIDENCE.as_posix(), DEFAULT_REPORT.as_posix()})
-REQUIRED_COMMAND_EVIDENCE = (
-    "full_pytest",
-    "skill_reference_sync",
-    "resource_manifest",
-    "skill_validation",
-    "release_guards",
+SCHEMA = "agent_data_pipeline_readiness_v2"
+FORBIDDEN_RUNTIME_MARKERS = (
+    "LEGACY_COMPATIBILITY_TASK_TYPES",
+    "legacy_document_json",
+    "agent_data_pipeline_authorization_v1",
+    "validate_document_index_bundle",
+    "AGENT_RESULT_ENVELOPE_SCHEMA",
+    "humanizer_semantic_output_template",
+    "semantic_review_output_template",
+    "semantic_pacing_output_template",
+    "graph_extract",
+    "memory_extract",
+    'task_type="character_memory"',
 )
-REQUIRED_SECURITY_EVIDENCE = (
-    "prompt_injection",
-    "role_overreach",
-    "self_review",
-    "bad_evidence",
-    "transaction_rollback",
-    "no_pollution",
+FORBIDDEN_PROCESS_MARKERS = (
+    "multiprocessing",
+    "ProcessPoolExecutor",
+    "subprocess.Popen",
 )
-CONTRACT_COMMANDS = (
-    ("skill_reference_sync", (sys.executable, "scripts/sync_skill_references.py", "--check")),
-    ("resource_manifest", (sys.executable, "scripts/build_resource_manifest.py", "--check")),
-    ("skill_validation", (sys.executable, "scripts/validate_skills.py")),
-    ("release_guards", (sys.executable, "scripts/release_surface_guards.py")),
+FORBIDDEN_FIXED_PROMPT_BUDGET_PATTERNS = (
+    re.compile(r"(?m)^\s*MAX_[A-Z_]*PROMPT[A-Z_]*\s*=\s*\d"),
+    re.compile(r"(?m)^\s*[A-Z_]*CONTEXT_MAX_CHARS\s*=\s*\d"),
+    re.compile(r"(?:prompt|context).{0,32}exceeds fixed character budget", re.IGNORECASE),
 )
 PROTOCOL_SURFACE_FILES = (
-    ".github/workflows/ci.yml",
-    "scripts/check_agent_data_pipeline_readiness.py",
-    "scripts/release_surface_guards.py",
     "src/longform_engine/agent_pipeline.py",
     "src/longform_engine/agent_isolation.py",
     "src/longform_engine/agent_normalization.py",
     "src/longform_engine/agent_protocol_readiness.py",
     "src/longform_engine/agent_results.py",
     "src/longform_engine/agent_tasks.py",
-    "src/longform_engine/artifacts.py",
-    "src/longform_engine/cli.py",
-    "src/longform_engine/gates/pipeline.py",
-    "src/longform_engine/orchestration/pipeline.py",
+    "src/longform_engine/graph/pipeline.py",
+    "src/longform_engine/memory/pipeline.py",
     "src/longform_engine/prompting.py",
     "src/longform_engine/production.py",
-    "src/longform_engine/quality/review.py",
     "src/longform_engine/roles.py",
     "src/longform_engine/semantic/pipeline.py",
 )
 
 
 class AgentDataPipelineBlocked(RuntimeError):
-    """Raised when a caller attempts to enable an unqualified data pipeline."""
+    """Raised when the current installation cannot compile a safe Agent task."""
 
 
 def check_agent_data_pipeline_readiness(
-    repository: str | Path,
-    *,
-    checklist_file: str | Path = DEFAULT_CHECKLIST,
-    evidence_file: str | Path = DEFAULT_EVIDENCE,
-    run_contracts: bool = True,
+    repository: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Return a stable, read-only Phase 6 readiness report."""
+    """Validate the current protocol in-process without running child commands."""
 
-    root = Path(repository).expanduser().resolve()
-    checklist_path = resolve_repository_path(root, checklist_file)
-    evidence_path = resolve_repository_path(root, evidence_file)
+    root = Path(repository).expanduser().resolve() if repository else resource_root().resolve()
     checks: list[dict[str, Any]] = []
-
-    phase_status = phase_zero_to_five_status(checklist_path)
-    add_check(
-        checks,
-        "phase_0_to_5_complete",
-        phase_status["ok"],
-        phase_status,
-        "Complete every Phase 0-5 checklist item before running Phase 6.",
-    )
 
     role_error = ""
     try:
-        assert_phase5_coverage()
-    except ValueError as exc:
+        registry = load_role_registry(root)
+        assert_current_protocol_coverage(registry)
+    except (OSError, RuntimeError, ValueError) as exc:
+        registry = None
         role_error = str(exc)
     add_check(
         checks,
         "role_and_task_coverage",
         not role_error,
-        {"status": "complete" if not role_error else "incomplete", "error": role_error},
-        "Repair the task/role/output matrix and rerun Phase 5 isolation tests.",
+        {
+            "registry_schema": ROLE_REGISTRY_SCHEMA,
+            "role_count": len(registry.roles) if registry else 0,
+            "playbook_count": len(registry.playbooks) if registry else 0,
+            "error": role_error,
+        },
+        "修复角色注册表、任务映射或专业模块后重新运行 readiness。",
     )
 
-    role_resource_hash = directory_hash(root / "config" / "agent_roles")
-    skill_records = {
-        "codex": {
-            "version": __version__,
-            "sha256": directory_hash(root / "longform-novel-codex"),
+    protocol_ok = (
+        AGENT_TASK_SCHEMA_VERSION == 4
+        and SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS == (4,)
+        and AGENT_TASK_INDEX_SCHEMA == "agent_task_index_v4"
+        and AGENT_TASK_EVENT_SCHEMA == "agent_task_event_v4"
+    )
+    add_check(
+        checks,
+        "manifest_v4_only",
+        protocol_ok,
+        {
+            "manifest_version": AGENT_TASK_SCHEMA_VERSION,
+            "supported_versions": list(SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS),
+            "index_schema": AGENT_TASK_INDEX_SCHEMA,
+            "event_schema": AGENT_TASK_EVENT_SCHEMA,
         },
-        "claude_code": {
-            "version": __version__,
-            "sha256": directory_hash(root / "longform-novel-claude"),
-        },
+        "仅保留 AgentTaskManifest、task index 和 event 的 v4 协议。",
+    )
+
+    prompt_errors: list[str] = [role_error] if role_error else []
+    if registry:
+        decision_hashes: dict[str, str] = {}
+        calibration_hashes: dict[str, str] = {}
+        for role in registry.roles.values():
+            if not role.always_sections or not role.task_sections:
+                prompt_errors.append(f"{role.role_id}: missing always/task sections")
+            for section, expected_mode in ROLE_PROFESSIONAL_SECTIONS.items():
+                actual_mode = (
+                    _role_section_mode(role, section)
+                    if section in role.prompt_sections
+                    else ""
+                )
+                if actual_mode != expected_mode:
+                    prompt_errors.append(
+                        f"{role.role_id}: {section} must use {expected_mode}"
+                    )
+            generic = sorted(GENERIC_TRIGGER_SIGNALS & set(role.trigger_sections))
+            if generic:
+                prompt_errors.append(f"{role.role_id}: generic triggers {generic}")
+            if "诊断树" not in role.prompt_sections.get("diagnostics", ""):
+                prompt_errors.append(f"{role.role_id}: missing role-specific diagnostic tree")
+            if role.role_family == "review" and (
+                not role.review_dimensions or not role.finding_codes
+            ):
+                prompt_errors.append(f"{role.role_id}: review scope is not explicit")
+            if role.role_family == "review":
+                missing_codes = [code for code in role.finding_codes if code not in role.prompt_text]
+                if missing_codes:
+                    prompt_errors.append(
+                        f"{role.role_id}: finding rules missing {', '.join(missing_codes)}"
+                    )
+            elif "专业判定表" not in role.prompt_sections.get("diagnostics", ""):
+                prompt_errors.append(f"{role.role_id}: missing professional decision table")
+            if role.role_family == "review" and role.max_active_playbooks > 2:
+                prompt_errors.append(f"{role.role_id}: review Playbook limit exceeds two")
+            if not contains_cjk(role.prompt_text):
+                prompt_errors.append(f"{role.role_id}: prompt is not Chinese-first")
+            calibration = role.prompt_sections.get("calibration", "")
+            if any(marker not in calibration for marker in ("正例", "反例", "边界")):
+                prompt_errors.append(f"{role.role_id}: calibration is not role-specific")
+            decision_digest = role.prompt_section_hashes.get("decision_model", "")
+            calibration_digest = role.prompt_section_hashes.get("calibration", "")
+            if decision_digest in decision_hashes:
+                prompt_errors.append(
+                    f"{role.role_id}: decision model duplicates {decision_hashes[decision_digest]}"
+                )
+            decision_hashes[decision_digest] = role.role_id
+            if calibration_digest in calibration_hashes:
+                prompt_errors.append(
+                    f"{role.role_id}: calibration duplicates {calibration_hashes[calibration_digest]}"
+                )
+            calibration_hashes[calibration_digest] = role.role_id
+        for playbook in registry.playbooks.values():
+            source = playbook.source
+            for section, expected_mode in PLAYBOOK_PROFESSIONAL_SECTIONS.items():
+                if source.section_modes.get(section) != expected_mode:
+                    prompt_errors.append(
+                        f"{playbook.playbook_id}: {section} must use {expected_mode}"
+                    )
+            if len(re.findall(r"(?m)^\d+\.\s*正例：", source.sections.get("examples", ""))) < 3:
+                prompt_errors.append(f"{playbook.playbook_id}: fewer than three calibration pairs")
+        facet_sections = [
+            playbook.source.sections.get("facets", "").strip()
+            for playbook in registry.playbooks.values()
+        ]
+        if len(facet_sections) != len(set(facet_sections)):
+            prompt_errors.append("Playbooks contain duplicated story-facet guidance")
+        if registry.registry_version != 3 or len(registry.roles) != 27 or len(registry.playbooks) != 12:
+            prompt_errors.append("registry must contain v3, 27 roles, and 12 playbooks")
+    add_check(
+        checks,
+        "chinese_role_contracts",
+        not prompt_errors,
+        {"errors": prompt_errors},
+        "补齐渐进区段、角色判断范围与专业方法模块。",
+    )
+
+    session_errors: list[str] = []
+    if registry:
+        for role in registry.roles.values():
+            if role.session_policy not in SESSION_POLICIES:
+                session_errors.append(f"{role.role_id}: invalid session policy")
+            if role.role_family == "review" and role.session_policy != "isolated_review":
+                session_errors.append(f"{role.role_id}: review must use an isolated session")
+        expected_sessions = {
+            "book_design": "project_coordinator",
+            "chapter_write": "chapter_author",
+            "repair": "chapter_author",
+            "humanize": "isolated_revision",
+            "semantic_review": "isolated_review",
+            "chapter_semantic": "isolated_archival",
+            "design_semantic_compile": "isolated_archival",
+        }
+        for task_type, expected in expected_sessions.items():
+            actual = registry.resolve(task_type).session_policy
+            if actual != expected:
+                session_errors.append(f"{task_type}: expected {expected}, got {actual}")
+    add_check(
+        checks,
+        "hybrid_session_boundaries",
+        not session_errors,
+        {"policies": sorted(SESSION_POLICIES), "errors": session_errors},
+        "修复角色会话策略，隔离作者、修订、审稿与语义归档上下文。",
+    )
+
+    context_errors: list[str] = []
+    try:
+        context_registry = load_context_profile_registry()
+    except (OSError, ValueError) as exc:
+        context_registry = {}
+        context_errors.append(str(exc))
+    expected_capacities = {"compact": 24_000, "standard": 48_000, "large": 96_000}
+    actual_capacities = {
+        str(profile_id): int(value.get("capacity_units") or 0)
+        for profile_id, value in (context_registry.get("profiles") or {}).items()
+        if isinstance(value, dict)
     }
-    surface_hash = protocol_surface_hash(root)
-    evidence, evidence_error = load_evidence(evidence_path)
-    evidence_errors = validate_evidence(
-        evidence,
-        repository=root,
-        expected_surface_hash=surface_hash,
-        expected_role_hash=role_resource_hash,
-        expected_skill_records=skill_records,
-    )
-    if evidence_error:
-        evidence_errors.insert(0, evidence_error)
+    if actual_capacities != expected_capacities:
+        context_errors.append(
+            f"context capacities must be resource-defined as {expected_capacities}, got {actual_capacities}"
+        )
+    if context_registry.get("default_profile") != "standard":
+        context_errors.append("standard must remain the default host profile")
+    allocation = context_registry.get("allocation") or {}
+    if float(allocation.get("minimum_output_and_handoff_ratio") or 0) < 0.25:
+        context_errors.append("less than 25% of capacity is reserved for output and handoff")
     add_check(
         checks,
-        "phase6_test_evidence",
-        not evidence_errors,
-        {
-            "file": relative_or_absolute(root, evidence_path),
-            "sha256": file_hash(evidence_path),
-            "errors": evidence_errors,
-        },
-        "Run the complete Phase 6 test plan and refresh the evidence JSON.",
+        "adaptive_context_profiles",
+        not context_errors,
+        {"profiles": actual_capacities, "errors": context_errors},
+        "修复资源化上下文档位、输出保留比例或默认宿主档位。",
     )
-    authorization_errors = validate_runtime_authorization(
+
+    facet_errors: list[str] = []
+    try:
+        facets = load_facet_registries()
+    except (OSError, ValueError) as exc:
+        facets = {}
+        facet_errors.append(str(exc))
+    adapters = [
+        str(value.get("prompt_adapter") or "").strip()
+        for values in facets.values()
+        for value in values.values()
+    ]
+    if len(adapters) != 44:
+        facet_errors.append(f"expected 44 story facets, got {len(adapters)}")
+    if len(adapters) != len(set(adapters)):
+        facet_errors.append("story facets contain duplicated Prompt adapters")
+    if any(not contains_cjk(adapter) for adapter in adapters):
+        facet_errors.append("every story facet must provide Chinese adaptation guidance")
+    add_check(
+        checks,
+        "chinese_story_facet_adapters",
+        not facet_errors,
+        {"facet_count": len(adapters), "unique_adapters": len(set(adapters)), "errors": facet_errors},
+        "补齐 44 个故事分面的中文方法适配器并消除重复模板。",
+    )
+
+    professional_errors, professional_inventory = professional_prompt_evidence(
         root,
-        expected_surface_hash=surface_hash,
-        expected_phase6_evidence_hash=file_hash(evidence_path),
+        registry=registry,
+        facets=facets,
     )
     add_check(
         checks,
-        "runtime_pipeline_authorization",
-        not authorization_errors,
+        "professional_prompt_calibration",
+        not professional_errors,
         {
-            "file": "config/agent_data_pipeline_authorization.json",
-            "errors": authorization_errors,
+            "item_count": professional_inventory.get("item_count", 0),
+            "expected_item_count": 83,
+            "inventory": professional_inventory,
+            "errors": professional_errors,
         },
-        "Refresh config/agent_data_pipeline_authorization.json from the current passing protocol surface.",
+        "逐项补齐 27 个角色、12 个 Playbook 与 44 个故事分面的专业内容和校准证据。",
     )
 
-    contract_results: dict[str, dict[str, Any]] = {}
-    if run_contracts:
-        for check_id, command in CONTRACT_COMMANDS:
-            result = run_command(root, command)
-            contract_results[check_id] = result
-            add_check(
-                checks,
-                f"current_{check_id}",
-                result["exit_code"] == 0,
-                result,
-                "Run `" + " ".join(command) + "` and fix the reported failure.",
-            )
+    protocol_errors: list[str] = []
+    if len(TASK_CONTRACTS) != 24:
+        protocol_errors.append(f"expected 24 task contracts, got {len(TASK_CONTRACTS)}")
+    mapped_protocols: set[str] = set()
+    for task_type, contract in TASK_CONTRACTS.items():
+        schemas = tuple(contract.get("schemas") or ())
+        if len(schemas) != 1 or schemas[0] not in AGENT_OUTPUT_PROTOCOLS:
+            protocol_errors.append(f"{task_type}: output protocol must be one of the four current protocols")
+        else:
+            mapped_protocols.add(schemas[0])
+    if mapped_protocols != set(AGENT_OUTPUT_PROTOCOLS):
+        protocol_errors.append("task contracts do not exercise exactly the four current protocols")
+    add_check(
+        checks,
+        "four_output_protocols",
+        not protocol_errors,
+        {"protocols": sorted(mapped_protocols), "task_count": len(TASK_CONTRACTS), "errors": protocol_errors},
+        "将所有当前任务收敛到四种单文件 Agent 输出协议。",
+    )
 
-    git = git_provenance(root)
+    selection_errors: list[str] = []
+    if registry:
+        role_tasks = [
+            (task_type, role_id)
+            for task_type, role_id in registry.task_role_map.items()
+        ] + [("editorial_review", role_id) for role_id in registry.editorial_role_map]
+        for task_type, role_id in role_tasks:
+            selection = registry.select_prompt(
+                task_type,
+                declared_role_id=role_id,
+                quality_focus=("dialogue", "opening", "character"),
+            )
+            if len(selection.playbooks) > registry.roles[role_id].max_active_playbooks:
+                selection_errors.append(f"{role_id}: active playbook limit exceeded")
+            for selected in selection.playbooks:
+                source = registry.playbooks[selected.playbook_id].source
+                forbidden = [
+                    section
+                    for section in selected.sections
+                    if source.section_modes[section] in {"reference_only", "calibration_only"}
+                ]
+                if forbidden:
+                    selection_errors.append(f"{role_id}: runtime selected {forbidden}")
+                modes = {source.section_modes[section] for section in selected.sections}
+                if task_type in {"repair", "humanize"} and "task" in modes:
+                    selection_errors.append(f"{role_id}: repair task loaded a creation/review lane")
+                if registry.roles[role_id].role_family == "review" and "trigger" in modes:
+                    selection_errors.append(f"{role_id}: review task loaded a repair lane")
+        author = registry.resolve("chapter_write")
+        humanizer = registry.resolve("humanize")
+        if author.contract_hash == humanizer.contract_hash or author.required_playbook_ids == humanizer.required_playbook_ids:
+            selection_errors.append("chapter author and Humanizer are not professionally differentiated")
+    add_check(
+        checks,
+        "progressive_prompt_selection",
+        not selection_errors,
+        {"errors": selection_errors},
+        "修复角色区段、方法模块选择或角色职责区分。",
+    )
+
+    source_files = [
+        root / relative
+        for relative in PROTOCOL_SURFACE_FILES
+        if relative != "src/longform_engine/agent_protocol_readiness.py"
+        and (root / relative).is_file()
+    ]
+    source_text = "\n".join(path.read_text(encoding="utf-8", errors="ignore") for path in source_files)
+    legacy_hits = [marker for marker in FORBIDDEN_RUNTIME_MARKERS if marker in source_text]
+    process_hits = [marker for marker in FORBIDDEN_PROCESS_MARKERS if marker in source_text]
+    fixed_budget_hits = [
+        pattern.pattern
+        for pattern in FORBIDDEN_FIXED_PROMPT_BUDGET_PATTERNS
+        if pattern.search(source_text)
+    ]
+    add_check(
+        checks,
+        "legacy_runtime_removed",
+        not legacy_hits,
+        {"markers": legacy_hits, "source_tree_checked": bool(source_files)},
+        "删除仍可执行的旧协议、旧结果适配器和分裂语义任务。",
+    )
+    add_check(
+        checks,
+        "single_process_orchestration",
+        not process_hits,
+        {"markers": process_hits, "source_tree_checked": bool(source_files)},
+        "移除生产运行时中的进程池、后台 worker 或子进程调度。",
+    )
+    add_check(
+        checks,
+        "fixed_prompt_budget_removed",
+        not fixed_budget_hits,
+        {"markers": fixed_budget_hits, "source_tree_checked": bool(source_files)},
+        "删除 Python 中固定字符失败阈值，统一使用资源化自适应预算。",
+    )
+
     failures = [item for item in checks if item["status"] == "fail"]
-    report = {
+    professional_prompt_ready = not any(
+        item["id"] == "professional_prompt_calibration" and item["status"] == "fail"
+        for item in checks
+    )
+    skill_records = {
+        "codex": skill_record(root / "longform-novel-codex"),
+        "claude_code": skill_record(root / "longform-novel-claude"),
+    }
+    return {
         "schema": SCHEMA,
         "ready_for_data_pipeline": not failures,
+        "professional_prompt_ready": professional_prompt_ready,
         "repository": str(root),
         "provenance": {
-            "git_commit": git["commit"],
-            "dirty_tree_sha256": git["dirty_tree_sha256"],
-            "dirty_file_count": git["dirty_file_count"],
-            "dirty_tree_exclusions": sorted(SELF_REFERENTIAL_FILES),
             "engine_version": __version__,
             "skills": skill_records,
-            "role_resource_sha256": role_resource_hash,
-            "protocol_surface_sha256": surface_hash,
-            "evidence_file": relative_or_absolute(root, evidence_path),
-            "evidence_sha256": file_hash(evidence_path),
+            "role_resource_sha256": directory_hash(root / "config" / "agent_roles"),
+            "protocol_surface_sha256": protocol_surface_hash(root),
+            "execution_model": "single_process_sequential",
         },
-        "test_evidence": evidence if isinstance(evidence, dict) else {},
         "checks": checks,
         "summary": {
             "passed": sum(item["status"] == "pass" for item in checks),
@@ -195,29 +428,21 @@ def check_agent_data_pipeline_readiness(
         "next_command": (
             failures[0]["next_command"]
             if failures
-            else "Phase 7 is authorized; continue with production next and keep apply/finalize explicit."
+            else "longform-engine production next project.yaml"
         ),
     }
-    return report
 
 
 def require_agent_data_pipeline_readiness(
-    repository: str | Path,
+    repository: str | Path | None = None,
     *,
     requested: bool,
-    checklist_file: str | Path = DEFAULT_CHECKLIST,
-    evidence_file: str | Path = DEFAULT_EVIDENCE,
 ) -> dict[str, Any] | None:
-    """Block a future Phase 7 enablement request unless Phase 6 is current."""
+    """Raise before task compilation when the installed structural contract is invalid."""
 
     if not requested:
         return None
-    report = check_agent_data_pipeline_readiness(
-        repository,
-        checklist_file=checklist_file,
-        evidence_file=evidence_file,
-        run_contracts=False,
-    )
+    report = check_agent_data_pipeline_readiness(repository)
     if not report["ready_for_data_pipeline"]:
         reasons = ", ".join(report["blocking_reasons"]) or "unknown readiness failure"
         raise AgentDataPipelineBlocked(
@@ -231,7 +456,7 @@ def render_agent_data_pipeline_readiness(report: dict[str, Any]) -> str:
     lines = [
         f"Agent-first data pipeline readiness: {state}",
         f"Engine: {report.get('provenance', {}).get('engine_version') or 'unknown'}",
-        f"Commit: {report.get('provenance', {}).get('git_commit') or 'unknown'}",
+        f"Execution: {report.get('provenance', {}).get('execution_model') or 'unknown'}",
     ]
     for item in report.get("checks") or []:
         lines.append(f"[{str(item.get('status')).upper()}] {item.get('id')}")
@@ -241,161 +466,23 @@ def render_agent_data_pipeline_readiness(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def phase_zero_to_five_status(path: Path) -> dict[str, Any]:
-    text = path.read_text(encoding="utf-8") if path.is_file() else ""
-    phases: list[dict[str, Any]] = []
-    for number in range(6):
-        match = re.search(
-            rf"(?ms)^## Phase {number}\.[^\n]*\n(.*?)(?=^## Phase {number + 1}\.|^## Required Tests|\Z)",
-            text,
-        )
-        states = re.findall(r"(?m)^- \[([ x~])\] ", match.group(1) if match else "")
-        phases.append(
-            {
-                "phase": number,
-                "items": len(states),
-                "complete": states.count("x"),
-                "pending": states.count(" "),
-                "partial": states.count("~"),
-            }
-        )
-    return {
-        "ok": all(item["items"] > 0 and item["items"] == item["complete"] for item in phases),
-        "checklist": str(path),
-        "phases": phases,
-    }
-
-
-def validate_evidence(
-    evidence: Any,
-    *,
-    repository: Path,
-    expected_surface_hash: str,
-    expected_role_hash: str,
-    expected_skill_records: dict[str, dict[str, str]],
-) -> list[str]:
-    errors: list[str] = []
-    if not isinstance(evidence, dict) or evidence.get("schema") != EVIDENCE_SCHEMA:
-        return [f"evidence schema must be {EVIDENCE_SCHEMA}."]
-    if evidence.get("engine_version") != __version__:
-        errors.append("evidence engine_version does not match the current Engine.")
-    if evidence.get("protocol_surface_sha256") != expected_surface_hash:
-        errors.append("evidence protocol_surface_sha256 is stale.")
-    if evidence.get("role_resource_sha256") != expected_role_hash:
-        errors.append("evidence role_resource_sha256 is stale.")
-    if evidence.get("skills") != expected_skill_records:
-        errors.append("evidence Skill versions or hashes are stale.")
-    commit = str(evidence.get("git_commit_at_test") or "")
-    dirty_hash = str(evidence.get("dirty_tree_sha256_at_test") or "")
-    if not re.fullmatch(r"[0-9a-f]{40,64}", commit):
-        errors.append("evidence git_commit_at_test is missing or invalid.")
-    if not re.fullmatch(r"[0-9a-f]{64}", dirty_hash):
-        errors.append("evidence dirty_tree_sha256_at_test is missing or invalid.")
-
-    commands = evidence.get("commands")
-    records = {
-        str(item.get("id") or ""): item
-        for item in commands
-        if isinstance(item, dict)
-    } if isinstance(commands, list) else {}
-    for check_id in REQUIRED_COMMAND_EVIDENCE:
-        item = records.get(check_id)
-        if not item or item.get("status") != "pass" or item.get("exit_code") != 0:
-            errors.append(f"missing passing command evidence: {check_id}.")
-    full_pytest = records.get("full_pytest") or {}
-    if not re.search(r"\b\d+ passed\b", str(full_pytest.get("summary") or "")):
-        errors.append("full_pytest evidence must record the observed passed count.")
-
-    payoff = evidence.get("realistic_payoff_fixture")
-    if not isinstance(payoff, dict):
-        errors.append("realistic_payoff_fixture evidence is missing.")
-    else:
-        if payoff.get("input_file_count") != 3 or payoff.get("max_files") != 3:
-            errors.append("realistic payoff evidence must use exactly three inputs.")
-        total = payoff.get("total_input_characters")
-        context = payoff.get("context_characters")
-        if not isinstance(total, int) or total > 15_000:
-            errors.append("realistic payoff total input characters exceed 15K.")
-        if not isinstance(context, int) or context > 6_000:
-            errors.append("realistic payoff compact context exceeds 6K.")
-        payoff_test = str(payoff.get("test_reference") or "")
-        if not test_reference_exists(repository, payoff_test):
-            errors.append("realistic payoff fixture test_reference is missing or stale.")
-
-    security = evidence.get("security_tests")
-    if not isinstance(security, dict):
-        errors.append("security_tests evidence is missing.")
-    else:
-        for category in REQUIRED_SECURITY_EVIDENCE:
-            tests = security.get(category)
-            if not isinstance(tests, list) or not tests or not all(
-                isinstance(item, str) and item.startswith("tests/") for item in tests
-            ):
-                errors.append(f"security test evidence is missing for {category}.")
-            elif not all(test_reference_exists(repository, item) for item in tests):
-                errors.append(f"security test evidence contains a stale reference for {category}.")
-    return errors
-
-
-def test_reference_exists(root: Path, reference: str) -> bool:
-    if "::" not in reference:
-        return False
-    path_text, test_name = reference.split("::", 1)
-    if not path_text.startswith("tests/") or not re.fullmatch(r"test_[A-Za-z0-9_]+", test_name):
-        return False
-    path = root / path_text
-    return path.is_file() and f"def {test_name}(" in path.read_text(encoding="utf-8", errors="ignore")
-
-
-def validate_runtime_authorization(
-    root: Path,
-    *,
-    expected_surface_hash: str,
-    expected_phase6_evidence_hash: str,
-) -> list[str]:
-    path = root / "config" / "agent_data_pipeline_authorization.json"
-    if not path.is_file():
-        return ["runtime authorization asset is missing."]
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_json_keys)
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
-        return [f"runtime authorization asset is invalid UTF-8 JSON: {exc}"]
-    errors: list[str] = []
-    if not isinstance(payload, dict) or payload.get("schema") != "agent_data_pipeline_authorization_v1":
-        errors.append("runtime authorization schema is invalid.")
-        return errors
-    if payload.get("authorized") is not True:
-        errors.append("runtime authorization is not enabled.")
-    if payload.get("engine_version") != __version__:
-        errors.append("runtime authorization engine_version is stale.")
-    if payload.get("protocol_surface_sha256") != expected_surface_hash:
-        errors.append("runtime authorization protocol_surface_sha256 is stale.")
-    if payload.get("phase6_evidence_sha256") != expected_phase6_evidence_hash:
-        errors.append("runtime authorization phase6_evidence_sha256 is stale.")
-    return errors
-
-
 def protocol_surface_hash(root: Path) -> str:
     paths: set[Path] = set()
     for relative in PROTOCOL_SURFACE_FILES:
         path = root / relative
         if path.is_file():
             paths.add(path)
-    for directory in (root / "config" / "agent_roles",):
-        if directory.is_dir():
-            paths.update(item for item in directory.rglob("*") if item.is_file())
-    tests = root / "tests"
-    if tests.is_dir():
-        paths.update(tests.glob("test_agent_document_protocol_phase*.py"))
-        for name in (
-            "test_agent_skill_integrity.py",
-            "test_storage.py",
-            "test_quality_contract_and_creative_interaction.py",
-        ):
-            path = tests / name
-            if path.is_file():
-                paths.add(path)
+    role_dir = root / "config" / "agent_roles"
+    if role_dir.is_dir():
+        paths.update(path for path in role_dir.rglob("*") if path.is_file())
     return hash_paths(root, paths)
+
+
+def skill_record(path: Path) -> dict[str, str]:
+    return {
+        "version": __version__,
+        "sha256": directory_hash(path),
+    }
 
 
 def directory_hash(path: Path) -> str:
@@ -405,102 +492,231 @@ def directory_hash(path: Path) -> str:
 def hash_paths(root: Path, paths: Iterable[Path]) -> str:
     digest = sha256()
     for path in sorted(set(paths), key=lambda item: item.relative_to(root).as_posix()):
-        relative = path.relative_to(root).as_posix()
-        digest.update(relative.encode("utf-8"))
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
 
 
-def git_provenance(root: Path) -> dict[str, Any]:
-    commit_result = run_git(root, "rev-parse", "HEAD")
-    commit = commit_result.stdout.strip() if commit_result.returncode == 0 else ""
-    changed: set[str] = set()
-    for args in (
-        ("diff", "--name-only", "HEAD", "--"),
-        ("diff", "--cached", "--name-only", "--"),
-        ("ls-files", "--others", "--exclude-standard"),
+def professional_prompt_evidence(
+    root: Path,
+    *,
+    registry: Any,
+    facets: dict[str, dict[str, dict[str, Any]]],
+) -> tuple[list[str], dict[str, Any]]:
+    """Build reproducible evidence for all professional Prompt source objects."""
+
+    errors: list[str] = []
+    inventory: dict[str, Any] = {"roles": [], "playbooks": [], "facets": [], "item_count": 0}
+    fixture_path = root / "config" / "v041_release_acceptance_fixtures.yaml"
+    try:
+        payload = yaml.safe_load(fixture_path.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        return [f"professional calibration fixture cannot be read: {exc}"], inventory
+    calibration = payload.get("professional_prompt_calibration")
+    if not isinstance(calibration, dict):
+        return ["professional_prompt_calibration must be a mapping"], inventory
+
+    role_cases = calibration.get("roles")
+    playbook_cases = calibration.get("playbooks")
+    facet_cases = calibration.get("facets")
+    if not isinstance(role_cases, dict):
+        errors.append("professional role calibration must be a mapping")
+        role_cases = {}
+    if not isinstance(playbook_cases, dict):
+        errors.append("professional Playbook calibration must be a mapping")
+        playbook_cases = {}
+    if not isinstance(facet_cases, dict):
+        errors.append("professional facet calibration must be a mapping")
+        facet_cases = {}
+
+    expected_role_ids = set(registry.roles) if registry else set()
+    expected_playbook_ids = set(registry.playbooks) if registry else set()
+    if set(role_cases) != expected_role_ids:
+        errors.append(_coverage_error("role", expected_role_ids, set(role_cases)))
+    if set(playbook_cases) != expected_playbook_ids:
+        errors.append(_coverage_error("Playbook", expected_playbook_ids, set(playbook_cases)))
+
+    flattened_facet_cases: dict[tuple[str, str], Any] = {}
+    for kind, values in facet_cases.items():
+        if not isinstance(values, dict):
+            errors.append(f"facet calibration {kind} must be a mapping")
+            continue
+        for facet_id, case in values.items():
+            flattened_facet_cases[(str(kind), str(facet_id))] = case
+    expected_facet_ids = {
+        (str(kind), str(facet_id))
+        for kind, values in facets.items()
+        for facet_id in values
+    }
+    if set(flattened_facet_cases) != expected_facet_ids:
+        errors.append(
+            _coverage_error(
+                "facet",
+                {f"{kind}:{facet_id}" for kind, facet_id in expected_facet_ids},
+                {f"{kind}:{facet_id}" for kind, facet_id in flattened_facet_cases},
+            )
+        )
+
+    calibration_text_owners: dict[str, str] = {}
+    for prefix, cases in (
+        ("role", role_cases),
+        ("playbook", playbook_cases),
+        (
+            "facet",
+            {f"{kind}:{facet_id}": case for (kind, facet_id), case in flattened_facet_cases.items()},
+        ),
     ):
-        result = run_git(root, *args)
-        if result.returncode == 0:
-            changed.update(line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip())
-    changed.difference_update(SELF_REFERENTIAL_FILES)
-    digest = sha256()
-    for relative in sorted(changed):
-        digest.update(relative.encode("utf-8"))
-        digest.update(b"\0")
-        path = root / relative
-        if path.is_file():
-            digest.update(sha256(path.read_bytes()).digest())
-        else:
-            digest.update(b"<deleted>")
-        digest.update(b"\0")
-    return {
-        "commit": commit,
-        "dirty_tree_sha256": digest.hexdigest(),
-        "dirty_file_count": len(changed),
-    }
+        for object_id, case in cases.items():
+            fixture_id = f"{prefix}:{object_id}"
+            if not isinstance(case, dict) or set(case) != {"positive", "negative", "boundary"}:
+                errors.append(f"{fixture_id}: calibration must contain exactly positive/negative/boundary")
+                continue
+            for case_kind in ("positive", "negative", "boundary"):
+                text = str(case.get(case_kind) or "").strip()
+                owner = f"{fixture_id}:{case_kind}"
+                if not text or not contains_cjk(text):
+                    errors.append(f"{owner}: calibration must be non-empty Chinese text")
+                    continue
+                normalized = re.sub(r"\s+", "", text)
+                duplicate = calibration_text_owners.get(normalized)
+                if duplicate:
+                    errors.append(f"{owner}: duplicates calibration text from {duplicate}")
+                calibration_text_owners[normalized] = owner
+
+    if registry:
+        diagnostic_owners: dict[str, str] = {}
+        for role_id, role in sorted(registry.roles.items()):
+            diagnostics = role.prompt_sections.get("diagnostics", "").strip()
+            diagnostic_hash = sha256(diagnostics.encode("utf-8")).hexdigest()
+            duplicate = diagnostic_owners.get(diagnostic_hash)
+            if duplicate:
+                errors.append(f"{role_id}: diagnostics duplicate {duplicate}")
+            diagnostic_owners[diagnostic_hash] = role_id
+
+            task_type, declared_role_id = _representative_role_task(registry, role_id)
+            try:
+                selection = registry.select_prompt(
+                    task_type,
+                    declared_role_id=declared_role_id,
+                )
+            except (KeyError, RuntimeError, ValueError) as exc:
+                errors.append(f"{role_id}: representative Prompt selection failed: {exc}")
+                continue
+            selected_text = [role.prompt_sections[item] for item in selection.role_sections]
+            selected_playbooks: list[dict[str, Any]] = []
+            for selected in selection.playbooks:
+                source = registry.playbooks[selected.playbook_id].source
+                selected_text.extend(source.sections[item] for item in selected.sections)
+                selected_playbooks.append(
+                    {"id": selected.playbook_id, "sections": list(selected.sections)}
+                )
+            inventory["roles"].append(
+                {
+                    "id": role_id,
+                    "fixture_id": f"role:{role_id}",
+                    "contract_hash": role.contract_hash,
+                    "diagnostics_hash": diagnostic_hash,
+                    "representative_task": task_type,
+                    "loaded_role_sections": list(selection.role_sections),
+                    "loaded_playbooks": selected_playbooks,
+                    "selection_hash": selection.selection_hash,
+                    "estimated_units": estimate_text_units("\n\n".join(selected_text)),
+                }
+            )
+
+        method_owners: dict[str, str] = {}
+        for playbook_id, playbook in sorted(registry.playbooks.items()):
+            source = playbook.source
+            review = source.sections.get("review", "").strip()
+            repair = source.sections.get("repair", "").strip()
+            method_text = f"{review}\n{repair}"
+            method_hash = sha256(method_text.encode("utf-8")).hexdigest()
+            duplicate = method_owners.get(method_hash)
+            if duplicate:
+                errors.append(f"{playbook_id}: review/repair method duplicates {duplicate}")
+            method_owners[method_hash] = playbook_id
+            if "诊断分支" not in review or len(re.findall(r"(?m)^-\s+", review)) < 3:
+                errors.append(f"{playbook_id}: review requires at least three specific diagnostic branches")
+            if "保护项" not in repair:
+                errors.append(f"{playbook_id}: repair requires a specific preserve rule")
+            inventory["playbooks"].append(
+                {
+                    "id": playbook_id,
+                    "fixture_id": f"playbook:{playbook_id}",
+                    "source_hash": source.source_hash,
+                    "section_hashes": dict(source.section_hashes),
+                    "section_modes": dict(source.section_modes),
+                    "method_hash": method_hash,
+                    "estimated_units": estimate_text_units(source.source_text),
+                }
+            )
+
+    adapter_owners: dict[str, str] = {}
+    for kind, values in sorted(facets.items()):
+        for facet_id, value in sorted(values.items()):
+            adapter = str(value.get("prompt_adapter") or "").strip()
+            adapter_hash = sha256(adapter.encode("utf-8")).hexdigest()
+            duplicate = adapter_owners.get(adapter_hash)
+            if duplicate:
+                errors.append(f"{kind}:{facet_id}: adapter duplicates {duplicate}")
+            adapter_owners[adapter_hash] = f"{kind}:{facet_id}"
+            clauses = [item.strip() for item in re.split(r"[。；]", adapter) if item.strip()]
+            if len(clauses) < 4:
+                errors.append(f"{kind}:{facet_id}: adapter lacks conflict/evidence/progression/boundary depth")
+            inventory["facets"].append(
+                {
+                    "id": f"{kind}:{facet_id}",
+                    "fixture_id": f"facet:{kind}:{facet_id}",
+                    "source_hash": str(value.get("sha256") or ""),
+                    "adapter_hash": adapter_hash,
+                    "estimated_units": estimate_text_units(adapter),
+                }
+            )
+
+    inventory["item_count"] = sum(
+        len(inventory[kind]) for kind in ("roles", "playbooks", "facets")
+    )
+    if inventory["item_count"] != 83:
+        errors.append(f"professional Prompt inventory must contain 83 items, got {inventory['item_count']}")
+    inventory["calibration_fixture_sha256"] = sha256(fixture_path.read_bytes()).hexdigest()
+    return errors, inventory
 
 
-def load_evidence(path: Path) -> tuple[Any, str]:
-    if not path.is_file():
-        return {}, f"Phase 6 evidence file is missing: {path}"
-    try:
-        return (
-            json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicate_json_keys),
-            "",
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
-        return {}, f"Phase 6 evidence is invalid UTF-8 JSON: {exc}"
+def _representative_role_task(registry: Any, role_id: str) -> tuple[str, str]:
+    task_types = sorted(
+        task_type
+        for task_type, mapped_role_id in registry.task_role_map.items()
+        if mapped_role_id == role_id
+    )
+    if task_types:
+        return task_types[0], ""
+    if role_id in registry.editorial_role_map:
+        return "editorial_review", role_id
+    raise ValueError(f"role {role_id} has no registered task")
 
 
-def run_command(root: Path, command: tuple[str, ...]) -> dict[str, Any]:
-    try:
-        result = subprocess.run(
-            command,
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=180,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"command": list(command), "exit_code": 1, "summary": str(exc)}
-    output = "\n".join(part for part in (result.stdout.strip(), result.stderr.strip()) if part)
-    return {
-        "command": list(command),
-        "exit_code": result.returncode,
-        "summary": output.splitlines()[-1] if output else "completed",
-    }
+def _coverage_error(label: str, expected: set[str], actual: set[str]) -> str:
+    missing = sorted(expected - actual)
+    unexpected = sorted(actual - expected)
+    return f"{label} calibration coverage mismatch; missing={missing}, unexpected={unexpected}"
 
 
-def run_git(root: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    try:
-        return subprocess.run(
-            ("git", *args),
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=20,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return subprocess.CompletedProcess(("git", *args), 1, "", str(exc))
+def contains_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u3400-\u9fff]", text))
 
 
-def resolve_repository_path(root: Path, value: str | Path) -> Path:
-    path = Path(value)
-    resolved = path.expanduser().resolve() if path.is_absolute() else (root / path).resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"Readiness path must remain inside the repository: {value}") from exc
-    return resolved
+def _role_section_mode(role: Any, section: str) -> str:
+    if section in role.always_sections:
+        return "always"
+    if section in role.task_sections:
+        return "task"
+    if section in role.trigger_sections.values():
+        return "trigger"
+    if section == "calibration":
+        return "calibration_only"
+    return ""
 
 
 def add_check(
@@ -518,14 +734,3 @@ def add_check(
             "next_command": "" if ok else next_command,
         }
     )
-
-
-def file_hash(path: Path) -> str:
-    return sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
-
-
-def relative_or_absolute(root: Path, path: Path) -> str:
-    try:
-        return path.relative_to(root).as_posix()
-    except ValueError:
-        return str(path)

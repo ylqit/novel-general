@@ -3,6 +3,9 @@ import sqlite3
 from hashlib import sha256
 from pathlib import Path
 
+from longform_engine.agent_pipeline import validate_production_agent_result
+from longform_engine.agent_protocols import CANONICAL_DELTA_SCHEMA
+from longform_engine.agent_tasks import load_manifest
 from longform_engine.config import load_project_config
 from longform_engine.db import database_path, init_database, query_table, rebuild_database, status, sync_database
 from longform_engine.orchestration import continue_write, finalize_chapter, open_book, submit_agent_draft
@@ -96,60 +99,72 @@ def test_db_rebuild_recovers_agent_skill_state(tmp_path):
     final_text = final.read_text(encoding="utf-8")
     start = final_text.index("Ari")
     end = min(len(final_text), start + 80)
-    evidence = {"start": start, "end": end, "excerpt": final_text[start:end]}
+    evidence_id = f"ch001.md@{start}:{end}"
     task = semantic_task(project_config, chapter_number=1)
     active_threads = sorted(active_planned_thread_ids(planned_threads(root), foreshadow_state_threads(root), 1))
     Path(task.output_file).write_text(
         json.dumps(
             {
-                "schema": "chapter_semantic_bundle_v1",
-                "chapter_number": 1,
-                "source": {
-                    "path": "40_manuscript/final/ch001.md",
-                    "sha256": sha256(final_text.encode("utf-8")).hexdigest(),
-                },
-                "chapter_digest": {
-                    "summary": "Ari protects a witness and commits to the next investigation step.",
-                    "causal_change": "Protecting the witness opens a new investigation route.",
-                    "reader_payoff": "The witness survives and the immediate threat is answered.",
-                    "cost": "Ari becomes visible to the opposing force.",
-                },
-                "scenes": [
-                    {
-                        "scene_id": "ch001:scene:1",
-                        **evidence,
-                        "participants": ["character:lin"],
-                        "location_id": "",
-                        "goal": "Protect the witness.",
-                        "outcome": "The witness survives.",
-                    }
-                ],
-                "events": [
-                    {
-                        "event_id": "event:ch001:witness",
-                        "title": "Ari protects the witness",
-                        "participants": ["character:lin"],
-                        "locations": [],
-                        "consequences": "The investigation continues with Ari exposed.",
-                        "evidence": evidence,
-                    }
-                ],
-                "relationship_deltas": [],
-                "character_deltas": [],
-                "foreshadow_deltas": [],
-                "world_deltas": [],
-                "timeline_deltas": [],
-                "retrieval": {
-                    "tags": ["witness", "investigation"],
-                    "entity_ids": ["character:lin"],
-                    "focus": ["Ari protects the witness"],
-                },
+                "schema": CANONICAL_DELTA_SCHEMA,
+                "delta_type": "chapter_semantic",
                 "coverage": {
-                    "featured_character_ids": ["character:lin"],
-                    "unchanged_character_ids": ["character:lin"],
-                    "active_thread_ids": active_threads,
-                    "unchanged_thread_ids": active_threads,
+                    "chapter_digest": "changed",
+                    "scenes": "changed",
+                    "events": "changed",
+                    "relationships": "unchanged",
+                    "characters": "unchanged",
+                    "foreshadowing": "unchanged",
+                    "world": "unchanged",
+                    "timeline": "unchanged",
                 },
+                "evidence": {
+                    "/changes/chapter_digest": [evidence_id],
+                    "/changes/scenes/0": [evidence_id],
+                    "/changes/events/0": [evidence_id],
+                },
+                "changes": {
+                    "chapter_digest": {
+                        "summary": "Ari protects a witness and commits to the next investigation step.",
+                        "causal_change": "Protecting the witness opens a new investigation route.",
+                        "reader_payoff": "The witness survives and the immediate threat is answered.",
+                        "cost": "Ari becomes visible to the opposing force.",
+                    },
+                    "scenes": [
+                        {
+                            "scene_id": "ch001:scene:1",
+                            "participants": ["character:lin"],
+                            "location_id": "",
+                            "goal": "Protect the witness.",
+                            "outcome": "The witness survives.",
+                        }
+                    ],
+                    "events": [
+                        {
+                            "event_id": "event:ch001:witness",
+                            "title": "Ari protects the witness",
+                            "participants": ["character:lin"],
+                            "locations": [],
+                            "consequences": "The investigation continues with Ari exposed.",
+                        }
+                    ],
+                    "relationship_deltas": [],
+                    "character_deltas": [],
+                    "foreshadow_deltas": [],
+                    "world_deltas": [],
+                    "timeline_deltas": [],
+                    "retrieval": {
+                        "tags": ["witness", "investigation"],
+                        "entity_ids": ["character:lin"],
+                        "focus": ["Ari protects the witness"],
+                    },
+                    "entity_coverage": {
+                        "featured_character_ids": ["character:lin"],
+                        "unchanged_character_ids": ["character:lin"],
+                        "active_thread_ids": active_threads,
+                        "unchanged_thread_ids": active_threads,
+                    },
+                },
+                "uncertainties": [],
             },
             ensure_ascii=False,
             indent=2,
@@ -157,6 +172,12 @@ def test_db_rebuild_recovers_agent_skill_state(tmp_path):
         + "\n",
         encoding="utf-8",
     )
+    control = validate_production_agent_result(
+        root,
+        load_manifest(root, task.manifest_file),
+        result_file=task.output_file,
+    )
+    assert control.ok, control.normalization.errors
     semantic_apply(project_config, chapter_number=1, file_path=task.output_file)
 
     db_path = database_path(project_config)

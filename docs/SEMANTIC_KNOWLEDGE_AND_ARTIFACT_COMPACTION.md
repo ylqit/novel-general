@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-本架构解决同一章被图谱、章节记忆、角色记忆和节奏任务重复读取的问题。新生产链以 final 为唯一正文证据，以每章一个 `chapter_semantic_bundle_v1` 为事实增量，以图谱、角色当前视图、伏笔状态、TCS、SQLite 和向量库为可重建物化视图。
+本架构解决同一章被图谱、章节记忆、角色记忆和节奏任务重复读取的问题。新生产链以 final 为唯一正文证据；Agent 每章只提交一个 `canonical_delta_v1`，CLI 校验后才规范化为内部 `chapter_semantic_bundle_v1` 账本。图谱、角色当前视图、伏笔状态、TCS、SQLite 和向量库均为可重建物化视图。
 
 该调整不在 Python 内调用 LLM。Codex 或 Claude Code 负责语义理解，CLI 负责路径、hash、span、前置状态、事务、索引和污染边界。
 
@@ -19,7 +19,7 @@
 
 ## 3. 统一语义包
 
-`chapter_semantic_bundle_v1` 包含：
+Agent 的 `canonical_delta_v1` 只声明 coverage、紧凑 evidence IDs、changes、unchanged 和 uncertainties。CLI 回读 final、验证 manifest 和当前 canonical 前置状态后，生成内部 `chapter_semantic_bundle_v1`，其中包含：
 
 - final 相对路径和 SHA-256。
 - 语义摘要、因果变化、读者收益和代价。
@@ -39,8 +39,9 @@ draft submit
 -> deterministic/semantic/payoff/editorial gates
 -> chapter finalize --approved-by human
 -> chapter semantic-task
--> Agent writes one chapter_semantic_bundle_v1
+-> Agent writes one canonical_delta_v1
 -> chapter semantic-validate
+-> CLI normalizes the internal chapter_semantic_bundle_v1
 -> explicit chapter semantic-apply
 -> verify graph/character/foreshadow/TCS/RAG/SQLite
 -> chapter close --approved-by human

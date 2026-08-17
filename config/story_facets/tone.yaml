@@ -2,54 +2,72 @@ schema: story_facet_registry_v1
 kind: tone
 profiles:
   adventure:
+    prompt_adapter: >-
+      冒险语气的张力来自未知地点、可选择路线、发现诱惑和承担风险的意愿，而不只是连续换地图。用准备、越界、意外发现、临场选择和返回后的认知变化证明探索；推进在期待、遭遇、后果与短暂反思之间轮换。新地点必须改变可做之事或代价。景观描写若正在建立方向感、危险或人物欲望不算目录，只有地点可互换且没有选择后果时才应压缩。
     requirements: ["Discovery must create a choice, risk, or changed understanding."]
     preferences: ["Alternate anticipation, encounter, consequence, and reflection."]
     risks: ["Location checklist"]
     review_questions: ["What did exploration make possible or costly?"]
     conflicts: []
   suspense:
+    prompt_adapter: >-
+      悬疑语气的张力由具体信息缺口、逼近时限和可想象后果构成，读者必须知道自己在担心什么。用异常细节、延迟回应、错误安全感、相互冲突的证据和揭示后的行动变化维持压力；推进应轮换提问、局部回答与更准确的新问题。视角人物可以因创伤或忙乱暂时回避思考。只有文本故意不让其想到已经清楚知道且当前必然相关的事实，才属于人工扣留。
     requirements: ["Uncertainty must arise from concrete incomplete knowledge."]
     preferences: ["Vary anticipation, discovery, reversal, and aftermath."]
     risks: ["Artificially withheld viewpoint facts"]
     review_questions: ["What exactly can the reader fear or question here?"]
     conflicts: []
   lighthearted:
+    prompt_adapter: >-
+      轻快语气由人物恢复力、社交时间差、微小欲望和可承受失误产生，不要求每段都有笑点。用接话方式、尴尬补救、生活动作和冲突后的重新靠近证明轻松；推进可快速转场，但危险、失败和悲伤仍要留下行为余波。笑点应暴露性格或关系。角色在压力下开玩笑不等于取消后果，只有损失被一句俏皮话彻底清零且无人改变时才失真。
     requirements: ["Lightness must coexist with credible consequence."]
     preferences: ["Use social timing, contrast, and recovery rather than constant jokes."]
     risks: ["Erasing grief or danger immediately"]
     review_questions: ["Did humor reveal character without cancelling stakes?"]
     conflicts: ["tone:unrelieved_dark"]
   humorous:
+    prompt_adapter: >-
+      幽默语气的冲突来自人物预期与现实、身份形象与真实能力、关系默契与公开场合之间的偏差。用铺垫、误认、具体反应、接梗失败和笑点后的关系变化完成喜剧节拍；不同角色应对同一事情有不同可笑点。网络梗可作为人物语言但不能成为唯一机制。尖刻玩笑若双方关系允许且目标人物有反击权不必误报羞辱，持续单向贬低弱者才需要修复。
     requirements: ["Comedy must arise from character, expectation, or situation."]
     preferences: ["Let different characters find different things funny."]
     risks: ["Humiliation as the only joke"]
     review_questions: ["Would this joke still work with the names removed?"]
     conflicts: []
   dark:
+    prompt_adapter: >-
+      黑暗语气的压力来自选择空间收窄、制度性伤害、道德代价和无法完全修复的后果，不是单纯增加死亡数量。用人物被迫舍弃什么、如何自我辩护、谁承担余波以及短暂希望怎样暴露代价来证明黑暗；推进必须改变信念、关系或行动。局部温情不会自动破坏黑暗，反而可形成损失尺度。只有苦难随机叠加、人物没有选择也没有状态变化时，才会变成麻木性虐待。
     requirements: ["Damage and moral pressure must have persistent consequences."]
     preferences: ["Preserve contrast and moments of agency."]
     risks: ["Suffering without character consequence"]
     review_questions: ["What did darkness force someone to choose?"]
     conflicts: []
   unrelieved_dark:
+    prompt_adapter: >-
+      持续黑暗要求主要节点按因果逐步压缩希望、关系和道德空间，冲突载体是无法逆转的制度、资源枯竭或人物选择债务。场景证据应显示旧退路为何失效、妥协如何制造下一层限制，以及人物仍怎样作出微小选择；推进不能靠随机追加更惨事件。短暂温情可以作为失去尺度或最后抵抗，并非“误提供治愈”。若项目同时要求轻快或温暖为主调，必须人工确认优先级，不能由数组顺序静默覆盖。
     requirements: ["Every major beat must intensify despair without tonal release."]
     preferences: []
     risks: ["Emotional flattening"]
     review_questions: ["Did any scene accidentally provide relief?"]
     conflicts: ["tone:lighthearted"]
   hot_blooded:
+    prompt_adapter: >-
+      热血语气的冲突由共同目标、公开承诺、实力差距和“仍决定向前”的选择构成，情绪高峰必须由此前行动挣得。用准备、失败后重组、伙伴接力、身体极限和宣言后的承担证明爆发；推进要在蓄势、冲锋、代价与余波间留出反差。口号可以是仪式性兑现而非天然空话。只有宣言没有前置行动、没有共同风险且说完无需付费时，才属于膨胀表达。
     requirements: ["Emotional escalation must be earned by action and shared stakes."]
     preferences: ["Use commitment and sacrifice rather than slogans alone."]
     risks: ["Inflated declarations"]
     review_questions: ["Which prior action earned the emotional peak?"]
     conflicts: []
   warm:
+    prompt_adapter: >-
+      温暖语气来自人物在有限能力内看见他人需要、承担具体劳动并尊重边界，冲突则来自“想照顾”与“对方如何愿意被照顾”的差异。用记住习惯、留出选择、修补日常、分担麻烦和接受拒绝证明关怀；推进后关系应多一层可托付或理解。泛化安慰不能替代行动。笨拙或失败的照料只要符合人物能力并引发调整，不应误报为不温暖。
     requirements: ["Care must appear as attention, labor, boundary, or sacrifice."]
     preferences: ["Let tenderness coexist with disagreement."]
     risks: ["Generic reassurance"]
     review_questions: ["What concrete act made the warmth believable?"]
     conflicts: []
   tragic:
+    prompt_adapter: >-
+      悲剧语气由人物珍视之物、现实约束、性格选择和累积因果在关键点不可兼得而形成，不靠突然死亡制造刺激。用早期可避免节点、反复选择、最后仍可理解的坚持和损失后的责任证明悲剧；推进要让读者同时看见“本可不同”与“为何走到这里”。偶然事件可以触发悲剧，但不能独自承担全部原因。开放或苦涩结局不必有人死亡，关键是不可撤销的状态变化与意义余波。
     requirements: ["Loss must follow character choice, constraint, and accumulated causality."]
     preferences: ["Preserve meaning without pretending the cost did not matter."]
     risks: ["Arbitrary death for stimulation"]

@@ -2,36 +2,48 @@ schema: story_facet_registry_v1
 kind: relationship_modes
 profiles:
   romance:
+    prompt_adapter: >-
+      爱情关系的冲突由双方不同目标、亲密边界、信息误读与现实安排共同形成，不能只靠外部情敌。用主动靠近、明确拒绝、暴露脆弱、修复失信和协商未来证明关系变化；推进后双方的信任、责任或可进入的生活区域应发生改变。占有、拯救和牺牲不能自动等同爱情。暂时单向付出不必误报失衡，只要另一方保有拒绝权且文本正在处理这份不对称；长期没有选择才是能动性缺失。
     requirements: ["Romantic movement must preserve both characters' goals and boundaries."]
     preferences: ["Use changed trust, vulnerability, and negotiated choices."]
     risks: ["Possession presented as intimacy"]
     review_questions: ["What changed for both people after the interaction?"]
     conflicts: []
   friendship:
+    prompt_adapter: >-
+      友情冲突来自忠诚、个人利益、判断分歧与历史承诺同时拉扯，不要求朋友永远站同一边。用指出盲点、拒绝不合理请求、承担非义务风险、记住小承诺和冲突后的修复证明关系；推进要改变两人可托付的信息或愿意承担的代价。称兄道弟可以符合人物语气，但不能替代行动证据。一次严重争执也不等于友情破裂，除非后续信任与互惠状态确实改变。
     requirements: ["Friendship must include reciprocity, disagreement, and remembered obligations."]
     preferences: ["Let friends challenge as well as support each other."]
     risks: ["Unconditional helper role"]
     review_questions: ["What could this friend refuse?"]
     conflicts: []
   family:
+    prompt_adapter: >-
+      家庭关系的冲突由照料、控制、依赖、代际期待、财产与旧伤叠加形成，同一动作可能同时包含爱与侵犯边界。用日常劳动、称呼变化、资源分配、旧事触发和拒绝家庭角色证明关系；推进要让某个旧模式被延续、识破或重新协商。亲属称谓本身不是证据，温情也不自动消除伤害。人物因文化与现实压力暂时妥协不应误报为无能动性，关键是文本是否看见其代价与内在选择。
     requirements: ["Family history and obligation must affect present choices without erasing individuality."]
     preferences: ["Track care, resentment, dependency, and repair separately."]
     risks: ["Kinship label substituting for relationship work"]
     review_questions: ["Which old family pattern shaped the present decision?"]
     conflicts: []
   team:
+    prompt_adapter: >-
+      团队冲突由专长差异、风险阈值、信息分布与决策权限不一致产生，而不是固定一人发令、其余人执行。用方案争论、交接失误、专业否决、救援优先级和失败后的责任分配证明协作；推进后成员权限、信任或分工应被调整。高压时临时统一指挥不等于主角垄断能动性。只有成员长期没有有效异议、不可替代贡献或自身后果时，才应判为“主角的四肢”。
     requirements: ["Members need differentiated skills, risks, and decision authority."]
     preferences: ["Make coordination reveal trust and friction."]
     risks: ["Everyone becoming the protagonist's hands"]
     review_questions: ["Which member changed the plan and why?"]
     conflicts: []
   rivalry:
+    prompt_adapter: >-
+      宿敌关系的冲突由双方独立评价标准、稀缺目标、相反方法和彼此承认共同驱动，不是轮流嘲讽。用对手赢下其擅长领域、识破主角盲点、迫使主角改法和竞争外的边界选择证明对等；推进应改变双方怎么看待胜负与彼此。阶段性实力碾压不必误报为工具人，只要对手仍有判断、反制和自己的成长路径。持续羞辱且不能影响主角才是关系退化。
     requirements: ["Rivals need independent standards, progress, and leverage."]
     preferences: ["Let rivalry expose values instead of repeating insults."]
     risks: ["Permanent humiliation target"]
     review_questions: ["What can the rival do or see that the protagonist cannot?"]
     conflicts: []
   master_disciple:
+    prompt_adapter: >-
+      师徒冲突由知识不对称、权力边界、保护欲、传承责任和学生独立需求共同形成。用示范、纠错、故意留白、危险许可、质疑师命和学生自行改法证明教学；推进要让学生改变判断方法，也让师者重新分配控制。师者保留秘密可以有责任或利益原因，并非天然操控。严厉训练若风险已知且学生有退出或质疑空间不应误报虐待，真正越界是用权威取消人格与选择。
     requirements: ["Teaching, authority, dependency, and eventual independence must have boundaries."]
     preferences: ["Make instruction change method and relationship."]
     risks: ["Teacher as exposition machine"]

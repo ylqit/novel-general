@@ -11,11 +11,22 @@ import hashlib
 import json
 import re
 
+from longform_engine.agent_protocols import (
+    EVIDENCE_REVIEW_SCHEMA,
+    VALIDATION_REPORT_SCHEMA,
+    build_validation_report,
+    output_protocol_for_task,
+    validate_evidence_review,
+    validate_review_evidence_for_sources,
+)
 from longform_engine.agent_tasks import (
     build_manifest,
     list_manifests,
+    manifest_input_paths,
+    manifest_output,
     mark_tasks_for_chapter_type,
     mark_tasks_for_output,
+    validate_current_task_result,
     write_manifest,
 )
 from longform_engine.character_expression import character_expression_diagnostics
@@ -905,7 +916,7 @@ def expand_task(
         chapter_number=chapter_number,
         input_files=[task_file, source_path],
         allowed_output_paths=[candidate_file],
-        output_schema="markdown_expanded_candidate",
+        output_schema=output_protocol_for_task("content_expand"),
         validate_command=next_command,
         apply_command=(
             f"longform-engine draft submit project.yaml --chapter {chapter_number} "
@@ -917,8 +928,6 @@ def expand_task(
             "optional_files": [],
             "compiled_brief": task_file,
             "selection_report": task_file,
-            "max_files": 2,
-            "max_chars": 20_000,
         },
     )
     write_manifest(root, manifest, manifest_file)
@@ -1144,7 +1153,7 @@ def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = 
         chapter_number=chapter_number,
         input_files=[task_file, source_path, *optional_inputs],
         allowed_output_paths=[candidate_file],
-        output_schema="markdown_humanized_candidate",
+        output_schema=output_protocol_for_task("humanize"),
         validate_command=next_command,
         apply_command=(
             f"longform-engine draft submit project.yaml --chapter {chapter_number} "
@@ -1156,8 +1165,6 @@ def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = 
             "optional_files": optional_inputs,
             "compiled_brief": task_file,
             "selection_report": task_file,
-            "max_files": 5,
-            "max_chars": 14_000,
         },
     )
     write_manifest(root, manifest, manifest_file)
@@ -1242,7 +1249,7 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
             semantic_task_file = semantic_task.task_file
             next_command = (
                 "longform-engine agent-task brief project.yaml "
-                f"--task-id humanize_semantic_review:ch{chapter_number:03d}:v1"
+                f"--task-id humanize_semantic_review:ch{chapter_number:03d}:v4"
             )
     elif passed:
         next_command = submit_command
@@ -1464,18 +1471,6 @@ def humanize_semantic_task(
             selected_context.append(path)
         if len(selected_context) >= 3:
             break
-    canonical_refs = [
-        relative_path(root, path)
-        for path in selected_context
-        if relative_path(root, path).startswith(("10_bible/", "20_outline/", "30_state/", RAG_LANE + "/memory/"))
-    ]
-    schema = humanizer_semantic_output_template(
-        chapter_number=chapter_number,
-        source=source,
-        candidate=candidate,
-        root=root,
-        canonical_refs=canonical_refs,
-    )
     source_lane = humanizer_source_lane(root, source)
     agent = str(
         config.data.get("writing", {}).get("agent", {}).get("default_agent")
@@ -1519,15 +1514,14 @@ def humanize_semantic_task(
                 "",
                 "## Output Contract",
                 "",
-                f"- Write JSON only: `{relative_path(root, output_file)}`",
+                f"- Write one `{EVIDENCE_REVIEW_SCHEMA}` JSON: `{relative_path(root, output_file)}`",
+                "- coverage: meaning_preservation, voice_preservation, event_preservation.",
+                "- codes: HUMANIZE_FACT_DRIFT, HUMANIZE_VOICE_LOSS, HUMANIZE_EVENT_CHANGE.",
+                "- evidence_ids may cite source or candidate as path/filename@start:end; CLI supplies hashes and scope.",
                 f"- Validate: `{validate_command}`",
                 f"- Apply after a pass: `{apply_command}`",
                 f"- Failure: `{failure_command}`",
                 "- Do not edit draft, final, RAG, graph, TCS, Bible, outline, or SQLite.",
-                "",
-                "```json",
-                json.dumps(schema, ensure_ascii=False, indent=2),
-                "```",
                 "",
             ]
         ),
@@ -1542,7 +1536,7 @@ def humanize_semantic_task(
         chapter_number=chapter_number,
         input_files=inputs,
         allowed_output_paths=[output_file],
-        output_schema="humanizer_semantic_review_v1",
+        output_schema=output_protocol_for_task("humanize_semantic_review"),
         validate_command=validate_command,
         apply_command=apply_command,
         failure_next_command=failure_command,
@@ -1556,8 +1550,6 @@ def humanize_semantic_task(
                 RAG_LANE + "/query_cache/",
                 RUNTIME_DB_LANE + "/",
             ],
-            "max_files": 6,
-            "max_chars": 28_000,
             "compiled_brief": task_file,
             "selection_report": task_file,
         },
@@ -1573,55 +1565,6 @@ def humanize_semantic_task(
         reasons=review_reasons,
         next_command=validate_command,
     )
-
-
-def humanizer_semantic_output_template(
-    *,
-    chapter_number: int,
-    source: Path,
-    candidate: Path,
-    root: Path,
-    canonical_refs: list[str],
-) -> dict[str, Any]:
-    source_text = safe_read_text(source)
-    candidate_text = safe_read_text(candidate)
-    source_end = min(len(source_text), 12)
-    candidate_end = min(len(candidate_text), 12)
-    return {
-        "schema": "humanizer_semantic_review_v1",
-        "chapter_number": chapter_number,
-        "source": {
-            "path": relative_path(root, source),
-            "sha256": sha256_text(source_text),
-        },
-        "candidate": {
-            "path": relative_path(root, candidate),
-            "sha256": sha256_text(candidate_text),
-        },
-        "verdict": "pass",
-        "fact_preservation": [
-            {
-                "dimension": dimension,
-                "status": "preserved",
-                "source_span": {"start": 0, "end": source_end, "text": source_text[:source_end]},
-                "candidate_span": {"start": 0, "end": candidate_end, "text": candidate_text[:candidate_end]},
-                "canonical_refs": canonical_refs[:1],
-                "entity_ids": [],
-                "message": f"Explain how {dimension} is preserved.",
-            }
-            for dimension in HUMANIZER_FACT_DIMENSIONS
-        ],
-        "chapter_contract": {
-            "duty_preserved": True,
-            "reader_gain_preserved": True,
-            "cost_preserved": True,
-            "forbidden_reveals_preserved": True,
-        },
-        "voice_checks": [],
-        "ai_taste_findings": [],
-        "confidence": 0.9,
-        "notes": "",
-    }
 
 
 def humanize_semantic_validate(
@@ -1646,28 +1589,26 @@ def humanize_semantic_validate(
     warnings: list[str] = []
     blockers: list[str] = []
     need_human = False
+    _task, control_errors = validate_current_task_result(
+        root,
+        chapter_number=chapter_number,
+        task_type="humanize_semantic_review",
+        output_path=target,
+        allowed_statuses=("submitted", "validated"),
+    )
+    errors.extend(control_errors)
     if not isinstance(payload, dict):
         payload = {}
         errors.append("semantic review result must be a JSON object.")
-    expected_keys = {
-        "schema",
-        "chapter_number",
-        "source",
-        "candidate",
-        "verdict",
-        "fact_preservation",
-        "chapter_contract",
-        "voice_checks",
-        "ai_taste_findings",
-        "confidence",
-        "notes",
-    }
-    if set(payload) != expected_keys:
-        errors.append(f"top-level keys must be exactly {sorted(expected_keys)}.")
-    if payload.get("schema") != "humanizer_semantic_review_v1":
-        errors.append("schema must be humanizer_semantic_review_v1.")
-    if int(payload.get("chapter_number") or 0) != chapter_number:
-        errors.append("payload chapter_number does not match command chapter.")
+    expected_dimensions = {"meaning_preservation", "voice_preservation", "event_preservation"}
+    allowed_codes = {"HUMANIZE_FACT_DRIFT", "HUMANIZE_VOICE_LOSS", "HUMANIZE_EVENT_CHANGE"}
+    errors.extend(
+        validate_evidence_review(
+            payload,
+            required_dimensions=expected_dimensions,
+            allowed_finding_codes=allowed_codes,
+        )
+    )
     candidate = root / "50_workbench" / "repair_candidates" / f"ch{chapter_number:03d}.humanized_candidate.md"
     source = humanizer_source_for_candidate(root, chapter_number, candidate)
     source_text = safe_read_text(source) if source is not None and source.exists() else ""
@@ -1676,116 +1617,35 @@ def humanize_semantic_validate(
         errors.append("Humanizer source could not be resolved from the active task.")
     if not candidate.exists():
         errors.append("Humanizer candidate is missing.")
-    validate_humanizer_file_identity(
-        payload.get("source"),
-        label="source",
-        expected_path=source,
-        expected_text=source_text,
-        root=root,
-        errors=errors,
-    )
-    validate_humanizer_file_identity(
-        payload.get("candidate"),
-        label="candidate",
-        expected_path=candidate,
-        expected_text=candidate_text,
-        root=root,
-        errors=errors,
-    )
     manifest = load_json(task_dir / f"ch{chapter_number:03d}.semantic_review.agent_task.json", default={})
     if not isinstance(manifest, dict) or manifest.get("task_type") != "humanize_semantic_review":
         errors.append("Humanizer semantic Agent task manifest is missing or invalid.")
         manifest = {}
-    allowed_refs = {
-        str(item).replace("\\", "/")
-        for item in manifest.get("input_files", [])
-        if str(item).replace("\\", "/").startswith(("10_bible/", "20_outline/", "30_state/", RAG_LANE + "/memory/"))
-    }
-    known_entities = humanizer_semantic_known_entities(root)
-    fact_items = payload.get("fact_preservation")
-    if not isinstance(fact_items, list):
-        errors.append("fact_preservation must be a list.")
-        fact_items = []
-    dimensions: list[str] = []
-    for index, item in enumerate(fact_items):
-        dimension, status = validate_humanizer_fact_item(
-            item,
-            index=index,
-            source_text=source_text,
-            candidate_text=candidate_text,
-            allowed_refs=allowed_refs,
-            known_entities=known_entities,
-            errors=errors,
-        )
-        if dimension:
-            dimensions.append(dimension)
-        if status == "changed":
-            blockers.append(f"fact_changed:{dimension or index}")
-        elif status == "uncertain":
-            blockers.append(f"fact_uncertain:{dimension or index}")
-            need_human = True
-    if sorted(dimensions) != sorted(HUMANIZER_FACT_DIMENSIONS):
-        errors.append(
-            "fact_preservation must contain each required dimension exactly once: "
-            + ", ".join(HUMANIZER_FACT_DIMENSIONS)
-            + "."
-        )
-    contract = payload.get("chapter_contract")
-    expected_contract = {
-        "duty_preserved",
-        "reader_gain_preserved",
-        "cost_preserved",
-        "forbidden_reveals_preserved",
-    }
-    if not isinstance(contract, dict) or set(contract) != expected_contract:
-        errors.append(f"chapter_contract keys must be exactly {sorted(expected_contract)}.")
-    else:
-        for key in sorted(expected_contract):
-            if not isinstance(contract.get(key), bool):
-                errors.append(f"chapter_contract.{key} must be boolean.")
-            elif contract[key] is False:
-                blockers.append(f"chapter_contract_changed:{key}")
-    voice_checks = payload.get("voice_checks")
-    if not isinstance(voice_checks, list):
-        errors.append("voice_checks must be a list.")
-        voice_checks = []
-    for index, item in enumerate(voice_checks):
-        status = validate_humanizer_voice_check(
-            item,
-            index=index,
-            candidate_text=candidate_text,
-            known_entities=known_entities,
-            errors=errors,
-        )
-        if status == "changed":
-            blockers.append(f"voice_changed:{index}")
-        elif status == "uncertain":
-            blockers.append(f"voice_uncertain:{index}")
-            need_human = True
-    findings = payload.get("ai_taste_findings")
-    if not isinstance(findings, list):
-        errors.append("ai_taste_findings must be a list.")
-        findings = []
+    source_key = relative_path(root, source) if source is not None else ""
+    candidate_key = relative_path(root, candidate)
+    _evidence, evidence_errors = validate_review_evidence_for_sources(
+        payload,
+        sources={source_key: source_text, candidate_key: candidate_text},
+    )
+    errors.extend(evidence_errors)
+    if set((payload.get("coverage") or {}).keys()) != expected_dimensions:
+        errors.append("coverage must contain exactly meaning_preservation, voice_preservation, event_preservation.")
+    findings = payload.get("findings") if isinstance(payload.get("findings"), list) else []
     for index, finding in enumerate(findings):
-        severity = validate_humanizer_ai_finding(
-            finding,
-            index=index,
-            candidate_text=candidate_text,
-            errors=errors,
-        )
-        if severity in {"P0", "P1"}:
-            blockers.append(f"ai_taste:{severity}:{index}")
-        if severity == "P0":
+        if not isinstance(finding, dict):
+            continue
+        if finding.get("code") not in allowed_codes:
+            errors.append(f"findings[{index}].code is outside Humanizer semantic scope.")
+        if finding.get("severity") in {"P0", "P1"}:
+            blockers.append(str(finding.get("code") or f"finding_{index + 1}"))
+        if finding.get("certainty") == "insufficient_evidence":
             need_human = True
-    confidence = payload.get("confidence")
-    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= float(confidence) <= 1:
-        errors.append("confidence must be a number between 0 and 1.")
     verdict = str(payload.get("verdict") or "").lower()
-    if verdict not in {"pass", "repair", "need_human"}:
-        errors.append("verdict must be pass, repair, or need_human.")
+    if verdict not in {"pass", "repair", "need_human", "insufficient_evidence"}:
+        errors.append("verdict is invalid.")
     if verdict == "pass" and blockers:
         errors.append("verdict=pass cannot override changed/uncertain facts, failed chapter contract, voice drift, or P0/P1 findings.")
-    if verdict == "need_human":
+    if verdict in {"need_human", "insufficient_evidence"}:
         need_human = True
     if verdict == "repair" and not blockers:
         warnings.append("repair verdict has no structured blocking finding.")
@@ -1812,23 +1672,24 @@ def humanize_semantic_validate(
             f"--file {relative_path(root, candidate)}"
         )
     report_file = task_dir / f"ch{chapter_number:03d}.semantic_review.validation.json"
-    report = {
-        "schema": "humanizer_semantic_validation_v1",
-        "chapter_number": chapter_number,
-        "file": relative_path(root, target),
-        "source_path": relative_path(root, source) if source is not None else "",
-        "source_sha256": sha256_text(source_text) if source_text else "",
-        "candidate_path": relative_path(root, candidate),
-        "candidate_sha256": sha256_text(candidate_text) if candidate_text else "",
-        "ok": ok,
-        "passed": passed,
-        "need_human": need_human,
-        "errors": errors,
-        "blocking_findings": blockers,
-        "warnings": warnings,
-        "next_command": next_command,
-        "validated_at": utc_now(),
-    }
+    report = build_validation_report(
+        ok=ok,
+        stage="humanizer_semantic_validate",
+        subject=relative_path(root, target),
+        errors=errors,
+        warnings=warnings,
+        blockers=blockers,
+        provenance={
+            "chapter_number": chapter_number,
+            "source_path": relative_path(root, source) if source is not None else "",
+            "source_sha256": sha256_text(source_text) if source_text else "",
+            "candidate_path": relative_path(root, candidate),
+            "candidate_sha256": sha256_text(candidate_text) if candidate_text else "",
+            "passed": passed,
+            "need_human": need_human,
+        },
+        next_command=next_command,
+    )
     write_json(report_file, report)
     mark_tasks_for_output(
         root,
@@ -1882,15 +1743,16 @@ def humanize_semantic_submission_status(
         / f"ch{chapter_number:03d}.semantic_review.validation.json"
     )
     report = load_json(report_file, default={})
+    provenance = report.get("provenance") if isinstance(report.get("provenance"), dict) else {}
     current = (
         isinstance(report, dict)
-        and report.get("schema") == "humanizer_semantic_validation_v1"
+        and report.get("schema") == VALIDATION_REPORT_SCHEMA
         and report.get("ok") is True
-        and report.get("passed") is True
-        and str(report.get("source_path") or "") == relative_path(root, source)
-        and str(report.get("source_sha256") or "") == sha256_text(source_text)
-        and str(report.get("candidate_path") or "") == relative_path(root, candidate)
-        and str(report.get("candidate_sha256") or "") == sha256_text(candidate_text)
+        and provenance.get("passed") is True
+        and str(provenance.get("source_path") or "") == relative_path(root, source)
+        and str(provenance.get("source_sha256") or "") == sha256_text(source_text)
+        and str(provenance.get("candidate_path") or "") == relative_path(root, candidate)
+        and str(provenance.get("candidate_sha256") or "") == sha256_text(candidate_text)
     )
     return {
         "required": True,
@@ -2480,11 +2342,9 @@ def resolve_humanizer_source(root: Path, chapter_number: int, source: str) -> Pa
 def humanizer_source_for_candidate(root: Path, chapter_number: int, candidate: Path) -> Path | None:
     candidate_rel = relative_path(root, candidate)
     for entry in reversed(list_manifests(root, chapter_number=chapter_number)):
-        if entry.get("task_type") != "humanize" or candidate_rel not in entry.get("allowed_output_paths", []):
+        if entry.get("task_type") != "humanize" or candidate_rel != manifest_output(entry).get("path"):
             continue
-        manifest_file = root / str(entry.get("manifest_file") or "")
-        manifest = load_json(manifest_file, default={})
-        for item in manifest.get("input_files") or [] if isinstance(manifest, dict) else []:
+        for item in manifest_input_paths(entry):
             path = root / str(item)
             normalized = str(item).replace("\\", "/")
             if (

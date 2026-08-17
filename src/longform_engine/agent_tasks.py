@@ -11,58 +11,46 @@ from hashlib import sha256
 import json
 import re
 
+from longform_engine.agent_protocols import (
+    BOUNDARY_PROFILE_HASH,
+    BOUNDARY_PROFILE_ID,
+    BOUNDARY_PROFILE_VERSION,
+    HARD_BOUNDARIES,
+    output_protocol_for_task,
+)
 from longform_engine.roles import (
-    ROLE_METADATA_FIELDS,
     RoleRegistryError,
     load_role_registry,
     validate_manifest_role_metadata,
     validate_role_task_coverage,
 )
-from longform_engine.prompting import PromptCompilationError, load_project_prompt_overlay
+from longform_engine.prompting import (
+    PromptCompilationError,
+    load_project_prompt_overlay,
+    resolve_context_budget_contract,
+)
+from longform_engine.story_profiles import project_active_facet_adapters
 from longform_engine.storage import atomic_write_text
 
 
-AGENT_TASK_SCHEMA_VERSION = 2
-AGENT_TASK_INDEX_SCHEMA = "agent_task_index_v2"
-AGENT_TASK_EVENT_SCHEMA = "agent_task_event_v2"
+AGENT_TASK_SCHEMA_VERSION = 4
+AGENT_TASK_INDEX_SCHEMA = "agent_task_index_v4"
+AGENT_TASK_EVENT_SCHEMA = "agent_task_event_v4"
 EVENT_SEGMENT_SCHEMA = "agent_task_event_segments_v1"
 EVENT_ROTATE_BYTES = 5 * 1024 * 1024
 EVENT_ROTATE_LINES = 10_000
-SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS = (1, 2)
+SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS = (4,)
 AGENT_TASK_STATUSES = (
     "awaiting_agent",
     "submitted",
     "validated",
+    "approved",
     "invalid",
     "applied",
     "superseded",
     "rolled_back",
 )
 CHAPTER_CANDIDATE_TASK_TYPES = frozenset({"chapter_write", "repair", "humanize", "content_expand"})
-HARD_BOUNDARIES = (
-    "no final",
-    "no rag",
-    "no graph direct",
-    "no sqlite direct",
-    "no bible direct",
-    "no outline direct",
-    "no research canon direct",
-)
-
-CONTEXT_BUDGETS: dict[str, tuple[int, int]] = {
-    "book_ideation": (5, 12_000),
-    "character_expression_design": (7, 20_000),
-    "character_expression_review": (24, 80_000),
-    "chapter_direction": (6, 16_000),
-    "chapter_write": (7, 20_000),
-    "repair": (6, 16_000),
-    "humanize": (5, 14_000),
-    "humanize_semantic_review": (6, 28_000),
-    "reader_payoff_review": (3, 15_000),
-    "editorial_review": (6, 18_000),
-    "chapter_semantic": (7, 28_000),
-}
-DEFAULT_CONTEXT_BUDGET = (8, 20_000)
 DEFAULT_FORBIDDEN_CONTEXT = (
     "40_manuscript/final/",
     "50_workbench/agent_drafts/ (except the declared output)",
@@ -70,8 +58,6 @@ DEFAULT_FORBIDDEN_CONTEXT = (
     "60_rag/query_cache/",
     "70_runtime/db/",
 )
-
-
 class AgentTaskContractError(ValueError):
     """Raised before an invalid Agent task can enter the project task index."""
 
@@ -83,25 +69,53 @@ class AgentTaskManifest:
     schema_version: int
     task_id: str
     task_type: str
-    role_id: str
-    role_version: str
-    role_prompt_hash: str
-    independence_mode: str
-    project_overlay_hash: str
-    chapter_number: int
     scope: dict[str, Any]
-    canonical_targets: tuple[str, ...]
-    requires_human_apply: bool
-    input_files: tuple[str, ...]
-    context_policy: dict[str, Any]
-    allowed_output_paths: tuple[str, ...]
-    output_schema: str
-    validate_command: str
-    apply_command: str
-    failure_next_command: str
-    hard_boundaries: tuple[str, ...]
-    status: str
+    role: dict[str, Any]
+    io: dict[str, Any]
+    policy: dict[str, Any]
+    commands: dict[str, str]
     created_at: str
+
+
+def manifest_chapter_number(manifest: dict[str, Any]) -> int:
+    scope = manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {}
+    return int(scope.get("chapter_number") or 0)
+
+
+def manifest_role(manifest: dict[str, Any]) -> dict[str, Any]:
+    value = manifest.get("role")
+    return value if isinstance(value, dict) else {}
+
+
+def manifest_input_records(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    io = manifest.get("io") if isinstance(manifest.get("io"), dict) else {}
+    values = io.get("inputs") if isinstance(io.get("inputs"), list) else []
+    return [item for item in values if isinstance(item, dict)]
+
+
+def manifest_input_paths(manifest: dict[str, Any]) -> list[str]:
+    return [str(item.get("path") or "") for item in manifest_input_records(manifest)]
+
+
+def manifest_output(manifest: dict[str, Any]) -> dict[str, Any]:
+    io = manifest.get("io") if isinstance(manifest.get("io"), dict) else {}
+    value = io.get("output")
+    return value if isinstance(value, dict) else {}
+
+
+def manifest_policy(manifest: dict[str, Any]) -> dict[str, Any]:
+    value = manifest.get("policy")
+    return value if isinstance(value, dict) else {}
+
+
+def manifest_context(manifest: dict[str, Any]) -> dict[str, Any]:
+    value = manifest_policy(manifest).get("context")
+    return value if isinstance(value, dict) else {}
+
+
+def manifest_commands(manifest: dict[str, Any]) -> dict[str, str]:
+    value = manifest.get("commands")
+    return value if isinstance(value, dict) else {}
 
 
 @dataclass(frozen=True)
@@ -129,7 +143,7 @@ class AgentTaskLifecycleResult:
 TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     "book_ideation": {
         "scope_kinds": ("project",),
-        "schemas": ("book_ideation_candidate_v1",),
+        "schemas": (output_protocol_for_task("book_ideation"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
@@ -137,7 +151,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "chapter_write": {
         "scope_kinds": ("chapter",),
-        "schemas": ("markdown_chapter_only",),
+        "schemas": (output_protocol_for_task("chapter_write"),),
         "output_prefixes": ("50_workbench/agent_drafts/",),
         "validate_prefixes": ("longform-engine draft submit ",),
         "apply_prefixes": ("longform-engine chapter finalize ",),
@@ -145,7 +159,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "repair": {
         "scope_kinds": ("chapter",),
-        "schemas": ("markdown_repair_candidate",),
+        "schemas": (output_protocol_for_task("repair"),),
         "output_prefixes": ("50_workbench/repair_candidates/",),
         "validate_prefixes": ("longform-engine draft submit ",),
         "apply_prefixes": ("longform-engine chapter finalize ",),
@@ -153,7 +167,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "humanize": {
         "scope_kinds": ("chapter",),
-        "schemas": ("markdown_humanized_candidate",),
+        "schemas": (output_protocol_for_task("humanize"),),
         "output_prefixes": ("50_workbench/repair_candidates/",),
         "validate_prefixes": ("longform-engine creative humanize-check ",),
         "apply_prefixes": ("longform-engine draft submit ",),
@@ -161,7 +175,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "humanize_semantic_review": {
         "scope_kinds": ("chapter",),
-        "schemas": ("humanizer_semantic_review_v1",),
+        "schemas": (output_protocol_for_task("humanize_semantic_review"),),
         "output_prefixes": ("50_workbench/humanizer_tasks/",),
         "validate_prefixes": ("longform-engine creative humanize-semantic-validate ",),
         "apply_prefixes": ("longform-engine draft submit ",),
@@ -172,7 +186,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "reader_payoff_review": {
         "scope_kinds": ("chapter",),
-        "schemas": ("reader_payoff_review_v1",),
+        "schemas": (output_protocol_for_task("reader_payoff_review"),),
         "output_prefixes": ("50_workbench/quality_reviews/",),
         "validate_prefixes": ("longform-engine quality payoff-validate ",),
         "apply_prefixes": ("longform-engine chapter finalize ",),
@@ -183,39 +197,15 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "content_expand": {
         "scope_kinds": ("chapter",),
-        "schemas": ("markdown_expanded_candidate",),
+        "schemas": (output_protocol_for_task("content_expand"),),
         "output_prefixes": ("50_workbench/repair_candidates/",),
         "validate_prefixes": ("longform-engine creative expand-check ",),
         "apply_prefixes": ("longform-engine draft submit ",),
         "failure_prefixes": ("longform-engine creative expand-task ",),
     },
-    "graph_extract": {
-        "scope_kinds": ("chapter",),
-        "schemas": ("semantic_graph_update_v1",),
-        "output_prefixes": ("50_workbench/graph_updates/",),
-        "validate_prefixes": ("longform-engine graph semantic-validate ",),
-        "apply_prefixes": ("longform-engine graph semantic-apply ",),
-        "failure_prefixes": ("longform-engine graph semantic-task ",),
-    },
-    "memory_extract": {
-        "scope_kinds": ("chapter",),
-        "schemas": ("semantic_memory_v1",),
-        "output_prefixes": ("50_workbench/memory_tasks/",),
-        "validate_prefixes": ("longform-engine memory semantic-validate ",),
-        "apply_prefixes": ("longform-engine memory semantic-apply ",),
-        "failure_prefixes": ("longform-engine memory semantic-task ",),
-    },
-    "character_memory": {
-        "scope_kinds": ("chapter",),
-        "schemas": ("character_memory_cards_v1",),
-        "output_prefixes": ("50_workbench/memory_tasks/",),
-        "validate_prefixes": ("longform-engine memory character-validate ",),
-        "apply_prefixes": ("longform-engine memory character-apply ",),
-        "failure_prefixes": ("longform-engine memory character-task ",),
-    },
     "chapter_semantic": {
         "scope_kinds": ("chapter",),
-        "schemas": ("chapter_semantic_bundle_v1",),
+        "schemas": (output_protocol_for_task("chapter_semantic"),),
         "output_prefixes": ("50_workbench/semantic_tasks/",),
         "validate_prefixes": ("longform-engine chapter semantic-validate ",),
         "apply_prefixes": ("longform-engine chapter semantic-apply ",),
@@ -223,7 +213,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "editorial_review": {
         "scope_kinds": ("chapter",),
-        "schemas": ("editorial_role_review_v1", "editorial_role_review_v2"),
+        "schemas": (output_protocol_for_task("editorial_review"),),
         "output_prefixes": ("50_workbench/editorial_reviews/results/",),
         "validate_prefixes": ("longform-engine editorial submit-review ",),
         "apply_prefixes": ("longform-engine editorial aggregate ",),
@@ -231,7 +221,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "pacing_review": {
         "scope_kinds": ("chapter",),
-        "schemas": ("semantic_pacing_result_v2",),
+        "schemas": (output_protocol_for_task("pacing_review"),),
         "output_prefixes": ("50_workbench/gate_artifacts/",),
         "validate_prefixes": ("longform-engine pacing semantic-validate ",),
         "apply_prefixes": ("longform-engine pacing semantic-apply ",),
@@ -239,7 +229,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "semantic_review": {
         "scope_kinds": ("chapter",),
-        "schemas": ("semantic_review_result_v1",),
+        "schemas": (output_protocol_for_task("semantic_review"),),
         "output_prefixes": ("50_workbench/gate_artifacts/",),
         "validate_prefixes": ("longform-engine gate semantic-validate ",),
         "apply_prefixes": ("longform-engine gate semantic-apply ",),
@@ -247,7 +237,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "book_design": {
         "scope_kinds": ("project",),
-        "schemas": ("book_design_candidate_v2",),
+        "schemas": (output_protocol_for_task("book_design"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
@@ -255,7 +245,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "character_expression_design": {
         "scope_kinds": ("project",),
-        "schemas": ("character_expression_profile_v1",),
+        "schemas": (output_protocol_for_task("character_expression_design"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": (
             "longform-engine character design-validate ",
@@ -272,7 +262,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "character_expression_review": {
         "scope_kinds": ("range",),
-        "schemas": ("character_expression_review_v1",),
+        "schemas": (output_protocol_for_task("character_expression_review"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": (
             "longform-engine character audit-validate ",
@@ -289,7 +279,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "outline_design": {
         "scope_kinds": ("project",),
-        "schemas": ("outline_design_candidate_v2",),
+        "schemas": (output_protocol_for_task("outline_design"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
@@ -297,7 +287,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "outline_extension": {
         "scope_kinds": ("range",),
-        "schemas": ("outline_extension_candidate_v1",),
+        "schemas": (output_protocol_for_task("outline_extension"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
@@ -305,7 +295,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "chapter_direction": {
         "scope_kinds": ("chapter",),
-        "schemas": ("chapter_direction_candidate_v2",),
+        "schemas": (output_protocol_for_task("chapter_direction"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
@@ -313,7 +303,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "outline_revision": {
         "scope_kinds": ("range",),
-        "schemas": ("outline_revision_candidate_v1",),
+        "schemas": (output_protocol_for_task("outline_revision"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
@@ -321,7 +311,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "research_synthesis": {
         "scope_kinds": ("project", "range"),
-        "schemas": ("research_synthesis_v1",),
+        "schemas": (output_protocol_for_task("research_synthesis"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
@@ -329,7 +319,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "style_analysis": {
         "scope_kinds": ("project", "range"),
-        "schemas": ("semantic_style_profile_v1",),
+        "schemas": (output_protocol_for_task("style_analysis"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
@@ -337,7 +327,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "adaptation_analysis": {
         "scope_kinds": ("project", "range"),
-        "schemas": ("adaptation_analysis_v1",),
+        "schemas": (output_protocol_for_task("adaptation_analysis"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine intelligence validate ",),
         "apply_prefixes": ("longform-engine intelligence apply ",),
@@ -345,7 +335,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "fanfiction_canon": {
         "scope_kinds": ("project",),
-        "schemas": ("fanfiction_source_canon_v1",),
+        "schemas": (output_protocol_for_task("fanfiction_canon"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine fanfiction canon-validate ", "longform-engine intelligence validate "),
         "apply_prefixes": ("longform-engine fanfiction canon-apply ", "longform-engine intelligence apply "),
@@ -353,11 +343,19 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
     },
     "fanfiction_design": {
         "scope_kinds": ("project",),
-        "schemas": ("fanfiction_design_candidate_v1",),
+        "schemas": (output_protocol_for_task("fanfiction_design"),),
         "output_prefixes": ("50_workbench/intelligence_candidates/",),
         "validate_prefixes": ("longform-engine fanfiction design-validate ", "longform-engine intelligence validate "),
         "apply_prefixes": ("longform-engine fanfiction design-apply ", "longform-engine intelligence apply "),
         "failure_prefixes": ("longform-engine fanfiction design-task ", "longform-engine intelligence task "),
+    },
+    "design_semantic_compile": {
+        "scope_kinds": ("project", "chapter", "range"),
+        "schemas": (output_protocol_for_task("design_semantic_compile"),),
+        "output_prefixes": ("50_workbench/intelligence_candidates/",),
+        "validate_prefixes": ("longform-engine intelligence compile-validate ",),
+        "apply_prefixes": ("longform-engine intelligence apply ",),
+        "failure_prefixes": ("longform-engine intelligence compile-task ",),
     },
 }
 
@@ -395,7 +393,7 @@ def build_manifest(
     context_policy: dict[str, Any] | None = None,
     role_id: str = "",
 ) -> dict[str, Any]:
-    """Create an AgentTaskManifest v2 payload with project-relative paths."""
+    """Create one immutable AgentTaskManifest v4 without duplicated projections."""
 
     normalized_type = normalize_token(task_type)
     normalized_status = normalize_status(status)
@@ -408,16 +406,7 @@ def build_manifest(
         scope_token = f"ch{int(normalized_scope['from_chapter']):03d}-ch{int(normalized_scope['to_chapter']):03d}"
     else:
         scope_token = "project"
-    id_revision = "v2" if normalized_type in {
-        "book_design",
-        "outline_design",
-        "outline_revision",
-        "research_synthesis",
-        "style_analysis",
-        "adaptation_analysis",
-        "fanfiction_canon",
-        "fanfiction_design",
-    } else "v1"
+    id_revision = "v4"
     manifest_id = task_id or f"{normalized_type}:{scope_token}:{id_revision}"
     normalized_inputs = normalize_paths(root, input_files)
     try:
@@ -425,30 +414,26 @@ def build_manifest(
         role = registry.resolve(normalized_type, declared_role_id=role_id)
     except RoleRegistryError as exc:
         raise AgentTaskContractError(f"Cannot build Agent task role contract: {exc}") from exc
-    payload = {
-        "schema_version": AGENT_TASK_SCHEMA_VERSION,
-        "task_id": manifest_id,
-        "task_type": normalized_type,
-        "chapter_number": normalized_chapter,
-        "scope": normalized_scope,
-        "canonical_targets": normalize_paths(root, canonical_targets),
-        "requires_human_apply": bool(requires_human_apply),
-        "input_files": normalized_inputs,
-        "context_policy": normalize_context_policy(
-            root,
-            context_policy,
-            input_files=normalized_inputs,
-            task_type=normalized_type,
-        ),
-        "allowed_output_paths": normalize_paths(root, allowed_output_paths),
-        "output_schema": output_schema,
-        "validate_command": validate_command,
-        "apply_command": apply_command,
-        "failure_next_command": failure_next_command,
-        "hard_boundaries": list(hard_boundaries),
-        "status": normalized_status,
-        "created_at": utc_now(),
-    }
+    normalized_policy = normalize_context_policy(
+        root,
+        context_policy,
+        input_files=normalized_inputs,
+        task_type=normalized_type,
+        scope=normalized_scope,
+    )
+    selection = registry.select_prompt(
+        normalized_type,
+        declared_role_id=role.role_id,
+        quality_focus=normalized_policy.get("quality_focus") or [],
+        trigger_codes=normalized_policy.get("trigger_codes") or [],
+    )
+    if normalized_status != "awaiting_agent":
+        raise AgentTaskContractError("New immutable manifests must start in task-index state awaiting_agent.")
+    if tuple(str(item).strip().lower() for item in hard_boundaries) != HARD_BOUNDARIES:
+        raise AgentTaskContractError("Agent tasks must use the registered canonical boundary profile.")
+    normalized_outputs = normalize_paths(root, allowed_output_paths)
+    if len(normalized_outputs) != 1:
+        raise AgentTaskContractError("AgentTaskManifest v4 requires exactly one output path.")
     try:
         overlay = load_project_prompt_overlay(root, role)
     except PromptCompilationError as exc:
@@ -456,21 +441,89 @@ def build_manifest(
             f"Cannot build Agent task project overlay: {exc}; "
             f"repair with `{exc.report['repair_command']}`."
         ) from exc
-    payload.update(role.manifest_metadata(project_overlay_hash=overlay.overlay_hash))
-    return payload
+    required = set(normalized_policy.get("required_files") or [])
+    input_records: list[dict[str, Any]] = []
+    for path_text in normalized_inputs:
+        path = resolve_under_root(root, path_text)
+        try:
+            content = path.read_text(encoding="utf-8").lstrip("\ufeff")
+        except UnicodeDecodeError as exc:
+            raise AgentTaskContractError(f"Agent input must be UTF-8 text: {path_text}") from exc
+        requirement = "required" if path_text in required else "optional"
+        reason = "compiled_task_brief" if path_text == normalized_policy.get("compiled_brief") else requirement
+        input_records.append(
+            {
+                "path": path_text,
+                "requirement": requirement,
+                "sha256": sha256(path.read_bytes()).hexdigest(),
+                "characters": len(content),
+                "reason": reason,
+            }
+        )
+    role_sections = [
+        {"id": section, "sha256": digest}
+        for section, digest in zip(selection.role_sections, selection.role_section_hashes, strict=True)
+    ]
+    playbooks = [
+        {
+            "id": item.playbook_id,
+            "sections": [
+                {"id": section, "sha256": digest}
+                for section, digest in zip(item.sections, item.section_hashes, strict=True)
+            ],
+        }
+        for item in selection.playbooks
+    ]
+    return {
+            "schema_version": AGENT_TASK_SCHEMA_VERSION,
+            "task_id": manifest_id,
+            "task_type": normalized_type,
+            "scope": normalized_scope,
+            "role": {
+                "id": role.role_id,
+                "version": role.role_version,
+                "contract_hash": role.contract_hash,
+                "selection_hash": selection.selection_hash,
+                "independence_mode": role.independence_mode,
+                "overlay_hash": overlay.overlay_hash,
+                "sections": role_sections,
+                "playbooks": playbooks,
+            },
+            "io": {
+                "inputs": input_records,
+                "output": {"path": normalized_outputs[0], "protocol": output_schema},
+            },
+            "policy": {
+                "boundary_profile": {
+                    "id": BOUNDARY_PROFILE_ID,
+                    "version": BOUNDARY_PROFILE_VERSION,
+                    "sha256": BOUNDARY_PROFILE_HASH,
+                },
+                "canonical_targets": normalize_paths(root, canonical_targets),
+                "requires_human_apply": bool(requires_human_apply),
+                "context": {
+                    "forbidden_paths": list(normalized_policy.get("forbidden_paths") or []),
+                    "budget_profile": str(normalized_policy["budget_profile"]),
+                    "capacity_units": int(normalized_policy["capacity_units"]),
+                    "overflow_policy": str(normalized_policy["overflow_policy"]),
+                    "quality_focus": list(normalized_policy.get("quality_focus") or []),
+                    "trigger_codes": list(normalized_policy.get("trigger_codes") or []),
+                    "active_facets": list(normalized_policy.get("active_facets") or []),
+                },
+            },
+            "commands": {
+                "validate": validate_command,
+                "apply": apply_command,
+                "failure": failure_next_command,
+            },
+            "created_at": utc_now(),
+        }
 
 
 def write_manifest(root: Path, manifest: dict[str, Any], manifest_file: str | Path) -> str:
     """Persist a manifest and update the project-level read-only index."""
 
     path = resolve_under_root(root, manifest_file)
-    if manifest.get("schema_version") == AGENT_TASK_SCHEMA_VERSION:
-        missing_role_fields = [field for field in ROLE_METADATA_FIELDS if field not in manifest]
-        if missing_role_fields:
-            raise AgentTaskContractError(
-                "New AgentTaskManifest v2 cannot infer Prompt role metadata during registration; missing: "
-                + ", ".join(missing_role_fields)
-            )
     normalized = normalize_manifest(manifest)
     validate_manifest_shape(normalized)
     validation = validate_manifest_strict(root, normalized)
@@ -479,9 +532,10 @@ def write_manifest(root: Path, manifest: dict[str, Any], manifest_file: str | Pa
         raise AgentTaskContractError(
             f"Agent task contract is invalid for {validation.task_id or '<unknown>'}: {details}"
         )
-    for output in normalized["allowed_output_paths"]:
+    output = (normalized["io"].get("output") or {}).get("path")
+    if output:
         resolve_under_root(root, output).parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(path, json.dumps(normalized, ensure_ascii=False, indent=2) + "\n")
+    atomic_write_text(path, json.dumps(dict(normalized), ensure_ascii=False, indent=2) + "\n")
     register_manifest(root, normalized, path)
     return str(path)
 
@@ -505,26 +559,15 @@ def register_manifest(root: Path, manifest: dict[str, Any], manifest_file: Path)
         ),
         None,
     )
-    new_status = normalize_status(str(manifest.get("status") or "awaiting_agent"))
+    new_status = "awaiting_agent"
+    scope = manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {}
     entry = {
         "task_id": manifest["task_id"],
         "task_type": manifest["task_type"],
-        "role_id": manifest["role_id"],
-        "role_version": manifest["role_version"],
-        "role_prompt_hash": manifest["role_prompt_hash"],
-        "independence_mode": manifest["independence_mode"],
-        "project_overlay_hash": manifest["project_overlay_hash"],
-        "chapter_number": manifest["chapter_number"],
-        "scope": manifest.get("scope") or {},
-        "canonical_targets": list(manifest.get("canonical_targets") or []),
-        "requires_human_apply": bool(manifest.get("requires_human_apply")),
-        "context_policy": dict(manifest.get("context_policy") or {}),
+        "scope": dict(manifest.get("scope") or {}),
+        "chapter_number": int(scope.get("chapter_number") or 0),
         "status": new_status,
         "manifest_file": rel_file,
-        "allowed_output_paths": list(manifest.get("allowed_output_paths") or []),
-        "validate_command": manifest.get("validate_command", ""),
-        "apply_command": manifest.get("apply_command", ""),
-        "failure_next_command": manifest.get("failure_next_command", ""),
         "created_at": manifest.get("created_at", ""),
         "updated_at": utc_now(),
     }
@@ -563,9 +606,24 @@ def list_manifests(root: Path, *, chapter_number: int | None = None) -> list[dic
     tasks = index.get("tasks") if isinstance(index, dict) else []
     if not isinstance(tasks, list):
         return []
-    result = [dict(item) for item in tasks if isinstance(item, dict)]
+    result: list[dict[str, Any]] = []
+    for item in tasks:
+        if not isinstance(item, dict):
+            continue
+        manifest_path = root / str(item.get("manifest_file") or "")
+        payload = read_json(manifest_path, default={})
+        if isinstance(payload, dict) and payload.get("schema_version") == AGENT_TASK_SCHEMA_VERSION:
+            view = normalize_manifest(payload)
+            view["status"] = str(item.get("status") or "awaiting_agent")
+            view["manifest_file"] = str(item.get("manifest_file") or "")
+            view["updated_at"] = str(item.get("updated_at") or "")
+            if isinstance(item.get("current_result"), dict):
+                view["current_result"] = dict(item["current_result"])
+            result.append(view)
+        else:
+            result.append(dict(item))
     if chapter_number is not None:
-        result = [item for item in result if int(item.get("chapter_number") or 0) == chapter_number]
+        result = [item for item in result if manifest_chapter_number(item) == chapter_number]
     return result
 
 
@@ -575,15 +633,33 @@ def load_manifest(root: Path, task: str | Path) -> dict[str, Any]:
     task_text = str(task)
     for entry in list_manifests(root):
         if entry.get("task_id") == task_text:
-            path = root / str(entry.get("manifest_file") or "")
-            payload = read_json(path, default={})
-            if isinstance(payload, dict):
-                return normalize_manifest(payload)
+            return entry
     path = resolve_under_root(root, task)
     payload = read_json(path, default={})
     if not isinstance(payload, dict):
         raise ValueError(f"Agent task manifest is not JSON object: {task}")
-    return normalize_manifest(payload)
+    normalized = normalize_manifest(payload)
+    relative_manifest = relative_path(root, path)
+    index = read_json(agent_task_index_file(root), default={})
+    entries = index.get("tasks") if isinstance(index, dict) else []
+    projection = next(
+        (
+            item
+            for item in entries if isinstance(item, dict)
+            and (
+                item.get("task_id") == normalized.get("task_id")
+                or str(item.get("manifest_file") or "") == relative_manifest
+            )
+        ),
+        None,
+    )
+    if isinstance(projection, dict):
+        normalized["status"] = str(projection.get("status") or "awaiting_agent")
+        normalized["manifest_file"] = str(projection.get("manifest_file") or relative_manifest)
+        normalized["updated_at"] = str(projection.get("updated_at") or "")
+        if isinstance(projection.get("current_result"), dict):
+            normalized["current_result"] = dict(projection["current_result"])
+    return normalized
 
 
 def update_task_status(
@@ -629,14 +705,6 @@ def update_task_status(
     selected["updated_at"] = utc_now()
     payload["updated_at"] = utc_now()
     atomic_write_text(index_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-    manifest_file = selected.get("manifest_file")
-    if manifest_file:
-        update_manifest_status_file(
-            root,
-            str(manifest_file),
-            normalized_status,
-            current_result=normalized_result,
-        )
     event_file = record_task_event(
         root,
         task_id=task_id,
@@ -666,19 +734,35 @@ def validate_current_task_result(
 
     output_text = relative_path(root, output_path)
     normalized_type = normalize_token(task_type)
-    matches = [
+    allowed = {normalize_status(item) for item in allowed_statuses}
+    owners = [
         task
         for task in list_manifests(root, chapter_number=chapter_number)
         if normalize_token(str(task.get("task_type") or "")) == normalized_type
-        and output_text in [str(path).replace("\\", "/") for path in task.get("allowed_output_paths") or []]
+        and output_text == str(manifest_output(task).get("path") or "").replace("\\", "/")
     ]
+    matches = [
+        task
+        for task in owners
+        if normalize_status(str(task.get("status") or "awaiting_agent")) in allowed
+    ]
+    if not matches:
+        pending = [
+            task
+            for task in owners
+            if normalize_status(str(task.get("status") or "awaiting_agent"))
+            in {"awaiting_agent", "invalid"}
+        ]
+        if len(pending) == 1:
+            matches = pending
     if len(matches) != 1:
         return None, (
             f"Expected exactly one current {normalized_type} task for `{output_text}`; found {len(matches)}.",
         )
-    task = matches[0]
+    projection = matches[0]
+    manifest_file = str(projection.get("manifest_file") or "")
+    task = load_manifest(root, manifest_file) if manifest_file else projection
     status = normalize_status(str(task.get("status") or "awaiting_agent"))
-    allowed = {normalize_status(item) for item in allowed_statuses}
     errors: list[str] = []
     if status not in allowed:
         errors.append(
@@ -698,16 +782,16 @@ def validate_current_task_result(
     if not current_hash or str(binding.get("sha256") or "") != current_hash:
         errors.append("The Agent result changed after control-plane validation.")
     diagnostic_text = str(binding.get("diagnostic_file") or "")
-    diagnostic = read_json(resolve_under_root(root, diagnostic_text), default={}) if diagnostic_text else {}
-    if not isinstance(diagnostic, dict):
-        diagnostic = {}
-    if (
-        diagnostic.get("ok") is not True
-        or str(diagnostic.get("task_id") or "") != str(task.get("task_id") or "")
-        or str(diagnostic.get("result_file") or "") != output_text
-        or str(diagnostic.get("result_sha256") or "") != current_hash
-    ):
-        errors.append("The Agent result diagnostic is missing, stale, or does not match the current task and file.")
+    if diagnostic_text:
+        diagnostic = read_json(resolve_under_root(root, diagnostic_text), default={})
+        if (
+            not isinstance(diagnostic, dict)
+            or diagnostic.get("ok") is not True
+            or str(diagnostic.get("task_id") or "") != str(task.get("task_id") or "")
+            or str(diagnostic.get("result_file") or "") != output_text
+            or str(diagnostic.get("result_sha256") or "") != current_hash
+        ):
+            errors.append("The Agent result diagnostic is stale or does not match the current task and file.")
     return task, tuple(errors)
 
 
@@ -727,7 +811,7 @@ def mark_tasks_for_output(
     allowed_from = {normalize_status(item) for item in from_statuses} if from_statuses else None
     results: list[AgentTaskLifecycleResult] = []
     for task in list_manifests(root, chapter_number=chapter_number):
-        if output_text not in [str(path).replace("\\", "/") for path in task.get("allowed_output_paths") or []]:
+        if output_text != str(manifest_output(task).get("path") or "").replace("\\", "/"):
             continue
         current = normalize_status(str(task.get("status") or "awaiting_agent"))
         if allowed_from is not None and current not in allowed_from:
@@ -762,7 +846,7 @@ def tasks_for_output(
         if (allowed_types is None or normalize_token(str(task.get("task_type") or "")) in allowed_types)
         and normalize_status(str(task.get("status") or "awaiting_agent"))
         in {"awaiting_agent", "submitted", "validated", "invalid"}
-        and output_text in [str(path).replace("\\", "/") for path in task.get("allowed_output_paths") or []]
+        and output_text == str(manifest_output(task).get("path") or "").replace("\\", "/")
     ]
 
 
@@ -950,7 +1034,7 @@ def status_summary(root: Path, *, chapter_number: int | None = None) -> dict[str
 
 
 def normalize_scope(scope: dict[str, Any] | None, *, chapter_number: int | None) -> dict[str, Any]:
-    """Validate and normalize v2 project/chapter/range scope."""
+    """Validate and normalize project/chapter/range scope."""
 
     value = dict(scope or {})
     kind = normalize_token(str(value.get("kind") or ("chapter" if chapter_number else "project")))
@@ -971,124 +1055,65 @@ def normalize_scope(scope: dict[str, Any] | None, *, chapter_number: int | None)
 
 
 def normalize_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a readable v1/v2 manifest to the v2 internal contract."""
+    """Normalize the current v4 manifest without adding compatibility fields."""
 
     if not isinstance(manifest, dict):
         raise ValueError("Agent task manifest must be a JSON object.")
     source_version = manifest.get("schema_version")
-    if source_version not in SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS:
-        raise ValueError("Agent task manifest schema_version must be 1 or 2.")
+    if source_version != AGENT_TASK_SCHEMA_VERSION:
+        raise ValueError("Agent task manifest schema_version must be 4; historical manifests are unsupported.")
     normalized = dict(manifest)
-    chapter_number = normalized.get("chapter_number")
-    if source_version == 1:
-        normalized["source_schema_version"] = 1
-        normalized["scope"] = normalize_scope(None, chapter_number=chapter_number)
-        normalized["canonical_targets"] = []
-        normalized["requires_human_apply"] = False
-        normalized["context_policy"] = normalize_context_policy(
-            Path("."),
-            None,
-            input_files=[str(item) for item in normalized.get("input_files") or []],
-            task_type=str(normalized.get("task_type") or ""),
-        )
-        boundaries = list(normalized.get("hard_boundaries") or [])
-        for boundary in HARD_BOUNDARIES:
-            if boundary not in boundaries:
-                boundaries.append(boundary)
-        normalized["hard_boundaries"] = boundaries
-        normalized["schema_version"] = AGENT_TASK_SCHEMA_VERSION
-    else:
-        normalized["scope"] = normalize_scope(
-            normalized.get("scope") if isinstance(normalized.get("scope"), dict) else None,
-            chapter_number=chapter_number if isinstance(chapter_number, int) else None,
-        )
-        normalized.setdefault("canonical_targets", [])
-        normalized.setdefault("requires_human_apply", False)
-        normalized["context_policy"] = normalize_context_policy(
-            Path("."),
-            normalized.get("context_policy") if isinstance(normalized.get("context_policy"), dict) else None,
-            input_files=[str(item) for item in normalized.get("input_files") or []],
-            task_type=str(normalized.get("task_type") or ""),
-        )
-    scope = normalized["scope"]
-    normalized["chapter_number"] = int(scope.get("chapter_number") or 0)
-    infer_legacy_role_metadata(normalized)
+    normalized["scope"] = normalize_scope(
+        normalized.get("scope") if isinstance(normalized.get("scope"), dict) else None,
+        chapter_number=None,
+    )
     return normalized
 
 
-def infer_legacy_role_metadata(manifest: dict[str, Any]) -> None:
-    """Backfill host-neutral role metadata while reading pre-Phase-1 manifests."""
-
-    if all(str(manifest.get(field) or "").strip() for field in ROLE_METADATA_FIELDS):
-        return
-    task_type = normalize_token(str(manifest.get("task_type") or ""))
-    declared_role_id = str(manifest.get("role_id") or "").strip()
-    if task_type == "editorial_review" and not declared_role_id:
-        match = re.match(r"editorial_review:([^:]+):", str(manifest.get("task_id") or ""))
-        if match:
-            declared_role_id = match.group(1)
-    try:
-        role = load_role_registry().resolve(task_type, declared_role_id=declared_role_id)
-    except RoleRegistryError as exc:
-        raise ValueError(f"Cannot infer legacy Agent task Prompt role metadata: {exc}") from exc
-    for field, value in role.manifest_metadata().items():
-        manifest.setdefault(field, value)
-
-
 def validate_manifest_shape(manifest: dict[str, Any]) -> None:
-    required = (
+    required = {
         "schema_version",
         "task_id",
         "task_type",
-        "role_id",
-        "role_version",
-        "role_prompt_hash",
-        "independence_mode",
-        "project_overlay_hash",
-        "chapter_number",
         "scope",
-        "canonical_targets",
-        "requires_human_apply",
-        "input_files",
-        "context_policy",
-        "allowed_output_paths",
-        "output_schema",
-        "validate_command",
-        "apply_command",
-        "failure_next_command",
-        "hard_boundaries",
-        "status",
+        "role",
+        "io",
+        "policy",
+        "commands",
         "created_at",
-    )
-    missing = [field for field in required if field not in manifest]
-    if missing:
-        raise ValueError(f"Agent task manifest missing fields: {', '.join(missing)}")
+    }
+    actual = {key for key in manifest.keys() if key not in {"status", "manifest_file", "updated_at", "current_result"}}
+    if actual != required:
+        raise ValueError(
+            "AgentTaskManifest v4 fields must be exactly: " + ", ".join(sorted(required))
+        )
     if manifest.get("schema_version") != AGENT_TASK_SCHEMA_VERSION:
-        raise ValueError("Agent task manifest schema_version must be 2 after normalization.")
+        raise ValueError("Agent task manifest schema_version must be 4.")
     if not str(manifest.get("task_id") or "").strip():
         raise ValueError("Agent task manifest task_id is required.")
-    for field in ROLE_METADATA_FIELDS:
-        if not isinstance(manifest.get(field), str) or not str(manifest.get(field) or "").strip():
-            raise ValueError(f"Agent task manifest {field} must be a non-empty string.")
-    if not isinstance(manifest.get("input_files"), list):
-        raise ValueError("Agent task manifest input_files must be a list.")
-    if not isinstance(manifest.get("allowed_output_paths"), list):
-        raise ValueError("Agent task manifest allowed_output_paths must be a list.")
-    if not isinstance(manifest.get("context_policy"), dict):
-        raise ValueError("Agent task manifest context_policy must be an object.")
-    if not isinstance(manifest.get("hard_boundaries"), list):
-        raise ValueError("Agent task manifest hard_boundaries must be a list.")
     if not isinstance(manifest.get("scope"), dict):
         raise ValueError("Agent task manifest scope must be an object.")
-    if not isinstance(manifest.get("canonical_targets"), list):
-        raise ValueError("Agent task manifest canonical_targets must be a list.")
-    if not isinstance(manifest.get("requires_human_apply"), bool):
-        raise ValueError("Agent task manifest requires_human_apply must be boolean.")
-    normalize_status(str(manifest.get("status") or ""))
+    role = manifest.get("role")
+    if not isinstance(role, dict) or set(role) != {
+        "id", "version", "contract_hash", "selection_hash", "independence_mode",
+        "overlay_hash", "sections", "playbooks",
+    }:
+        raise ValueError("Agent task manifest role must use the v4 role projection.")
+    io = manifest.get("io")
+    if not isinstance(io, dict) or set(io) != {"inputs", "output"}:
+        raise ValueError("Agent task manifest io must contain exactly inputs and output.")
+    policy = manifest.get("policy")
+    if not isinstance(policy, dict) or set(policy) != {
+        "boundary_profile", "canonical_targets", "requires_human_apply", "context",
+    }:
+        raise ValueError("Agent task manifest policy must use the v4 policy projection.")
+    commands = manifest.get("commands")
+    if not isinstance(commands, dict) or set(commands) != {"validate", "apply", "failure"}:
+        raise ValueError("Agent task manifest commands must contain validate, apply, and failure.")
 
 
 def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bool = True) -> ManifestValidationResult:
-    """Validate a readable AgentTaskManifest v1/v2 semantic workflow contract."""
+    """Validate the current AgentTaskManifest v4 workflow contract."""
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -1117,12 +1142,16 @@ def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bo
 
     task_id = str(manifest.get("task_id") or "").strip()
     task_type = normalize_token(str(manifest.get("task_type") or ""))
+    role_value = manifest.get("role") if isinstance(manifest.get("role"), dict) else {}
+    policy_value = manifest.get("policy") if isinstance(manifest.get("policy"), dict) else {}
+    commands_value = manifest.get("commands") if isinstance(manifest.get("commands"), dict) else {}
+    scope = manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {}
     try:
         registry = validate_role_task_coverage(set(TASK_CONTRACTS))
         errors.extend(validate_manifest_role_metadata(manifest, registry=registry))
         role = registry.resolve(
             task_type,
-            declared_role_id=str(manifest.get("role_id") or ""),
+            declared_role_id=str(role_value.get("id") or ""),
         )
         try:
             expected_overlay_hash = load_project_prompt_overlay(root, role).overlay_hash
@@ -1132,7 +1161,7 @@ def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bo
                 f"repair with `{exc.report['repair_command']}`."
             )
         else:
-            actual_overlay_hash = str(manifest.get("project_overlay_hash") or "")
+            actual_overlay_hash = str(role_value.get("overlay_hash") or "")
             if actual_overlay_hash != expected_overlay_hash:
                 errors.append(
                     "Agent task manifest project_overlay_hash drifted from the current approved overlay; "
@@ -1140,9 +1169,8 @@ def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bo
                 )
     except RoleRegistryError as exc:
         errors.append(str(exc))
-    scope = manifest.get("scope") or {}
     scope_kind = str(scope.get("kind") or "")
-    chapter_number = manifest.get("chapter_number")
+    chapter_number = int(scope.get("chapter_number") or 0)
     if scope_kind == "chapter":
         if not isinstance(chapter_number, int) or chapter_number <= 0:
             errors.append("chapter scope requires a positive chapter_number.")
@@ -1169,36 +1197,42 @@ def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bo
             )
         validate_schema(manifest, contract, errors)
         validate_outputs(root, manifest, contract, errors)
-        validate_command_field(manifest, "validate_command", contract["validate_prefixes"], errors)
-        validate_command_field(manifest, "apply_command", contract["apply_prefixes"], errors)
-        validate_command_field(manifest, "failure_next_command", contract["failure_prefixes"], errors)
+        validate_command_field(commands_value, "validate", contract["validate_prefixes"], errors)
+        apply_prefixes = contract["apply_prefixes"]
+        if output_protocol_for_task(task_type) == "design_document_v1":
+            apply_prefixes = (*apply_prefixes, "longform-engine intelligence approve ")
+        validate_command_field(commands_value, "apply", apply_prefixes, errors)
+        validate_command_field(commands_value, "failure", contract["failure_prefixes"], errors)
 
-    input_files = manifest.get("input_files") or []
-    if not input_files:
-        errors.append("input_files must contain at least one path.")
-    for index, item in enumerate(input_files if isinstance(input_files, list) else []):
-        path_text = normalize_manifest_path(root, item)
+    io_value = manifest.get("io") if isinstance(manifest.get("io"), dict) else {}
+    input_records = io_value.get("inputs") if isinstance(io_value.get("inputs"), list) else []
+    if not input_records:
+        errors.append("io.inputs must contain at least one input record.")
+    for index, item in enumerate(input_records):
+        path_text = normalize_manifest_path(root, item.get("path") if isinstance(item, dict) else "")
         if not path_text:
-            errors.append(f"input_files[{index}] must be a non-empty path.")
+            errors.append(f"io.inputs[{index}].path must be a non-empty path.")
         elif is_parent_escape(path_text):
-            errors.append(f"input_files[{index}] must not escape the project root: {item}")
+            errors.append(f"io.inputs[{index}].path must not escape the project root: {path_text}")
     validate_context_policy(root, manifest, errors)
 
-    boundaries = {str(item).strip().lower() for item in manifest.get("hard_boundaries") or []}
-    for boundary in HARD_BOUNDARIES:
-        if boundary not in boundaries:
-            errors.append(f"hard_boundaries must include `{boundary}`.")
-    canonical_targets = manifest.get("canonical_targets") or []
+    boundary_profile = policy_value.get("boundary_profile")
+    expected_boundary = {
+        "id": BOUNDARY_PROFILE_ID,
+        "version": BOUNDARY_PROFILE_VERSION,
+        "sha256": BOUNDARY_PROFILE_HASH,
+    }
+    if boundary_profile != expected_boundary:
+        errors.append("policy.boundary_profile does not match the registered canonical write boundary.")
+    canonical_targets = policy_value.get("canonical_targets") or []
     for index, item in enumerate(canonical_targets if isinstance(canonical_targets, list) else []):
         path_text = normalize_manifest_path(root, item)
         if not path_text or Path(str(item)).is_absolute() or is_parent_escape(path_text):
             errors.append(f"canonical_targets[{index}] must be a project-relative path inside the project.")
         elif not is_canonical_output(path_text):
             errors.append(f"canonical_targets[{index}] is not a recognized canonical lane: {path_text}")
-    if bool(manifest.get("requires_human_apply")) and "--approved-by human" not in str(manifest.get("apply_command") or ""):
-        errors.append("requires_human_apply tasks must include `--approved-by human` in apply_command.")
-    if normalize_status(str(manifest.get("status") or "")) != "awaiting_agent":
-        warnings.append("initial Agent task status is normally `awaiting_agent`.")
+    if bool(policy_value.get("requires_human_apply")) and "--approved-by human" not in str(commands_value.get("apply") or ""):
+        errors.append("policy.requires_human_apply tasks must include `--approved-by human` in commands.apply.")
 
     return ManifestValidationResult(
         ok=not errors,
@@ -1211,47 +1245,49 @@ def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bo
 
 
 def validate_schema(manifest: dict[str, Any], contract: dict[str, tuple[str, ...]], errors: list[str]) -> None:
-    schema = str(manifest.get("output_schema") or "").strip()
+    output = ((manifest.get("io") or {}).get("output") or {}) if isinstance(manifest.get("io"), dict) else {}
+    schema = str(output.get("protocol") or "").strip()
     allowed = contract["schemas"]
     if schema not in allowed:
-        errors.append(f"output_schema must be one of {', '.join(allowed)}; got `{schema}`.")
+        errors.append(f"io.output.protocol must be one of {', '.join(allowed)}; got `{schema}`.")
 
 
 def validate_outputs(root: Path, manifest: dict[str, Any], contract: dict[str, tuple[str, ...]], errors: list[str]) -> None:
-    outputs = manifest.get("allowed_output_paths") or []
+    output = ((manifest.get("io") or {}).get("output") or {}) if isinstance(manifest.get("io"), dict) else {}
+    outputs = [output.get("path")] if output.get("path") else []
     if not outputs:
-        errors.append("allowed_output_paths must contain at least one path.")
+        errors.append("io.output.path must be a non-empty path.")
         return
     for index, item in enumerate(outputs):
         path_text = normalize_manifest_path(root, item)
         if not path_text:
-            errors.append(f"allowed_output_paths[{index}] must be a non-empty path.")
+            errors.append("io.output.path must be a non-empty path.")
             continue
         if Path(str(item)).is_absolute():
-            errors.append(f"allowed_output_paths[{index}] must be project-relative: {item}")
+            errors.append(f"io.output.path must be project-relative: {item}")
         if is_parent_escape(path_text):
-            errors.append(f"allowed_output_paths[{index}] must not escape the project root: {item}")
+            errors.append(f"io.output.path must not escape the project root: {item}")
         if is_canonical_output(path_text):
-            errors.append(f"allowed_output_paths[{index}] must not point to canonical state: {path_text}")
+            errors.append(f"io.output.path must not point to canonical state: {path_text}")
         if not path_matches_prefix(path_text, contract["output_prefixes"]):
             errors.append(
-                f"allowed_output_paths[{index}] must live under one of "
+                f"io.output.path must live under one of "
                 f"{', '.join(contract['output_prefixes'])}; got `{path_text}`."
             )
 
 
 def validate_command_field(
-    manifest: dict[str, Any],
+    commands: dict[str, Any],
     field: str,
     allowed_prefixes: tuple[str, ...],
     errors: list[str],
 ) -> None:
-    command = normalize_command(str(manifest.get(field) or ""))
+    command = normalize_command(str(commands.get(field) or ""))
     if not command:
-        errors.append(f"{field} is required.")
+        errors.append(f"commands.{field} is required.")
         return
     if not any(command.startswith(prefix) for prefix in allowed_prefixes):
-        errors.append(f"{field} must start with one of {', '.join(allowed_prefixes)}; got `{command}`.")
+        errors.append(f"commands.{field} must start with one of {', '.join(allowed_prefixes)}; got `{command}`.")
 
 
 def normalize_manifest_path(root: Path, value: Any) -> str:
@@ -1298,24 +1334,6 @@ def agent_task_events_file(root: Path) -> Path:
     return root / "50_workbench" / "agent_tasks" / "events.jsonl"
 
 
-def update_manifest_status_file(
-    root: Path,
-    manifest_file: str | Path,
-    status: str,
-    *,
-    current_result: dict[str, Any] | None = None,
-) -> None:
-    path = resolve_under_root(root, manifest_file)
-    payload = read_json(path, default={})
-    if not isinstance(payload, dict):
-        return
-    payload["status"] = normalize_status(status)
-    if current_result is not None:
-        payload["current_result"] = current_result
-    payload["updated_at"] = utc_now()
-    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-
-
 def normalize_current_result_binding(value: dict[str, Any]) -> dict[str, Any]:
     required = ("ok", "path", "sha256", "diagnostic_file", "source_schema", "validated_at")
     missing = [field for field in required if field not in value]
@@ -1324,10 +1342,12 @@ def normalize_current_result_binding(value: dict[str, Any]) -> dict[str, Any]:
     path = str(value.get("path") or "").replace("\\", "/")
     diagnostic = str(value.get("diagnostic_file") or "").replace("\\", "/")
     digest = str(value.get("sha256") or "")
-    if not path or not diagnostic or (digest and not re.fullmatch(r"[0-9a-f]{64}", digest)):
-        raise ValueError("current_result binding requires project paths and a lowercase SHA-256 digest.")
+    if not path or (digest and not re.fullmatch(r"[0-9a-f]{64}", digest)):
+        raise ValueError("current_result binding requires an output path and a lowercase SHA-256 digest.")
     if value.get("ok") is True and not digest:
         raise ValueError("A valid current_result binding requires a SHA-256 digest.")
+    if value.get("ok") is not True and not diagnostic:
+        raise ValueError("An invalid current_result binding requires one diagnostic file.")
     return {
         "ok": value.get("ok") is True,
         "path": path,
@@ -1358,7 +1378,7 @@ def record_task_event(
         "schema_version": AGENT_TASK_SCHEMA_VERSION,
         "task_id": task_id,
         "task_type": str(task.get("task_type") or ""),
-        "chapter_number": int(task.get("chapter_number") or 0),
+        "chapter_number": manifest_chapter_number(task),
         "from_status": normalized_from,
         "to_status": normalized_to,
         "command": command,
@@ -1553,11 +1573,11 @@ def normalize_context_policy(
     *,
     input_files: list[str],
     task_type: str,
+    scope: dict[str, Any],
 ) -> dict[str, Any]:
     """Normalize required/optional context tiers without widening declared inputs."""
 
     raw = dict(policy or {})
-    max_files, max_chars = CONTEXT_BUDGETS.get(normalize_token(task_type), DEFAULT_CONTEXT_BUDGET)
     required = normalize_paths(root, raw.get("required_files") or input_files)
     optional = normalize_paths(root, raw.get("optional_files") or [])
     declared = dedupe([str(item).replace("\\", "/") for item in input_files])
@@ -1567,79 +1587,169 @@ def normalize_context_policy(
     optional.extend(item for item in declared if item not in classified)
     compiled_brief = normalize_manifest_path(root, raw.get("compiled_brief") or (required[0] if required else ""))
     selection_report = normalize_manifest_path(root, raw.get("selection_report") or "")
+    quality_focus = normalize_signal_list(raw.get("quality_focus") or [])
+    trigger_codes = normalize_signal_list(raw.get("trigger_codes") or [])
+    budget = resolve_context_budget_contract(root, raw)
+    chapter_number = int(scope.get("chapter_number") or 0) if scope.get("kind") == "chapter" else 0
+    facet_records = project_active_facet_adapters(
+        root,
+        chapter_number=chapter_number,
+        requested=[str(item) for item in raw.get("active_facets") or []],
+        limit=3,
+    )
     return {
         "schema": "agent_context_policy_v1",
         "required_files": required,
         "optional_files": optional,
         "forbidden_paths": dedupe([str(item) for item in raw.get("forbidden_paths") or DEFAULT_FORBIDDEN_CONTEXT]),
-        "max_files": int(raw.get("max_files") or max_files),
-        "max_chars": int(raw.get("max_chars") or max_chars),
+        "budget_profile": budget.profile,
+        "capacity_units": budget.capacity_units,
+        "overflow_policy": budget.overflow_policy,
         "compiled_brief": compiled_brief,
         "selection_report": selection_report,
+        "quality_focus": quality_focus,
+        "trigger_codes": trigger_codes,
+        "active_facets": [
+            {
+                "kind": item["kind"],
+                "id": item["id"],
+                "level": item["level"],
+                "source": item["source"],
+                "sha256": item["sha256"],
+            }
+            for item in facet_records
+        ],
     }
 
 
 def validate_context_policy(root: Path, manifest: dict[str, Any], errors: list[str]) -> None:
-    policy = manifest.get("context_policy")
+    policy_root = manifest.get("policy") if isinstance(manifest.get("policy"), dict) else {}
+    policy = policy_root.get("context")
     if not isinstance(policy, dict):
-        errors.append("context_policy must be an object.")
+        errors.append("policy.context must be an object.")
         return
     required_fields = {
-        "schema",
-        "required_files",
-        "optional_files",
         "forbidden_paths",
-        "max_files",
-        "max_chars",
-        "compiled_brief",
-        "selection_report",
+        "budget_profile",
+        "capacity_units",
+        "overflow_policy",
+        "quality_focus",
+        "trigger_codes",
+        "active_facets",
     }
     if set(policy) != required_fields:
-        errors.append("context_policy must contain exactly the agent_context_policy_v1 fields.")
+        errors.append("policy.context must contain exactly the v4 context fields.")
         return
-    if policy.get("schema") != "agent_context_policy_v1":
-        errors.append("context_policy.schema must be agent_context_policy_v1.")
-    inputs = [str(item).replace("\\", "/") for item in manifest.get("input_files") or []]
-    required = policy.get("required_files")
-    optional = policy.get("optional_files")
+    input_records = ((manifest.get("io") or {}).get("inputs") or []) if isinstance(manifest.get("io"), dict) else []
+    inputs = [
+        str(item.get("path") or "").replace("\\", "/")
+        for item in input_records
+        if isinstance(item, dict)
+    ]
+    required = [
+        str(item.get("path") or "").replace("\\", "/")
+        for item in input_records
+        if isinstance(item, dict) and item.get("requirement") == "required"
+    ]
+    optional = [
+        str(item.get("path") or "").replace("\\", "/")
+        for item in input_records
+        if isinstance(item, dict) and item.get("requirement") == "optional"
+    ]
     forbidden = policy.get("forbidden_paths")
-    if not isinstance(required, list) or not isinstance(optional, list) or not isinstance(forbidden, list):
-        errors.append("context_policy required_files, optional_files, and forbidden_paths must be lists.")
+    if not isinstance(forbidden, list):
+        errors.append("policy.context.forbidden_paths must be a list.")
         return
     classified = [str(item).replace("\\", "/") for item in [*required, *optional]]
     if len(classified) != len(set(classified)):
-        errors.append("context_policy files must not be duplicated across required and optional tiers.")
+        errors.append("io.inputs paths must not be duplicated across required and optional tiers.")
     if set(classified) != set(inputs):
-        errors.append("context_policy required_files and optional_files must classify every input_file exactly once.")
-    max_files = policy.get("max_files")
-    max_chars = policy.get("max_chars")
-    if not isinstance(max_files, int) or isinstance(max_files, bool) or max_files <= 0:
-        errors.append("context_policy.max_files must be a positive integer.")
-    elif len(inputs) > max_files:
-        errors.append(f"actual input file count {len(inputs)} exceeds max_files {max_files}.")
-    if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars <= 0:
-        errors.append("context_policy.max_chars must be a positive integer.")
-    elif isinstance(manifest.get("input_files"), list):
-        total_chars = 0
-        for index, item in enumerate(manifest["input_files"]):
+        errors.append("io.inputs must classify every path as required or optional exactly once.")
+    try:
+        resolve_context_budget_contract(root, policy)
+    except ValueError as exc:
+        errors.append(str(exc))
+    if isinstance(input_records, list):
+        records = {
+            str(item.get("path") or ""): item
+            for item in input_records
+            if isinstance(item, dict)
+        }
+        for index, item in enumerate(inputs):
             path_text = normalize_manifest_path(root, item)
             if not path_text or is_parent_escape(path_text):
                 continue
             path = (root / path_text).resolve()
             if not path.exists() or not path.is_file():
-                errors.append(f"input_files[{index}] does not exist or is not a file: {path_text}")
+                errors.append(f"io.inputs[{index}].path does not exist or is not a file: {path_text}")
                 continue
             try:
-                total_chars += len(path.read_text(encoding="utf-8").lstrip("\ufeff"))
+                content = path.read_text(encoding="utf-8").lstrip("\ufeff")
             except UnicodeDecodeError:
-                errors.append(f"input_files[{index}] must be valid UTF-8 text: {path_text}")
-        if total_chars > max_chars:
-            errors.append(
-                f"input_files exceeds context_policy.max_chars ({total_chars} > {max_chars})."
-            )
-    compiled = str(policy.get("compiled_brief") or "")
+                errors.append(f"io.inputs[{index}].path must be valid UTF-8 text: {path_text}")
+                continue
+            record = records.get(path_text)
+            if record is None:
+                errors.append(f"io.inputs is missing `{path_text}`.")
+                continue
+            if set(record) != {"path", "requirement", "sha256", "characters", "reason"}:
+                errors.append(f"io.inputs record for `{path_text}` has an invalid v4 shape.")
+                continue
+            if record.get("requirement") not in {"required", "optional"}:
+                errors.append(f"io.inputs requirement for `{path_text}` is invalid.")
+            if int(record.get("characters") or -1) != len(content):
+                errors.append(f"io.inputs character count drifted for `{path_text}`.")
+            if str(record.get("sha256") or "") != sha256(path.read_bytes()).hexdigest():
+                errors.append(f"io.inputs SHA-256 drifted for `{path_text}`.")
+    compiled = next(
+        (
+            str(item.get("path") or "")
+            for item in input_records
+            if isinstance(item, dict) and item.get("reason") == "compiled_task_brief"
+        ),
+        "",
+    )
     if not compiled or compiled not in required:
-        errors.append("context_policy.compiled_brief must name one required input file.")
+        errors.append("io.inputs must identify one required compiled_task_brief input.")
+    for field in ("quality_focus", "trigger_codes"):
+        values = policy.get(field)
+        if not isinstance(values, list) or any(
+            not isinstance(item, str) or not item for item in values
+        ):
+            errors.append(f"policy.context.{field} must be a list of non-empty normalized tokens.")
+    facets = policy.get("active_facets")
+    if not isinstance(facets, list) or len(facets) > 3:
+        errors.append("policy.context.active_facets must be a list with at most three entries.")
+    else:
+        scope = manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {}
+        chapter_number = int(scope.get("chapter_number") or 0) if scope.get("kind") == "chapter" else 0
+        current = project_active_facet_adapters(
+            root,
+            chapter_number=chapter_number,
+            requested=[f"{item.get('kind')}:{item.get('id')}" for item in facets if isinstance(item, dict)],
+            limit=3,
+        )
+        expected = [
+            {key: item[key] for key in ("kind", "id", "level", "source", "sha256")}
+            for item in current
+        ]
+        if facets != expected:
+            errors.append("policy.context.active_facets drifted from the current story facet registry.")
+
+
+def normalize_signal_list(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        values: list[Any] = []
+        for key, items in value.items():
+            values.append(key)
+            values.extend(items if isinstance(items, list) else [items])
+    elif isinstance(value, list):
+        values = value
+    elif value:
+        values = [value]
+    else:
+        values = []
+    return dedupe([normalize_token(str(item)) for item in values if str(item or "").strip()])
 
 
 def normalize_token(value: str) -> str:

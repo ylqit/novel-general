@@ -116,6 +116,24 @@ longform-engine quality contract project.yaml --chapter 1 --compare-market fanqi
 -> 项目覆盖
 ```
 
+## Agent 自适应上下文
+
+```yaml
+writing:
+  agent:
+    context:
+      mode: adaptive
+      host_profile: standard
+      capacity_override_units: null
+      overflow_policy: split_context
+```
+
+`compact`、`standard`、`large` 的资源档位分别为 24K、48K、96K engine-controlled units。它们是保守、模型无关的估算，不是 Codex 或 Claude 的真实 tokenizer 数值。默认至少保留 25% 给正文输出、宿主指令和交接；控制 Prompt 的软/硬目标为容量的 12%/20%，输入证据为 45%/55%。
+
+超限时按“去重 -> 移除 calibration/reference -> 移除未触发模块 -> 删除已解决反馈 -> 低优先级证据按需读取 -> 范围任务顺序拆分”处理。章节正文始终只有一个作者输出；核心事实仍放不下时返回 `prompt_budget_exceeded` 和 `need-human`，不会静默截断。
+
+会话策略由角色注册表控制：开书与卷级规划可继续项目协调会话；每章作者新开会话，repair 可继续该章作者会话；Humanizer、独立审稿和 final 后语义档案均新开隔离会话。CLI 只在 `production next` 与 `agent-task brief` 中声明动作、范围和第一条命令。
+
 ## 每章人工方向
 
 `quality.creative_guidance.mode` 必须保持 `guided`。每章写作前，`chapter_direction_candidate_v2` 必须提供 2 至 3 个方向以及各自代价，由用户显式选择。方向工作单包含全书/卷/主角目标阶梯、场景链、角色欲望、对白归属、关系变化、主线和伏笔回响。

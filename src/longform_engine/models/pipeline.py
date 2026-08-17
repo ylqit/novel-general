@@ -75,7 +75,6 @@ class ModelVerifyResult:
 
 MODEL_CACHE_REF_SCHEMA = "semantic_model_cache_ref_v1"
 MODEL_CACHE_STATUS_SCHEMA = "semantic_model_cache_status_v1"
-MODEL_MIGRATION_SCHEMA = "semantic_model_cache_migration_v1"
 MODEL_MANIFEST_SCHEMA = "semantic_model_cache_manifest_v2"
 
 
@@ -126,9 +125,8 @@ def list_profiles() -> tuple[ModelProfile, ...]:
 
 
 def models_dir(config: ConfigDocument) -> Path:
-    """Resolve custom, referenced shared, legacy, or default shared model storage."""
+    """Resolve an explicit absolute cache or the user-level shared model cache."""
 
-    root = resolve_project_root(config)
     semantic = semantic_config(config)
     rag = config.data.get("rag", {}) if isinstance(config.data.get("rag"), dict) else {}
     configured = semantic.get("models_dir") or rag.get("models_dir")
@@ -136,17 +134,12 @@ def models_dir(config: ConfigDocument) -> Path:
         path = Path(str(configured)).expanduser()
         if path.is_absolute():
             return path.resolve()
+        raise ModelError("models_dir must be an absolute path or omitted to use the shared user cache.")
     reference = read_json(model_cache_reference_path(config), default={})
     if isinstance(reference, dict) and reference.get("schema") == MODEL_CACHE_REF_SCHEMA:
         shared_path = Path(str(reference.get("shared_path") or "")).expanduser()
         if shared_path.is_absolute():
             return shared_path.resolve()
-    if configured:
-        project_path = (root / Path(str(configured))).resolve()
-        if is_legacy_models_path(root, project_path) and directory_has_files(project_path):
-            return project_path
-        if not is_legacy_models_path(root, project_path):
-            return project_path
     return shared_model_cache_root()
 
 
@@ -167,20 +160,12 @@ def model_cache_reference_path(config: ConfigDocument) -> Path:
     return resolve_project_root(config) / "70_runtime" / "semantic_model_cache_ref.json"
 
 
-def is_legacy_models_path(root: Path, path: Path) -> bool:
-    return path.resolve() == (root / "70_runtime" / "models").resolve()
-
-
 def cache_kind(config: ConfigDocument) -> str:
-    root = resolve_project_root(config)
-    path = models_dir(config)
     semantic = semantic_config(config)
     rag = config.data.get("rag", {}) if isinstance(config.data.get("rag"), dict) else {}
     configured = semantic.get("models_dir") or rag.get("models_dir")
     if configured and Path(str(configured)).expanduser().is_absolute():
         return "custom_absolute"
-    if is_legacy_models_path(root, path):
-        return "legacy_project"
     return "shared"
 
 
@@ -321,74 +306,6 @@ def cache_status_payload() -> dict[str, Any]:
         "profiles": profiles,
         "pending_lock": (root / ".install.lock").exists(),
     }
-
-
-def migrate_models_to_shared(config: ConfigDocument, *, dry_run: bool, confirmed: bool) -> dict[str, Any]:
-    root = resolve_project_root(config)
-    legacy = root / "70_runtime" / "models"
-    shared = shared_model_cache_root()
-    profile = selected_profile(config)
-    source_profile = legacy / profile.name
-    target = shared / profile.name
-    source_bytes = tree_size(legacy)
-    source_ready = source_profile.is_dir() and directory_has_files(source_profile)
-    shared_ready = target.is_dir() and verify_profile_manifest(target)
-    blockers: list[str] = []
-    if cache_kind(config) == "custom_absolute":
-        blockers.append("explicit absolute models_dir is user-managed and cannot be migrated automatically")
-    if not source_ready and not shared_ready:
-        blockers.append(f"legacy profile is missing and no valid shared profile exists: {source_profile}")
-    payload: dict[str, Any] = {
-        "schema": MODEL_MIGRATION_SCHEMA,
-        "profile": profile.name,
-        "legacy_path": str(legacy),
-        "shared_path": str(shared),
-        "source_bytes": source_bytes,
-        "dry_run": dry_run,
-        "eligible": not blockers,
-        "blockers": blockers,
-        "migrated": False,
-        "legacy_removed": False,
-        "reused_existing": False,
-        "source_present": source_ready,
-        "shared_profile_valid": shared_ready,
-        "reference_file": str(model_cache_reference_path(config)),
-    }
-    if dry_run or blockers:
-        return payload
-    if not confirmed:
-        raise ModelError("Model migration requires --yes after reviewing the dry-run.")
-    shared.mkdir(parents=True, exist_ok=True)
-    lock = shared / ".install.lock"
-    acquire_cache_lock(lock)
-    staging = shared / f".{profile.name}.migration-{uuid.uuid4().hex}"
-    try:
-        source_hash = hash_tree(source_profile, exclude_names={"profile_manifest.json"}) if source_ready else ""
-        target_hash = hash_tree(target, exclude_names={"profile_manifest.json"}) if shared_ready else ""
-        if not source_ready or (source_hash and source_hash == target_hash):
-            payload["reused_existing"] = True
-        else:
-            shutil.copytree(source_profile, staging)
-            if hash_tree(staging, exclude_names={"profile_manifest.json"}) != source_hash:
-                raise ModelError("Shared model migration hash verification failed.")
-            write_profile_manifest(staging, profile, embedding_revision="legacy", reranker_revision="legacy")
-            publish_model_profile(staging, target)
-            if hash_tree(target, exclude_names={"profile_manifest.json"}) != source_hash:
-                raise ModelError("Published shared model differs from the legacy source.")
-        manifest = merge_model_manifest(shared, profile, downloaded=True)
-        manifest_file = shared / "semantic_models.json"
-        atomic_write_text(manifest_file, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
-        write_model_cache_reference(config, profile.name, shared, manifest_file)
-        if models_dir(config).resolve() != shared.resolve():
-            raise ModelError("Project model reference did not resolve to the shared cache.")
-        if legacy.exists():
-            shutil.rmtree(legacy)
-        payload["migrated"] = True
-        payload["legacy_removed"] = not legacy.exists()
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-        release_cache_lock(lock)
-    return payload
 
 
 def verify_models(config: ConfigDocument) -> ModelVerifyResult:

@@ -49,7 +49,7 @@ Required five-step closed loop:
 3. Submit the candidate with `draft submit`.
 4. Run or inspect `gate-check`, including pacing, reverse brake, style, humanizer, graph, memory, and semantic checks when enabled.
 5. Finalize only through `chapter finalize`; failed or conditional chapters go to repair, waiver, branch, or rollback instead of semantic extraction.
-6. After finalize, complete exactly one `chapter_semantic_bundle_v1`, validate it, explicitly apply it, and run `chapter close`. Do not start the next chapter before close succeeds.
+6. After finalize, complete exactly one `canonical_delta_v1`, validate it, explicitly apply the CLI-normalized semantic ledger, and run `chapter close`. Do not start the next chapter before close succeeds.
 
 ## Write One Chapter
 
@@ -97,11 +97,10 @@ Required five-step closed loop:
 Use `editorial review` or `editorial batch-review` for formal review artifacts. The available roles are:
 
 - planning_chief_editor / 策划主编,
-- writing_agent / 写作特工,
+- scene_prose_editor / 场景与正文编辑,
 - anti_ai_editor / 反 AI 编辑,
-- serial_verifier / 连载核实官,
-- reader_quality_reviewer / 读者质量审查员,
-- executive_editor / 总编辑.
+- reader_experience_editor / 读者体验编辑,
+- canon_fidelity_reviewer / 同人还原编辑（仅同人项目）.
 
 Fanfiction adds `canon_fidelity_reviewer / 同人还原审查员`, which checks voice, relationship stage, ability and world rules, declared divergence causality, canon-character agency, original contribution, collective irrationality, and character-skin-only writing. AU or canon divergence is not an error when the declared change and its consequences support it.
 

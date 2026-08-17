@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
+from longform_engine.agent_pipeline import validate_production_agent_result
+from longform_engine.agent_protocols import CANONICAL_DELTA_SCHEMA
+from longform_engine.agent_tasks import load_manifest
 from longform_engine.config import load_project_config
 from longform_engine.graph import validate_graph
 from longform_engine.memory import build_tcs, validate_tcs
@@ -65,11 +69,13 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     evidence = {"start": start, "end": end, "excerpt": text[start:end]}
 
     task = semantic_task(config, chapter_number=1)
-    manifest = json.loads(Path(task.manifest_file).read_text(encoding="utf-8"))
+    manifest = load_manifest(root, task.manifest_file)
+    inputs = [item["path"] for item in manifest["io"]["inputs"]]
     assert manifest["task_type"] == "chapter_semantic"
-    assert len(manifest["input_files"]) == 3
-    assert manifest["context_policy"]["max_files"] == 3
-    assert manifest["input_files"] == [
+    assert len(inputs) == 3
+    assert manifest["policy"]["context"]["budget_profile"] == "standard"
+    assert manifest["policy"]["context"]["capacity_units"] == 48_000
+    assert inputs == [
         "50_workbench/semantic_tasks/ch001.semantic_task.md",
         "40_manuscript/final/ch001.md",
         "50_workbench/semantic_tasks/ch001.semantic_context.json",
@@ -78,16 +84,10 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     assert context["schema"] == "chapter_semantic_context_v1"
     assert {item["id"] for item in context["stable_ids"]["characters"]} == {"char_shen", "char_he"}
     assert "char_future" not in json.dumps(context, ensure_ascii=False)
-    assert sum((root / path).read_text(encoding="utf-8").__len__() for path in manifest["input_files"]) <= 28_000
+    assert manifest["policy"]["context"]["overflow_policy"] == "split_context"
     assert "Source Excerpt" not in Path(task.task_file).read_text(encoding="utf-8")
 
     payload = {
-        "schema": "chapter_semantic_bundle_v1",
-        "chapter_number": 1,
-        "source": {
-            "path": "40_manuscript/final/ch001.md",
-            "sha256": sha256(final.read_bytes()).hexdigest(),
-        },
         "chapter_digest": {
             "summary": "沈阙将旧木牌交给何简，两人的调查合作由试探转为有限确认。",
             "causal_change": "木牌交接让何简进入证据链。",
@@ -170,7 +170,8 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
         },
     }
     output = Path(task.output_file)
-    write_json(output, payload)
+    control = write_semantic_delta(root, task, payload)
+    assert control.ok, control.normalization.errors
 
     validation = semantic_validate(config, chapter_number=1, file_path=output)
     assert validation.ok, validation.errors
@@ -264,7 +265,7 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     assert not list((root / "70_runtime" / "transactions" / "s").glob("*"))
 
     payload["chapter_digest"]["summary"] = "不同的候选不能覆盖已落盘语义事实。"
-    write_json(output, payload)
+    write_semantic_delta(root, task, payload, validate_control=False)
     with pytest.raises(ValueError, match="different candidate"):
         semantic_apply(config, chapter_number=1, file_path=output)
 
@@ -277,9 +278,6 @@ def test_semantic_validation_rejects_hash_and_evidence_mismatch(tmp_path):
     final.write_text("# 第一章\n\n正文证据。\n", encoding="utf-8")
     task = semantic_task(config, chapter_number=1)
     payload = {
-        "schema": "chapter_semantic_bundle_v1",
-        "chapter_number": 1,
-        "source": {"path": "40_manuscript/final/ch001.md", "sha256": "bad"},
         "chapter_digest": {"summary": "摘要", "causal_change": "变化", "reader_payoff": "收益", "cost": "代价"},
         "scenes": [{"start": 0, "end": 2, "excerpt": "错误"}],
         "events": [],
@@ -296,11 +294,23 @@ def test_semantic_validation_rejects_hash_and_evidence_mismatch(tmp_path):
             "unchanged_thread_ids": [],
         },
     }
-    write_json(Path(task.output_file), payload)
+    output = Path(task.output_file)
+    invalid_delta = semantic_delta_payload(payload, source_name=final.name)
+    invalid_delta["evidence"] = {
+        "/changes/chapter_digest": [f"{final.name}@0:999"],
+        "/changes/scenes/0": [f"{final.name}@0:999"],
+    }
+    write_json(output, invalid_delta)
+    control = validate_production_agent_result(
+        project.root,
+        load_manifest(project.root, task.manifest_file),
+        result_file=output,
+    )
+    assert control.ok is False
     result = semantic_validate(config, chapter_number=1, file_path=task.output_file)
     assert result.ok is False
-    assert any("sha256" in error for error in result.errors)
-    assert any("excerpt" in error for error in result.errors)
+    assert any("out of bounds" in error for error in result.errors)
+    assert any("control-plane" in error for error in result.errors)
     assert not (project.root / "30_state" / "semantic_ledger" / "ch001.json").exists()
 
     outside_result = semantic_validate(config, chapter_number=1, file_path=final)
@@ -310,22 +320,99 @@ def test_semantic_validation_rejects_hash_and_evidence_mismatch(tmp_path):
     assert not final.with_suffix(".validation.json").exists()
 
     forged = project.root / "50_workbench" / "semantic_tasks" / "ch001.forged.backfill.semantic.json"
-    write_json(forged, payload)
+    write_json(forged, invalid_delta)
     forged_result = semantic_validate(config, chapter_number=1, file_path=forged)
     assert any("not declared" in error for error in forged_result.errors)
 
     chapter_two = project.root / "40_manuscript" / "final" / "ch002.md"
     chapter_two.write_text("# 第二章\n\n后续正文证据。\n", encoding="utf-8")
     task_two = semantic_task(config, chapter_number=2)
-    payload_two = json.loads(json.dumps(payload, ensure_ascii=False))
-    payload_two["chapter_number"] = 2
-    payload_two["source"] = {
-        "path": "40_manuscript/final/ch002.md",
-        "sha256": sha256(chapter_two.read_bytes()).hexdigest(),
-    }
-    write_json(Path(task_two.output_file), payload_two)
+    payload_two = deepcopy(payload)
+    start = chapter_two.read_text(encoding="utf-8").index("后续")
+    end = start + len("后续正文证据")
+    payload_two["scenes"] = [{"start": start, "end": end, "excerpt": "后续正文证据"}]
+    output_two = Path(task_two.output_file)
+    write_json(output_two, semantic_delta_payload(payload_two, source_name=chapter_two.name))
+    control_two = validate_production_agent_result(
+        project.root,
+        load_manifest(project.root, task_two.manifest_file),
+        result_file=output_two,
+    )
+    assert control_two.ok, control_two.normalization.errors
     sequence_result = semantic_validate(config, chapter_number=2, file_path=task_two.output_file)
     assert any("must be applied before" in error for error in sequence_result.errors)
+
+
+def write_semantic_delta(root: Path, task, payload: dict, *, validate_control: bool = True):
+    output = Path(task.output_file)
+    final = root / "40_manuscript" / "final" / f"ch{int(task.chapter_number):03d}.md"
+    write_json(output, semantic_delta_payload(payload, source_name=final.name))
+    if not validate_control:
+        return None
+    return validate_production_agent_result(
+        root,
+        load_manifest(root, task.manifest_file),
+        result_file=output,
+    )
+
+
+def semantic_delta_payload(payload: dict, *, source_name: str) -> dict:
+    """Convert rich test facts into the compact Agent-authored semantic protocol."""
+
+    changes = deepcopy(payload)
+    evidence: dict[str, list[str]] = {}
+
+    def compact(item: dict, pointer: str, *, inline: bool = False) -> None:
+        evidence = item if inline else item.pop("evidence", None)
+        if not isinstance(evidence, dict):
+            return
+        evidence_id = f"{source_name}@{int(evidence['start'])}:{int(evidence['end'])}"
+        evidence_map[pointer] = [evidence_id]
+        if inline:
+            item.pop("start", None)
+            item.pop("end", None)
+            item.pop("excerpt", None)
+
+    evidence_map = evidence
+    for index, scene in enumerate(changes.get("scenes") or []):
+        compact(scene, f"/changes/scenes/{index}", inline=True)
+    for field in (
+        "events",
+        "relationship_deltas",
+        "character_deltas",
+        "foreshadow_deltas",
+        "world_deltas",
+        "timeline_deltas",
+    ):
+        for index, item in enumerate(changes.get(field) or []):
+            pointer = f"/changes/{field}/{index}"
+            compact(item, pointer)
+            if field == "character_deltas":
+                for fact_index, fact in enumerate(item.get("knowledge_gained") or []):
+                    compact(fact, f"{pointer}/knowledge_gained/{fact_index}")
+
+    changes["entity_coverage"] = changes.pop("coverage")
+    sections = {
+        "chapter_digest": "changed",
+        "scenes": "changed" if changes.get("scenes") else "unchanged",
+        "events": "changed" if changes.get("events") else "unchanged",
+        "relationships": "changed" if changes.get("relationship_deltas") else "unchanged",
+        "characters": "changed" if changes.get("character_deltas") else "unchanged",
+        "foreshadowing": "changed" if changes.get("foreshadow_deltas") else "unchanged",
+        "world": "changed" if changes.get("world_deltas") else "unchanged",
+        "timeline": "changed" if changes.get("timeline_deltas") else "unchanged",
+    }
+    return {
+        "schema": CANONICAL_DELTA_SCHEMA,
+        "delta_type": "chapter_semantic",
+        "coverage": sections,
+        "evidence": {
+            "/changes/chapter_digest": next(iter(evidence.values()), [f"{source_name}@0:1"]),
+            **evidence,
+        },
+        "changes": changes,
+        "uncertainties": [],
+    }
 
 
 def write_json(path: Path, payload: object) -> None:

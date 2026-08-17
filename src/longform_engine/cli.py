@@ -29,16 +29,20 @@ from longform_engine.blind_review import (
 from longform_engine.character_expression import approve_voice_samples
 
 from longform_engine.agent_pipeline import validate_production_agent_result
+from longform_engine.agent_protocols import output_protocol_for_task
 from longform_engine.agent_tasks import (
     build_manifest,
     list_manifests,
     load_manifest,
+    manifest_chapter_number,
+    manifest_commands,
+    manifest_input_paths,
+    manifest_output,
     status_summary,
     validate_manifest_strict,
     write_manifest,
 )
 from longform_engine.agent_protocol_readiness import (
-    DEFAULT_EVIDENCE as DEFAULT_AGENT_PROTOCOL_EVIDENCE,
     check_agent_data_pipeline_readiness,
     render_agent_data_pipeline_readiness,
 )
@@ -89,34 +93,29 @@ from longform_engine.gates import (
 from longform_engine.release_readiness import check_release_readiness, render_release_readiness
 from longform_engine.graph import (
     check_graph,
-    semantic_graph_apply,
-    semantic_graph_task,
-    semantic_graph_validate,
     retrieve_graph,
     update_graph,
     validate_graph,
 )
 from longform_engine.intelligence import (
+    DESIGN_INTELLIGENCE_TASK_TYPES,
     INTELLIGENCE_TASK_TYPES,
+    apply_compiled_design,
     apply_intelligence_candidate,
+    approve_design_document,
+    create_design_compile_task,
     create_intelligence_task,
     fanfiction_status,
     validate_intelligence_candidate,
+    validate_design_compile_delta,
 )
-from longform_engine.legacy import legacy_backfill, legacy_compact, legacy_status
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.story_profiles import BUILTIN_MARKET_IDS, compile_story_profile
 from longform_engine.memory import (
-    apply_semantic_memory,
     build_tcs,
     build_tcs_transition,
-    character_apply,
     character_check,
-    character_task,
-    character_validate,
     compress_memory,
-    semantic_task,
-    semantic_validate,
     validate_tcs,
     validate_memory,
 )
@@ -124,7 +123,6 @@ from longform_engine.models import (
     cache_status_payload,
     install_model_profile,
     list_profiles,
-    migrate_models_to_shared,
     verify_models,
 )
 from longform_engine.orchestration import (
@@ -245,15 +243,6 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--force", action="store_true", help="Overwrite seed files if they already exist.")
     init.set_defaults(func=cmd_init_project)
 
-    init_novel = subparsers.add_parser("init-novel", help="Backward-compatible alias for init-project.")
-    init_novel.add_argument("config", nargs="?", help="Path to project.yaml.")
-    init_novel.add_argument("--template", default=None, help="Template name, for example qidian-longform.")
-    init_novel.add_argument("--output", help="Target project directory.")
-    init_novel.add_argument("--interactive", action="store_true", help="Run the project creation wizard.")
-    add_scale_arguments(init_novel)
-    init_novel.add_argument("--force", action="store_true", help="Overwrite seed files if they already exist.")
-    init_novel.set_defaults(func=cmd_init_project)
-
     status = subparsers.add_parser("status", help="Show project bootstrap status.")
     status.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
@@ -288,7 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--tool", choices=["codex", "claude-code", "all"], default="all")
         command.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
         if action == "install":
-            command.add_argument("--force", action="store_true", help="Replace a legacy target after explicit review.")
+            command.add_argument("--force", action="store_true", help="Replace an older or unowned target after explicit review.")
         if action == "uninstall":
             command.add_argument("--yes", action="store_true", help="Confirm removal of owned Skill directories.")
         command.set_defaults(func=handler)
@@ -498,7 +487,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_compare.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     benchmark_compare.set_defaults(func=cmd_benchmark_compare)
 
-    agent_task = subparsers.add_parser("agent-task", help="Inspect compatible AgentTaskManifest v1/v2 task packages.")
+    agent_task = subparsers.add_parser("agent-task", help="Inspect current AgentTaskManifest v3 task packages.")
     agent_task_subparsers = agent_task.add_subparsers(dest="agent_task_command", required=True)
 
     agent_task_list = agent_task_subparsers.add_parser("list", help="List indexed agent task manifests.")
@@ -546,7 +535,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent_task_overlay_validate.set_defaults(func=cmd_agent_task_overlay_validate)
 
-    agent_task_validate = agent_task_subparsers.add_parser("validate", help="Validate one AgentTaskManifest v1/v2 contract.")
+    agent_task_validate = agent_task_subparsers.add_parser("validate", help="Validate one AgentTaskManifest v3 contract.")
     agent_task_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     agent_task_validate.add_argument("task", help="Task id or manifest path.")
     agent_task_validate.add_argument("--strict", action="store_true", help="Check task type, lanes, schemas, commands, and hard boundaries.")
@@ -562,31 +551,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent_result_validate.add_argument("task", help="Task id or manifest path.")
     agent_result_validate.add_argument("--file", required=True, help="Declared Agent result path.")
-    agent_result_validate.add_argument(
-        "--document", help="Declared Markdown companion for a document/index bundle."
-    )
     agent_result_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     agent_result_validate.set_defaults(func=cmd_agent_task_result_validate)
 
     agent_task_readiness = agent_task_subparsers.add_parser(
         "readiness",
-        help="Check whether Phase 0-6 evidence permits implementation of the Agent-first data pipeline.",
+        help="Check the installed Manifest v3, Chinese role, and single-process Agent protocol.",
     )
     agent_task_readiness.add_argument(
         "--repository", default=".", help="Engine repository root."
     )
     agent_task_readiness.add_argument(
-        "--evidence",
-        default=DEFAULT_AGENT_PROTOCOL_EVIDENCE.as_posix(),
-        help="Repository-relative Phase 6 evidence JSON.",
-    )
-    agent_task_readiness.add_argument(
-        "--skip-contracts",
-        action="store_true",
-        help="Use recorded contract evidence without rerunning the four quick contract commands.",
-    )
-    agent_task_readiness.add_argument(
-        "--json", action="store_true", help="Print agent_data_pipeline_readiness_v1 JSON."
+        "--json", action="store_true", help="Print agent_data_pipeline_readiness_v2 JSON."
     )
     agent_task_readiness.set_defaults(func=cmd_agent_task_readiness)
 
@@ -639,10 +615,43 @@ def build_parser() -> argparse.ArgumentParser:
     intelligence_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     intelligence_validate.set_defaults(func=cmd_intelligence_validate)
 
-    intelligence_apply = intelligence_subparsers.add_parser("apply", help="Explicitly apply a validated candidate through a transaction.")
+    intelligence_approve = intelligence_subparsers.add_parser(
+        "approve",
+        help="Approve one validated authoritative Markdown design document.",
+    )
+    intelligence_approve.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    intelligence_approve.add_argument("--task-type", required=True, choices=DESIGN_INTELLIGENCE_TASK_TYPES)
+    intelligence_approve.add_argument("--document", required=True, help="Validated design_document_v1 Markdown.")
+    intelligence_approve.add_argument("--approved-by", required=True, choices=["human"])
+    intelligence_approve.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    intelligence_approve.set_defaults(func=cmd_intelligence_approve)
+
+    intelligence_compile_task = intelligence_subparsers.add_parser(
+        "compile-task",
+        help="Create a canonical_delta_v1 semantic compilation task for an approved design document.",
+    )
+    intelligence_compile_task.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    intelligence_compile_task.add_argument("--task-type", required=True, choices=DESIGN_INTELLIGENCE_TASK_TYPES)
+    intelligence_compile_task.add_argument("--document", required=True)
+    intelligence_compile_task.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    intelligence_compile_task.set_defaults(func=cmd_intelligence_compile_task)
+
+    intelligence_compile_validate = intelligence_subparsers.add_parser(
+        "compile-validate",
+        help="Validate one design canonical delta against its approved Markdown source.",
+    )
+    intelligence_compile_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    intelligence_compile_validate.add_argument("--task-type", required=True, choices=DESIGN_INTELLIGENCE_TASK_TYPES)
+    intelligence_compile_validate.add_argument("--document", required=True)
+    intelligence_compile_validate.add_argument("--delta", required=True)
+    intelligence_compile_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    intelligence_compile_validate.set_defaults(func=cmd_intelligence_compile_validate)
+
+    intelligence_apply = intelligence_subparsers.add_parser("apply", help="Explicitly apply a validated canonical delta through a transaction.")
     intelligence_apply.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     intelligence_apply.add_argument("--task-type", required=True, choices=INTELLIGENCE_TASK_TYPES)
-    intelligence_apply.add_argument("--file", required=True, help="Validated candidate JSON.")
+    intelligence_apply.add_argument("--document", help="Approved Markdown source for design tasks.")
+    intelligence_apply.add_argument("--delta", required=True, help="Validated canonical_delta_v1 JSON.")
     intelligence_apply.add_argument("--approved-by", choices=["human"], help="Required for book and outline mutations.")
     intelligence_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     intelligence_apply.set_defaults(func=cmd_intelligence_apply)
@@ -677,7 +686,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Apply a validated character expression profile with explicit human approval.",
     )
     character_design_apply.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    character_design_apply.add_argument("--file", required=True, help="Validated character expression candidate JSON.")
+    character_design_apply.add_argument("--document", required=True, help="Approved design_document_v1 Markdown.")
+    character_design_apply.add_argument("--delta", required=True, help="Validated canonical_delta_v1 JSON.")
     character_design_apply.add_argument("--approved-by", required=True, choices=["human"])
     character_design_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     character_design_apply.set_defaults(func=cmd_character_design_apply)
@@ -779,7 +789,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Apply validated fanfiction design with explicit human approval.",
     )
     fanfiction_design_apply.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    fanfiction_design_apply.add_argument("--file", required=True, help="Validated fanfiction design candidate JSON.")
+    fanfiction_design_apply.add_argument("--document", required=True, help="Approved design_document_v1 Markdown.")
+    fanfiction_design_apply.add_argument("--delta", required=True, help="Validated canonical_delta_v1 JSON.")
     fanfiction_design_apply.add_argument("--approved-by", required=True, choices=["human"])
     fanfiction_design_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     fanfiction_design_apply.set_defaults(func=cmd_fanfiction_design_apply)
@@ -860,14 +871,6 @@ def build_parser() -> argparse.ArgumentParser:
     models_cache_status = models_subparsers.add_parser("cache-status", help="Inspect the shared semantic model cache.")
     models_cache_status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     models_cache_status.set_defaults(func=cmd_models_cache_status)
-
-    models_migrate = models_subparsers.add_parser("migrate", help="Migrate a legacy project model cache to shared storage.")
-    models_migrate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    models_migrate.add_argument("--to-shared", action="store_true", required=True, help="Migrate to the user-level shared cache.")
-    models_migrate.add_argument("--dry-run", action="store_true", help="Inspect migration without writing files.")
-    models_migrate.add_argument("--yes", action="store_true", help="Confirm migration and legacy cache removal.")
-    models_migrate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    models_migrate.set_defaults(func=cmd_models_migrate)
 
     vector_store = subparsers.add_parser("vector-store", help="Verify and rebuild pluggable vector indexes.")
     vector_subparsers = vector_store.add_subparsers(dest="vector_command", required=True)
@@ -1113,26 +1116,6 @@ def build_parser() -> argparse.ArgumentParser:
     graph_retrieve.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     graph_retrieve.set_defaults(func=cmd_graph_retrieve)
 
-    graph_semantic_task = graph_subparsers.add_parser("semantic-task", help="Generate a Codex semantic graph extraction task.")
-    graph_semantic_task.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    graph_semantic_task.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
-    graph_semantic_task.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    graph_semantic_task.set_defaults(func=cmd_graph_semantic_task)
-
-    graph_semantic_validate = graph_subparsers.add_parser("semantic-validate", help="Validate semantic graph update JSON.")
-    graph_semantic_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    graph_semantic_validate.add_argument("--chapter", type=int, required=True, help="Chapter number.")
-    graph_semantic_validate.add_argument("--file", required=True, help="Semantic graph JSON under 50_workbench/.")
-    graph_semantic_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    graph_semantic_validate.set_defaults(func=cmd_graph_semantic_validate)
-
-    graph_semantic_apply = graph_subparsers.add_parser("semantic-apply", help="Apply validated semantic graph updates.")
-    graph_semantic_apply.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    graph_semantic_apply.add_argument("--chapter", type=int, required=True, help="Chapter number.")
-    graph_semantic_apply.add_argument("--file", required=True, help="Validated semantic graph JSON under 50_workbench/.")
-    graph_semantic_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    graph_semantic_apply.set_defaults(func=cmd_graph_semantic_apply)
-
     memory = subparsers.add_parser("memory", help="Validate narrative memory and Codex semantic extraction tasks.")
     memory_subparsers = memory.add_subparsers(dest="memory_command", required=True)
 
@@ -1140,26 +1123,6 @@ def build_parser() -> argparse.ArgumentParser:
     memory_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     memory_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     memory_validate.set_defaults(func=cmd_memory_validate)
-
-    memory_task = memory_subparsers.add_parser("semantic-task", help="Generate a Codex semantic extraction task.")
-    memory_task.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    memory_task.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
-    memory_task.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    memory_task.set_defaults(func=cmd_memory_semantic_task)
-
-    memory_semantic_validate = memory_subparsers.add_parser("semantic-validate", help="Validate a Codex semantic extraction JSON file.")
-    memory_semantic_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    memory_semantic_validate.add_argument("--chapter", type=int, required=True, help="Chapter number.")
-    memory_semantic_validate.add_argument("--file", required=True, help="Semantic extraction JSON under 50_workbench/.")
-    memory_semantic_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    memory_semantic_validate.set_defaults(func=cmd_memory_semantic_validate)
-
-    memory_semantic_apply = memory_subparsers.add_parser("semantic-apply", help="Apply validated semantic memory to canonical memory files.")
-    memory_semantic_apply.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    memory_semantic_apply.add_argument("--chapter", type=int, required=True, help="Chapter number.")
-    memory_semantic_apply.add_argument("--file", required=True, help="Validated semantic extraction JSON under 50_workbench/.")
-    memory_semantic_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    memory_semantic_apply.set_defaults(func=cmd_memory_semantic_apply)
 
     memory_tcs = memory_subparsers.add_parser("tcs", help="Build a Temporal Context State snapshot.")
     memory_tcs.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
@@ -1174,26 +1137,6 @@ def build_parser() -> argparse.ArgumentParser:
     memory_compress.add_argument("--to-chapter", type=int, required=True, help="Last chapter in range.")
     memory_compress.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     memory_compress.set_defaults(func=cmd_memory_compress)
-
-    character_task_cmd = memory_subparsers.add_parser("character-task", help="Generate a Codex character memory task.")
-    character_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    character_task_cmd.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
-    character_task_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    character_task_cmd.set_defaults(func=cmd_memory_character_task)
-
-    character_validate_cmd = memory_subparsers.add_parser("character-validate", help="Validate Character Memory Card JSON.")
-    character_validate_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    character_validate_cmd.add_argument("--chapter", type=int, required=True, help="Chapter number.")
-    character_validate_cmd.add_argument("--file", required=True, help="Character memory JSON under 50_workbench/.")
-    character_validate_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    character_validate_cmd.set_defaults(func=cmd_memory_character_validate)
-
-    character_apply_cmd = memory_subparsers.add_parser("character-apply", help="Apply validated Character Memory Cards.")
-    character_apply_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    character_apply_cmd.add_argument("--chapter", type=int, required=True, help="Chapter number.")
-    character_apply_cmd.add_argument("--file", required=True, help="Validated character memory JSON under 50_workbench/.")
-    character_apply_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    character_apply_cmd.set_defaults(func=cmd_memory_character_apply)
 
     character_check_cmd = memory_subparsers.add_parser("character-check", help="Check draft against Character Memory Cards.")
     character_check_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
@@ -1309,13 +1252,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     chapter_semantic_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     chapter_semantic_task_cmd.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
-    chapter_semantic_task_cmd.add_argument("--backfill", action="store_true", help="Create a compatibility backfill task.")
     chapter_semantic_task_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     chapter_semantic_task_cmd.set_defaults(func=cmd_chapter_semantic_task)
 
     chapter_semantic_validate_cmd = chapter_subparsers.add_parser(
         "semantic-validate",
-        help="Validate chapter_semantic_bundle_v1 against final prose and current state.",
+        help="Validate a canonical_delta_v1 chapter result against final prose and current state.",
     )
     chapter_semantic_validate_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     chapter_semantic_validate_cmd.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
@@ -1377,28 +1319,6 @@ def build_parser() -> argparse.ArgumentParser:
     artifacts_restore_cmd.add_argument("--chapter", type=int, required=True, help="Archived chapter number.")
     artifacts_restore_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     artifacts_restore_cmd.set_defaults(func=cmd_artifacts_restore)
-
-    legacy = subparsers.add_parser("legacy", help="Inspect and migrate projects created before semantic closure.")
-    legacy_subparsers = legacy.add_subparsers(dest="legacy_command", required=True)
-    legacy_status_cmd = legacy_subparsers.add_parser("status", help="Inspect legacy evidence and migration blockers.")
-    legacy_status_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    legacy_status_cmd.add_argument("--through", type=int, help="Optional finalized range to inspect.")
-    legacy_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    legacy_status_cmd.set_defaults(func=cmd_legacy_status)
-
-    legacy_backfill_cmd = legacy_subparsers.add_parser("backfill", help="Create the earliest missing semantic backfill task.")
-    legacy_backfill_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    legacy_backfill_cmd.add_argument("--through", type=int, required=True, help="Last finalized chapter in the migration range.")
-    legacy_backfill_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    legacy_backfill_cmd.set_defaults(func=cmd_legacy_backfill)
-
-    legacy_compact_cmd = legacy_subparsers.add_parser("compact", help="Rebuild, create migration closures, and compact legacy chapters.")
-    legacy_compact_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    legacy_compact_cmd.add_argument("--through", type=int, required=True, help="Complete finalized range to migrate.")
-    legacy_compact_cmd.add_argument("--approved-by", required=True, help="Human identity approving migration closures.")
-    legacy_compact_cmd.add_argument("--dry-run", action="store_true", help="Validate the full batch without mutation.")
-    legacy_compact_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    legacy_compact_cmd.set_defaults(func=cmd_legacy_compact)
 
     gate = subparsers.add_parser("gate-check", help="Run deterministic chapter gates.")
     gate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
@@ -1593,12 +1513,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     for command in (
         init,
-        init_novel,
         db_init,
         db_sync,
         db_rebuild,
         models_install,
-        models_migrate,
         vector_rebuild_cmd,
         creative_brief,
         style_extract_cmd,
@@ -1615,18 +1533,9 @@ def build_parser() -> argparse.ArgumentParser:
         rag_context,
         graph_update,
         graph_check,
-        graph_semantic_task,
-        graph_semantic_validate,
-        graph_semantic_apply,
         memory_validate,
-        memory_task,
-        memory_semantic_validate,
-        memory_semantic_apply,
         memory_tcs,
         memory_compress,
-        character_task_cmd,
-        character_validate_cmd,
-        character_apply_cmd,
         character_check_cmd,
         tcs_transition_cmd,
         open_book_cmd,
@@ -1646,8 +1555,6 @@ def build_parser() -> argparse.ArgumentParser:
         chapter_close_cmd,
         artifacts_compact_cmd,
         artifacts_restore_cmd,
-        legacy_backfill_cmd,
-        legacy_compact_cmd,
         gate,
         semantic_gate_task_cmd,
         semantic_gate_validate_cmd,
@@ -2497,7 +2404,7 @@ def cmd_agent_task_list(args: argparse.Namespace) -> int:
         for item in items:
             print(
                 f"- {item.get('task_id')} "
-                f"ch{int(item.get('chapter_number') or 0):03d} "
+                f"ch{manifest_chapter_number(item):03d} "
                 f"{item.get('task_type')} {item.get('status')}"
             )
     return 0
@@ -2525,17 +2432,18 @@ def cmd_agent_task_show(args: argparse.Namespace) -> int:
     else:
         print(f"Task: {payload.get('task_id')}")
         print(f"Type: {payload.get('task_type')}")
-        print(f"Chapter: {payload.get('chapter_number')}")
+        print(f"Chapter: {manifest_chapter_number(payload)}")
         print(f"Status: {payload.get('status')}")
         print("Inputs:")
-        for item in payload.get("input_files") or []:
+        for item in manifest_input_paths(payload):
             print(f"  - {item}")
-        print("Allowed outputs:")
-        for item in payload.get("allowed_output_paths") or []:
-            print(f"  - {item}")
-        print(f"Validate: {payload.get('validate_command')}")
-        print(f"Apply: {payload.get('apply_command')}")
-        print(f"On failure: {payload.get('failure_next_command')}")
+        output = manifest_output(payload)
+        commands = manifest_commands(payload)
+        print(f"Output: {output.get('path')}")
+        print(f"Protocol: {output.get('protocol')}")
+        print(f"Validate: {commands.get('validate')}")
+        print(f"Apply: {commands.get('apply')}")
+        print(f"On failure: {commands.get('failure')}")
     return 0
 
 
@@ -2560,13 +2468,14 @@ def cmd_agent_task_overlay_validate(args: argparse.Namespace) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print(f"Project Prompt overlay: {'OK' if payload['ok'] else 'INVALID'}")
-        print(f"File: {payload['overlay_file']}")
-        if payload.get("overlay_hash"):
-            print(f"SHA-256: {payload['overlay_hash']}")
-        if payload.get("conflict_report"):
-            for item in payload["conflict_report"].get("conflicts") or []:
+        print(f"File: {payload['subject']}")
+        provenance = payload.get("provenance") or {}
+        if provenance.get("overlay_hash"):
+            print(f"SHA-256: {provenance['overlay_hash']}")
+        if provenance.get("conflict_report"):
+            for item in provenance["conflict_report"].get("conflicts") or []:
                 print(f"Conflict [{item.get('field')}]: {item.get('reason')}")
-            print(f"Repair: {payload['repair_command']}")
+            print(f"Repair: {payload['next_command']}")
     return 0 if payload["ok"] else 1
 
 
@@ -2603,7 +2512,6 @@ def cmd_agent_task_result_validate(args: argparse.Namespace) -> int:
         root,
         manifest,
         result_file=args.file,
-        document_file=args.document,
     )
     output = asdict(result)
     if args.json:
@@ -2626,11 +2534,7 @@ def cmd_agent_task_result_validate(args: argparse.Namespace) -> int:
 
 
 def cmd_agent_task_readiness(args: argparse.Namespace) -> int:
-    report = check_agent_data_pipeline_readiness(
-        args.repository,
-        evidence_file=args.evidence,
-        run_contracts=not args.skip_contracts,
-    )
+    report = check_agent_data_pipeline_readiness(args.repository)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:
@@ -2673,6 +2577,10 @@ def cmd_production_next(args: argparse.Namespace) -> int:
         print(f"Blocked by: {payload.get('blocked_by')}")
         print(f"Waiting for: {payload.get('waiting_for')}")
         print(f"Next command: {payload.get('next_command')}")
+        session = payload.get("session") or {}
+        if session:
+            print(f"Session: {session.get('action')} ({session.get('scope')})")
+            print(f"Session first command: {session.get('first_command')}")
         if payload.get("human_summary"):
             print(f"Summary: {payload.get('human_summary')}")
         if payload.get("input_files"):
@@ -2720,9 +2628,7 @@ def cmd_production_board(args: argparse.Namespace) -> int:
                 f"repair={(row.get('repair_status') or {}).get('status')} "
                 f"humanize={(row.get('humanize_status') or {}).get('status')} "
                 f"expand={(row.get('expand_status') or {}).get('status')} "
-                f"graph={(row.get('graph_status') or {}).get('status')} "
-                f"memory={(row.get('memory_status') or {}).get('status')} "
-                f"character_memory={(row.get('character_memory_status') or {}).get('status')} "
+                f"semantic={(row.get('chapter_semantic_status') or {}).get('status')} "
                 f"pacing={(row.get('semantic_pacing_status') or {}).get('status')} "
                 f"editorial={editorial.get('status')} "
                 f"need_human={editorial.get('need_human')}"
@@ -2843,14 +2749,83 @@ def cmd_intelligence_validate(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
-def cmd_intelligence_apply(args: argparse.Namespace) -> int:
+def cmd_intelligence_approve(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = apply_intelligence_candidate(
+    result = approve_design_document(
         config,
         task_type=args.task_type,
-        file_path=args.file,
+        document_path=args.document,
         approved_by=args.approved_by,
     )
+    payload = asdict(result)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: design document approved")
+        print(f"Document: {result.document_file}")
+        print(f"Approval: {result.approval_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_intelligence_compile_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = create_design_compile_task(
+        config,
+        task_type=args.task_type,
+        document_path=args.document,
+    )
+    payload = asdict(result)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: design semantic compile task created")
+        print(f"Task: {result.task_id}")
+        print(f"Candidate: {result.candidate_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_intelligence_compile_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = validate_design_compile_delta(
+        config,
+        task_type=args.task_type,
+        document_path=args.document,
+        delta_path=args.delta,
+    )
+    payload = asdict(result)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: design delta validated" if result.ok else "ERROR: design delta is invalid")
+        print(f"Delta: {result.candidate_file}")
+        print(f"Report: {result.report_file}")
+        for error in result.errors:
+            print(f"  - {error}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.ok else 1
+
+
+def cmd_intelligence_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    if args.task_type in DESIGN_INTELLIGENCE_TASK_TYPES:
+        if not args.document:
+            raise ValueError("Design apply requires --document and --delta.")
+        result = apply_compiled_design(
+            config,
+            task_type=args.task_type,
+            document_path=args.document,
+            delta_path=args.delta,
+            approved_by=args.approved_by or "",
+        )
+    else:
+        result = apply_intelligence_candidate(
+            config,
+            task_type=args.task_type,
+            file_path=args.delta,
+            approved_by=args.approved_by,
+        )
     payload = asdict(result)
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -2898,6 +2873,8 @@ def cmd_character_audit_validate(args: argparse.Namespace) -> int:
 def cmd_character_audit_apply(args: argparse.Namespace) -> int:
     args.task_type = "character_expression_review"
     args.approved_by = None
+    args.delta = args.file
+    args.document = None
     return cmd_intelligence_apply(args)
 
 
@@ -2933,6 +2910,8 @@ def cmd_fanfiction_canon_validate(args: argparse.Namespace) -> int:
 
 def cmd_fanfiction_canon_apply(args: argparse.Namespace) -> int:
     args.task_type = "fanfiction_canon"
+    args.delta = args.file
+    args.document = None
     return cmd_intelligence_apply(args)
 
 
@@ -3107,22 +3086,6 @@ def cmd_models_cache_status(args: argparse.Namespace) -> int:
         for profile in payload["profiles"]:
             print(f"- {profile['profile']}: bytes={profile['bytes']} manifest_ok={profile['manifest_ok']}")
     return 1 if payload["pending_lock"] else 0
-
-
-def cmd_models_migrate(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    payload = migrate_models_to_shared(config, dry_run=args.dry_run or not args.yes, confirmed=args.yes)
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print(f"Eligible: {payload['eligible']}")
-        print(f"Legacy: {payload['legacy_path']}")
-        print(f"Shared: {payload['shared_path']}")
-        print(f"Bytes: {payload['source_bytes']}")
-        for blocker in payload["blockers"]:
-            print(f"BLOCKED: {blocker}")
-        print(f"Migrated: {payload['migrated']}")
-    return 0 if payload["eligible"] else 1
 
 
 def cmd_vector_store_verify(args: argparse.Namespace) -> int:
@@ -3614,54 +3577,6 @@ def cmd_graph_retrieve(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_graph_semantic_task(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = semantic_graph_task(config, chapter_number=args.chapter)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: semantic graph extraction task written")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Task: {result.task_file}")
-        print(f"Manifest: {result.manifest_file}")
-        print(f"Output: {result.output_file}")
-        print(f"Source: {result.source_file}")
-        print(f"Next command: {result.next_command}")
-    return 0
-
-
-def cmd_graph_semantic_validate(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = semantic_graph_validate(config, chapter_number=args.chapter, file_path=args.file)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: semantic graph validation completed")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Valid: {result.ok}")
-        print(f"Report: {result.report_file}")
-        for error in result.errors:
-            print(f"ERROR: {error}")
-        for warning in result.warnings:
-            print(f"WARN: {warning}")
-        print(f"Next command: {result.next_command}")
-    return 0 if result.ok else 1
-
-
-def cmd_graph_semantic_apply(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = semantic_graph_apply(config, chapter_number=args.chapter, file_path=args.file)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: semantic graph updates applied")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Applied: {result.applied}")
-        print(f"Skipped low confidence: {result.skipped_low_confidence}")
-        print(f"Graph: {result.graph_file}")
-    return 0
-
-
 def cmd_memory_validate(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
     result = validate_memory(config)
@@ -3681,55 +3596,6 @@ def cmd_memory_validate(args: argparse.Namespace) -> int:
         for warning in result.warnings:
             print(f"WARN: {warning}")
     return 0 if result.ok else 1
-
-
-def cmd_memory_semantic_task(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = semantic_task(config, chapter_number=args.chapter)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: Codex semantic extraction task written")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Task: {result.task_file}")
-        print(f"Manifest: {result.manifest_file}")
-        print(f"Output: {result.output_file}")
-        print(f"Source: {result.source_file}")
-        print(f"Next command: {result.next_command}")
-    return 0
-
-
-def cmd_memory_semantic_validate(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = semantic_validate(config, chapter_number=args.chapter, file_path=args.file)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: semantic extraction validation completed")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Valid: {result.ok}")
-        print(f"Report: {result.report_file}")
-        for error in result.errors:
-            print(f"ERROR: {error}")
-        for warning in result.warnings:
-            print(f"WARN: {warning}")
-        print(f"Next command: {result.next_command}")
-    return 0 if result.ok else 1
-
-
-def cmd_memory_semantic_apply(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = apply_semantic_memory(config, chapter_number=args.chapter, file_path=args.file)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: semantic memory applied")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Chapter memory: {result.chapter_file}")
-        print(f"Scene memories: {len(result.scene_files)}")
-        print(f"Graph update: {result.graph_update_file}")
-        print(f"SQLite synced: {result.db_synced}")
-    return 0
 
 
 def cmd_memory_tcs(args: argparse.Namespace) -> int:
@@ -3762,52 +3628,6 @@ def cmd_memory_compress(args: argparse.Namespace) -> int:
         print(f"Range: ch{result.from_chapter:03d}-ch{result.to_chapter:03d}")
         print(f"Output: {result.output_file}")
         print(f"Sources: {result.source_count}")
-        print(f"SQLite synced: {result.db_synced}")
-    return 0
-
-
-def cmd_memory_character_task(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = character_task(config, chapter_number=args.chapter)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: character memory task written")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Task: {result.task_file}")
-        print(f"Manifest: {result.manifest_file}")
-        print(f"Output: {result.output_file}")
-        print(f"Next command: {result.next_command}")
-    return 0
-
-
-def cmd_memory_character_validate(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = character_validate(config, chapter_number=args.chapter, file_path=args.file)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: character memory validation completed")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Valid: {result.ok}")
-        print(f"Report: {result.report_file}")
-        for error in result.errors:
-            print(f"ERROR: {error}")
-        for warning in result.warnings:
-            print(f"WARN: {warning}")
-        print(f"Next command: {result.next_command}")
-    return 0 if result.ok else 1
-
-
-def cmd_memory_character_apply(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = character_apply(config, chapter_number=args.chapter, file_path=args.file)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: character memory applied")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Character files: {len(result.character_files)}")
         print(f"SQLite synced: {result.db_synced}")
     return 0
 
@@ -4075,13 +3895,12 @@ def cmd_chapter_finalize(args: argparse.Namespace) -> int:
 
 def cmd_chapter_semantic_task(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = chapter_semantic_task(config, chapter_number=args.chapter, backfill=args.backfill)
+    result = chapter_semantic_task(config, chapter_number=args.chapter)
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
         print("OK: unified chapter semantic task written")
         print(f"Chapter: {result.chapter_number}")
-        print(f"Backfill: {result.backfill}")
         print(f"Task: {result.task_file}")
         print(f"Manifest: {result.manifest_file}")
         print(f"Output: {result.output_file}")
@@ -4222,53 +4041,6 @@ def cmd_artifacts_verify(args: argparse.Namespace) -> int:
         for error in result.errors:
             print(f"- {error}")
     return 0 if result.ok else 1
-
-
-def cmd_legacy_status(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    payload = legacy_status(config, through=args.through)
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print(f"Legacy migration through: {payload['through']}")
-        print(json.dumps(payload["ranges"], ensure_ascii=False, sort_keys=True))
-        for blocker in payload["blockers"]:
-            print(f"BLOCKED: {blocker}")
-        print(f"Next command: {payload['next_command']}")
-    return 0
-
-
-def cmd_legacy_backfill(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    payload = legacy_backfill(config, through=args.through)
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print(f"Created: {payload['created']}")
-        print(f"Chapter: {payload['chapter_number'] or 'none'}")
-        print(f"Next command: {payload['next_command']}")
-    return 0
-
-
-def cmd_legacy_compact(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    payload = legacy_compact(
-        config,
-        through=args.through,
-        approved_by=args.approved_by,
-        dry_run=args.dry_run,
-    )
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print(f"Eligible: {payload['eligible']}")
-        print(f"Dry run: {payload['dry_run']}")
-        print(f"Closures created: {len(payload['closures_created'])}")
-        print(f"Archives: {len(payload['archives'])}")
-        for blocker in payload["blockers"]:
-            print(f"BLOCKED: {blocker}")
-        print(f"Next command: {payload['next_command']}")
-    return 0 if payload["eligible"] else 1
 
 
 def cmd_artifacts_restore(args: argparse.Namespace) -> int:
@@ -4530,7 +4302,7 @@ def write_repair_candidate_task(config: ConfigDocument, *, chapter_number: int, 
         chapter_number=chapter_number,
         input_files=[task_path, chapter_draft],
         allowed_output_paths=[candidate_draft],
-        output_schema="markdown_repair_candidate",
+        output_schema=output_protocol_for_task("repair"),
         validate_command=next_command,
         apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
         failure_next_command=(
@@ -4542,8 +4314,6 @@ def write_repair_candidate_task(config: ConfigDocument, *, chapter_number: int, 
             "optional_files": [],
             "compiled_brief": task_path,
             "selection_report": task_path,
-            "max_files": 6,
-            "max_chars": 16_000,
         },
     )
     write_manifest(root, manifest, manifest_file)
@@ -4857,7 +4627,7 @@ def _configure_stdio() -> None:
 
 
 def _lock_context(args: argparse.Namespace) -> tuple[ConfigDocument, str | None]:
-    if args.command in {"init-project", "init-novel"}:
+    if args.command == "init-project":
         config, output = prepared_init_context(args)
         return config, output
     if args.command == "open-book" and getattr(args, "interactive", False):

@@ -108,6 +108,12 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
             "draft_dir": "50_workbench/agent_drafts",
             "require_submit_command": True,
             "default_agent": "codex",
+            "context": {
+                "mode": "adaptive",
+                "host_profile": "standard",
+                "capacity_override_units": None,
+                "overflow_policy": "split_context",
+            },
         },
         "template_dry_run": {
             "enabled": False,
@@ -339,6 +345,27 @@ def validate_config(data: dict[str, Any]) -> None:
     allowed_modes = {"agent_skill", "template_dry_run"}
     if mode not in allowed_modes:
         raise ConfigError(f"writing.mode `{mode}` must be one of: {', '.join(sorted(allowed_modes))}")
+    agent = _require_mapping(writing, "agent", "writing")
+    context = _require_mapping(agent, "context", "writing.agent")
+    if str(context.get("mode") or "") != "adaptive":
+        raise ConfigError("writing.agent.context.mode must be adaptive")
+    if str(context.get("host_profile") or "") not in {"compact", "standard", "large"}:
+        raise ConfigError(
+            "writing.agent.context.host_profile must be one of: compact, standard, large"
+        )
+    override = context.get("capacity_override_units")
+    context_registry = yaml.safe_load(
+        resource_path("config", "agent_context_profiles.yaml").read_text(encoding="utf-8")
+    ) or {}
+    minimum_capacity = int(context_registry.get("minimum_capacity_units") or 1)
+    if override is not None and (
+        not isinstance(override, int) or isinstance(override, bool) or override < minimum_capacity
+    ):
+        raise ConfigError(
+            "writing.agent.context.capacity_override_units must be null or meet the resource-defined minimum"
+        )
+    if str(context.get("overflow_policy") or "") != "split_context":
+        raise ConfigError("writing.agent.context.overflow_policy must be split_context")
 
     semantic = _require_mapping(data, "semantic")
     vector_store = _require_mapping(semantic, "vector_store", "semantic")

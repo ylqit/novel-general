@@ -1,10 +1,10 @@
-import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
-from longform_engine.agent_normalization import normalize_and_validate_agent_result
+from longform_engine.agent_pipeline import validate_production_agent_result
+from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
 from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
 from longform_engine.config import load_project_config
 from longform_engine.creative import (
@@ -30,34 +30,36 @@ def test_humanizer_semantic_task_is_strict_and_surfaces_in_production_next(tmp_p
     assert check.passed
     assert check.semantic_review_required
     assert "semantic_review_milestone" in check.semantic_review_reasons
-    assert "humanize_semantic_review:ch001:v1" in check.next_command
-    manifest = load_manifest(root, "humanize_semantic_review:ch001:v1")
+    assert "humanize_semantic_review:ch001:v4" in check.next_command
+    manifest = load_manifest(root, "humanize_semantic_review:ch001:v4")
     validation = validate_manifest_strict(root, manifest)
     assert validation.ok, validation.errors
-    assert manifest["output_schema"] == "humanizer_semantic_review_v1"
-    assert manifest["allowed_output_paths"] == ["50_workbench/humanizer_tasks/ch001.semantic_review.json"]
-    assert len(manifest["input_files"]) <= 6
-    assert manifest["context_policy"]["max_chars"] == 28_000
+    assert manifest["io"]["output"] == {
+        "path": "50_workbench/humanizer_tasks/ch001.semantic_review.json",
+        "protocol": EVIDENCE_REVIEW_SCHEMA,
+    }
+    assert len(manifest["io"]["inputs"]) <= 6
+    assert manifest["policy"]["context"]["budget_profile"] == "standard"
+    assert manifest["policy"]["context"]["capacity_units"] == 48_000
 
     action = production_next(config)
     assert action["status"] == "agent_task_awaiting_agent"
     assert action["task_type"] == "humanize_semantic_review"
-    assert action["task_id"] == "humanize_semantic_review:ch001:v1"
+    assert action["task_id"] == "humanize_semantic_review:ch001:v4"
 
 
-def test_agent_first_normalizer_accepts_humanizer_semantic_review_v1(tmp_path):
+def test_agent_first_normalizer_accepts_humanizer_evidence_review(tmp_path):
     config, root, candidate = seed_humanizer_project(tmp_path, milestones=[1])
     humanize_check(config, chapter_number=1, file_path=candidate)
     output = write_semantic_result(root)
-    manifest = load_manifest(root, "humanize_semantic_review:ch001:v1")
+    manifest = load_manifest(root, "humanize_semantic_review:ch001:v4")
 
-    result = normalize_and_validate_agent_result(root, manifest, result_file=output)
+    result = validate_production_agent_result(root, manifest, result_file=output)
 
-    assert result.ok is True, result.errors
-    assert result.adapter == "humanizer_semantic_review_v1"
-    assert result.source_schema == "humanizer_semantic_review_v1"
-    assert len(result.normalized_result["evidence"]) == 15
-    assert result.normalized_result["findings"] == []
+    assert result.ok is True, result.normalization.errors
+    assert result.normalization.adapter == "four_protocols_v1"
+    assert result.normalization.source_schema == EVIDENCE_REVIEW_SCHEMA
+    assert result.normalization.normalized_result["findings"] == []
 
 
 def test_humanizer_semantic_pass_allows_submit_and_applies_both_tasks(tmp_path):
@@ -76,7 +78,7 @@ def test_humanizer_semantic_pass_allows_submit_and_applies_both_tasks(tmp_path):
     assert (root / "40_manuscript" / "draft" / "ch001.md").read_text(encoding="utf-8") == original_draft
 
     output = write_semantic_result(root)
-    review = humanize_semantic_validate(config, chapter_number=1, file_path=output)
+    review = validate_humanizer_output(config, root, output)
     assert review.ok
     assert review.passed
     result = submit_agent_draft(
@@ -100,8 +102,10 @@ def test_production_loop_validates_existing_humanizer_semantic_output_without_ap
     humanize_check(config, chapter_number=1, file_path=candidate)
     write_semantic_result(root)
 
+    control = production_loop(config, max_steps=1, no_apply=True)
     result = production_loop(config, max_steps=1, no_apply=True)
 
+    assert control["steps"][0]["action"] == "agent_result_validate"
     assert result["steps"][0]["action"] == "humanize_semantic_validate"
     task = next(
         item
@@ -116,7 +120,7 @@ def test_humanizer_semantic_rejects_output_path_outside_declared_slot(tmp_path):
     config, root, candidate = seed_humanizer_project(tmp_path, milestones=[1])
     humanize_check(config, chapter_number=1, file_path=candidate)
     outside = root / "50_workbench" / "humanizer_tasks" / "wrong.json"
-    write_json(outside, {"schema": "humanizer_semantic_review_v1"})
+    write_json(outside, {"schema": EVIDENCE_REVIEW_SCHEMA})
     before = canonical_snapshot(root)
 
     with pytest.raises(ValueError, match="Humanizer semantic result must be"):
@@ -124,49 +128,21 @@ def test_humanizer_semantic_rejects_output_path_outside_declared_slot(tmp_path):
     assert canonical_snapshot(root) == before
 
 
-@pytest.mark.parametrize(
-    "mutate, expected_error",
-    [
-        (
-            lambda payload: payload["source"].update({"sha256": "0" * 64}),
-            "source.sha256 does not match",
-        ),
-        (
-            lambda payload: payload["candidate"].update({"path": "50_workbench/repair_candidates/wrong.md"}),
-            "candidate.path does not match",
-        ),
-        (
-            lambda payload: payload["fact_preservation"][0]["source_span"].update({"text": "错误切片"}),
-            "source_span.text does not match",
-        ),
-        (
-            lambda payload: payload["fact_preservation"][0]["canonical_refs"].append("10_bible/undeclared.json"),
-            "undeclared canonical file",
-        ),
-        (
-            lambda payload: payload["fact_preservation"][0]["entity_ids"].append("char:unknown"),
-            "unknown entity_id",
-        ),
-    ],
-)
-def test_humanizer_semantic_invalid_evidence_does_not_pollute_canonical_state(
-    tmp_path,
-    mutate,
-    expected_error,
-):
+def test_humanizer_semantic_invalid_evidence_does_not_pollute_canonical_state(tmp_path):
     config, root, candidate = seed_humanizer_project(tmp_path, milestones=[1])
     humanize_check(config, chapter_number=1, file_path=candidate)
     output = write_semantic_result(root)
     payload = read_json(output)
-    mutate(payload)
+    payload["verdict"] = "repair"
+    payload["findings"] = [humanizer_blocking_finding(root, evidence_ids=["ch001.humanized_candidate.md@0:99999"])]
     write_json(output, payload)
     before = canonical_snapshot(root)
 
-    result = humanize_semantic_validate(config, chapter_number=1, file_path=output)
+    manifest = load_manifest(root, "humanize_semantic_review:ch001:v4")
+    result = validate_production_agent_result(root, manifest, result_file=output)
 
     assert not result.ok
-    assert not result.passed
-    assert any(expected_error in error for error in result.errors)
+    assert any("outside current source bounds" in error for error in result.normalization.errors)
     assert canonical_snapshot(root) == before
     task = next(
         item
@@ -180,16 +156,16 @@ def test_humanizer_semantic_pass_verdict_cannot_override_fact_change(tmp_path):
     config, root, candidate = seed_humanizer_project(tmp_path, milestones=[1])
     humanize_check(config, chapter_number=1, file_path=candidate)
     output = write_semantic_result(root)
-    assert humanize_semantic_validate(config, chapter_number=1, file_path=output).passed
+    assert validate_humanizer_output(config, root, output).passed
     payload = read_json(output)
-    payload["fact_preservation"][0]["status"] = "changed"
+    payload["findings"] = [humanizer_blocking_finding(root)]
     write_json(output, payload)
     before = canonical_snapshot(root)
 
-    contradictory = humanize_semantic_validate(config, chapter_number=1, file_path=output)
+    manifest = load_manifest(root, "humanize_semantic_review:ch001:v4")
+    contradictory = validate_production_agent_result(root, manifest, result_file=output)
     assert not contradictory.ok
-    assert not contradictory.passed
-    assert any("verdict=pass cannot override" in error for error in contradictory.errors)
+    assert any("verdict=pass cannot contain P0/P1" in error for error in contradictory.normalization.errors)
     assert canonical_snapshot(root) == before
     task = next(
         item
@@ -200,10 +176,10 @@ def test_humanizer_semantic_pass_verdict_cannot_override_fact_change(tmp_path):
 
     payload["verdict"] = "repair"
     write_json(output, payload)
-    repair = humanize_semantic_validate(config, chapter_number=1, file_path=output)
+    repair = validate_humanizer_output(config, root, output)
     assert repair.ok
     assert not repair.passed
-    assert "fact_changed:actor_action_object" in repair.blocking_findings
+    assert "HUMANIZE_FACT_DRIFT" in repair.blocking_findings
     assert "creative humanize-task" in repair.next_command
     assert canonical_snapshot(root) == before
 
@@ -212,7 +188,7 @@ def test_humanizer_candidate_change_after_review_requires_a_new_review(tmp_path)
     config, root, candidate = seed_humanizer_project(tmp_path, milestones=[1])
     humanize_check(config, chapter_number=1, file_path=candidate)
     output = write_semantic_result(root)
-    assert humanize_semantic_validate(config, chapter_number=1, file_path=output).passed
+    assert validate_humanizer_output(config, root, output).passed
     original_draft = (root / "40_manuscript" / "draft" / "ch001.md").read_text(encoding="utf-8")
 
     candidate.write_text(CANDIDATE_TEXT.replace("收回册中", "压回册中"), encoding="utf-8")
@@ -275,62 +251,39 @@ def seed_humanizer_project(tmp_path, *, milestones):
 
 
 def write_semantic_result(root):
-    source = root / "40_manuscript" / "draft" / "ch001.md"
-    candidate = root / "50_workbench" / "repair_candidates" / "ch001.humanized_candidate.md"
-    source_text = source.read_text(encoding="utf-8")
-    candidate_text = candidate.read_text(encoding="utf-8")
-    source_span = {"start": 0, "end": 8, "text": source_text[:8]}
-    candidate_span = {"start": 0, "end": 8, "text": candidate_text[:8]}
     payload = {
-        "schema": "humanizer_semantic_review_v1",
-        "chapter_number": 1,
-        "source": {"path": "40_manuscript/draft/ch001.md", "sha256": sha256(source_text)},
-        "candidate": {
-            "path": "50_workbench/repair_candidates/ch001.humanized_candidate.md",
-            "sha256": sha256(candidate_text),
-        },
+        "schema": EVIDENCE_REVIEW_SCHEMA,
         "verdict": "pass",
-        "fact_preservation": [
-            {
-                "dimension": dimension,
-                "status": "preserved",
-                "source_span": dict(source_span),
-                "candidate_span": dict(candidate_span),
-                "canonical_refs": ["10_bible/characters.json"],
-                "entity_ids": ["lead_ari"],
-                "message": f"{dimension} remains supported by the same scene action.",
-            }
-            for dimension in (
-                "actor_action_object",
-                "event_outcome",
-                "causality",
-                "chronology",
-                "relationship_state",
-                "ability_cost",
-                "forbidden_reveals",
-            )
-        ],
-        "chapter_contract": {
-            "duty_preserved": True,
-            "reader_gain_preserved": True,
-            "cost_preserved": True,
-            "forbidden_reveals_preserved": True,
-        },
-        "voice_checks": [
-            {
-                "character_id": "lead_ari",
-                "status": "preserved",
-                "candidate_spans": [dict(candidate_span)],
-                "message": "Ari remains evidence-led and restrained.",
-            }
-        ],
-        "ai_taste_findings": [],
-        "confidence": 0.95,
-        "notes": "",
+        "coverage": {"meaning_preservation": "checked", "voice_preservation": "checked", "event_preservation": "checked"},
+        "findings": [],
     }
     output = root / "50_workbench" / "humanizer_tasks" / "ch001.semantic_review.json"
     write_json(output, payload)
     return output
+
+
+def humanizer_blocking_finding(root, *, evidence_ids=None):
+    ids = evidence_ids or [
+        "40_manuscript/draft/ch001.md@0:8",
+        "50_workbench/repair_candidates/ch001.humanized_candidate.md@0:8",
+    ]
+    return {
+        "code": "HUMANIZE_FACT_DRIFT",
+        "severity": "P1",
+        "certainty": "confirmed",
+        "diagnosis": "The candidate changes who performs the scene-defining action.",
+        "evidence_ids": ids,
+        "reader_impact": "The causal meaning no longer matches the accepted draft.",
+        "repair_target": "Restore the original actor-action-object relation.",
+        "preserve": ["scene outcome", "character voice"],
+    }
+
+
+def validate_humanizer_output(config, root, output):
+    manifest = load_manifest(root, "humanize_semantic_review:ch001:v4")
+    control = validate_production_agent_result(root, manifest, result_file=output)
+    assert control.ok, control.normalization.errors
+    return humanize_semantic_validate(config, chapter_number=1, file_path=output)
 
 
 def canonical_snapshot(root):
@@ -344,10 +297,6 @@ def canonical_snapshot(root):
         str(path.relative_to(root)): path.read_bytes() if path.exists() else None
         for path in paths
     }
-
-
-def sha256(text):
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def read_json(path):

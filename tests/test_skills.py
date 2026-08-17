@@ -38,9 +38,10 @@ def test_skills_are_self_contained_compact_and_no_key():
         assert "/工程下一步" in text
         assert "production next" in text
         assert "agent-task brief" in text
-        assert "allowed_output_paths" in text
-        assert "output_schema" in text
-        assert "failure_next_command" in text
+        assert "io.inputs" in text
+        assert "io.output.path" in text
+        assert "io.output.protocol" in text
+        assert "commands.failure" in text
         assert "../shared" not in text
         assert ".venv" not in text
         for reference in REFERENCES:
@@ -71,7 +72,7 @@ def test_readme_is_public_pipx_skill_package_homepage():
     for term in (
         "longform-novel-engine = Python engine + Codex skill + Claude Code skill",
         "https://github.com/ylqit/novel-general",
-        "git+https://github.com/ylqit/novel-general.git@v0.4.0",
+        "git+https://github.com/ylqit/novel-general.git@v0.4.1",
         "longform-novel-engine[semantic]",
         "pipx",
         "PIPX_BIN_DIR",
@@ -117,7 +118,7 @@ def test_public_distribution_checklist_and_workflow_docs_are_linked():
         "Repository And License",
         "Wheel Resources",
         "Skill Lifecycle",
-        "AgentTaskManifest v2",
+        "AgentTaskManifest v3",
         "Quality Evidence",
         "CI And Release",
         "Definition Of Done",
@@ -140,7 +141,8 @@ def test_shared_protocols_keep_chapter_and_editorial_contracts():
         "five-step closed loop",
         "planning_chief_editor",
         "anti_ai_editor",
-        "serial_verifier",
+        "scene_prose_editor",
+        "reader_experience_editor",
         "need_human_reasons",
         "editorial need-human",
         "production loop",

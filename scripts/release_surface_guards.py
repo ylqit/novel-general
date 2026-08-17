@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from hashlib import sha256
 from pathlib import Path
 import json
 import re
@@ -10,9 +9,6 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-
-from longform_engine.agent_protocol_readiness import protocol_surface_hash  # noqa: E402
-
 
 SRC = ROOT / "src" / "longform_engine"
 
@@ -40,7 +36,6 @@ ALLOW_FINAL_WRITES = {
     "src/longform_engine/completion.py",
     "src/longform_engine/orchestration/pipeline.py",
     "src/longform_engine/intelligence/pipeline.py",
-    "src/longform_engine/legacy.py",
     "src/longform_engine/revision/pipeline.py",
     "src/longform_engine/rag/pipeline.py",
     "src/longform_engine/memory/pipeline.py",
@@ -74,7 +69,6 @@ ALLOW_AGENT_TO_CANON = {
     "src/longform_engine/vectorstore/pipeline.py",
     "src/longform_engine/cli.py",
     "src/longform_engine/intelligence/pipeline.py",
-    "src/longform_engine/legacy.py",
     "src/longform_engine/semantic/pipeline.py",
 }
 
@@ -157,7 +151,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         "src/longform_engine/creative/pipeline.py",
         (
             'task_type="content_expand"',
-            'output_schema="markdown_expanded_candidate"',
+            'output_schema=output_protocol_for_task("content_expand")',
             'command="creative expand-check"',
         ),
     ),
@@ -224,11 +218,11 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "tests/test_production_experience.py",
+        "tests/test_agent_skill_integrity.py",
         (
-            "test_production_loop_no_pollution_pause_path",
-            "PRODUCTIONLOOP_NOPOLLUTION",
-            "query_table",
+            "test_v041_progressive_prompts_four_protocols_and_no_pollution",
+            "agent_data_pipeline_readiness_v2",
+            "single_process_sequential",
         ),
     ),
     (
@@ -320,6 +314,7 @@ def main() -> int:
             failures.extend(check_read_only_canonical_validator(rel, text))
     failures.extend(check_experience_layer_guards())
     failures.extend(check_agent_first_protocol_isolation_guards())
+    failures.extend(check_v041_legacy_runtime_removed())
     failures.extend(check_agent_data_pipeline_readiness_guards())
     failures.extend(check_agent_first_production_pipeline_guards())
     failures.extend(check_artifact_compaction_guards())
@@ -412,7 +407,7 @@ def check_experience_layer_guards() -> list[str]:
 
 
 def check_agent_first_protocol_isolation_guards() -> list[str]:
-    """Keep Phase 5 parsers isolated behind the authorized Phase 7 integration owner."""
+    """Keep Agent parsers read-only behind the production integration owner."""
 
     failures: list[str] = []
     production_path = SRC / "production.py"
@@ -420,7 +415,7 @@ def check_agent_first_protocol_isolation_guards() -> list[str]:
     for module_name in ("agent_isolation", "agent_results"):
         if re.search(rf"(?:from|import)\s+longform_engine\.{module_name}\b", production_text):
             failures.append(
-                f"production.py must not import Phase 5 isolated protocol module `{module_name}` before readiness."
+                f"production.py must not bypass agent_pipeline by importing `{module_name}` directly."
             )
 
     for relative in (
@@ -429,37 +424,35 @@ def check_agent_first_protocol_isolation_guards() -> list[str]:
     ):
         path = ROOT / relative
         if not path.is_file():
-            failures.append(f"Phase 5 isolated protocol module is missing: {relative}")
+            failures.append(f"Agent protocol module is missing: {relative}")
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         if re.search("|".join(DIRECT_WRITER_PATTERNS), text):
-            failures.append(f"Phase 5 isolated protocol module must remain write-free: {relative}")
+            failures.append(f"Agent protocol module must remain write-free: {relative}")
         for pattern in DIRECT_LLM_PATTERNS:
             if re.search(pattern, text):
                 failures.append(
-                    f"Phase 5 isolated protocol module calls an external LLM pattern `{pattern}`: {relative}"
+                    f"Agent protocol module calls an external LLM pattern `{pattern}`: {relative}"
                 )
     isolation_text = (SRC / "agent_isolation.py").read_text(encoding="utf-8", errors="ignore")
     for marker in (
-        "LEGACY_COMPATIBILITY_TASK_TYPES",
+        "CURRENT_TASK_TYPES",
         "compile_isolated_agent_package",
         "validate_isolated_agent_submission",
-        "legacy task `{task_type}` is compatibility-read-only",
+        "assert_current_protocol_coverage",
     ):
         if marker not in isolation_text:
-            failures.append(f"Phase 5 isolation marker `{marker}` is missing from agent_isolation.py")
+            failures.append(f"Agent isolation marker `{marker}` is missing from agent_isolation.py")
     return failures
 
 
 def check_agent_first_production_pipeline_guards() -> list[str]:
-    """Require one readiness-bound owner for Phase 7 work orders and lifecycle mutation."""
+    """Require one readiness-bound owner for work orders and lifecycle mutation."""
 
     failures: list[str] = []
     integration_path = SRC / "agent_pipeline.py"
     production_path = SRC / "production.py"
-    authorization_path = ROOT / "config" / "agent_data_pipeline_authorization.json"
-    evidence_path = ROOT / "docs" / "baselines" / "AGENT_FIRST_DOCUMENT_PROTOCOL_PHASE6_EVIDENCE.json"
-    for path in (integration_path, production_path, authorization_path, evidence_path):
+    for path in (integration_path, production_path):
         if not path.is_file():
             failures.append(f"Agent-first production pipeline asset is missing: {relpath(path)}")
     if failures:
@@ -475,32 +468,53 @@ def check_agent_first_production_pipeline_guards() -> list[str]:
         "agent-task result-validate",
     ):
         if marker not in integration:
-            failures.append(f"Phase 7 integration marker `{marker}` is missing from agent_pipeline.py")
+            failures.append(f"Agent integration marker `{marker}` is missing from agent_pipeline.py")
     for marker in (
         "require_agent_first_production_pipeline",
         "compile_production_agent_package",
         "chapter_stage_task_types",
     ):
         if marker not in production:
-            failures.append(f"Phase 7 production marker `{marker}` is missing from production.py")
+            failures.append(f"Agent production marker `{marker}` is missing from production.py")
     for pattern in DIRECT_LLM_PATTERNS:
         if re.search(pattern, integration):
-            failures.append(f"Phase 7 integration must not call an external LLM pattern `{pattern}`")
-    try:
-        authorization = json.loads(authorization_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        failures.append(f"Phase 7 authorization JSON is unreadable: {exc}")
-        return failures
-    expected_hash = protocol_surface_hash(ROOT)
-    if authorization.get("schema") != "agent_data_pipeline_authorization_v1":
-        failures.append("Phase 7 runtime authorization schema is invalid")
-    if authorization.get("authorized") is not True:
-        failures.append("Phase 7 runtime authorization is not enabled")
-    if authorization.get("protocol_surface_sha256") != expected_hash:
-        failures.append("Phase 7 runtime authorization does not match the readiness report surface hash")
-    expected_evidence_hash = sha256(evidence_path.read_bytes()).hexdigest()
-    if authorization.get("phase6_evidence_sha256") != expected_evidence_hash:
-        failures.append("Phase 7 runtime authorization does not match the Phase 6 evidence hash")
+            failures.append(f"Agent integration must not call an external LLM pattern `{pattern}`")
+    if "agent_data_pipeline_authorization" in integration:
+        failures.append("Agent integration must not depend on a stale authorization asset")
+    return failures
+
+
+def check_v041_legacy_runtime_removed() -> list[str]:
+    """Prevent removed v0.3 protocol entry points from returning to release assets."""
+
+    failures: list[str] = []
+    if (SRC / "legacy.py").exists():
+        failures.append("legacy.py must not ship in the v0.4.1 runtime")
+    combined = "\n".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in (
+            SRC / "agent_tasks.py",
+            SRC / "agent_results.py",
+            SRC / "agent_normalization.py",
+            SRC / "agent_isolation.py",
+            SRC / "cli.py",
+            SRC / "graph" / "pipeline.py",
+            SRC / "memory" / "pipeline.py",
+        )
+        if path.is_file()
+    )
+    for marker in (
+        "LEGACY_COMPATIBILITY_TASK_TYPES",
+        "legacy_document_json",
+        "agent_data_pipeline_authorization_v1",
+        'task_type="graph_extract"',
+        'task_type="memory_extract"',
+        'task_type="character_memory"',
+        'add_parser("init-novel"',
+        'add_parser("legacy"',
+    ):
+        if marker in combined:
+            failures.append(f"removed runtime marker returned: {marker}")
     return failures
 
 
@@ -549,12 +563,18 @@ def check_agent_data_pipeline_readiness_guards() -> list[str]:
     script_text = script_path.read_text(encoding="utf-8", errors="ignore")
     ci_text = ci_path.read_text(encoding="utf-8", errors="ignore")
     for marker in (
-        "agent_data_pipeline_readiness_v1",
+        "agent_data_pipeline_readiness_v2",
         "ready_for_data_pipeline",
+        "professional_prompt_ready",
+        "professional_prompt_calibration",
         "require_agent_data_pipeline_readiness",
         "AgentDataPipelineBlocked",
         "protocol_surface_sha256",
-        "dirty_tree_sha256",
+        "single_process_sequential",
+        "adaptive_context_profiles",
+        "hybrid_session_boundaries",
+        "chinese_story_facet_adapters",
+        "fixed_prompt_budget_removed",
     ):
         if marker not in readiness_text:
             failures.append(f"Agent readiness marker `{marker}` is missing from agent_protocol_readiness.py")

@@ -4,6 +4,9 @@ from pathlib import Path
 
 import yaml
 
+from longform_engine.agent_pipeline import validate_production_agent_result
+from longform_engine.agent_protocols import CANONICAL_DELTA_SCHEMA
+from longform_engine.agent_tasks import load_manifest
 from longform_engine.semantic import chapter_close, semantic_apply, semantic_task
 from longform_engine.semantic.pipeline import active_planned_thread_ids, foreshadow_state_threads, planned_threads
 from longform_engine.lengths import compile_length_forecast
@@ -388,7 +391,7 @@ def prepare_unified_semantic_bundle(root: Path, config, chapter_number: int) -> 
     text = final.read_text(encoding="utf-8")
     start = next((index for index, character in enumerate(text) if not character.isspace()), 0)
     end = min(len(text), max(start + 1, start + 24))
-    evidence = {"start": start, "end": end, "excerpt": text[start:end]}
+    evidence_id = f"ch{chapter_number:03d}.md@{start}:{end}"
     active_threads = sorted(
         active_planned_thread_ids(
             planned_threads(root),
@@ -400,43 +403,65 @@ def prepare_unified_semantic_bundle(root: Path, config, chapter_number: int) -> 
     write_json(
         output,
         {
-            "schema": "chapter_semantic_bundle_v1",
-            "chapter_number": chapter_number,
-            "source": {
-                "path": f"40_manuscript/final/ch{chapter_number:03d}.md",
-                "sha256": sha256(final.read_bytes()).hexdigest(),
-            },
-            "chapter_digest": {
-                "summary": "The chapter advances the immediate conflict through a concrete choice.",
-                "causal_change": "The protagonist's action changes the next available decision.",
-                "reader_payoff": "The immediate chapter question receives a concrete answer.",
-                "cost": "The action narrows the protagonist's safe options.",
-            },
-            "scenes": [
-                {
-                    "scene_id": f"ch{chapter_number:03d}:scene:1",
-                    **evidence,
-                    "participants": [],
-                    "location_id": "",
-                    "goal": "Advance the immediate chapter conflict.",
-                    "outcome": "The next decision becomes unavoidable.",
-                }
-            ],
-            "events": [],
-            "relationship_deltas": [],
-            "character_deltas": [],
-            "foreshadow_deltas": [],
-            "world_deltas": [],
-            "timeline_deltas": [],
-            "retrieval": {"tags": ["chapter progression"], "entity_ids": [], "focus": ["causal change"]},
+            "schema": CANONICAL_DELTA_SCHEMA,
+            "delta_type": "chapter_semantic",
             "coverage": {
-                "featured_character_ids": [],
-                "unchanged_character_ids": [],
-                "active_thread_ids": active_threads,
-                "unchanged_thread_ids": active_threads,
+                "chapter_digest": "changed",
+                "scenes": "changed",
+                "events": "unchanged",
+                "relationships": "unchanged",
+                "characters": "unchanged",
+                "foreshadowing": "unchanged",
+                "world": "unchanged",
+                "timeline": "unchanged",
             },
+            "evidence": {
+                "/changes/chapter_digest": [evidence_id],
+                "/changes/scenes/0": [evidence_id],
+            },
+            "changes": {
+                "chapter_digest": {
+                    "summary": "The chapter advances the immediate conflict through a concrete choice.",
+                    "causal_change": "The protagonist's action changes the next available decision.",
+                    "reader_payoff": "The immediate chapter question receives a concrete answer.",
+                    "cost": "The action narrows the protagonist's safe options.",
+                },
+                "scenes": [
+                    {
+                        "scene_id": f"ch{chapter_number:03d}:scene:1",
+                        "participants": [],
+                        "location_id": "",
+                        "goal": "Advance the immediate chapter conflict.",
+                        "outcome": "The next decision becomes unavoidable.",
+                    }
+                ],
+                "events": [],
+                "relationship_deltas": [],
+                "character_deltas": [],
+                "foreshadow_deltas": [],
+                "world_deltas": [],
+                "timeline_deltas": [],
+                "retrieval": {
+                    "tags": ["chapter progression"],
+                    "entity_ids": [],
+                    "focus": ["causal change"],
+                },
+                "entity_coverage": {
+                    "featured_character_ids": [],
+                    "unchanged_character_ids": [],
+                    "active_thread_ids": active_threads,
+                    "unchanged_thread_ids": active_threads,
+                },
+            },
+            "uncertainties": [],
         },
     )
+    control = validate_production_agent_result(
+        root,
+        load_manifest(root, task.manifest_file),
+        result_file=output,
+    )
+    assert control.ok, control.normalization.errors
     return output
 
 

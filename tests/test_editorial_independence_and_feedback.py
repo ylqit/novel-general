@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from longform_engine.agent_pipeline import validate_production_agent_result
+from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
 from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_aggregate, editorial_review, editorial_submit_review
@@ -16,25 +18,17 @@ from longform_engine.quality import (
     truncate_feedback_registry,
 )
 from longform_engine.quality.feedback import read_registry
+from longform_engine.roles import load_role_registry
 from longform_engine.storage import init_project
-
-
-def evidence_pass_items(role_id: str, evidence: str) -> list[dict]:
-    return [
-        {
-            "code": f"{role_id}_observed_pass",
-            "severity": "PASS",
-            "status": "resolved",
-            "message": "The declared review lens has direct chapter evidence.",
-            "evidence": [evidence],
-            "character_ids": ["lead_ari", "ally_mira"] if role_id == "character_editor" else [],
-            "recommendation": "preserve the evidenced behavior",
-        }
-    ]
 
 
 def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_blocker(tmp_path):
     config, root = seed_project(tmp_path)
+    config.data.setdefault("editorial", {})["review_roles"] = [
+        "planning_chief_editor",
+        "scene_prose_editor",
+        "character_editor",
+    ]
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text(
         "# Chapter 1\n\nAri follows the clue, but a logic break changes the relationship without evidence.\n",
@@ -46,8 +40,7 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
     selected = set(review.selected_roles)
 
     assert review_payload["role_selection"]["policy"] == "risk_based_editorial_selection_v1"
-    assert {"writing_agent", "serial_verifier", "executive_editor"} <= selected
-    assert "planning_chief_editor" not in selected
+    assert {"scene_prose_editor", "planning_chief_editor"} <= selected
     assert "continuity_or_relationship_risk" in review.risk_signals
     assert "blocking_P0_P1_risk" in review.risk_signals
 
@@ -58,14 +51,18 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
     ]
     instances = set()
     for manifest in manifests:
-        assert manifest["output_schema"] == "editorial_role_review_v2"
-        assert len(manifest["input_files"]) <= 7
-        assert not any("/results/" in path for path in manifest["input_files"])
+        inputs = [item["path"] for item in manifest["io"]["inputs"]]
+        assert manifest["io"]["output"]["protocol"] == EVIDENCE_REVIEW_SCHEMA
+        assert len(inputs) <= 7
+        assert not any("/results/" in path for path in inputs)
         assert validate_manifest_strict(root, manifest).ok
-        work_order = (root / manifest["context_policy"]["compiled_brief"]).read_text(encoding="utf-8")
-        assert "Each items[] object must contain: code, severity" in work_order
-        assert "stable IDs in each item's `character_ids`" in work_order
-        context_path = next(path for path in manifest["input_files"] if path.endswith(".context.json"))
+        work_order_path = next(
+            item["path"] for item in manifest["io"]["inputs"] if item["reason"] == "compiled_task_brief"
+        )
+        work_order = (root / work_order_path).read_text(encoding="utf-8")
+        assert "Each finding uses the shared fields" in work_order
+        assert "CLI binds them" in work_order
+        context_path = next(path for path in inputs if path.endswith(".context.json"))
         context = json.loads((root / context_path).read_text(encoding="utf-8"))
         instances.add(context["reviewer_instance_id"])
         assert len(context["context_digest_hash"]) == 64
@@ -73,24 +70,6 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
         assert context["excluded_peer_results"]
     assert len(instances) == len(manifests)
 
-    role_items = {
-        "serial_verifier": [
-            {
-                "code": "relationship_stage_jump",
-                "severity": "P1",
-                "message": "The relationship stage changes without causal evidence.",
-                "evidence": ["logic break changes the relationship"],
-            }
-        ],
-        "executive_editor": [
-            {
-                "code": "relationship_stage_jump",
-                "severity": "P2",
-                "message": "The same relationship change may be repairable.",
-                "evidence": ["changes the relationship without evidence"],
-            }
-        ],
-    }
     for role_id in sorted(selected):
         result_file = root / "50_workbench" / "editorial_reviews" / "results" / f"ch001.{role_id}.json"
         context = json.loads(
@@ -103,43 +82,25 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
                 / f"{role_id}.context.json"
             ).read_text(encoding="utf-8")
         )
-        items = role_items.get(
-            role_id,
-            evidence_pass_items(role_id, "Ari follows the clue"),
-        )
+        if role_id == "character_editor":
+            findings = [editorial_finding("SPEAKER_AMBIGUOUS", "voice_distinction", "P1", draft)]
+        elif role_id == "scene_prose_editor":
+            findings = [editorial_finding("SPEAKER_AMBIGUOUS", "dialogue_attribution", "P2", draft)]
+        else:
+            findings = []
         result_file.write_text(
             json.dumps(
-                {
-                    "schema_version": 2,
-                    "chapter_number": 1,
-                    "role_id": role_id,
-                    "verdict": "needs_revision" if role_id == "serial_verifier" else (
-                        "conditional_pass" if items else "pass"
-                    ),
-                    "items": items,
-                    "reviewer_instance_id": context["reviewer_instance_id"],
-                    "agent_product": "codex-app",
-                    "agent_version": "test",
-                    "context_digest_hash": context["context_digest_hash"],
-                    "independence_mode": "same_host_isolated_context",
-                    "review_round": context["review_round"],
-                    "confidence": 0.83,
-                },
+                editorial_payload(role_id, findings=findings),
                 ensure_ascii=False,
                 indent=2,
             ),
             encoding="utf-8",
         )
-        editorial_submit_review(
-            config,
-            chapter_number=1,
-            role=role_id,
-            file_path=result_file,
-        )
+        submit_editorial_result(config, root, role_id, result_file)
 
     aggregate = editorial_aggregate(config, chapter_number=1)
     payload = json.loads(Path(aggregate.aggregate_file).read_text(encoding="utf-8"))
-    row = next(item for item in aggregate.disagreement_matrix if item["issue_code"] == "relationship_stage_jump")
+    row = next(item for item in aggregate.disagreement_matrix if item["issue_code"] == "SPEAKER_AMBIGUOUS")
 
     assert not aggregate.missing_roles
     assert row["severity_conflict"] is True
@@ -177,7 +138,7 @@ def test_risk_selected_editorial_v2_recognizes_chinese_payoff_and_access_gain(tm
     review = editorial_review(config, chapter_number=1)
 
     assert "major_payoff_or_reveal" in review.risk_signals
-    assert {"planning_chief_editor", "reader_quality_reviewer"} <= set(review.selected_roles)
+    assert {"planning_chief_editor", "reader_experience_editor"} <= set(review.selected_roles)
 
 
 def test_editorial_v2_rejects_stale_context_without_canonical_pollution(tmp_path):
@@ -198,28 +159,15 @@ def test_editorial_v2_rejects_stale_context_without_canonical_pollution(tmp_path
     )
     result_file = root / "50_workbench" / "editorial_reviews" / "results" / f"ch001.{role_id}.json"
     result_file.write_text(
-        json.dumps(
-            {
-                "schema_version": 2,
-                "chapter_number": 1,
-                "role_id": role_id,
-                "verdict": "pass",
-                "items": [],
-                "reviewer_instance_id": context["reviewer_instance_id"],
-                "agent_product": "codex-app",
-                "agent_version": "test",
-                "context_digest_hash": "0" * 64,
-                "independence_mode": "same_host_isolated_context",
-                "review_round": context["review_round"],
-                "confidence": 0.9,
-            },
-            ensure_ascii=False,
-        ),
+        json.dumps(editorial_payload(role_id), ensure_ascii=False),
         encoding="utf-8",
     )
+    draft.write_text("# Chapter 1\n\nAri inspects a replacement clue.\n", encoding="utf-8")
+    manifest = editorial_manifest(root, role_id)
+    control = validate_production_agent_result(root, manifest, result_file=result_file)
 
-    with pytest.raises(ValueError, match="context_digest_hash"):
-        editorial_submit_review(config, chapter_number=1, role=role_id, file_path=result_file)
+    assert not control.ok
+    assert any("SHA-256 drifted" in error for error in control.normalization.errors)
 
     assert not result_file.with_name(f"ch001.{role_id}.normalized.json").exists()
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
@@ -263,34 +211,10 @@ def test_partial_editorial_submissions_do_not_invalidate_peer_contexts(tmp_path)
             / f"ch001.{role_id}.json"
         )
         result_file.write_text(
-            json.dumps(
-                {
-                    "schema_version": 2,
-                    "chapter_number": 1,
-                    "role_id": role_id,
-                    "verdict": "pass",
-                    "items": evidence_pass_items(
-                        role_id,
-                        "Ari chooses the marked retreat route and records its cost.",
-                    ),
-                    "reviewer_instance_id": context["reviewer_instance_id"],
-                    "agent_product": "codex-app",
-                    "agent_version": "test",
-                    "context_digest_hash": context["context_digest_hash"],
-                    "independence_mode": context["independence_mode"],
-                    "review_round": context["review_round"],
-                    "confidence": 0.9,
-                },
-                ensure_ascii=False,
-            ),
+            json.dumps(editorial_payload(role_id), ensure_ascii=False),
             encoding="utf-8",
         )
-        submitted = editorial_submit_review(
-            config,
-            chapter_number=1,
-            role=role_id,
-            file_path=result_file,
-        )
+        submitted = submit_editorial_result(config, root, role_id, result_file)
         assert submitted.accepted is True
         if role_id != review.selected_roles[-1]:
             assert hashlib.sha256(registry.read_bytes()).hexdigest() == registry_before
@@ -324,27 +248,10 @@ def test_editorial_aggregate_rejects_results_for_replaced_chapter_candidate(tmp_
             / f"ch001.{role_id}.json"
         )
         result_file.write_text(
-            json.dumps(
-                {
-                    "schema_version": 2,
-                    "chapter_number": 1,
-                    "role_id": role_id,
-                    "verdict": "pass",
-                    "items": evidence_pass_items(role_id, "Ari inspects the first bounded clue."),
-                    "reviewer_instance_id": context["reviewer_instance_id"],
-                    "agent_product": "codex-app",
-                    "agent_version": "test",
-                    "context_digest_hash": context["context_digest_hash"],
-                    "independence_mode": context["independence_mode"],
-                    "review_round": context["review_round"],
-                    "confidence": 0.9,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps(editorial_payload(role_id), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        editorial_submit_review(config, chapter_number=1, role=role_id, file_path=result_file)
+        submit_editorial_result(config, root, role_id, result_file)
 
     first = editorial_aggregate(config, chapter_number=1)
     first_payload = json.loads(Path(first.aggregate_file).read_text(encoding="utf-8"))
@@ -388,7 +295,7 @@ def test_editorial_v2_requires_exact_chapter_evidence_for_blocking_finding(tmp_p
         encoding="utf-8",
     )
     review = editorial_review(config, chapter_number=1)
-    role_id = "serial_verifier"
+    role_id = "planning_chief_editor"
     assert role_id in review.selected_roles
     context = json.loads(
         (
@@ -403,33 +310,24 @@ def test_editorial_v2_requires_exact_chapter_evidence_for_blocking_finding(tmp_p
     result_file = root / "50_workbench" / "editorial_reviews" / "results" / f"ch001.{role_id}.json"
     result_file.write_text(
         json.dumps(
-            {
-                "schema_version": 2,
-                "chapter_number": 1,
-                "role_id": role_id,
-                "verdict": "needs_revision",
-                "items": [
+            editorial_payload(
+                role_id,
+                findings=[
                     {
-                        "code": "relationship_stage_jump",
-                        "severity": "P1",
-                        "message": "The relationship changes without support.",
-                        "evidence": ["this excerpt does not exist"],
+                        **editorial_finding("MAINLINE_MISSING", "mainline_visibility", "P1", draft),
+                        "evidence_ids": ["ch001.md@0:99999"],
                     }
                 ],
-                "reviewer_instance_id": context["reviewer_instance_id"],
-                "agent_product": "codex-app",
-                "agent_version": "test",
-                "context_digest_hash": context["context_digest_hash"],
-                "independence_mode": context["independence_mode"],
-                "review_round": context["review_round"],
-                "confidence": 0.8,
-            },
+            ),
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
+    manifest = editorial_manifest(root, role_id)
+    control = validate_production_agent_result(root, manifest, result_file=result_file)
 
-    with pytest.raises(ValueError, match="evidence must match exact text"):
+    assert not control.ok
+    with pytest.raises(ValueError, match="control-plane|out of bounds"):
         editorial_submit_review(config, chapter_number=1, role=role_id, file_path=result_file)
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
@@ -532,6 +430,56 @@ def test_corrupt_feedback_registry_uses_bounded_fallback_without_canonical_write
     assert len(carryover["items"]) <= 5
     assert any("warning" in note.lower() for note in carryover["notes"])
     assert canonical_hashes(root) == canonical_before
+
+
+def editorial_payload(role_id: str, *, findings: list[dict] | None = None) -> dict:
+    contract = load_role_registry().resolve("editorial_review", declared_role_id=role_id)
+    items = list(findings or [])
+    return {
+        "schema": EVIDENCE_REVIEW_SCHEMA,
+        "verdict": "repair" if items else "pass",
+        "coverage": {dimension: "checked" for dimension in contract.review_dimensions},
+        "findings": items,
+    }
+
+
+def editorial_finding(code: str, dimension: str, severity: str, source: Path) -> dict:
+    text = source.read_text(encoding="utf-8")
+    return {
+        "code": code,
+        "severity": severity,
+        "certainty": "confirmed",
+        "diagnosis": "The current scene does not make the speaker or causal move reliably legible.",
+        "evidence_ids": [f"{source.name}@0:{len(text)}"],
+        "reader_impact": "The reader cannot reliably attribute the decisive move.",
+        "repair_target": "Clarify the responsible speaker or causal action without changing the outcome.",
+        "preserve": ["accepted scene outcome"],
+    }
+
+
+def editorial_manifest(root: Path, role_id: str) -> dict:
+    task = next(
+        item
+        for item in list_manifests(root, chapter_number=1)
+        if item.get("task_type") == "editorial_review"
+        and (item.get("role") or {}).get("id") == role_id
+    )
+    return load_manifest(root, str(task["task_id"]))
+
+
+def submit_editorial_result(config, root: Path, role_id: str, result_file: Path):
+    control = validate_production_agent_result(
+        root,
+        editorial_manifest(root, role_id),
+        result_file=result_file,
+    )
+    assert control.ok, control.normalization.errors
+    return editorial_submit_review(
+        config,
+        chapter_number=1,
+        role=role_id,
+        file_path=result_file,
+    )
 
 
 def seed_project(tmp_path: Path):

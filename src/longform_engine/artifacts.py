@@ -160,9 +160,13 @@ def orphan_agent_task_artifacts(root: Path) -> list[Path]:
         ):
             continue
         manifest = read_json(manifest_file, {})
-        inputs = manifest.get("input_files") if isinstance(manifest, dict) else None
-        if isinstance(inputs, list):
-            declared_inputs.update(str(value).replace("\\", "/") for value in inputs if str(value))
+        io = manifest.get("io") if isinstance(manifest, dict) and isinstance(manifest.get("io"), dict) else {}
+        inputs = io.get("inputs") if isinstance(io.get("inputs"), list) else []
+        declared_inputs.update(
+            str(value.get("path") or "").replace("\\", "/")
+            for value in inputs
+            if isinstance(value, dict) and value.get("path")
+        )
 
     result: list[Path] = []
     for task_file in workbench.rglob("*.md"):
@@ -357,9 +361,9 @@ def verify_task_projection_state(root: Path, archives: list[Path]) -> list[str]:
     index = read_json(index_file, {})
     if not index_file.exists():
         return errors
-    if not isinstance(index, dict) or int(index.get("schema_version") or 0) not in {1, 2}:
+    if not isinstance(index, dict) or int(index.get("schema_version") or 0) != 4:
         return ["Agent task index is unreadable or unsupported"]
-    if index.get("schema") not in {None, "agent_task_index_v2"}:
+    if index.get("schema") != "agent_task_index_v4":
         errors.append("Agent task index schema is invalid")
     archived_chapters = {chapter_from_archive(path): path for path in archives}
     for task in index.get("tasks", []):

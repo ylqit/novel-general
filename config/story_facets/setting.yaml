@@ -2,42 +2,56 @@ schema: story_facet_registry_v1
 kind: setting
 profiles:
   xuanhuan:
+    prompt_adapter: >-
+      冲突由力量位阶、稀缺资源、宗门秩序和能力代价共同承载，不能只靠更高境界压低境界。让规则在试探、失败、旁观者反应或付费使用中被看见；升级后必须改变能力边界、责任、敌对目光或暴露风险。推进应经历“发现限制—选择代价—验证新用法—承担后果”，不要用境界名册替代场景。审稿时排除已有伏笔、长期训练或已支付资源支持的特殊突破，只把无前置条件且恰好解决当前困局的新增规则判为便利设定。
     requirements: ["Power rules must be observable, bounded, and costly."]
     preferences: ["Reveal the world through decisions and consequences."]
     risks: ["Convenient new rules", "Level-up exposition"]
     review_questions: ["Did every exceptional gain respect an established boundary?"]
     conflicts: []
   xianxia:
+    prompt_adapter: >-
+      冲突由寿元、灵材、道统、心性选择和因果债务共同施压，修行不是单独增长的数值。用闭关所失、功法偏差、渡劫准备、师门反应和兑现因果呈现规则；突破后应改变人物能承担的责任、看待旧关系的方式或被天道与势力注视的程度。推进重点是“求道理由—瓶颈选择—所得与所欠—道心再解释”。玄谈若正在改变取舍并非空话，天命或奇遇若有前置伏笔且持续索取代价也不应误判为无偿外挂。
     requirements: ["Cultivation, resources, lifespan, and causality must remain coherent."]
     preferences: ["Let doctrine affect choices instead of serving as decoration."]
     risks: ["Realm names replacing conflict", "Cost-free transcendence"]
     review_questions: ["Did advancement change obligations and relationships?"]
     conflicts: []
   wuxia:
+    prompt_adapter: >-
+      冲突落在身体距离、兵器习性、招式意图、江湖声望和人情债上，高手也受地形、旧伤与身份约束。场景证据应包括步法与呼吸的改变、出招前的判断、旁观者对名声的反应，以及胜负后的伤势、承诺或追杀。推进不是不断换绝招，而是忠义、生存和旧诺迫使人物重估“该不该出手、为谁出手”。简写一场实力悬殊的交手不等于缺乏武学细节；只有关键胜负无法由已知技艺、身体条件和选择解释时才构成失真。
     requirements: ["Martial capability, social reputation, and jianghu obligations must constrain action."]
     preferences: ["Express ethics through choices under loyalty and survival pressure."]
     risks: ["Fantasy power inflation erasing martial limits"]
     review_questions: ["Did the conflict preserve bodily and social consequences?"]
     conflicts: []
   urban:
+    prompt_adapter: >-
+      冲突由职业流程、金钱成本、机构权限、舆论与熟人关系形成，角色不能凭一句话跨越现实门槛。用排队、审批、账单、绩效、合同、通勤和公开反应作为可观察证据，但只保留会改变决定或关系的细节。推进应让每次资源获取留下手续、责任、利益交换或声誉后果。为节奏压缩普通流程并非失真；只有被压缩的环节本来会阻止当前行动、改变利益归属或暴露违法风险时才需要补写。
     requirements: ["Institutions, professions, money, and public reactions must remain credible."]
     preferences: ["Make resources and status visible through concrete access and responsibility."]
     risks: ["Cardboard institutions", "Frictionless wealth or influence"]
     review_questions: ["Did the setting react plausibly to the character's action?"]
     conflicts: []
   history:
+    prompt_adapter: >-
+      冲突由物资供给、交通耗时、信息速度、制度权限和身份等级限制，人物知道什么与能调动什么必须分开。场景要用文书传递、器物可得性、礼法后果、季节路况和身份称谓证明时代条件，而不是堆砌古词。推进来自人物利用或撞上这些限制后造成的政治、家庭与生存后果。现代观念由特殊经历、思想来源和现实阻力支持时不算穿帮；仅以当代常识无成本说服整套时代秩序才应判为失真。
     requirements: ["Material conditions, institutions, and period knowledge must constrain action."]
     preferences: ["Use historical knowledge only when it changes a decision."]
     risks: ["Modern assumptions without causal support"]
     review_questions: ["Could the declared action occur under the period's material conditions?"]
     conflicts: []
   science_fiction:
+    prompt_adapter: >-
+      冲突由核心假设、工程限制、资源分配和社会制度共同承载，技术既创造能力也重新分配风险。让装置在操作、误用、维护、故障和公共争议中证明“能做什么、何时失效、谁承担后果”；推进则由旧预测被新证据修正而产生。百科说明只有在改变当前方案时才保留，万能设备不得临时补齐缺口。作品选择软科幻或压缩技术细节不应被误报，判断标准是已声明约束能否持续预测人物和社会后果。
     requirements: ["Technology and social consequences must follow declared constraints."]
     preferences: ["Introduce technical facts at the point of use or failure."]
     risks: ["Technology as an unlimited answer machine"]
     review_questions: ["Did the technology create consequences as well as capability?"]
     conflicts: []
   game_fantasy:
+    prompt_adapter: >-
+      冲突由界面规则、角色身体、玩家知识差和世界居民的独立反应共同形成，数值优势不能取消恐惧、疼痛与团队协商。用实际操作、误判反馈、冷却或资源耗尽、队伍分歧和 NPC 拒绝来证明机制；推进要让规则知识改变战术，同时让一次分歧改变信任或生存条件。专名和数值在承担即时判断时可以密集出现，不必一律删减。只有机制说明淹没选择，或同伴长期只等待主角触发时，才属于界面倾倒或 NPC 化。
     requirements: ["Game rules, player knowledge, risk, and embodied experience must remain distinguishable."]
     preferences: ["Show mechanics through play, failure, and social response."]
     risks: ["Interface dump", "NPC-like supporting cast", "Mechanics without lived stakes"]

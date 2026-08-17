@@ -140,7 +140,7 @@ def test_chapter_card_writer_brief_and_humanizer_share_one_bounded_contract(tmp_
     card = json.loads((root / "20_outline" / "chapter_cards" / "ch001.json").read_text(encoding="utf-8"))
     task = json.loads((root / "50_workbench" / "writing_tasks" / "ch001.json").read_text(encoding="utf-8"))
     task_markdown = (root / "50_workbench" / "writing_tasks" / "ch001.md").read_text(encoding="utf-8")
-    manifest = load_manifest(root, "chapter_write:ch001:v1")
+    manifest = load_manifest(root, "chapter_write:ch001:v4")
 
     assert card["platform_promise"] == card["effective_quality_contract"]["contract"]["platform_promise"]
     assert card["chapter_duty"]
@@ -150,8 +150,9 @@ def test_chapter_card_writer_brief_and_humanizer_share_one_bounded_contract(tmp_
     assert task["writing_brief"]["quality_contract"] == card["effective_quality_contract"]
     assert "Compatibility advisory only" in task_markdown
     assert "not a fixed sentence, dialogue, pace, or cliffhanger template" in task_markdown
-    assert len(manifest["input_files"]) <= 7
-    assert len(task_markdown) <= 20_000
+    assert len(manifest["io"]["inputs"]) <= 7
+    assert task["context_plan"]["budget_profile"] == "standard"
+    assert task["context_plan"]["budget_status"] in {"within_soft_target", "advisory"}
 
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\nA concrete scene with a consequential choice.\n", encoding="utf-8")
@@ -164,9 +165,9 @@ def test_chapter_card_writer_brief_and_humanizer_share_one_bounded_contract(tmp_
 
 def test_editorial_roles_treat_platform_fit_as_sustainable_and_advisory():
     planning = editorial_pipeline.role_instruction("planning_chief_editor")
-    reader = editorial_pipeline.role_instruction("reader_quality_reviewer")
+    reader = editorial_pipeline.role_instruction("reader_experience_editor")
 
-    assert "platform promise remains sustainable" in planning
-    assert "Do not require a payoff or cliffhanger quota" in planning
-    assert "medium-term reading motivation" in reader
-    assert "non-blocking P2 advice" in reader
+    assert "长线承诺" in planning
+    assert "不得要求固定爽点" in planning
+    assert "读者是否获得具体" in reader
+    assert "非阻断 P2" in reader

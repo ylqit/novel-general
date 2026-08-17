@@ -10,10 +10,25 @@ import hashlib
 import json
 import re
 
-from longform_engine.agent_tasks import build_manifest, mark_tasks_for_chapter_type, mark_tasks_for_output, write_manifest
+from longform_engine.agent_protocols import (
+    EVIDENCE_REVIEW_SCHEMA,
+    VALIDATION_REPORT_SCHEMA,
+    build_validation_report,
+    output_protocol_for_task,
+    validate_evidence_review,
+    validate_review_evidence_for_source,
+)
+from longform_engine.agent_tasks import (
+    build_manifest,
+    mark_tasks_for_chapter_type,
+    mark_tasks_for_output,
+    validate_current_task_result,
+    write_manifest,
+)
 from longform_engine.character_expression import character_expression_diagnostics
 from longform_engine.config import ConfigDocument
 from longform_engine.quality import refresh_feedback_registry
+from longform_engine.roles import load_role_registry
 from longform_engine.storage import atomic_write_text, resolve_project_root
 from longform_engine.text_metrics import content_character_count
 
@@ -25,8 +40,8 @@ DEFAULT_EDITORIAL_TEAM: tuple[dict[str, str], ...] = (
         "focus": "outline duty, longform promise, payoff timing, A/B/C quota discipline",
     },
     {
-        "id": "writing_agent",
-        "display_name": "写作特工",
+        "id": "scene_prose_editor",
+        "display_name": "场景与正文编辑",
         "focus": "scene execution, dialogue force, emotional evidence, action texture",
     },
     {
@@ -40,12 +55,7 @@ DEFAULT_EDITORIAL_TEAM: tuple[dict[str, str], ...] = (
         "focus": "AI diction, template paragraphs, summary-heavy prose, meta residue",
     },
     {
-        "id": "serial_verifier",
-        "display_name": "连载核实官",
-        "focus": "TCS, Character Memory, graph facts, relationship stage, location continuity",
-    },
-    {
-        "id": "reader_quality_reviewer",
+        "id": "reader_experience_editor",
         "display_name": "读者体验编辑",
         "focus": "chapter duty, reader gain, scene fatigue, payoff cost, ending fit, platform-profile fit",
     },
@@ -54,19 +64,9 @@ DEFAULT_EDITORIAL_TEAM: tuple[dict[str, str], ...] = (
         "display_name": "同人还原编辑",
         "focus": "canon motive, voice, relationship phase, world rules, divergence causality, agency, original contribution",
     },
-    {
-        "id": "executive_editor",
-        "display_name": "总编辑",
-        "focus": "P0/P1/P2 priority, unresolved risk, conditional pass streak, need-human decision",
-    },
 )
 
-ROLE_ALIASES = {
-    "planning_editor": "planning_chief_editor",
-    "consistency_reviewer": "serial_verifier",
-    "reader_experience_reviewer": "reader_quality_reviewer",
-    "chief_editor": "executive_editor",
-}
+ROLE_ALIASES: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -390,6 +390,13 @@ def editorial_submit_review(
     role_id = role_definition(role)["id"]
     path = resolve_editorial_result_path(root, file_path)
     payload = load_json(path, default={})
+    _task, control_errors = validate_current_task_result(
+        root,
+        chapter_number=chapter_number,
+        task_type="editorial_review",
+        output_path=path,
+        allowed_statuses=("submitted", "validated"),
+    )
     errors, warnings, normalized = validate_editorial_result_payload(
         payload,
         chapter_number=chapter_number,
@@ -397,23 +404,29 @@ def editorial_submit_review(
         root=root,
         result_file=path,
     )
+    errors = [*control_errors, *errors]
     validation_file = editorial_validation_file(root, chapter_number, role_id)
     accepted = not errors
-    validation_payload = {
-        "schema_version": 1,
-        "chapter_number": chapter_number,
-        "role_id": role_id,
-        "result_file": relative_path(root, path),
-        "accepted": accepted,
-        "errors": errors,
-        "warnings": warnings,
-        "next_command": (
+    validation_payload = build_validation_report(
+        ok=accepted,
+        stage="editorial_submit_review",
+        subject=relative_path(root, path),
+        errors=errors,
+        warnings=warnings,
+        blockers=errors,
+        provenance={
+            "chapter_number": chapter_number,
+            "role_id": role_id,
+            "result_file": relative_path(root, path),
+            "accepted": accepted,
+            "normalized": normalized if accepted else {},
+        },
+        next_command=(
             f"longform-engine editorial aggregate project.yaml --chapter {chapter_number}"
             if accepted
             else f"longform-engine editorial review project.yaml --chapter {chapter_number}"
         ),
-        "validated_at": utc_now(),
-    }
+    )
     atomic_write_text(validation_file, json.dumps(validation_payload, ensure_ascii=False, indent=2) + "\n")
     mark_tasks_for_output(
         root,
@@ -427,8 +440,6 @@ def editorial_submit_review(
     if not accepted:
         raise ValueError(f"editorial review result did not validate: {'; '.join(errors)}")
 
-    normalized_file = editorial_normalized_file(root, chapter_number, role_id)
-    atomic_write_text(normalized_file, json.dumps(normalized, ensure_ascii=False, indent=2) + "\n")
     aggregate = editorial_aggregate(config, chapter_number=chapter_number)
     return EditorialSubmitResult(
         chapter_number=chapter_number,
@@ -456,13 +467,11 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
     accepted: list[dict[str, Any]] = []
     result_files: list[str] = []
     stale_results: list[dict[str, str]] = []
-    for path in sorted(result_dir.glob(f"ch{chapter_number:03d}.*.normalized.json")):
-        payload = load_json(path, default={})
-        if isinstance(payload, dict):
-            if int(payload.get("schema_version") or 1) < 2:
-                accepted.append(payload)
-                result_files.append(relative_path(root, path))
-                continue
+    for path in sorted(result_dir.glob(f"ch{chapter_number:03d}.*.validation.json")):
+        validation_payload = load_json(path, default={})
+        provenance = validation_payload.get("provenance") if isinstance(validation_payload, dict) else None
+        payload = provenance.get("normalized") if isinstance(provenance, dict) else None
+        if isinstance(payload, dict) and provenance.get("accepted") is True:
             role_id = role_definition(str(payload.get("role_id") or ""))["id"]
             context = load_editorial_context(root, chapter_number=chapter_number, role_id=role_id)
             provenance_paths = [
@@ -490,7 +499,7 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
                 )
                 continue
             accepted.append(payload)
-            result_files.append(relative_path(root, path))
+            result_files.append(str(payload.get("source_result_file") or relative_path(root, path)))
     accepted_roles = {role_definition(str(result.get("role_id") or ""))["id"] for result in accepted}
     missing_roles = tuple(role for role in expected_roles if role not in accepted_roles)
     duplicate_role_results = tuple(duplicate_editorial_role_results(root, chapter_number))
@@ -641,7 +650,7 @@ def deterministic_editorial_items(
                 "short_chapter",
                 "P2",
                 "chapter is short for longform web pacing",
-                role_id="writing_agent",
+                role_id="scene_prose_editor",
             )
         )
     if any(marker in text for marker in ("TODO", "写作说明", "作者按", "[说明]")):
@@ -661,7 +670,7 @@ def deterministic_editorial_items(
                 "logic_continuity_risk",
                 "P1",
                 "logic or continuity marker remains unresolved",
-                role_id="serial_verifier",
+                role_id="planning_chief_editor",
             )
         )
     if duplicate_sentence_ratio(text) > 0.25:
@@ -979,7 +988,7 @@ def write_multi_agent_task_files(root: Path, payload: dict[str, Any]) -> list[st
             chapter_number=int(payload["chapter_number"]),
             input_files=role_inputs,
             allowed_output_paths=[output_file],
-            output_schema="editorial_role_review_v2",
+            output_schema=output_protocol_for_task("editorial_review"),
             validate_command=(
                 f"longform-engine editorial submit-review project.yaml --chapter {int(payload['chapter_number'])} "
                 f"--role {role_id} --file {relative_path(root, output_file)}"
@@ -989,15 +998,13 @@ def write_multi_agent_task_files(root: Path, payload: dict[str, Any]) -> list[st
                 f"longform-engine editorial need-human project.yaml --chapter {int(payload['chapter_number'])} "
                 "--reason editorial_result_invalid"
             ),
-            task_id=f"editorial_review:{role_id}:ch{int(payload['chapter_number']):03d}:v2",
+            task_id=f"editorial_review:{role_id}:ch{int(payload['chapter_number']):03d}:v4",
             role_id=role_id,
             context_policy={
                 "required_files": role_inputs,
                 "optional_files": [],
                 "compiled_brief": path,
                 "selection_report": path,
-                "max_files": 7,
-                "max_chars": 18_000,
             },
         )
         write_manifest(root, manifest, manifest_file)
@@ -1021,7 +1028,7 @@ def editorial_role_source_inputs(
             root / "00_governance" / "reader_contract.md",
             root / "30_state" / "reward_ledger.jsonl",
         ],
-        "writing_agent": [
+        "scene_prose_editor": [
             chapter,
             card,
             root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json",
@@ -1040,17 +1047,11 @@ def editorial_role_source_inputs(
             card,
             root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json",
         ],
-        "serial_verifier": [
-            chapter,
-            root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json",
-            root / "30_state" / "character_memory.json",
-            card,
-        ],
-        "reader_quality_reviewer": [
+        "reader_experience_editor": [
             chapter,
             card,
             root / "00_governance" / "reader_contract.md",
-            root / "50_workbench" / "quality_reviews" / f"ch{chapter_number:03d}.reader_payoff.normalized.json",
+            root / "50_workbench" / "quality_reviews" / f"ch{chapter_number:03d}.reader_payoff.validation.json",
             root / "30_state" / "reward_ledger.jsonl",
         ],
         "canon_fidelity_reviewer": [
@@ -1059,10 +1060,6 @@ def editorial_role_source_inputs(
             root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
             card,
             root / "10_bible" / "creative_brief.json",
-        ],
-        "executive_editor": [
-            chapter,
-            card,
         ],
     }
     candidates = candidates_by_role.get(
@@ -1160,6 +1157,7 @@ def format_role_task(
     relevant = [item for item in payload.get("items", []) if item.get("role_id") in {role_id, None}]
     output_path = relative_path(root, output_file) if output_file else ""
     context_payload = context_payload or {}
+    role_contract = load_role_registry().resolve("editorial_review", declared_role_id=role_id)
     lines = [
         f"# Editorial Agent Task: {role['display_name']} ({role_id})",
         "",
@@ -1192,23 +1190,13 @@ def format_role_task(
     lines.extend(
         [
             "",
-            "Write one JSON result to the output path only.",
-            (
-                "Required JSON fields: schema_version=2, chapter_number, role_id, verdict, items, "
-                "reviewer_instance_id, agent_product, agent_version, context_digest_hash, "
-                "independence_mode, review_round, confidence."
-            ),
-            "Valid verdicts: pass, conditional_pass, needs_revision, rewrite, blocked.",
-            (
-                "Each items[] object must contain: code, severity (P0|P1|P2|PASS), message, "
-                "evidence (an array of exact current-chapter excerpts), and may contain status, "
-                "recommendation, character_ids."
-            ),
-            "Every P0/P1 item must cite one or more exact excerpts from the current chapter in `evidence`.",
-            (
-                "The character_editor must return evidence-bearing items for every featured character even when the verdict "
-                "is pass, and list the covered stable IDs in each item's `character_ids`."
-            ),
+            f"Write one `{EVIDENCE_REVIEW_SCHEMA}` JSON result to the output path only.",
+            "Valid verdicts: pass, repair, need_human, insufficient_evidence.",
+            "Coverage must contain exactly: " + ", ".join(role_contract.review_dimensions) + ".",
+            "Finding codes are limited to: " + ", ".join(role_contract.finding_codes) + ".",
+            "Each finding uses the shared fields code, dimension, severity, certainty, diagnosis, evidence_ids, reader_impact, repair_target, preserve.",
+            "Evidence IDs use current chapter path or filename plus @start:end; P0/P1 requires confirmed evidence.",
+            "Do not fill chapter, role, product, version, context hash, path, source hash, review round or timestamps; CLI binds them.",
             "Do not read any other editorial role result before submitting this result.",
             "Use only the files declared by this role's AgentTaskManifest.",
             "Do not mutate final/RAG/graph/memory/TCS/SQLite directly.",
@@ -1221,51 +1209,33 @@ def format_role_task(
 def role_instruction(role_id: str) -> str:
     instructions = {
         "planning_chief_editor": (
-            "Check chapter duty, outline anchor, payoff timing, event quota pressure, reverse-brake retention, "
-            "whether the chapter advances the longform promise, and whether the chapter card's primary platform "
-            "promise remains sustainable across the next serial arc. Do not require a payoff or cliffhanger quota."
+            "检查章节职责、纲要锚点、兑现时机、长线承诺和后续连载空间。只判断因果与承诺是否可持续，"
+            "不得要求固定爽点、事件配额或悬崖结尾。"
         ),
-        "writing_agent": (
-            "Check whether the opening makes the world, immediate situation, near-term goal, long-term direction, "
-            "and motive visible when the approved arc requires them. Check that the protagonist makes consequential "
-            "choices instead of being carried by summary, that supporting characters have names, private wants, and "
-            "independent reactions, and that adjacent dialogue has attributable speakers. Also check embodied scene "
-            "execution, action-carried psychology, transition smoothness, and whether prose can be repaired without "
-            "changing canon. Return unknown or insufficient_evidence instead of inventing support for a pass."
+        "scene_prose_editor": (
+            "检查世界、当下处境、近期目标、长期方向和行动动机是否在需要时可见；主角是否以有代价的选择"
+            "推动场景；配角是否有姓名、私欲和独立反应；相邻对白是否能确认说话者。继续检查动作承载心理、"
+            "场景转接和叙述压缩是否成立。证据不足时返回 unknown 或 insufficient_evidence，不得编造通过依据。"
         ),
         "character_editor": (
-            "Compare the chapter with the declared character packet. Check what each featured character notices, "
-            "wants, conceals, physically does, and changes in the relationship. Test whether attributed lines could "
-            "be swapped between speakers without changing force. Every featured character needs exact chapter evidence, "
-            "including pass findings; do not demand a universal dialogue, appearance, or interiority quota. When the "
-            "declared packet or chapter evidence is insufficient, return unknown or insufficient_evidence rather than pass."
+            "对照人物包，检查每个重点人物看见什么、想要什么、隐瞒什么、身体上做了什么，以及关系如何移动。"
+            "测试对白互换后是否仍无差别。通过结论同样必须有正文证据，不设置统一对白、外貌或心理描写配额；"
+            "材料不足时返回 unknown 或 insufficient_evidence。"
         ),
         "anti_ai_editor": (
-            "Check AI diction, high-frequency filler, template paragraphs, summary-heavy prose, same-shape sentences, "
-            "interchangeable dialogue, and meta residue."
+            "检查模板词、填充句、同构段落、过度总结、句式齐整、可互换对白和写作说明残留。"
         ),
-        "serial_verifier": (
-            "Check TCS, Character Memory, graph facts, relationship stage, location continuity, ability limits, "
-            "foreshadowing state, and contradiction markers."
-        ),
-        "reader_quality_reviewer": (
-            "Check whether the declared chapter duty is fulfilled, the reader receives a concrete gain, the gain has "
-            "an earned cost, scenes avoid upgrade-log repetition, and the ending mode fits this chapter instead of "
-            "forcing a universal cliffhanger. Evaluate medium-term reading motivation from evidence in the chapter. "
-            "Treat compatibility-market observations as non-blocking P2 advice; they cannot alone justify P0/P1."
+        "reader_experience_editor": (
+            "检查章节职责是否真正完成、读者是否获得具体信息或情绪收益、收益是否伴随成立的代价，场景是否"
+            "避免流水账升级，结尾是否适合本章而非强制悬崖。平台兼容意见只能作为非阻断 P2 建议。"
         ),
         "canon_fidelity_reviewer": (
-            "Read only declared source canon and fanfiction design. Check motive, speech habits, relationship phase, "
-            "ability limits, location/era knowledge, source-world rules, and canon character agency. Treat declared "
-            "AU/divergence as valid when butterfly effects support it. Flag skin-only characterization, collective "
-            "irrationality, canon characters reduced to props, and setting names retained while rules silently fail."
-        ),
-        "executive_editor": (
-            "Prioritize P0/P1/P2 issues, review unresolved items and conditional pass streak, then decide proceed, repair, "
-            "batch-review, or need-human."
+            "只读取声明的 canon 与同人设计，检查动机、说话习惯、关系阶段、能力边界、时代知识、世界规则"
+            "和原作人物能动性。有蝴蝶效应支撑的既定分歧不算 OOC；重点识别只套角色皮、集体降智、原作人物"
+            "沦为工具以及保留术语却让规则失效。"
         ),
     }
-    return instructions.get(role_id, "Review this chapter from the named role.")
+    return instructions.get(role_id, "只从当前声明的专业角色视角审查本章，并引用可核验正文证据。")
 
 
 def default_role_summary() -> dict[str, str]:
@@ -1401,17 +1371,6 @@ def validate_editorial_result_payload(
     warnings: list[str] = []
     if not isinstance(payload, dict):
         return ["editorial review result must be a JSON object."], [], {}
-    try:
-        schema_version = int(payload.get("schema_version") or 1)
-    except (TypeError, ValueError):
-        schema_version = 0
-    if schema_version != 2:
-        errors.append("schema_version must be 2; historical editorial result schemas are not accepted.")
-    if int(payload.get("chapter_number") or 0) != chapter_number:
-        errors.append("payload chapter_number does not match command chapter.")
-    payload_role = role_definition(str(payload.get("role_id") or "")).get("id")
-    if payload_role != role_id:
-        errors.append(f"payload role_id must be {role_id}.")
     review_payload = load_json(
         review_root(root) / f"ch{chapter_number:03d}.review.json",
         default={},
@@ -1427,117 +1386,75 @@ def validate_editorial_result_payload(
     }
     if selected_roles and role_id not in selected_roles:
         errors.append(f"role_id {role_id} was not selected for this editorial review round.")
-    verdict = normalize_verdict(payload.get("verdict"))
-    if not verdict:
-        errors.append("verdict must be pass, conditional_pass, needs_revision, rewrite, or blocked.")
-        verdict = "blocked"
-    items_raw = payload.get("items")
-    if not isinstance(items_raw, list):
-        errors.append("items must be a list.")
-        items_raw = []
-    items: list[dict[str, Any]] = []
+    contract = load_role_registry().resolve("editorial_review", declared_role_id=role_id)
+    errors.extend(
+        validate_evidence_review(
+            payload,
+            required_dimensions=contract.review_dimensions,
+            allowed_finding_codes=contract.finding_codes,
+        )
+    )
+    coverage_payload = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
+    coverage = set(coverage_payload)
+    if coverage != set(contract.review_dimensions):
+        errors.append(
+            f"coverage for {role_id} must contain exactly: {', '.join(contract.review_dimensions)}."
+        )
     chapter_path = find_chapter(root, chapter_number)
     chapter_text = safe_read_text(chapter_path) if chapter_path is not None else ""
-    for index, item in enumerate(items_raw):
-        if not isinstance(item, dict):
-            errors.append(f"items[{index}] must be an object.")
-            continue
-        code = str(item.get("code") or "").strip()
-        severity = str(item.get("severity") or "").strip().upper()
-        message = str(item.get("message") or "").strip()
-        if not code:
-            errors.append(f"items[{index}] missing code.")
-        if severity not in {"P0", "P1", "P2", "PASS"}:
-            errors.append(f"items[{index}] severity must be P0, P1, P2, or PASS.")
-        if not message:
-            errors.append(f"items[{index}] missing message.")
-        evidence = normalize_string_list(item.get("evidence"))
-        evidence_validated = bool(
-            schema_version == 2
-            and evidence
-            and chapter_text
-            and all(normalize_evidence_text(fragment) in normalize_evidence_text(chapter_text) for fragment in evidence)
+    if chapter_path is None:
+        errors.append("current chapter source is missing.")
+        evidence_records: dict[str, dict[str, Any]] = {}
+    else:
+        evidence_records, evidence_errors = validate_review_evidence_for_source(
+            payload,
+            source_path=relative_path(root, chapter_path),
+            source_text=chapter_text,
         )
-        normalized_item = {
-            "code": code or f"item_{index + 1}",
-            "severity": severity or "P2",
-            "status": str(item.get("status") or ("resolved" if severity == "PASS" else "open")),
-            "role_id": role_id,
-            "message": message,
-            "evidence": evidence,
-            "evidence_validated": evidence_validated,
-            "recommendation": str(item.get("recommendation") or ""),
-            "character_ids": normalize_string_list(item.get("character_ids")),
-        }
-        if normalized_item["severity"] in {"P0", "P1"} and not normalized_item["evidence"]:
-            if schema_version == 2:
-                errors.append(f"items[{index}] {normalized_item['severity']} requires exact chapter evidence.")
-            else:
-                warnings.append(f"items[{index}] {normalized_item['severity']} has no evidence span.")
-        elif schema_version == 2 and normalized_item["evidence"] and not evidence_validated:
-            errors.append(f"items[{index}] evidence must match exact text in the current chapter.")
-        items.append(normalized_item)
-    explicit_coverage_gap = next(
-        (
-            str(item.get("code") or "")
-            for item in items
-            if str(item.get("code") or "").startswith(("unknown", "insufficient_evidence"))
-        ),
-        "",
-    )
+        errors.extend(evidence_errors)
+    items: list[dict[str, Any]] = []
+    for index, finding in enumerate(payload.get("findings") or []):
+        if not isinstance(finding, dict):
+            continue
+        code = str(finding.get("code") or "")
+        if code not in contract.finding_codes:
+            errors.append(f"findings[{index}].code is outside {role_id} scope.")
+        evidence_ids = [str(item) for item in finding.get("evidence_ids") or []]
+        items.append(
+            {
+                "code": code or f"item_{index + 1}",
+                "severity": str(finding.get("severity") or "P2"),
+                "status": "open",
+                "role_id": role_id,
+                "message": str(finding.get("diagnosis") or ""),
+                "evidence": [
+                    evidence_records[item]["excerpt"] for item in evidence_ids if item in evidence_records
+                ],
+                "evidence_ids": evidence_ids,
+                "evidence_validated": bool(evidence_ids) and all(
+                    item in evidence_records for item in evidence_ids
+                ),
+                "recommendation": str(finding.get("repair_target") or ""),
+                "preserve": list(finding.get("preserve") or []),
+                "character_ids": [],
+            }
+        )
+    source_verdict = str(payload.get("verdict") or "")
+    verdict = {
+        "pass": "pass",
+        "repair": "needs_revision",
+        "need_human": "blocked",
+        "insufficient_evidence": "blocked",
+    }.get(source_verdict, "blocked")
     coverage_status = (
-        "unknown"
-        if explicit_coverage_gap.startswith("unknown")
-        else "insufficient_evidence"
-        if explicit_coverage_gap or not items
+        "insufficient_evidence"
+        if source_verdict == "insufficient_evidence" or "insufficient" in coverage_payload.values()
         else "complete"
     )
-    if not items:
-        errors.append(
-            "editorial v2 reviews must not submit an empty pass; return evidence-bearing PASS items "
-            "or an explicit insufficient_evidence item with a non-pass verdict."
-        )
-    if coverage_status != "complete" and verdict == "pass":
-        errors.append("pass verdict cannot claim complete review when coverage is unknown or insufficient_evidence.")
-    if role_id == "character_editor":
-        card_payload = load_json(
-            root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
-            default={},
-        )
-        featured_raw = card_payload.get("featured_character_ids") if isinstance(card_payload, dict) else []
-        featured_ids = {str(item) for item in featured_raw or [] if str(item).strip()}
-        evidenced_ids = {
-            character_id
-            for item in items
-            if item.get("evidence_validated")
-            for character_id in item.get("character_ids") or []
-        }
-        if not items:
-            errors.append("character_editor must not submit an empty pass; evidence-bearing items are required.")
-        missing_featured = sorted(featured_ids - evidenced_ids)
-        if missing_featured:
-            errors.append(
-                "character_editor evidence does not cover featured characters: "
-                + ", ".join(missing_featured)
-                + "."
-            )
-    if verdict == "pass" and any(item.get("severity") in {"P0", "P1"} and item.get("status") != "resolved" for item in items):
-        errors.append("pass verdict cannot include unresolved P0/P1 items.")
     context = load_editorial_context(root, chapter_number=chapter_number, role_id=role_id)
-    reviewer_instance_id = str(payload.get("reviewer_instance_id") or "").strip()
-    agent_product = str(payload.get("agent_product") or "").strip()
-    agent_version = str(payload.get("agent_version") or "").strip()
-    submitted_context_hash = str(payload.get("context_digest_hash") or "").strip()
-    independence_mode = str(payload.get("independence_mode") or "").strip()
-    review_round = int(payload.get("review_round") or 0)
-    confidence = normalize_confidence(payload.get("confidence"))
     if not context:
-        errors.append("editorial v2 context metadata is missing; regenerate the editorial review task.")
+        errors.append("editorial context metadata is missing; regenerate the editorial review task.")
     else:
-        if reviewer_instance_id != str(context.get("reviewer_instance_id") or ""):
-            errors.append("reviewer_instance_id does not match the isolated role context.")
-        if submitted_context_hash != str(context.get("context_digest_hash") or ""):
-            errors.append("context_digest_hash does not match the isolated role context.")
         provenance_paths = [
             root / str(path)
             for path in context.get("provenance_source_files") or context.get("declared_source_files") or []
@@ -1547,36 +1464,28 @@ def validate_editorial_result_payload(
             errors.append("one or more declared editorial context files no longer exist.")
         elif context_digest_hash(root, provenance_paths) != str(context.get("context_digest_hash") or ""):
             errors.append("editorial context changed after task creation; regenerate the role task.")
-        if review_round != int(context.get("review_round") or 0):
-            errors.append("review_round does not match the isolated role context.")
-    if not agent_product:
-        errors.append("agent_product is required for editorial_role_review_v2.")
-    if not agent_version:
-        errors.append("agent_version is required for editorial_role_review_v2.")
-    if independence_mode not in {"same_host_isolated_context", "cross_host", "human", "unknown"}:
-        errors.append(
-            "independence_mode must be same_host_isolated_context, cross_host, human, or unknown."
-        )
-    if confidence is None:
-        errors.append("confidence must be a number from 0 to 1.")
-        review_round = review_round or int(context.get("review_round") or 1)
-        confidence = confidence if confidence is not None else 0.0
     normalized = {
-        "schema_version": 2,
+        "schema_version": 3,
         "chapter_number": chapter_number,
         "role_id": role_id,
         "verdict": verdict,
         "items": items,
-        "summary": str(payload.get("summary") or ""),
-        "reviewer_instance_id": reviewer_instance_id,
-        "agent_product": agent_product or "legacy-v1",
-        "agent_version": agent_version or "unknown",
-        "context_digest_hash": submitted_context_hash,
-        "independence_mode": independence_mode,
-        "review_round": review_round,
-        "confidence": confidence,
+        "summary": "; ".join(
+            str(item.get("diagnosis") or "")
+            for item in payload.get("findings") or []
+            if isinstance(item, dict) and str(item.get("diagnosis") or "").strip()
+        ),
+        "reviewer_instance_id": str(context.get("reviewer_instance_id") or ""),
+        "context_digest_hash": str(context.get("context_digest_hash") or ""),
+        "independence_mode": str(context.get("independence_mode") or "same_host_isolated_context"),
+        "review_round": int(context.get("review_round") or 1),
+        "confidence": 1.0 if all(
+            finding.get("certainty") == "confirmed"
+            for finding in payload.get("findings") or []
+            if isinstance(finding, dict)
+        ) else 0.5,
         "coverage_status": coverage_status,
-        "evidence_grade": "declared_independent_context" if schema_version == 2 else "legacy_unknown",
+        "evidence_grade": "exact_current_source_spans",
         "source_result_file": relative_path(root, result_file),
         "validated_at": utc_now(),
     }
@@ -1623,10 +1532,6 @@ def editorial_validation_file(root: Path, chapter_number: int, role_id: str) -> 
     return review_root(root) / "results" / f"ch{chapter_number:03d}.{role_id}.validation.json"
 
 
-def editorial_normalized_file(root: Path, chapter_number: int, role_id: str) -> Path:
-    return review_root(root) / "results" / f"ch{chapter_number:03d}.{role_id}.normalized.json"
-
-
 def normalize_verdict(value: Any) -> str:
     verdict = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
     return verdict if verdict in {"pass", "conditional_pass", "needs_revision", "rewrite", "blocked"} else ""
@@ -1661,7 +1566,7 @@ def duplicate_editorial_role_results(root: Path, chapter_number: int) -> list[di
     result_dir = review_root(root) / "results"
     by_role: dict[str, list[str]] = {}
     for path in sorted(result_dir.glob(f"ch{chapter_number:03d}.*.json")):
-        if path.name.endswith((".normalized.json", ".validation.json")):
+        if path.name.endswith(".validation.json"):
             continue
         role_id = editorial_role_from_result_file(root, path)
         by_role.setdefault(role_id, []).append(relative_path(root, path))
@@ -1683,13 +1588,14 @@ def invalid_editorial_results(root: Path, chapter_number: int) -> list[dict[str,
     result_dir = review_root(root) / "results"
     for path in sorted(result_dir.glob(f"ch{chapter_number:03d}.*.validation.json")):
         payload = load_json(path, default={})
-        if not isinstance(payload, dict) or payload.get("accepted") is not False:
+        provenance = payload.get("provenance") if isinstance(payload, dict) else None
+        if not isinstance(provenance, dict) or provenance.get("accepted") is not False:
             continue
         invalid.append(
             {
-                "role_id": str(payload.get("role_id") or editorial_role_from_result_file(root, path)),
+                "role_id": str(provenance.get("role_id") or editorial_role_from_result_file(root, path)),
                 "validation_file": relative_path(root, path),
-                "result_file": str(payload.get("result_file") or ""),
+                "result_file": str(provenance.get("result_file") or ""),
                 "errors": [str(error) for error in payload.get("errors") or []],
             }
         )
@@ -1704,7 +1610,7 @@ def editorial_role_from_result_file(root: Path, path: Path) -> str:
     match = re.match(r"^ch\d{3}\.(.+)$", name)
     if match:
         name = match.group(1)
-    for suffix in (".validation.json", ".normalized.json", ".json"):
+    for suffix in (".validation.json", ".json"):
         if name.endswith(suffix):
             name = name[: -len(suffix)]
             break
@@ -1856,13 +1762,13 @@ def editorial_team(
         root
         / "50_workbench"
         / "quality_reviews"
-        / f"ch{chapter_number:03d}.reader_payoff.normalized.json"
+        / f"ch{chapter_number:03d}.reader_payoff.validation.json"
     )
     fanfiction_mode = str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
     selected.add(
-        "reader_quality_reviewer"
+        "reader_experience_editor"
         if payoff_file.exists() or fanfiction_mode
-        else "writing_agent"
+        else "scene_prose_editor"
     )
     selected.update(
         str(item.get("role_id") or "")
@@ -1875,13 +1781,11 @@ def editorial_team(
     if "character_expression_risk" in signals:
         selected.add("character_editor")
     if "continuity_or_relationship_risk" in signals:
-        selected.add("serial_verifier")
+        selected.add("planning_chief_editor")
     if signals & {"volume_boundary", "major_payoff_or_reveal"}:
-        selected.update({"planning_chief_editor", "reader_quality_reviewer"})
+        selected.update({"planning_chief_editor", "reader_experience_editor"})
     if "fanfiction_canon_risk" in signals:
         selected.add("canon_fidelity_reviewer")
-    if "blocking_P0_P1_risk" in signals:
-        selected.add("executive_editor")
     ordered = [dict(role) for role in DEFAULT_EDITORIAL_TEAM if role["id"] in selected]
     custom = sorted(selected - {role["id"] for role in DEFAULT_EDITORIAL_TEAM})
     ordered.extend(role_definition(role) for role in custom)
@@ -1977,7 +1881,7 @@ def editorial_risk_signals(
     severities = {str(item.get("severity") or "") for item in deterministic_items}
     if "anti_ai_editor" in roles or any("ai_" in code or "repetition" in code for code in issue_codes):
         signals.append("ai_flavor_recurrence")
-    if "serial_verifier" in roles or any(
+    if "planning_chief_editor" in roles or any(
         token in code
         for code in issue_codes
         for token in ("continuity", "relationship", "timeline", "logic")

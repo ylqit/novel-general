@@ -9,7 +9,7 @@
 - 本地文件是事实源；SQLite、RAG 和图谱是受控写入或可重建派生状态。
 - 每个 Agent 工单声明输入文件、允许输出、schema、validate、apply、失败命令与硬边界。
 
-> 当前公开稳定版为 `v0.4.0`，采用字数主导、滚动纲要与可组合题材协议，且不读取 v0.3.x 项目配置。200 万字符规模工程验证已经完成；两组混合题材五章盲评仍属于发布后质量证据，因此本版本不宣称文学质量全面优于 `novel-skill`。进度见 [v0.4.0 验收清单](docs/V0_4_0_WORD_BUDGET_AND_COMPOSABLE_PROFILE_CHECKLIST.md)。
+> 当前公开稳定版为 `v0.4.1`，在 v0.4.0 字数主导、滚动纲要与可组合题材基础上，完成四类 Agent 输出协议、Manifest v4、渐进 Prompt、自适应上下文和混合会话收敛。人工文学盲评仍属于发布后质量证据，因此本版本不宣称文学质量全面优于 `novel-skill`。进度见 [v0.4.1 Prompt 验收清单](docs/V0_4_1_PROMPT_PROFESSIONAL_DEEPENING_CHECKLIST.md)。
 
 ## Skills
 
@@ -39,22 +39,22 @@
 
 唯一发布源是 [ylqit/novel-general](https://github.com/ylqit/novel-general)。公开安装使用 pipx，把 engine 放入隔离环境，再由 engine 原子复制对应 Skill。无需先 clone 仓库，也不执行远程 `curl | shell`。
 
-> 当前公开稳定版为 `v0.4.0`。以下命令固定到不可变 tag；该版本完成字数主导、滚动纲要、混合题材合同和 200 万字符规模工程验证，真实混合题材文学盲评仍在后续阶段。
+> 当前公开稳定版为 `v0.4.1`。以下命令固定到不可变 tag；该版本定位为协议、Prompt、Schema 与上下文工程稳定版，真实混合题材文学盲评仍在后续阶段。
 
-`v0.4.0` 是破坏性项目协议升级，不读取 v0.3.x 项目配置；请新建项目。本版本不宣称文学质量全面优于 `novel-skill`。
+`v0.4.1` 是破坏性项目协议升级，不读取 v0.3.x 或 v0.4.0 项目配置；请新建项目。本版本不宣称文学质量全面优于 `novel-skill`。
 
 ### 让 Agent 安装
 
 复制到 Codex：
 
 ```text
-请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.4.0。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool codex 和 longform-engine doctor --tool codex。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Codex 会话，并从 /工程下一步 开始。
+请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.4.1。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool codex --force 和 longform-engine doctor --tool codex。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Codex 会话，并从 /工程下一步 开始。
 ```
 
 复制到 Claude Code：
 
 ```text
-请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.4.0。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool claude-code 和 longform-engine doctor --tool claude-code。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Claude Code 会话，并从 /工程下一步 开始。
+请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.4.1。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool claude-code --force 和 longform-engine doctor --tool claude-code。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Claude Code 会话，并从 /工程下一步 开始。
 ```
 
 ### Windows PowerShell
@@ -64,8 +64,8 @@ py -3 -m pip install --user --upgrade pipx
 py -3 -m pipx ensurepath
 $env:PIPX_BIN_DIR = if ($env:PIPX_BIN_DIR) { $env:PIPX_BIN_DIR } else { Join-Path $env:USERPROFILE ".local\bin" }
 $env:PATH = "$env:PIPX_BIN_DIR;$env:PATH"
-py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.4.0'
-longform-engine skills install --tool all
+py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.4.1'
+longform-engine skills install --tool all --force
 longform-engine doctor --tool all
 ```
 
@@ -80,8 +80,8 @@ python3 -m pip install --user --upgrade pipx
 python3 -m pipx ensurepath
 export PIPX_BIN_DIR="${PIPX_BIN_DIR:-$HOME/.local/bin}"
 export PATH="$PIPX_BIN_DIR:$PATH"
-python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.4.0'
-longform-engine skills install --tool all
+python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.4.1'
+longform-engine skills install --tool all --force
 longform-engine doctor --tool all
 ```
 
@@ -90,7 +90,7 @@ longform-engine doctor --tool all
 ### 升级与卸载
 
 ```powershell
-py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.4.0'
+py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.4.1'
 longform-engine skills update --tool all
 longform-engine doctor --tool all
 ```
@@ -122,7 +122,7 @@ longform-engine open-book --interactive
 -> longform-engine agent-task brief project.yaml TASK_OR_PATH
 ```
 
-Agent 只读取工作单与 `input_files`，写入 `allowed_output_paths`，然后运行工作单给出的 validate/submit 命令。apply 与 finalize 必须显式执行；`production loop --no-apply` 遇到 Agent、人工、apply 或 finalize 边界会暂停。
+Agent 只读取工作单与 manifest `io.inputs`，只写 `io.output.path` 并遵守 `io.output.protocol`，然后运行 `commands.validate`。`commands.apply` 与 finalize 必须显式执行；`production loop --no-apply` 遇到 Agent、人工、apply 或 finalize 边界会暂停。
 
 空白项目不会直接进入第一章。`production next` 会先要求完成下面的项目级闭环：
 
@@ -155,8 +155,8 @@ open-book
 CLI 通过后，`chapter finalize` 才在同一事务中写入 `reader_reward_entry_v2` 和
 `30_state/quality/structure_history.jsonl`；失败或过期审稿不会污染正式状态。finalize 只确立正文证据，
 不再用正文开头冒充摘要，也不提前更新图谱、角色记忆、伏笔、TCS、RAG 或 SQLite。定稿后由
-`chapter_semantic_bundle_v1` 一次抽取全部证据化事实，CLI 事务化物化当前状态，`chapter close`
-成功后才允许进入下一章。旧 graph/memory/character 抽取命令仅为旧项目兼容保留。
+Agent 以 `canonical_delta_v1` 一次提交全部证据化变化；CLI 校验后规范化为内部章节语义账本并事务化物化当前状态，`chapter close`
+成功后才允许进入下一章。graph、memory 与 character-memory 不再各自重复读取正文，全部由统一章节语义 delta 物化。
 
 ## 创作模式与同人
 
@@ -244,8 +244,10 @@ Bible、outline、research canon、final、semantic ledger、RAG、graph、fores
 
 - Humanizer v3 检查空文本、重复模板、信息轰炸、流水账升级、纸片人/工具人、对白同质、伪细节、情绪标签、意义膨胀和强制钩子。
 - Humanizer v4 的第二遍改写读取 `character_expression_packet_v1`，保护人物的感知偏向、决策偏向、话语层级、社交面具和情绪泄漏，并强化相反欲望、隐藏议程、不可逆行动和情绪余波。
-- `book_design_candidate_v2` 可直接写入 `10_bible/character_expression.json`；v0.4.0 不再接收旧 book design 项目协议，也不允许 Agent 直接写 Bible。
-- 常规章节人物包仍受 7 文件/20K 字符预算约束；低对白、少外貌或少内心独白不会单独成为硬失败，CLI 同时报告真实 `dialogue_char_ratio`、引号密度、归因覆盖、说话人特征和可交换风险。
+- 经批准的设计 Markdown 必须先编译为 `canonical_delta_v1`，再由 CLI 原子物化人物与关系视图；v0.4.1 不接收旧 book design 项目协议，也不允许 Agent 直接写 Bible。
+- v0.4.1 工作区使用自适应上下文预算：`compact/standard/large` 分别提供 24K/48K/96K engine-controlled units，也可由项目覆盖。字符数和文件数只作诊断；CLI 依次去重、移除未触发参考、按需加载证据并拆分范围上下文，只有核心事实仍无法容纳时才进入 `need-human`。
+- 每章作者使用新的章节会话；repair 可继续该章作者会话；Humanizer、连贯/人物/节奏/收益/同人审稿和 final 语义档案使用独立新会话。CLI 只给出会话要求和第一条命令，不创建子进程，也不把聊天历史当长期状态。
+- 27 个任务角色与 12 个中文写作 Playbook 按区段渐进加载；44 个故事分面均有独立中文适配器，每轮最多激活三个。当前只能称为“高级专业候选 Prompt”，真实混合题材人工盲评完成前不作文学等级承诺。
 - 第 1-3 章、人物初登场、POV 切换、关系转折和对白同质复发会选择 `character_editor`；即使 pass，也必须给每个 featured character 提供正文证据。
 - 润色候选会与来源稿比较数字事实、角色保留和改写比例；过度重写会触发 `need-human`，避免“去 AI 味”把剧情和人物一起洗掉。
 - Humanizer v4 Phase 1 在风险改写、里程碑、卷边界、strict 和同人场景创建独立语义审稿任务，校验人物、事件、因果、时间、关系、能力和禁揭露七类事实；复核后修改候选会使旧结果失效。
@@ -257,7 +259,7 @@ Bible、outline、research canon、final、semantic ledger、RAG、graph、fores
 - `qidian_male` 是默认主合同；`fanqie_free` 只输出最多三条非阻断兼容建议，不会自动改章或阻断定稿。
 - 章节卡明确区分平台承诺、章节职责、读者收益、代价与关系变化；Reader Payoff 必须从正文证据验证，不能把计划当成事实。
 - `quality baseline-approve` 只能显式批准已定稿章节的 prose-free 结构指纹，CLI 不会自动把新章节加入风格基线。
-- 每章都必须完成 `chapter_direction_candidate_v2`：Agent 提供 2 至 3 个有明确代价的方向，用户显式选择后才生成章节卡和正文工作单。CLI 不替作者决定关键剧情。
+- 每章方向使用 `design_document_v1`：Agent 提供 2 至 3 个有明确代价的方向，用户显式批准后再编译为 `canonical_delta_v1`，随后生成章节卡和正文工作单。CLI 不替作者决定关键剧情。
 
 查看本章实际合同：
 
@@ -274,7 +276,7 @@ longform-engine character samples-approve project.yaml --file 50_workbench/chara
 
 ## 长篇一致性
 
-v0.4.0 以 `content_characters_v1` 为唯一生产规模口径：只统计正文中的 Unicode 字母和数字，不计空白、标点、Markdown 标记、标题、工作单或审稿文件。默认目标为 200 万正文字符，每章目标 3000、软区间 2400 至 3600，预测约 667 章和 8 卷；章节数与卷数会随实际章长和故事密度重估，不再是硬约束。200 万以内属于正式工程支持，超过 200 万可配置但 doctor 标记为 experimental。
+v0.4.1 延续 `content_characters_v1` 作为唯一生产规模口径：只统计正文中的 Unicode 字母和数字，不计空白、标点、Markdown 标记、标题、工作单或审稿文件。默认目标为 200 万正文字符，每章目标 3000、软区间 2400 至 3600，预测约 667 章和 8 卷；章节数与卷数会随实际章长和故事密度重估，不再是硬约束。200 万以内属于正式工程支持，超过 200 万可配置但 doctor 标记为 experimental。
 
 全书完成条件是“人工批准的结局完成 + 必要承诺闭环 + 正文字符数进入容差 + 无 P0/P1”，不是抵达某个固定章节号。低于目标时只能由人批准扩展故事弧，禁止自动注水；超过目标时提示重估，不机械压缩已经成立的剧情。核心状态层包括：
 

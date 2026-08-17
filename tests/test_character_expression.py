@@ -4,7 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from longform_engine.agent_tasks import load_manifest
+from longform_engine.agent_pipeline import validate_production_agent_result
+from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
+from longform_engine.agent_tasks import list_manifests, load_manifest
 from longform_engine.character_expression import approve_voice_samples, character_expression_diagnostics
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_review, editorial_submit_review
@@ -88,16 +90,18 @@ def test_chapter_work_order_compiles_character_packet_inside_existing_budget(tmp
     continue_write(config, chapter_number=1, overwrite=True)
 
     task = json.loads((root / "50_workbench" / "writing_tasks" / "ch001.json").read_text(encoding="utf-8"))
-    manifest = load_manifest(root, "chapter_write:ch001:v1")
+    manifest = load_manifest(root, "chapter_write:ch001:v4")
     markdown = (root / "50_workbench" / "writing_tasks" / "ch001.md").read_text(encoding="utf-8")
     packet = task["character_expression_packet"]
     assert packet["schema"] == "character_expression_packet_v1"
     assert packet["featured_character_ids"] == ["lead_ari", "ally_mira"]
     assert len(packet["approved_voice_samples"]) <= 2
-    assert manifest["input_files"] == ["50_workbench/writing_tasks/ch001.md"]
+    inputs = [item["path"] for item in manifest["io"]["inputs"]]
+    assert inputs == ["50_workbench/writing_tasks/ch001.md"]
     assert "50_workbench/character_packets/ch001.json" in task["context_plan"]["excluded_duplicates"]
-    assert len(manifest["input_files"]) <= 7
-    assert len(markdown) <= 20_000
+    assert len(inputs) <= 7
+    assert task["context_plan"]["budget_profile"] == "standard"
+    assert task["context_plan"]["estimated_units"] > 0
     assert "Character Performance Packet" in markdown
     assert "verification versus immediate access" in markdown
 
@@ -133,7 +137,7 @@ def test_sparse_dialogue_profile_does_not_create_universal_low_dialogue_warning(
     assert not any("dialogue ratio is very low" in warning for warning in warnings)
 
 
-def test_character_editor_rejects_empty_pass_and_requires_featured_character_evidence(tmp_path):
+def test_character_editor_accepts_scoped_p1_with_exact_character_evidence(tmp_path):
     config, root = seed_ready_project(tmp_path)
     continue_write(config, chapter_number=1, overwrite=True)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
@@ -142,63 +146,46 @@ def test_character_editor_rejects_empty_pass_and_requires_featured_character_evi
     draft.write_text(f"# Chapter 1\n\n{evidence}\n\n{ally_evidence}\n", encoding="utf-8")
     review = editorial_review(config, chapter_number=1)
     assert "character_editor" in review.selected_roles
-    context_path = (
-        root
-        / "50_workbench"
-        / "editorial_reviews"
-        / "agent_tasks"
-        / "ch001"
-        / "character_editor.context.json"
-    )
-    context = json.loads(context_path.read_text(encoding="utf-8"))
     result_file = root / "50_workbench" / "editorial_reviews" / "results" / "ch001.character_editor.json"
-    base = {
-        "schema_version": 2,
-        "chapter_number": 1,
-        "role_id": "character_editor",
-        "verdict": "pass",
-        "reviewer_instance_id": context["reviewer_instance_id"],
-        "agent_product": "codex-app",
-        "agent_version": "test",
-        "context_digest_hash": context["context_digest_hash"],
-        "independence_mode": "same_host_isolated_context",
-        "review_round": context["review_round"],
-        "confidence": 0.9,
-    }
-    result_file.write_text(json.dumps({**base, "items": []}), encoding="utf-8")
-    with pytest.raises(ValueError, match="must not submit an empty pass"):
-        editorial_submit_review(config, chapter_number=1, role="character_editor", file_path=result_file)
-
+    text = draft.read_text(encoding="utf-8")
+    start = text.index(ally_evidence)
     result_file.write_text(
         json.dumps(
             {
-                **base,
-                "items": [
+                "schema": EVIDENCE_REVIEW_SCHEMA,
+                "verdict": "repair",
+                    "coverage": {"character_agency": "checked", "voice_distinction": "checked", "embodied_presence": "checked"},
+                "findings": [
                     {
-                        "code": "character_evidence_lead_ari",
-                        "severity": "PASS",
-                        "status": "resolved",
-                        "message": "Ari's procedural mask and embodied anxiety remain distinct.",
-                        "evidence": [evidence],
-                        "character_ids": ["lead_ari"],
-                        "recommendation": "preserve this pressure-specific behavior",
-                    },
-                    {
-                        "code": "character_evidence_ally_mira",
-                        "severity": "PASS",
-                        "status": "resolved",
-                        "message": "Mira applies pressure through action and a direct demand.",
-                        "evidence": [ally_evidence],
-                        "character_ids": ["ally_mira"],
-                        "recommendation": "preserve her action-first pressure",
+                        "code": "DIALOGUE_SWAP",
+                        "severity": "P1",
+                        "certainty": "confirmed",
+                        "diagnosis": "The reply could be exchanged with Ari without changing tactic or pressure.",
+                        "evidence_ids": [f"ch001.md@{start}:{start + len(ally_evidence)}"],
+                        "reader_impact": "Mira loses a recognizable social strategy.",
+                        "repair_target": "Restore Mira's action-first demand while preserving the blocked doorway.",
+                        "preserve": ["blocked doorway", "cost of waiting"],
                     }
                 ],
             }
         ),
         encoding="utf-8",
     )
+    task = next(
+        item
+        for item in list_manifests(root, chapter_number=1)
+        if item.get("task_type") == "editorial_review"
+        and (item.get("role") or {}).get("id") == "character_editor"
+    )
+    control = validate_production_agent_result(
+        root,
+        load_manifest(root, task["task_id"]),
+        result_file=result_file,
+    )
+    assert control.ok, control.normalization.errors
     accepted = editorial_submit_review(config, chapter_number=1, role="character_editor", file_path=result_file)
     assert accepted.accepted
+    assert accepted.need_human
 
 
 def test_range_character_audit_validates_hash_spans_and_archives_only_to_workbench(tmp_path):
@@ -219,61 +206,11 @@ def test_range_character_audit_validates_hash_spans_and_archives_only_to_workben
         to_chapter=2,
     )
     manifest = load_manifest(root, task.task_id)
-    relative_sources = {
-        chapter: path.relative_to(root).as_posix() for chapter, path in sources.items()
-    }
-
-    def evidence(chapter: int, excerpt: str) -> dict:
-        text = chapter_texts[chapter]
-        start = text.index(excerpt)
-        return {
-            "source_path": relative_sources[chapter],
-            "start": start,
-            "end": start + len(excerpt),
-            "excerpt": excerpt,
-        }
-
     payload = {
-        "schema": "character_expression_review_v1",
-        "scope": {"from_chapter": 1, "to_chapter": 2},
-        "source_hashes": {
-            relative_sources[chapter]: hashlib.sha256(path.read_bytes()).hexdigest()
-            for chapter, path in sources.items()
-        },
-        "character_reviews": [
-            {
-                "character_id": "lead_ari",
-                "verdict": "pass",
-                "dimensions": {
-                    "voice_fit": "pass",
-                    "swapability": "not_observed",
-                    "character_as_function": "pass",
-                    "embodied_presence": "pass",
-                    "narrator_over_explains": "pass",
-                    "dialogue_as_exposition": "pass",
-                },
-                "summary": "Ari acts through procedural pressure.",
-                "evidence": [evidence(1, "Ari aligns the receipt")],
-            }
-        ],
-        "chapter_reviews": [
-            {
-                "chapter_number": 1,
-                "verdict": "pass",
-                "risks": [],
-                "summary": "The scene carries character through action.",
-                "evidence": [evidence(1, "asks for the seal record")],
-            },
-            {
-                "chapter_number": 2,
-                "verdict": "pass",
-                "risks": [],
-                "summary": "Mira applies distinct social pressure.",
-                "evidence": [evidence(2, "names the cost of waiting")],
-            },
-        ],
-        "cross_chapter_findings": [],
+        "schema": EVIDENCE_REVIEW_SCHEMA,
         "verdict": "pass",
+        "coverage": {"cross_chapter_character": "checked", "voice_drift": "checked", "arc_causality": "checked"},
+        "findings": [],
     }
     candidate = root / task.candidate_file
     candidate.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -286,6 +223,8 @@ def test_range_character_audit_validates_hash_spans_and_archives_only_to_workben
         )
     }
 
+    control = validate_production_agent_result(root, manifest, result_file=candidate)
+    assert control.ok, control.normalization.errors
     validation = validate_intelligence_candidate(
         config,
         task_type="character_expression_review",
@@ -297,7 +236,7 @@ def test_range_character_audit_validates_hash_spans_and_archives_only_to_workben
         task_type="character_expression_review",
         file_path=candidate,
     )
-    assert manifest["canonical_targets"] == []
+    assert manifest["policy"]["canonical_targets"] == []
     assert (root / "50_workbench" / "character_reviews" / "review_ch001-ch002.json").is_file()
     assert canonical_before == {
         path: (root / path).read_bytes() if (root / path).exists() else b""

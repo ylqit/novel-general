@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from hashlib import sha256
 import json
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -150,6 +151,11 @@ def load_facet_registries() -> dict[str, dict[str, dict[str, Any]]]:
                 entries = value.get(field, [])
                 if not isinstance(entries, list) or any(not isinstance(item, str) or not item.strip() for item in entries):
                     raise StoryProfileError(f"story facet {kind}:{facet_id}.{field} must be a string list")
+            prompt_adapter = value.get("prompt_adapter")
+            if not isinstance(prompt_adapter, str) or not prompt_adapter.strip():
+                raise StoryProfileError(f"story facet {kind}:{facet_id}.prompt_adapter must be non-empty text")
+            if not any("\u3400" <= char <= "\u9fff" for char in prompt_adapter):
+                raise StoryProfileError(f"story facet {kind}:{facet_id}.prompt_adapter must contain Chinese guidance")
             normalized[str(facet_id)] = {
                 **deepcopy(value),
                 "source": f"config/story_facets/{kind}.yaml#{facet_id}",
@@ -159,6 +165,60 @@ def load_facet_registries() -> dict[str, dict[str, dict[str, Any]]]:
             }
         registries[kind] = normalized
     return registries
+
+
+def project_active_facet_adapters(
+    project_root: Path,
+    *,
+    chapter_number: int = 0,
+    requested: list[str] | None = None,
+    limit: int = 3,
+) -> list[dict[str, str]]:
+    """Resolve at most three current Chinese facet adapters with stable provenance."""
+
+    root = project_root.resolve()
+    project_file = root / "project.yaml"
+    if not project_file.is_file():
+        return []
+    try:
+        project = yaml.safe_load(project_file.read_text(encoding="utf-8")) or {}
+    except (OSError, UnicodeError, yaml.YAMLError):
+        return []
+    profile = project.get("story_profile") if isinstance(project, dict) else None
+    if not isinstance(profile, dict):
+        return []
+    chapter_requested = list(requested or [])
+    if chapter_number > 0 and not chapter_requested:
+        plan_file = root / "20_outline" / "chapter_plan.json"
+        try:
+            plan = json.loads(plan_file.read_text(encoding="utf-8")) if plan_file.is_file() else []
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            plan = []
+        rows = plan if isinstance(plan, list) else plan.get("chapters", []) if isinstance(plan, dict) else []
+        row = next(
+            (
+                item for item in rows
+                if isinstance(item, dict) and int(item.get("chapter_number") or 0) == chapter_number
+            ),
+            None,
+        )
+        if isinstance(row, dict):
+            chapter_requested = [str(item) for item in row.get("active_facets") or []]
+    try:
+        compiled = compile_story_profile(profile, market_ids=set(BUILTIN_MARKET_IDS))
+    except StoryProfileError:
+        return []
+    return [
+        {
+            "kind": str(item["kind"]),
+            "id": str(item["id"]),
+            "level": str(item["level"]),
+            "source": str(item["source"]),
+            "sha256": str(item["sha256"]),
+            "prompt_adapter": str(item["prompt_adapter"]).strip(),
+        }
+        for item in active_story_facets(compiled, chapter_requested, limit=limit)
+    ]
 
 
 def normalize_facet_selection(kind: str, raw: Any, registry: dict[str, dict[str, Any]]) -> list[dict[str, str]]:

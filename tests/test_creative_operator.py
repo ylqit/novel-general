@@ -155,7 +155,7 @@ def test_humanizer_task_and_check_stay_in_workbench(tmp_path):
     assert "50_workbench" in task.task_file
     assert Path(task.candidate_file).name == "ch001.humanized_candidate.md"
     assert Path(task.candidate_file).parent.name == "repair_candidates"
-    manifest = load_manifest(root, "humanize:ch001:v1")
+    manifest = load_manifest(root, "humanize:ch001:v4")
     strict = validate_manifest_strict(root, manifest)
     assert strict.ok, strict.errors
     assert check.passed is False

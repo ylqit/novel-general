@@ -1,33 +1,71 @@
 {
-  "schema": "agent_role_registry_v1",
-  "registry_version": 1,
-  "allowed_overlay_fields": [
-    "genre_vocabulary",
-    "narrative_person",
-    "pov_distance",
-    "target_reader",
-    "platform_advisories",
-    "character_voice_contracts",
-    "content_exclusions",
-    "approved_style_baseline"
+  "schema": "agent_role_registry_v3",
+  "registry_version": 3,
+  "playbooks": [
+    {
+      "playbook_id": "opening_and_mainline",
+      "path": "config/agent_roles/playbooks/opening_and_mainline.md"
+    },
+    {
+      "playbook_id": "scene_causality",
+      "path": "config/agent_roles/playbooks/scene_causality.md"
+    },
+    {
+      "playbook_id": "character_agency",
+      "path": "config/agent_roles/playbooks/character_agency.md"
+    },
+    {
+      "playbook_id": "dialogue_and_subtext",
+      "path": "config/agent_roles/playbooks/dialogue_and_subtext.md"
+    },
+    {
+      "playbook_id": "interiority_and_emotion",
+      "path": "config/agent_roles/playbooks/interiority_and_emotion.md"
+    },
+    {
+      "playbook_id": "world_rules_and_exposition",
+      "path": "config/agent_roles/playbooks/world_rules_and_exposition.md"
+    },
+    {
+      "playbook_id": "relationship_dynamics",
+      "path": "config/agent_roles/playbooks/relationship_dynamics.md"
+    },
+    {
+      "playbook_id": "foreshadow_and_mystery",
+      "path": "config/agent_roles/playbooks/foreshadow_and_mystery.md"
+    },
+    {
+      "playbook_id": "serial_pacing",
+      "path": "config/agent_roles/playbooks/serial_pacing.md"
+    },
+    {
+      "playbook_id": "anti_ai_expression",
+      "path": "config/agent_roles/playbooks/anti_ai_expression.md"
+    },
+    {
+      "playbook_id": "ensemble_and_viewpoint",
+      "path": "config/agent_roles/playbooks/ensemble_and_viewpoint.md"
+    },
+    {
+      "playbook_id": "fanfiction_canon",
+      "path": "config/agent_roles/playbooks/fanfiction_canon.md"
+    }
   ],
   "task_role_map": {
     "adaptation_analysis": "adaptation_analyst",
     "book_design": "book_architect",
     "book_ideation": "creative_facilitator",
     "chapter_direction": "chapter_story_editor",
-    "chapter_semantic": "chapter_semantic_archivist",
+    "chapter_semantic": "canonical_semantic_archivist",
+    "design_semantic_compile": "canonical_semantic_archivist",
     "chapter_write": "chapter_author",
     "character_expression_design": "character_performance_architect",
     "character_expression_review": "character_performance_reviewer",
-    "character_memory": "legacy_character_memory_curator",
     "content_expand": "expansion_writer",
     "fanfiction_canon": "fanfiction_canon_archivist",
     "fanfiction_design": "fanfiction_architect",
-    "graph_extract": "legacy_graph_extractor",
     "humanize": "humanizer",
     "humanize_semantic_review": "humanizer_semantic_reviewer",
-    "memory_extract": "legacy_memory_extractor",
     "outline_design": "longform_outline_architect",
     "outline_extension": "longform_outline_architect",
     "outline_revision": "continuity_outline_editor",
@@ -42,44 +80,1079 @@
     "anti_ai_editor": "anti_ai_editor",
     "canon_fidelity_reviewer": "canon_fidelity_reviewer",
     "character_editor": "character_editor",
-    "executive_editor": "executive_editor",
     "planning_chief_editor": "planning_chief_editor",
-    "reader_quality_reviewer": "reader_quality_reviewer",
-    "serial_verifier": "serial_verifier",
-    "writing_agent": "writing_agent"
+    "reader_experience_editor": "reader_experience_editor",
+    "scene_prose_editor": "scene_prose_editor"
+  },
+  "session_policy_map": {
+    "adaptation_analyst": "isolated_review",
+    "anti_ai_editor": "isolated_review",
+    "book_architect": "project_coordinator",
+    "canon_fidelity_reviewer": "isolated_review",
+    "canonical_semantic_archivist": "isolated_archival",
+    "chapter_author": "chapter_author",
+    "chapter_story_editor": "project_coordinator",
+    "character_editor": "isolated_review",
+    "character_performance_architect": "project_coordinator",
+    "character_performance_reviewer": "isolated_review",
+    "continuity_outline_editor": "project_coordinator",
+    "creative_facilitator": "project_coordinator",
+    "expansion_writer": "isolated_revision",
+    "fanfiction_architect": "project_coordinator",
+    "fanfiction_canon_archivist": "isolated_archival",
+    "humanizer": "isolated_revision",
+    "humanizer_semantic_reviewer": "isolated_review",
+    "longform_outline_architect": "project_coordinator",
+    "planning_chief_editor": "isolated_review",
+    "reader_experience_editor": "isolated_review",
+    "reader_payoff_reviewer": "isolated_review",
+    "repair_author": "chapter_author",
+    "research_synthesizer": "isolated_archival",
+    "scene_prose_editor": "isolated_review",
+    "semantic_continuity_reviewer": "isolated_review",
+    "semantic_pacing_reviewer": "isolated_review",
+    "semantic_style_analyst": "isolated_review"
   },
   "roles": [
-    {"role_id": "adaptation_analyst", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/adaptation_analyst.md", "output_mode": "strict_delta_json", "independence_mode": "author_context"},
-    {"role_id": "anti_ai_editor", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/anti_ai_editor.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"},
-    {"role_id": "book_architect", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/book_architect.md", "output_mode": "document_index_bundle", "independence_mode": "author_context"},
-    {"role_id": "canon_fidelity_reviewer", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/canon_fidelity_reviewer.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"},
-    {"role_id": "chapter_author", "role_version": "1.1.0", "prompt_path": "config/agent_roles/prompts/chapter_author.md", "output_mode": "markdown_prose", "independence_mode": "author_context"},
-    {"role_id": "chapter_semantic_archivist", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/chapter_semantic_archivist.md", "output_mode": "strict_delta_json", "independence_mode": "isolated_review"},
-    {"role_id": "chapter_story_editor", "role_version": "1.1.0", "prompt_path": "config/agent_roles/prompts/chapter_story_editor.md", "output_mode": "compact_review_json", "independence_mode": "author_context"},
-    {"role_id": "character_editor", "role_version": "1.1.0", "prompt_path": "config/agent_roles/prompts/character_editor.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"},
-    {"role_id": "character_performance_architect", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/character_performance_architect.md", "output_mode": "strict_delta_json", "independence_mode": "author_context"},
-    {"role_id": "character_performance_reviewer", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/character_performance_reviewer.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"},
-    {"role_id": "continuity_outline_editor", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/continuity_outline_editor.md", "output_mode": "document_index_bundle", "independence_mode": "author_context"},
-    {"role_id": "creative_facilitator", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/creative_facilitator.md", "output_mode": "compact_review_json", "independence_mode": "author_context"},
-    {"role_id": "executive_editor", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/executive_editor.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"},
-    {"role_id": "expansion_writer", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/expansion_writer.md", "output_mode": "markdown_prose", "independence_mode": "author_context"},
-    {"role_id": "fanfiction_architect", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/fanfiction_architect.md", "output_mode": "document_index_bundle", "independence_mode": "author_context"},
-    {"role_id": "fanfiction_canon_archivist", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/fanfiction_canon_archivist.md", "output_mode": "strict_delta_json", "independence_mode": "author_context"},
-    {"role_id": "humanizer", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/humanizer.md", "output_mode": "markdown_prose", "independence_mode": "author_context"},
-    {"role_id": "humanizer_semantic_reviewer", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/humanizer_semantic_reviewer.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"},
-    {"role_id": "legacy_character_memory_curator", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/legacy_character_memory_curator.md", "output_mode": "strict_delta_json", "independence_mode": "author_context"},
-    {"role_id": "legacy_graph_extractor", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/legacy_graph_extractor.md", "output_mode": "strict_delta_json", "independence_mode": "author_context"},
-    {"role_id": "legacy_memory_extractor", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/legacy_memory_extractor.md", "output_mode": "strict_delta_json", "independence_mode": "author_context"},
-    {"role_id": "longform_outline_architect", "role_version": "1.1.0", "prompt_path": "config/agent_roles/prompts/longform_outline_architect.md", "output_mode": "document_index_bundle", "independence_mode": "author_context"},
-    {"role_id": "planning_chief_editor", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/planning_chief_editor.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"},
-    {"role_id": "reader_payoff_reviewer", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/reader_payoff_reviewer.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"},
-    {"role_id": "reader_quality_reviewer", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/reader_quality_reviewer.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"},
-    {"role_id": "repair_author", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/repair_author.md", "output_mode": "markdown_prose", "independence_mode": "author_context"},
-    {"role_id": "research_synthesizer", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/research_synthesizer.md", "output_mode": "strict_delta_json", "independence_mode": "author_context"},
-    {"role_id": "semantic_continuity_reviewer", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/semantic_continuity_reviewer.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"},
-    {"role_id": "semantic_pacing_reviewer", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/semantic_pacing_reviewer.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"},
-    {"role_id": "semantic_style_analyst", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/semantic_style_analyst.md", "output_mode": "strict_delta_json", "independence_mode": "author_context"},
-    {"role_id": "serial_verifier", "role_version": "1.0.0", "prompt_path": "config/agent_roles/prompts/serial_verifier.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"},
-    {"role_id": "writing_agent", "role_version": "1.1.0", "prompt_path": "config/agent_roles/prompts/writing_agent.md", "output_mode": "compact_review_json", "independence_mode": "isolated_review"}
+    {
+      "role_id": "adaptation_analyst",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/adaptation_analyst.md",
+      "output_mode": "design_document_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "target_reader",
+        "content_exclusions"
+      ],
+      "role_family": "analysis",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "adaptation_analysis": "diagnostics",
+        "adaptation_transfer_failure": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "scene_causality"
+      ],
+      "optional_playbook_ids": [
+        "serial_pacing",
+        "anti_ai_expression"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "anti_ai_editor",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/anti_ai_editor.md",
+      "output_mode": "evidence_review_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [
+        "target_reader",
+        "approved_style_baseline",
+        "character_voice_contracts"
+      ],
+      "role_family": "review",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "editorial_review": "diagnostics",
+        "ai_summary_loop": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "anti_ai_expression"
+      ],
+      "optional_playbook_ids": [
+        "scene_causality",
+        "dialogue_and_subtext"
+      ],
+      "max_active_playbooks": 2,
+      "review_dimensions": [
+        "template_expression",
+        "voice_flattening",
+        "summary_inflation"
+      ],
+      "finding_codes": [
+        "AI_SUMMARY_LOOP",
+        "AI_MEANING_INFLATION",
+        "AI_HOMOGENEOUS_VOICE"
+      ]
+    },
+    {
+      "role_id": "book_architect",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/book_architect.md",
+      "output_mode": "design_document_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "target_reader",
+        "platform_advisories",
+        "content_exclusions",
+        "approved_style_baseline"
+      ],
+      "role_family": "planning",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "book_design": "diagnostics",
+        "book_design_conflict": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "opening_and_mainline",
+        "character_agency"
+      ],
+      "optional_playbook_ids": [
+        "world_rules_and_exposition",
+        "relationship_dynamics",
+        "foreshadow_and_mystery"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "canon_fidelity_reviewer",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/canon_fidelity_reviewer.md",
+      "output_mode": "evidence_review_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [
+        "character_voice_contracts",
+        "content_exclusions"
+      ],
+      "role_family": "review",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "editorial_review": "diagnostics",
+        "canon_conflict": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "fanfiction_canon"
+      ],
+      "optional_playbook_ids": [
+        "character_agency",
+        "relationship_dynamics"
+      ],
+      "max_active_playbooks": 2,
+      "review_dimensions": [
+        "canon_fidelity",
+        "ooc_causality",
+        "original_contribution"
+      ],
+      "finding_codes": [
+        "CANON_CONFLICT",
+        "OOC_UNSUPPORTED",
+        "ORIGINAL_CHARACTER_DOMINATION"
+      ]
+    },
+    {
+      "role_id": "chapter_author",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/chapter_author.md",
+      "output_mode": "prose_markdown_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "narrative_person",
+        "pov_distance",
+        "target_reader",
+        "platform_advisories",
+        "character_voice_contracts",
+        "content_exclusions",
+        "approved_style_baseline"
+      ],
+      "role_family": "generation",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "chapter_write": "diagnostics",
+        "chapter_contract_conflict": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "scene_causality",
+        "character_agency"
+      ],
+      "optional_playbook_ids": [
+        "opening_and_mainline",
+        "dialogue_and_subtext",
+        "interiority_and_emotion",
+        "anti_ai_expression"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "canonical_semantic_archivist",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/canonical_semantic_archivist.md",
+      "output_mode": "canonical_delta_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [],
+      "role_family": "archival",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "chapter_semantic": "chapter_extract",
+        "design_semantic_compile": "design_compile",
+        "semantic_evidence_gap": "diagnostics",
+        "semantic_ambiguity": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "world_rules_and_exposition"
+      ],
+      "optional_playbook_ids": [
+        "relationship_dynamics",
+        "foreshadow_and_mystery"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "chapter_story_editor",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/chapter_story_editor.md",
+      "output_mode": "design_document_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "target_reader",
+        "platform_advisories",
+        "character_voice_contracts",
+        "content_exclusions"
+      ],
+      "role_family": "planning",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "chapter_direction": "diagnostics",
+        "direction_causality_failure": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "scene_causality",
+        "opening_and_mainline"
+      ],
+      "optional_playbook_ids": [
+        "character_agency",
+        "relationship_dynamics",
+        "foreshadow_and_mystery",
+        "serial_pacing"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "character_editor",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/character_editor.md",
+      "output_mode": "evidence_review_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [
+        "character_voice_contracts",
+        "approved_style_baseline"
+      ],
+      "role_family": "review",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "editorial_review": "diagnostics",
+        "speaker_ambiguous": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "character_agency"
+      ],
+      "optional_playbook_ids": [
+        "dialogue_and_subtext",
+        "interiority_and_emotion",
+        "relationship_dynamics"
+      ],
+      "max_active_playbooks": 2,
+      "review_dimensions": [
+        "character_agency",
+        "voice_distinction",
+        "embodied_presence"
+      ],
+      "finding_codes": [
+        "CHARACTER_FLAT",
+        "DIALOGUE_SWAP",
+        "SPEAKER_AMBIGUOUS"
+      ]
+    },
+    {
+      "role_id": "character_performance_architect",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/character_performance_architect.md",
+      "output_mode": "design_document_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "narrative_person",
+        "pov_distance",
+        "character_voice_contracts",
+        "content_exclusions"
+      ],
+      "role_family": "planning",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "character_expression_design": "diagnostics",
+        "character_contract_collision": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "character_agency",
+        "dialogue_and_subtext"
+      ],
+      "optional_playbook_ids": [
+        "interiority_and_emotion",
+        "relationship_dynamics"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "character_performance_reviewer",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/character_performance_reviewer.md",
+      "output_mode": "evidence_review_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [
+        "character_voice_contracts",
+        "approved_style_baseline"
+      ],
+      "role_family": "review",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "character_expression_review": "diagnostics",
+        "character_drift": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "character_agency"
+      ],
+      "optional_playbook_ids": [
+        "dialogue_and_subtext",
+        "interiority_and_emotion",
+        "ensemble_and_viewpoint"
+      ],
+      "max_active_playbooks": 2,
+      "review_dimensions": [
+        "cross_chapter_character",
+        "voice_drift",
+        "arc_causality"
+      ],
+      "finding_codes": [
+        "CHARACTER_DRIFT",
+        "VOICE_COLLAPSE",
+        "ARC_CHANGE_UNSUPPORTED"
+      ]
+    },
+    {
+      "role_id": "continuity_outline_editor",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/continuity_outline_editor.md",
+      "output_mode": "design_document_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "target_reader",
+        "platform_advisories",
+        "content_exclusions"
+      ],
+      "role_family": "planning",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "outline_revision": "diagnostics",
+        "outline_dependency_conflict": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "foreshadow_and_mystery",
+        "serial_pacing"
+      ],
+      "optional_playbook_ids": [
+        "character_agency",
+        "relationship_dynamics"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "creative_facilitator",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/creative_facilitator.md",
+      "output_mode": "design_document_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "target_reader",
+        "platform_advisories",
+        "content_exclusions"
+      ],
+      "role_family": "facilitation",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "book_ideation": "diagnostics",
+        "decision_not_distinct": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "opening_and_mainline"
+      ],
+      "optional_playbook_ids": [
+        "character_agency",
+        "world_rules_and_exposition",
+        "relationship_dynamics"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "expansion_writer",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/expansion_writer.md",
+      "output_mode": "prose_markdown_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "narrative_person",
+        "pov_distance",
+        "character_voice_contracts",
+        "content_exclusions",
+        "approved_style_baseline"
+      ],
+      "role_family": "generation",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "content_expand": "diagnostics",
+        "expansion_without_causality": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "scene_causality"
+      ],
+      "optional_playbook_ids": [
+        "character_agency",
+        "dialogue_and_subtext",
+        "interiority_and_emotion"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "fanfiction_architect",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/fanfiction_architect.md",
+      "output_mode": "design_document_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "target_reader",
+        "character_voice_contracts",
+        "content_exclusions"
+      ],
+      "role_family": "planning",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "fanfiction_design": "diagnostics",
+        "divergence_causality_gap": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "fanfiction_canon",
+        "character_agency"
+      ],
+      "optional_playbook_ids": [
+        "relationship_dynamics",
+        "foreshadow_and_mystery"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "fanfiction_canon_archivist",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/fanfiction_canon_archivist.md",
+      "output_mode": "canonical_delta_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "character_voice_contracts",
+        "content_exclusions"
+      ],
+      "role_family": "archival",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "fanfiction_canon": "diagnostics",
+        "canon_evidence_gap": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "fanfiction_canon",
+        "world_rules_and_exposition"
+      ],
+      "optional_playbook_ids": [
+        "relationship_dynamics"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "humanizer",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/humanizer.md",
+      "output_mode": "prose_markdown_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "narrative_person",
+        "pov_distance",
+        "target_reader",
+        "character_voice_contracts",
+        "content_exclusions",
+        "approved_style_baseline"
+      ],
+      "role_family": "revision",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "humanize": "diagnostics",
+        "humanize_boundary_conflict": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "anti_ai_expression"
+      ],
+      "optional_playbook_ids": [
+        "scene_causality",
+        "dialogue_and_subtext",
+        "interiority_and_emotion"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "humanizer_semantic_reviewer",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/humanizer_semantic_reviewer.md",
+      "output_mode": "evidence_review_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [
+        "character_voice_contracts",
+        "approved_style_baseline"
+      ],
+      "role_family": "review",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "humanize_semantic_review": "diagnostics",
+        "humanize_semantic_drift": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "anti_ai_expression"
+      ],
+      "optional_playbook_ids": [
+        "character_agency",
+        "dialogue_and_subtext"
+      ],
+      "max_active_playbooks": 2,
+      "review_dimensions": [
+        "meaning_preservation",
+        "voice_preservation",
+        "event_preservation"
+      ],
+      "finding_codes": [
+        "HUMANIZE_FACT_DRIFT",
+        "HUMANIZE_VOICE_LOSS",
+        "HUMANIZE_EVENT_CHANGE"
+      ]
+    },
+    {
+      "role_id": "longform_outline_architect",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/longform_outline_architect.md",
+      "output_mode": "design_document_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "target_reader",
+        "platform_advisories",
+        "content_exclusions"
+      ],
+      "role_family": "planning",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "outline_design": "diagnostics",
+        "outline_extension": "diagnostics",
+        "outline_window_failure": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "opening_and_mainline",
+        "serial_pacing"
+      ],
+      "optional_playbook_ids": [
+        "character_agency",
+        "relationship_dynamics",
+        "foreshadow_and_mystery",
+        "ensemble_and_viewpoint"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "planning_chief_editor",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/planning_chief_editor.md",
+      "output_mode": "evidence_review_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [
+        "target_reader",
+        "platform_advisories"
+      ],
+      "role_family": "review",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "editorial_review": "diagnostics",
+        "chapter_duty_missing": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "opening_and_mainline"
+      ],
+      "optional_playbook_ids": [
+        "foreshadow_and_mystery",
+        "serial_pacing"
+      ],
+      "max_active_playbooks": 2,
+      "review_dimensions": [
+        "outline_fulfillment",
+        "mainline_visibility",
+        "promise_window"
+      ],
+      "finding_codes": [
+        "MAINLINE_MISSING",
+        "OUTLINE_DUTY_MISSED",
+        "PROMISE_WINDOW_BROKEN"
+      ]
+    },
+    {
+      "role_id": "reader_payoff_reviewer",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/reader_payoff_reviewer.md",
+      "output_mode": "evidence_review_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [
+        "target_reader",
+        "platform_advisories"
+      ],
+      "role_family": "review",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "reader_payoff_review": "diagnostics",
+        "payoff_missing": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "serial_pacing"
+      ],
+      "optional_playbook_ids": [
+        "relationship_dynamics",
+        "foreshadow_and_mystery"
+      ],
+      "max_active_playbooks": 2,
+      "review_dimensions": [
+        "reader_gain",
+        "cost",
+        "promise_progress"
+      ],
+      "finding_codes": [
+        "PAYOFF_MISSING",
+        "COST_MISSING",
+        "FALSE_PAYOFF",
+        "PAYOFF_DELIVERED",
+        "COST_VISIBLE",
+        "PROMISE_ADVANCED"
+      ]
+    },
+    {
+      "role_id": "reader_experience_editor",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/reader_experience_editor.md",
+      "output_mode": "evidence_review_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [
+        "target_reader",
+        "platform_advisories",
+        "approved_style_baseline"
+      ],
+      "role_family": "review",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "editorial_review": "diagnostics",
+        "reader_confusion": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "scene_causality"
+      ],
+      "optional_playbook_ids": [
+        "interiority_and_emotion",
+        "serial_pacing"
+      ],
+      "max_active_playbooks": 2,
+      "review_dimensions": [
+        "clarity",
+        "emotional_entry",
+        "reading_fatigue"
+      ],
+      "finding_codes": [
+        "READER_CONFUSION",
+        "EMOTION_UNGROUNDED",
+        "SCENE_FATIGUE"
+      ]
+    },
+    {
+      "role_id": "repair_author",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/repair_author.md",
+      "output_mode": "prose_markdown_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "narrative_person",
+        "pov_distance",
+        "character_voice_contracts",
+        "content_exclusions",
+        "approved_style_baseline"
+      ],
+      "role_family": "revision",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "repair": "diagnostics",
+        "repair_scope_conflict": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "scene_causality"
+      ],
+      "optional_playbook_ids": [
+        "character_agency",
+        "dialogue_and_subtext",
+        "anti_ai_expression"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "research_synthesizer",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/research_synthesizer.md",
+      "output_mode": "canonical_delta_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "content_exclusions"
+      ],
+      "role_family": "archival",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "research_synthesis": "diagnostics",
+        "research_evidence_gap": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "world_rules_and_exposition"
+      ],
+      "optional_playbook_ids": [
+        "foreshadow_and_mystery"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "scene_prose_editor",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/scene_prose_editor.md",
+      "output_mode": "evidence_review_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [
+        "narrative_person",
+        "pov_distance",
+        "character_voice_contracts",
+        "approved_style_baseline"
+      ],
+      "role_family": "review",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "editorial_review": "diagnostics",
+        "scene_summarized": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "scene_causality"
+      ],
+      "optional_playbook_ids": [
+        "dialogue_and_subtext",
+        "interiority_and_emotion",
+        "anti_ai_expression"
+      ],
+      "max_active_playbooks": 2,
+      "review_dimensions": [
+        "scene_execution",
+        "dialogue_attribution",
+        "interiority_function"
+      ],
+      "finding_codes": [
+        "SCENE_SUMMARIZED",
+        "SPEAKER_AMBIGUOUS",
+        "INTERIORITY_REPEATS"
+      ]
+    },
+    {
+      "role_id": "semantic_continuity_reviewer",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/semantic_continuity_reviewer.md",
+      "output_mode": "evidence_review_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [],
+      "role_family": "review",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "semantic_review": "diagnostics",
+        "canonical_conflict": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "world_rules_and_exposition"
+      ],
+      "optional_playbook_ids": [
+        "relationship_dynamics",
+        "foreshadow_and_mystery"
+      ],
+      "max_active_playbooks": 2,
+      "review_dimensions": [
+        "canonical_fact",
+        "motivation",
+        "space_time_ability"
+      ],
+      "finding_codes": [
+        "CANONICAL_CONFLICT",
+        "MOTIVATION_JUMP",
+        "SPACE_TIME_ABILITY_BREAK"
+      ]
+    },
+    {
+      "role_id": "semantic_pacing_reviewer",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/semantic_pacing_reviewer.md",
+      "output_mode": "evidence_review_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [
+        "target_reader",
+        "platform_advisories",
+        "approved_style_baseline"
+      ],
+      "role_family": "review",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "pacing_review": "diagnostics",
+        "beat_repetition": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "serial_pacing"
+      ],
+      "optional_playbook_ids": [
+        "scene_causality"
+      ],
+      "max_active_playbooks": 2,
+      "review_dimensions": [
+        "pressure_release",
+        "beat_change",
+        "aftermath"
+      ],
+      "finding_codes": [
+        "BEAT_REPETITION",
+        "TURN_TOO_ABRUPT",
+        "AFTERMATH_MISSING"
+      ]
+    },
+    {
+      "role_id": "semantic_style_analyst",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/semantic_style_analyst.md",
+      "output_mode": "design_document_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "narrative_person",
+        "pov_distance",
+        "target_reader",
+        "approved_style_baseline"
+      ],
+      "role_family": "analysis",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "style_analysis": "diagnostics",
+        "style_evidence_gap": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "anti_ai_expression"
+      ],
+      "optional_playbook_ids": [
+        "scene_causality",
+        "dialogue_and_subtext"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    }
   ]
 }

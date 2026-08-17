@@ -94,7 +94,6 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
     parser = build_parser()
     mutating_cases = [
         ("init-project", "--template", "qidian-longform", "--output", "novel"),
-        ("init-novel", "--template", "qidian-longform", "--output", "novel"),
         ("db", "init", "project.yaml"),
         ("db", "sync", "project.yaml"),
         ("db", "rebuild", "project.yaml"),
@@ -113,6 +112,9 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("auto-write", "report", "project.yaml"),
         ("draft", "submit", "project.yaml", "--chapter", "1", "--file", "50_workbench/agent_drafts/ch001.codex.md"),
         ("chapter", "finalize", "project.yaml", "--chapter", "1", "--approved-by", "human"),
+        ("chapter", "semantic-task", "project.yaml", "--chapter", "1"),
+        ("chapter", "semantic-validate", "project.yaml", "--chapter", "1", "--file", "50_workbench/semantic_tasks/ch001.semantic.json"),
+        ("chapter", "semantic-apply", "project.yaml", "--chapter", "1", "--file", "50_workbench/semantic_tasks/ch001.semantic.json"),
         ("gate-check", "project.yaml", "--chapter", "1"),
         ("gate-waiver", "project.yaml", "--chapter", "1", "--reason", "人工确认"),
         ("pacing-review", "project.yaml", "--chapter", "1"),
@@ -161,10 +163,10 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("production", "loop", "project.yaml"),
         ("intelligence", "task", "project.yaml", "--task-type", "book_design"),
         ("intelligence", "validate", "project.yaml", "--task-type", "book_design", "--file", "50_workbench/intelligence_candidates/book_design.project.candidate.json"),
-        ("intelligence", "apply", "project.yaml", "--task-type", "book_design", "--file", "50_workbench/intelligence_candidates/book_design.project.candidate.json", "--approved-by", "human"),
+        ("intelligence", "apply", "project.yaml", "--task-type", "book_design", "--document", "50_workbench/intelligence_candidates/book_design.project.candidate.md", "--delta", "50_workbench/intelligence_candidates/design_semantic_compile.book_design.project.delta.json", "--approved-by", "human"),
         ("character", "design-task", "project.yaml"),
         ("character", "design-validate", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_design.project.candidate.json"),
-        ("character", "design-apply", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_design.project.candidate.json", "--approved-by", "human"),
+        ("character", "design-apply", "project.yaml", "--document", "50_workbench/intelligence_candidates/character_expression_design.project.candidate.md", "--delta", "50_workbench/intelligence_candidates/design_semantic_compile.character_expression_design.project.delta.json", "--approved-by", "human"),
         ("character", "audit-task", "project.yaml", "--from-chapter", "1", "--to-chapter", "15"),
         ("character", "audit-validate", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_review.ch001-ch015.candidate.json"),
         ("character", "audit-apply", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_review.ch001-ch015.candidate.json"),
@@ -188,9 +190,9 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("status", "project.yaml"),
         ("agent-task", "list", "project.yaml"),
         ("agent-task", "status", "project.yaml"),
-        ("agent-task", "show", "project.yaml", "chapter_write:ch001:v1"),
-        ("agent-task", "brief", "project.yaml", "chapter_write:ch001:v1"),
-        ("agent-task", "validate", "project.yaml", "chapter_write:ch001:v1", "--strict"),
+        ("agent-task", "show", "project.yaml", "chapter_write:ch001:v4"),
+        ("agent-task", "brief", "project.yaml", "chapter_write:ch001:v4"),
+        ("agent-task", "validate", "project.yaml", "chapter_write:ch001:v4", "--strict"),
         ("production", "status", "project.yaml"),
         ("production", "next", "project.yaml"),
         ("production", "next", "project.yaml", "--editorial"),
@@ -357,7 +359,7 @@ def test_cli_graph_validate_update_and_check(tmp_path):
     assert (tmp_path / "novel" / "50_workbench" / "graph_reports" / "graph_check.md").exists()
 
 
-def test_cli_graph_memory_character_tasks_print_manifest(tmp_path):
+def test_cli_unified_chapter_semantic_task_prints_manifest(tmp_path):
     init = run_cli("init-project", "--template", "qidian-longform", "--output", str(tmp_path / "novel"))
     assert init.returncode == 0
 
@@ -369,19 +371,11 @@ def test_cli_graph_memory_character_tasks_print_manifest(tmp_path):
     )
 
     project_yaml = tmp_path / "novel" / "project.yaml"
-    graph = run_cli("graph", "semantic-task", str(project_yaml), "--chapter", "1")
-    memory = run_cli("memory", "semantic-task", str(project_yaml), "--chapter", "1")
-    character = run_cli("memory", "character-task", str(project_yaml), "--chapter", "1")
+    semantic = run_cli("chapter", "semantic-task", str(project_yaml), "--chapter", "1")
 
-    assert graph.returncode == 0
-    assert "Manifest:" in graph.stdout
-    assert "ch001.semantic_graph.agent_task.json" in graph.stdout
-    assert memory.returncode == 0
-    assert "Manifest:" in memory.stdout
-    assert "ch001.semantic_memory.agent_task.json" in memory.stdout
-    assert character.returncode == 0
-    assert "Manifest:" in character.stdout
-    assert "ch001.character_memory.agent_task.json" in character.stdout
+    assert semantic.returncode == 0
+    assert "Manifest:" in semantic.stdout
+    assert "ch001.semantic.agent_task.json" in semantic.stdout
 
 
 def test_cli_open_plan_beat_continue(tmp_path):
@@ -421,7 +415,7 @@ def test_cli_agent_task_validate_strict_json(tmp_path):
         "agent-task",
         "validate",
         str(project_yaml),
-        "chapter_write:ch001:v1",
+        "chapter_write:ch001:v4",
         "--strict",
         "--json",
     )

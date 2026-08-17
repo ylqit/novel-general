@@ -10,7 +10,6 @@ from typing import Any
 import json
 import re
 
-from longform_engine import __version__
 from longform_engine.agent_isolation import (
     IsolatedAgentPackage,
     compile_isolated_agent_package,
@@ -22,14 +21,24 @@ from longform_engine.agent_normalization import (
     write_agent_result_diagnostic,
 )
 from longform_engine.agent_protocol_readiness import require_agent_data_pipeline_readiness
-from longform_engine.agent_tasks import list_manifests, update_task_status, utc_now
-from longform_engine.resources import resource_path, resource_root
-from longform_engine.prompting import PromptCompilation
+from longform_engine.agent_tasks import (
+    list_manifests,
+    manifest_chapter_number,
+    manifest_commands,
+    update_task_status,
+    utc_now,
+)
+from longform_engine.resources import resource_root
+from longform_engine.prompting import (
+    PromptCompilation,
+    refresh_prompt_compilation,
+    strip_budget_report,
+)
 from longform_engine.storage import apply_transaction
 
 
 PIPELINE_SCHEMA = "agent_first_production_pipeline_v1"
-AUTHORIZATION_SCHEMA = "agent_data_pipeline_authorization_v1"
+AUTHORIZATION_SCHEMA = "agent_first_pipeline_authorization_v2"
 FEEDBACK_SCHEMA = "controlled_agent_feedback_v1"
 SAFE_CODE_PATTERN = re.compile(r"[^A-Za-z0-9_.:-]+")
 FEEDBACK_FILES = (
@@ -60,37 +69,19 @@ class ProductionAgentResult:
 
 @lru_cache(maxsize=1)
 def require_agent_first_production_pipeline() -> dict[str, Any]:
-    """Require source-tree Phase 6 evidence or an installed-wheel authorization asset."""
+    """Require the same structural protocol contract in a checkout or installed wheel."""
 
     root = resource_root()
-    checklist = root / "docs" / "AGENT_FIRST_DOCUMENT_PROTOCOL_AND_DATA_PIPELINE_CHECKLIST.md"
-    if checklist.is_file():
-        report = require_agent_data_pipeline_readiness(root, requested=True)
-        if report is None:
-            raise AgentProductionPipelineError("Phase 6 readiness unexpectedly returned no report.")
-        return {
-            "schema": AUTHORIZATION_SCHEMA,
-            "authorized": True,
-            "source": "source_tree_phase6_report",
-            "engine_version": __version__,
-            "protocol_surface_sha256": report["provenance"]["protocol_surface_sha256"],
-        }
-
-    path = resource_path("config", "agent_data_pipeline_authorization.json")
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise AgentProductionPipelineError(f"Installed Agent pipeline authorization is unreadable: {exc}") from exc
-    if (
-        not isinstance(payload, dict)
-        or payload.get("schema") != AUTHORIZATION_SCHEMA
-        or payload.get("authorized") is not True
-        or payload.get("engine_version") != __version__
-        or not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("protocol_surface_sha256") or ""))
-        or not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("phase6_evidence_sha256") or ""))
-    ):
-        raise AgentProductionPipelineError("Installed Agent pipeline authorization is missing, stale, or invalid.")
-    return dict(payload) | {"source": "installed_release_asset"}
+    report = require_agent_data_pipeline_readiness(root, requested=True)
+    if report is None:
+        raise AgentProductionPipelineError("Agent protocol readiness unexpectedly returned no report.")
+    return {
+        "schema": AUTHORIZATION_SCHEMA,
+        "authorized": True,
+        "source": "current_structural_contract",
+        "protocol_surface_sha256": report["provenance"]["protocol_surface_sha256"],
+        "execution_model": report["provenance"]["execution_model"],
+    }
 
 
 def compile_production_agent_package(
@@ -109,27 +100,59 @@ def compile_production_agent_package(
         host=host,
         controlled_feedback=feedback["items"],
     )
-    result_path = package.output_contract.companion_output_path or package.output_contract.primary_output_path
-    document_arg = (
-        f" --document {package.output_contract.primary_output_path}"
-        if package.output_contract.companion_output_path
-        else ""
-    )
     protocol_command = (
         f"longform-engine agent-task result-validate project.yaml {package.task_id} "
-        f"--file {result_path}{document_arg}"
+        f"--file {package.output_contract.output_path}"
     )
-    handoff = (
-        "\n## Protocol Validation Order\n\n"
-        f"1. Register and structurally validate the role output: `{protocol_command}`\n"
-        f"2. Run domain validation: `{package.output_contract.validate_command}`\n"
-        "3. Stop before apply/finalize unless the user explicitly runs the declared command.\n"
+    budget = package.prompt.payload.get("budget") or {}
+    if str(budget.get("status") or "") == "need_human":
+        handoff = (
+            "\n## 当前阻断与交接\n\n"
+            "当前核心 Prompt 或必要证据无法安全装入所选容量档。本任务不得生成或提交候选结果。\n"
+            f"下一命令：`{package.output_contract.failure_command}`\n"
+        )
+    else:
+        handoff = (
+            "\n## 协议验收顺序\n\n"
+            f"1. 登记并校验角色输出：`{protocol_command}`\n"
+            f"2. 执行领域校验：`{package.output_contract.validate_command}`\n"
+            "3. 除非用户明确执行声明命令，否则停在 apply/finalize 之前。\n"
+        )
+    semantic_markdown = strip_budget_report(package.prompt.markdown) + "\n" + handoff
+    refreshed_prompt = refresh_prompt_compilation(
+        root.resolve(),
+        manifest,
+        markdown=semantic_markdown,
+        payload=package.prompt.payload,
+        input_units=package.context.total_estimated_units,
+        context_batches=package.context.budget_report.get("context_batches") or [],
+        blocking_reasons=package.context.budget_report.get("blocking_reasons") or [],
     )
-    semantic_markdown = package.prompt.markdown.rstrip() + "\n" + handoff
+    if not refreshed_prompt.payload.get("executable", True) and str(budget.get("status") or "") != "need_human":
+        blocked_handoff = (
+            "\n## 当前阻断与交接\n\n"
+            "追加宿主交接后，核心 Prompt 已超过所选容量档。本任务不得生成或提交候选结果。\n"
+            f"下一命令：`{package.output_contract.failure_command}`\n"
+        )
+        semantic_markdown = strip_budget_report(package.prompt.markdown) + "\n" + blocked_handoff
+        refreshed_prompt = refresh_prompt_compilation(
+            root.resolve(),
+            manifest,
+            markdown=semantic_markdown,
+            payload=package.prompt.payload,
+            input_units=package.context.total_estimated_units,
+            context_batches=package.context.budget_report.get("context_batches") or [],
+            blocking_reasons=[
+                *(package.context.budget_report.get("blocking_reasons") or []),
+                "host_handoff_exceeds_control_budget",
+            ],
+        )
+    semantic_markdown = refreshed_prompt.markdown
+    prompt_payload = refreshed_prompt.payload
     prompt_hash = sha256(semantic_markdown.encode("utf-8")).hexdigest()
     return replace(
         package,
-        prompt=PromptCompilation(payload=package.prompt.payload, markdown=semantic_markdown),
+        prompt=PromptCompilation(payload=prompt_payload, markdown=semantic_markdown),
         prompt_hash=prompt_hash,
         host_work_order=render_host_work_order(
             host=host,
@@ -144,7 +167,6 @@ def validate_production_agent_result(
     manifest: dict[str, Any],
     *,
     result_file: str | Path,
-    document_file: str | Path | None = None,
 ) -> ProductionAgentResult:
     """Validate one role output and atomically advance only its control-plane lifecycle."""
 
@@ -159,7 +181,6 @@ def validate_production_agent_result(
         project_root,
         manifest,
         result_file=result_file,
-        document_file=document_file,
     )
     normalization = validation.normalization
     if normalization is None:
@@ -171,7 +192,7 @@ def validate_production_agent_result(
     with apply_transaction(
         project_root,
         command="agent-task result-validate",
-        chapter_number=int(manifest.get("chapter_number") or 0) or None,
+        chapter_number=manifest_chapter_number(manifest) or None,
         source_paths=[output_path],
         touched_paths=[agent_task_dir],
         metadata={
@@ -181,7 +202,11 @@ def validate_production_agent_result(
             "lifecycle_target": lifecycle_status,
         },
     ):
-        normalized = write_agent_result_diagnostic(project_root, normalization)
+        normalized = (
+            replace(normalization, diagnostic_file="")
+            if validation.ok
+            else write_agent_result_diagnostic(project_root, normalization)
+        )
         update_task_status(
             project_root,
             task_id,
@@ -199,11 +224,8 @@ def validate_production_agent_result(
             },
         )
 
-    next_command = (
-        str(manifest.get("validate_command") or "")
-        if validation.ok
-        else str(manifest.get("failure_next_command") or "")
-    )
+    commands = manifest_commands(manifest)
+    next_command = str(commands.get("validate") if validation.ok else commands.get("failure") or "")
     return ProductionAgentResult(
         schema=PIPELINE_SCHEMA,
         ok=validation.ok,
@@ -227,9 +249,9 @@ def production_package_payload(package: IsolatedAgentPackage) -> dict[str, Any]:
         "role_id": package.role_id,
         "role_version": package.role_version,
         "independence_mode": package.independence_mode,
-        "role_prompt_hash": package.role_prompt_hash,
+        "role_contract_hash": package.role_contract_hash,
         "project_overlay_hash": package.project_overlay_hash,
-        "prompt_hash": package.prompt_hash,
+        "compiled_prompt_hash": package.prompt_hash,
         "context": package.context.as_dict(),
         "output_contract": asdict(package.output_contract),
         "result_template": package.result_template,
@@ -241,7 +263,7 @@ def production_package_payload(package: IsolatedAgentPackage) -> dict[str, Any]:
 def controlled_feedback(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     """Compile code-only review carryover; never forward prose, evidence spans, or commands."""
 
-    chapter_number = int(manifest.get("chapter_number") or 0)
+    chapter_number = manifest_chapter_number(manifest)
     task_type = str(manifest.get("task_type") or "")
     source_chapter = chapter_number - 1 if task_type == "chapter_write" else chapter_number
     if source_chapter <= 0:

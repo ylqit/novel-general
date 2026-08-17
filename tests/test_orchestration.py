@@ -1,5 +1,6 @@
 import json
 
+from longform_engine.agent_protocols import PROSE_MARKDOWN_SCHEMA
 from longform_engine.agent_tasks import build_manifest, list_manifests, write_manifest
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_review
@@ -365,9 +366,9 @@ def test_submit_agent_draft_waits_for_required_semantic_review_without_invalidat
     )
 
     assert result.passed is False
-    assert result.next_command == "agent-task brief project.yaml semantic_review:ch001:v1"
-    assert tasks["chapter_write:ch001:v1"]["status"] == "submitted"
-    assert tasks["semantic_review:ch001:v1"]["status"] == "awaiting_agent"
+    assert result.next_command == "agent-task brief project.yaml semantic_review:ch001:v4"
+    assert tasks["chapter_write:ch001:v4"]["status"] == "submitted"
+    assert tasks["semantic_review:ch001:v4"]["status"] == "awaiting_agent"
     assert next_action["task_type"] == "semantic_review"
     assert next_action["status"] == "agent_task_awaiting_agent"
     assert "agent_semantic_review" in gate["allowed_actions"]
@@ -638,9 +639,10 @@ def test_continue_write_carries_previous_controlled_feedback_forward(tmp_path):
     assert "graph update waits for chapter finalize" not in json.dumps(feedback, ensure_ascii=False)
     assert "## Feedback Carryover" in task_md
     assert "humanizer_summary_voice" in task_md
+    manifest_inputs = {item["path"] for item in manifest["io"]["inputs"]}
     for source in feedback["source_files"]:
-        assert source not in manifest["input_files"]
-    assert len(manifest["input_files"]) <= 7
+        assert source not in manifest_inputs
+    assert len(manifest_inputs) <= 7
     assert set(feedback["source_files"]).issubset(set(task["context_plan"]["excluded_duplicates"]))
     assert not (root / "40_manuscript" / "final" / "ch002.md").exists()
     assert not (root / "60_rag" / "chunks" / "ch002.json").exists()
@@ -691,13 +693,13 @@ def write_repair_manifest(root):
         chapter_number=1,
         input_files=[root / "project.yaml"],
         allowed_output_paths=[candidate],
-        output_schema="markdown_repair_candidate",
+        output_schema=PROSE_MARKDOWN_SCHEMA,
         validate_command=(
             "longform-engine draft submit project.yaml --chapter 1 "
             "--file 50_workbench/repair_candidates/ch001.codex.repair_candidate.md --agent codex --overwrite"
         ),
         apply_command="longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
         failure_next_command="longform-engine repair-chapter project.yaml --chapter 1 --plan-only",
-        task_id="repair:ch001:v1",
+        task_id="repair:ch001:v4",
     )
     write_manifest(root, manifest, root / "50_workbench" / "repair_candidates" / "ch001.repair_task.agent_task.json")

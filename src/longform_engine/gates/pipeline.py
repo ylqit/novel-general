@@ -10,11 +10,21 @@ import hashlib
 import json
 import re
 
+from longform_engine.agent_protocols import (
+    EVIDENCE_REVIEW_SCHEMA,
+    VALIDATION_REPORT_SCHEMA,
+    build_validation_report,
+    output_protocol_for_task,
+    validate_evidence_review,
+    validate_review_evidence_for_source,
+)
 from longform_engine.agent_tasks import (
     AgentTaskContractError,
     build_manifest,
     list_manifests,
+    manifest_input_paths,
     mark_tasks_for_output,
+    resolve_under_root,
     resolve_candidate_task,
     supersede_other_candidate_tasks,
     update_task_status,
@@ -28,6 +38,7 @@ from longform_engine.db import sync_database
 from longform_engine.graph import check_graph
 from longform_engine.memory import deterministic_evidence_gate_findings
 from longform_engine.planning import evaluate_event_matrix, event_type_marker_count, infer_event_types_from_text
+from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.text_metrics import content_character_count
 
@@ -136,9 +147,6 @@ class RepairPlanResult:
     next_command: str
 
 
-SEMANTIC_REVIEW_CONTEXT_MAX_CHARS = 8_000
-
-
 def build_semantic_review_context(
     root: Path,
     *,
@@ -204,13 +212,28 @@ def build_semantic_review_context(
             "declared_continuity": semantic_review_declared_fanfiction_policy(fanfiction_bible),
         }
 
+    budget_contract = resolve_context_budget_contract(root)
+    visible_character_units = max(
+        1.0,
+        float(budget_contract.estimator["cjk_unit_weight"])
+        * float(budget_contract.estimator["safety_multiplier"]),
+    )
+    packet_character_budget = max(
+        3_000,
+        int((budget_contract.input_soft_units * 0.6) / visible_character_units),
+    )
+    section_weights = {
+        "chapter_contract": 0.19,
+        "current_state": 0.11,
+        "outline_anchor": 0.08,
+        "characters": 0.19,
+        "story_graph": 0.10,
+        "fanfiction": 0.33,
+    }
+    active_weight = sum(section_weights[key] for key in raw_sections)
     section_budgets = {
-        "chapter_contract": 1_500,
-        "current_state": 900,
-        "outline_anchor": 600,
-        "characters": 1_500,
-        "story_graph": 800,
-        "fanfiction": 2_400,
+        key: max(350, int(packet_character_budget * section_weights[key] / active_weight))
+        for key in raw_sections
     }
     sections: dict[str, Any] = {}
     section_selection: dict[str, dict[str, Any]] = {}
@@ -260,11 +283,10 @@ def build_semantic_review_context(
         },
     }
     serialized = json.dumps(packet, ensure_ascii=False, separators=(",", ":"))
-    if len(serialized) > SEMANTIC_REVIEW_CONTEXT_MAX_CHARS:
-        raise GateError(
-            "Compiled semantic review context exceeds 8000 characters; reduce the chapter participant/canon scope."
-        )
     packet["selection"]["compiled_chars"] = len(serialized)
+    packet["selection"]["estimated_units"] = estimate_text_units(serialized, budget_contract.estimator)
+    packet["selection"]["budget_profile"] = budget_contract.profile
+    packet["selection"]["capacity_units"] = budget_contract.capacity_units
     return packet
 
 
@@ -636,7 +658,6 @@ def semantic_review_task(
         fanfiction=str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction",
     )
     write_json(context_file, context_payload)
-    schema = semantic_review_output_template(chapter_number, chapter_path, root)
     atomic_write_text(
         task_md,
         "\n".join(
@@ -663,14 +684,13 @@ def semantic_review_task(
                 "",
                 "## Output Contract",
                 "",
-                f"- Write JSON only: `{relative_path(root, output_file)}`",
+                f"- Write one `{EVIDENCE_REVIEW_SCHEMA}` JSON: `{relative_path(root, output_file)}`",
+                "- coverage: canonical_fact, motivation, space_time_ability.",
+                "- finding codes: CANONICAL_CONFLICT, MOTIVATION_JUMP, SPACE_TIME_ABILITY_BREAK.",
+                "- evidence_ids use current source path or filename plus @start:end; CLI supplies chapter/path/hash/time.",
                 f"- Validate: `longform-engine gate semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}`",
                 f"- Apply: `longform-engine gate semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}`",
                 "- Never edit final/RAG/graph/TCS/SQLite or canonical source files.",
-                "",
-                "```json",
-                json.dumps(schema, ensure_ascii=False, indent=2),
-                "```",
                 "",
             ]
         ),
@@ -682,7 +702,7 @@ def semantic_review_task(
         chapter_number=chapter_number,
         input_files=manifest_inputs,
         allowed_output_paths=[output_file],
-        output_schema="semantic_review_result_v1",
+        output_schema=output_protocol_for_task("semantic_review"),
         validate_command=f"longform-engine gate semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
         apply_command=f"longform-engine gate semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
         failure_next_command=f"longform-engine gate semantic-task project.yaml --chapter {chapter_number}",
@@ -699,8 +719,6 @@ def semantic_review_task(
                 "60_rag/query_cache/",
                 "70_runtime/db/",
             ],
-            "max_files": 7,
-            "max_chars": 18_000,
             "compiled_brief": relative_path(root, task_md),
             "selection_report": relative_path(root, context_file),
         },
@@ -730,54 +748,53 @@ def semantic_review_validate(
     payload = load_json(path, default={})
     errors: list[str] = []
     warnings: list[str] = []
+    task, control_errors = validate_current_task_result(
+        root,
+        chapter_number=chapter_number,
+        task_type="semantic_review",
+        output_path=path,
+        allowed_statuses=("submitted", "validated"),
+    )
+    errors.extend(control_errors)
     if not isinstance(payload, dict):
         payload = {}
         errors.append("semantic review result must be a JSON object.")
-    expected_keys = {"schema", "chapter_number", "source_path", "source_hash", "verdict", "findings", "notes"}
-    if set(payload) != expected_keys:
-        errors.append(f"top-level keys must be exactly {sorted(expected_keys)}.")
-    if payload.get("schema") != "semantic_review_result_v1":
-        errors.append("schema must be semantic_review_result_v1.")
-    if int(payload.get("chapter_number") or 0) != chapter_number:
-        errors.append("payload chapter_number does not match command chapter.")
-    source = resolve_review_source(root, chapter_number, str(payload.get("source_path") or ""))
+    expected_dimensions = {"canonical_fact", "motivation", "space_time_ability"}
+    allowed_codes = {"CANONICAL_CONFLICT", "MOTIVATION_JUMP", "SPACE_TIME_ABILITY_BREAK"}
+    errors.extend(
+        validate_evidence_review(
+            payload,
+            required_dimensions=expected_dimensions,
+            allowed_finding_codes=allowed_codes,
+        )
+    )
+    source = semantic_review_source_for_task(root, task, chapter_number)
     if source is None:
         errors.append("chapter source is missing.")
         source_text = ""
     else:
         source_text = safe_read_text(source)
-        if str(payload.get("source_path") or "") != relative_path(root, source):
-            errors.append("source_path does not match the current chapter source.")
-        if str(payload.get("source_hash") or "") != sha256_text(source_text):
-            errors.append("source_hash does not match the current chapter source.")
     verdict = str(payload.get("verdict") or "").lower()
-    if verdict not in {"pass", "warning", "fail"}:
-        errors.append("verdict must be pass, warning, or fail.")
-    context = load_json(artifact_dir / "semantic_review_context.json", default={})
-    allowed_refs = {
-        str(item).replace("\\", "/")
-        for item in (context.get("allowed_canonical_refs") if isinstance(context, dict) else []) or []
-        if is_canonical_reference(str(item))
-    }
-    known_entities = semantic_review_known_entities(root)
-    findings = payload.get("findings")
-    if not isinstance(findings, list):
-        errors.append("findings must be a list.")
-        findings = []
-    for index, finding in enumerate(findings):
-        validate_semantic_review_finding(
-            finding,
-            index=index,
+    if set((payload.get("coverage") or {}).keys()) != expected_dimensions:
+        errors.append("coverage must contain exactly canonical_fact, motivation, space_time_ability.")
+    if source is not None:
+        _evidence, evidence_errors = validate_review_evidence_for_source(
+            payload,
+            source_path=relative_path(root, source),
             source_text=source_text,
-            allowed_refs=allowed_refs,
-            known_entities=known_entities,
-            errors=errors,
         )
-    if verdict == "fail" and not any(
+        errors.extend(evidence_errors)
+    findings = payload.get("findings") if isinstance(payload.get("findings"), list) else []
+    for index, finding in enumerate(findings):
+        if not isinstance(finding, dict):
+            continue
+        if finding.get("code") not in allowed_codes:
+            errors.append(f"findings[{index}].code is outside semantic-continuity scope.")
+    if verdict == "repair" and not any(
         isinstance(item, dict) and str(item.get("severity") or "").upper() in {"P0", "P1"}
         for item in findings
     ):
-        errors.append("fail verdict requires at least one P0/P1 finding.")
+        warnings.append("repair verdict contains no P0/P1 finding.")
     report_file = artifact_dir / "semantic_review_validation.json"
     ok = not errors
     next_command = (
@@ -787,16 +804,16 @@ def semantic_review_validate(
     )
     write_json(
         report_file,
-        {
-            "schema": "semantic_review_validation_v1",
-            "chapter_number": chapter_number,
-            "file": relative_path(root, path),
-            "ok": ok,
-            "errors": errors,
-            "warnings": warnings,
-            "next_command": next_command,
-            "updated_at": utc_now(),
-        },
+        build_validation_report(
+            ok=ok,
+            stage="semantic_review_validate",
+            subject=relative_path(root, path),
+            errors=errors,
+            warnings=warnings,
+            blockers=errors,
+            provenance={"chapter_number": chapter_number},
+            next_command=next_command,
+        ),
     )
     mark_tasks_for_output(
         root,
@@ -832,6 +849,17 @@ def semantic_review_apply(
     root = resolve_project_root(config)
     path = Path(validation.file)
     artifact_dir = gate_artifact_dir(root, chapter_number)
+    review_task, control_errors = validate_current_task_result(
+        root,
+        chapter_number=chapter_number,
+        task_type="semantic_review",
+        output_path=path,
+        allowed_statuses=("validated",),
+    )
+    source = semantic_review_source_for_task(root, review_task, chapter_number)
+    if control_errors or source is None:
+        detail = "; ".join(control_errors) or "the current semantic review source is unavailable"
+        raise GateError(f"semantic review control-plane binding is invalid: {detail}")
     application_file = artifact_dir / "semantic_review_application.json"
     payload = load_json(path, default={})
     candidate_task = semantic_review_candidate_task(root, chapter_number)
@@ -868,7 +896,7 @@ def semantic_review_apply(
                 "schema": "semantic_review_application_v1",
                 "chapter_number": chapter_number,
                 "result_file": relative_path(root, path),
-                "source_hash": payload.get("source_hash"),
+                "source_hash": sha256_text(safe_read_text(source)) if source is not None else "",
                 "payload": payload,
                 "applied_at": utc_now(),
             },
@@ -1212,11 +1240,20 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
             ],
         },
         "allowed_output_path": relative_path(root, output_file),
-        "output_schema": semantic_pacing_output_template(chapter_number, chapter_path, root),
+        "output_schema": {
+            "schema": EVIDENCE_REVIEW_SCHEMA,
+            "verdict": "pass|repair|need_human|insufficient_evidence",
+            "coverage": {
+                "pressure_release": "checked|insufficient|not_applicable",
+                "beat_change": "checked|insufficient|not_applicable",
+                "aftermath": "checked|insufficient|not_applicable",
+            },
+            "findings": [],
+        },
         "instructions": [
             "Judge semantic pacing, escalation, reader pressure, tail hook, and reverse-brake risks.",
             "Do not edit final/RAG/graph/TCS/SQLite or gate_result.json directly.",
-            "Return JSON only at the allowed output path.",
+            "Return one evidence_review_v1 JSON at the allowed output path.",
         ],
         "created_at": utc_now(),
     }
@@ -1235,7 +1272,7 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
                 "Judge semantic pacing only. Do not mutate final/RAG/graph/TCS/SQLite or gate_result.json directly.",
                 "The task JSON already contains the bounded planning context. Do not open its source_catalog paths.",
                 "",
-                "## Output Schema",
+                "## Output Protocol",
                 "",
                 "```json",
                 json.dumps(task_payload["output_schema"], ensure_ascii=False, indent=2),
@@ -1252,7 +1289,7 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
         chapter_number=chapter_number,
         input_files=[task_md, chapter_path, task_json],
         allowed_output_paths=[output_file],
-        output_schema="semantic_pacing_result_v2",
+        output_schema=output_protocol_for_task("pacing_review"),
         validate_command=f"longform-engine pacing semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
         apply_command=f"longform-engine pacing semantic-apply project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
         failure_next_command=f"longform-engine pacing semantic-task project.yaml --chapter {chapter_number}",
@@ -1261,8 +1298,6 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
             "optional_files": [],
             "compiled_brief": task_md,
             "selection_report": task_json,
-            "max_files": 3,
-            "max_chars": 20_000,
         },
     )
     write_manifest(root, manifest, manifest_file)
@@ -1304,46 +1339,41 @@ def semantic_pacing_validate(
     if not isinstance(payload, dict):
         payload = {}
         errors.append("semantic pacing result must be a JSON object.")
-    if int(payload.get("schema_version") or 0) != 2:
-        errors.append("schema_version must be 2; historical semantic pacing schemas are not accepted.")
-    if int(payload.get("chapter_number") or 0) != chapter_number:
-        errors.append("payload chapter_number does not match command chapter.")
+    expected_dimensions = {"pressure_release", "beat_change", "aftermath"}
+    allowed_codes = {"BEAT_REPETITION", "TURN_TOO_ABRUPT", "AFTERMATH_MISSING"}
+    errors.extend(
+        validate_evidence_review(
+            payload,
+            required_dimensions=expected_dimensions,
+            allowed_finding_codes=allowed_codes,
+        )
+    )
     chapter_path = chapter_text_path(root, chapter_number, source="draft")
     if chapter_path is None:
         errors.append(f"Current draft not found for ch{chapter_number:03d}.")
     else:
         expected_path = relative_path(root, chapter_path)
         expected_hash = sha256_text(safe_read_text(chapter_path))
-        if str(payload.get("source_path") or "") != expected_path:
-            errors.append("source_path does not match the current chapter draft.")
-        if str(payload.get("source_sha256") or "") != expected_hash:
-            errors.append("source_sha256 does not match the current chapter draft.")
+        _evidence, evidence_errors = validate_review_evidence_for_source(
+            payload,
+            source_path=expected_path,
+            source_text=safe_read_text(chapter_path),
+        )
+        errors.extend(evidence_errors)
     verdict = str(payload.get("verdict") or "").strip().lower()
-    if verdict not in {"pass", "warning", "fail"}:
-        errors.append("verdict must be pass, warning, or fail.")
-    tier = str(payload.get("tier") or "").strip().lower()
-    if tier and tier not in {"slow", "medium", "fast"}:
-        errors.append("tier must be slow, medium, or fast.")
-    issues = payload.get("issues")
-    if not isinstance(issues, list):
-        errors.append("issues must be a list.")
-        issues = []
-    for index, issue in enumerate(issues):
-        if not isinstance(issue, dict):
-            errors.append(f"issues[{index}] must be an object.")
+    if set((payload.get("coverage") or {}).keys()) != expected_dimensions:
+        errors.append("coverage must contain exactly pressure_release, beat_change, aftermath.")
+    findings = payload.get("findings") if isinstance(payload.get("findings"), list) else []
+    for index, finding in enumerate(findings):
+        if not isinstance(finding, dict):
             continue
-        if not str(issue.get("code") or "").strip():
-            errors.append(f"issues[{index}] missing code.")
-        severity = str(issue.get("severity") or "").strip().upper()
-        if severity not in {"P0", "P1", "P2"}:
-            errors.append(f"issues[{index}] severity must be P0, P1, or P2.")
-        if not str(issue.get("message") or "").strip():
-            errors.append(f"issues[{index}] missing message.")
-    raw_warnings = payload.get("warnings", [])
-    if not isinstance(raw_warnings, list):
-        errors.append("warnings must be a list.")
-    if verdict == "fail" and not any(isinstance(issue, dict) and str(issue.get("severity") or "").upper() in {"P0", "P1"} for issue in issues):
-        warnings.append("fail verdict has no P0/P1 issue; apply will treat it as P1.")
+        if finding.get("code") not in allowed_codes:
+            errors.append(f"findings[{index}].code is outside semantic-pacing scope.")
+    if verdict == "repair" and not any(
+        isinstance(item, dict) and str(item.get("severity") or "").upper() in {"P0", "P1"}
+        for item in findings
+    ):
+        warnings.append("repair verdict has no P0/P1 finding.")
     report_file = artifact_dir / "semantic_pacing_validation.json"
     ok = not errors
     next_command = (
@@ -1353,18 +1383,20 @@ def semantic_pacing_validate(
     )
     write_json(
         report_file,
-        {
-            "schema_version": 2,
-            "chapter_number": chapter_number,
-            "file": relative_path(root, path),
-            "source_path": str(payload.get("source_path") or ""),
-            "source_sha256": str(payload.get("source_sha256") or ""),
-            "ok": ok,
-            "errors": errors,
-            "warnings": warnings,
-            "next_command": next_command,
-            "updated_at": utc_now(),
-        },
+        build_validation_report(
+            ok=ok,
+            stage="semantic_pacing_validate",
+            subject=relative_path(root, path),
+            errors=errors,
+            warnings=warnings,
+            blockers=errors,
+            provenance={
+                "chapter_number": chapter_number,
+                "source_path": expected_path if chapter_path is not None else "",
+                "source_sha256": expected_hash if chapter_path is not None else "",
+            },
+            next_command=next_command,
+        ),
     )
     mark_tasks_for_output(
         root,
@@ -1467,6 +1499,9 @@ def semantic_pacing_apply(
             if not str(item).startswith("semantic_pacing:")
         ]
         semantic_failures, semantic_warnings = semantic_pacing_gate_items(payload)
+        current_source = chapter_text_path(root, chapter_number, source="draft")
+        current_source_path = relative_path(root, current_source) if current_source is not None else ""
+        current_source_hash = sha256_text(safe_read_text(current_source)) if current_source is not None else ""
         failures.extend(semantic_failures)
         warnings.extend(semantic_warnings)
         severity = max_severity(failures)
@@ -1484,12 +1519,11 @@ def semantic_pacing_apply(
                 "semantic_pacing_result": relative_path(root, path),
                 "semantic_pacing": {
                     "verdict": payload.get("verdict"),
-                    "tier": payload.get("tier"),
-                    "source_path": payload.get("source_path"),
-                    "source_sha256": payload.get("source_sha256"),
+                    "coverage": payload.get("coverage", []),
+                    "source_path": current_source_path,
+                    "source_sha256": current_source_hash,
                     "result_sha256": sha256_text(safe_read_text(path)),
-                    "tail_hook_quality": payload.get("tail_hook_quality", ""),
-                    "issues": payload.get("issues", []),
+                    "findings": payload.get("findings", []),
                 },
                 "updated_at": utc_now(),
             }
@@ -2669,30 +2703,6 @@ def markdown_report(title: str, issues: list[str], warnings: list[str]) -> str:
     return "\n".join(lines)
 
 
-def semantic_pacing_output_template(chapter_number: int, source: Path, root: Path) -> dict[str, Any]:
-    return {
-        "schema_version": 2,
-        "chapter_number": chapter_number,
-        "source_path": relative_path(root, source),
-        "source_sha256": sha256_text(safe_read_text(source)),
-        "verdict": "pass",
-        "tier": "medium",
-        "event_types": [],
-        "tail_hook_quality": "weak",
-        "issues": [
-            {
-                "code": "semantic_pacing_example",
-                "severity": "P2",
-                "message": "Concrete pacing risk.",
-                "evidence": "Short quote from the chapter.",
-                "recommendation": "Scene-level repair recommendation.",
-            }
-        ],
-        "warnings": [],
-        "notes": "",
-    }
-
-
 def semantic_pacing_review_status(
     config: ConfigDocument,
     *,
@@ -2724,14 +2734,12 @@ def semantic_pacing_review_status(
     passed = bool(
         draft_hash
         and isinstance(payload, dict)
-        and int(payload.get("schema_version") or 0) == 2
-        and str(payload.get("source_path") or "") == relative_path(root, draft)
-        and str(payload.get("source_sha256") or "") == draft_hash
+        and payload.get("schema") == EVIDENCE_REVIEW_SCHEMA
         and isinstance(applied, dict)
         and str(applied.get("source_path") or "") == relative_path(root, draft)
         and str(applied.get("source_sha256") or "") == draft_hash
         and str(applied.get("result_sha256") or "") == sha256_text(safe_read_text(result))
-        and str(applied.get("verdict") or "") in {"pass", "warning"}
+        and str(applied.get("verdict") or "") == "pass"
         and gate.get("passed") is True
     )
     return {
@@ -2762,33 +2770,25 @@ def semantic_pacing_task_is_current(root: Path, chapter_number: int, task: dict[
     )
 
 
-def semantic_review_output_template(chapter_number: int, source: Path, root: Path) -> dict[str, Any]:
-    text = safe_read_text(source)
-    example_end = min(len(text), 20)
-    return {
-        "schema": "semantic_review_result_v1",
-        "chapter_number": chapter_number,
-        "source_path": relative_path(root, source),
-        "source_hash": sha256_text(text),
-        "verdict": "pass",
-        "findings": [
-            {
-                "code": "motivation_jump_example",
-                "category": "motivation",
-                "severity": "P2",
-                "message": "Concrete semantic issue.",
-                "evidence_span": {
-                    "start": 0,
-                    "end": example_end,
-                    "text": text[:example_end],
-                },
-                "canonical_refs": ["10_bible/characters.json"],
-                "entity_ids": [],
-                "recommendation": "Concrete scene-level repair.",
-            }
-        ],
-        "notes": "",
-    }
+def semantic_review_source_for_task(
+    root: Path,
+    task: dict[str, Any] | None,
+    chapter_number: int,
+) -> Path | None:
+    """Resolve the exact draft/final bytes declared by the current review task."""
+
+    if not isinstance(task, dict):
+        return None
+    candidates: list[Path] = []
+    names = {f"ch{chapter_number:03d}.md", f"chapter_{chapter_number:03d}.md", f"{chapter_number}.md"}
+    for value in manifest_input_paths(task):
+        relative = str(value or "").replace("\\", "/")
+        if not relative.startswith(("40_manuscript/draft/", "40_manuscript/final/")):
+            continue
+        path = resolve_under_root(root, relative)
+        if path.name in names and path.is_file():
+            candidates.append(path)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def semantic_review_gate_items(
@@ -2840,7 +2840,7 @@ def semantic_review_gate_items(
             "required": True,
             "status": "awaiting_agent",
             "task": relative_path(root, Path(task.manifest_file)),
-            "next_command": f"longform-engine agent-task brief project.yaml --task-id semantic_review:ch{chapter_number:03d}:v1",
+            "next_command": f"longform-engine agent-task brief project.yaml --task-id semantic_review:ch{chapter_number:03d}:v4",
         }
     payload = application["payload"]
     failures: list[dict[str, Any]] = []
@@ -2850,16 +2850,15 @@ def semantic_review_gate_items(
             continue
         severity = str(item.get("severity") or "").upper()
         code = str(item.get("code") or "finding")
-        message = str(item.get("message") or code)
+        message = str(item.get("diagnosis") or code)
         if severity in {"P0", "P1"}:
             failures.append(
                 {
                     "code": f"agent_semantic:{code}",
                     "severity": severity,
                     "message": message,
-                    "evidence_span": item.get("evidence_span"),
-                    "canonical_refs": item.get("canonical_refs"),
-                    "repair_action": item.get("recommendation"),
+                    "evidence_ids": list(item.get("evidence_ids") or []),
+                    "repair_action": item.get("repair_target"),
                 }
             )
         elif severity == "P2":
@@ -3024,33 +3023,26 @@ def resolve_semantic_pacing_result_path(root: Path, artifact_dir: Path, file_pat
 def semantic_pacing_gate_items(payload: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
     failures: list[dict[str, Any]] = []
     warnings: list[str] = []
-    issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
-    for issue in issues:
-        if not isinstance(issue, dict):
+    findings = payload.get("findings") if isinstance(payload.get("findings"), list) else []
+    for finding in findings:
+        if not isinstance(finding, dict):
             continue
-        severity = str(issue.get("severity") or "").upper()
-        message = str(issue.get("message") or "").strip()
-        code = str(issue.get("code") or "semantic_pacing").strip()
+        severity = str(finding.get("severity") or "").upper()
+        message = str(finding.get("diagnosis") or "").strip()
+        code = str(finding.get("code") or "semantic_pacing").strip()
         if severity in {"P0", "P1"}:
             failures.append(
                 {
                     "code": f"semantic_pacing:{code}",
                     "severity": severity,
                     "message": message or code,
-                    "evidence": issue.get("evidence", ""),
-                    "repair_action": issue.get("recommendation", "repair pacing and rerun semantic pacing review"),
+                    "evidence": list(finding.get("evidence_ids") or []),
+                    "repair_action": finding.get("repair_target", "repair pacing and rerun semantic pacing review"),
                 }
             )
         elif severity == "P2":
             warnings.append(f"semantic_pacing:{code}: {message or code}")
-    for warning in payload.get("warnings", []) if isinstance(payload.get("warnings"), list) else []:
-        if isinstance(warning, dict):
-            code = warning.get("code") or "warning"
-            message = warning.get("message") or ""
-            warnings.append(f"semantic_pacing:{code}: {message}")
-        else:
-            warnings.append(f"semantic_pacing:{warning}")
-    if str(payload.get("verdict") or "").lower() == "fail" and not failures:
+    if str(payload.get("verdict") or "").lower() == "repair" and not failures:
         failures.append(
             {
                 "code": "semantic_pacing:fail_verdict",
@@ -3066,27 +3058,27 @@ def append_semantic_pacing_report(path: Path, payload: dict[str, Any], result_pa
     existing = safe_read_text(path) if path.exists() else ""
     marker = "\n## Semantic Pacing Review\n"
     base = existing.split(marker, 1)[0].rstrip()
-    issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
-    warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+    findings = payload.get("findings") if isinstance(payload.get("findings"), list) else []
+    coverage = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
     lines = [
         base,
         marker.strip(),
         "",
         f"- Result: `{result_path}`",
         f"- Verdict: {payload.get('verdict', '')}",
-        f"- Tier: {payload.get('tier', '')}",
-        f"- Tail hook quality: {payload.get('tail_hook_quality', '')}",
+        "- Coverage: " + ", ".join(f"{key}={value}" for key, value in sorted(coverage.items())),
         "",
         "### Issues",
         "",
     ]
-    for issue in issues:
-        if isinstance(issue, dict):
-            lines.append(f"- [{issue.get('severity')}] {issue.get('code')}: {issue.get('message')}")
-    if not issues:
+    for finding in findings:
+        if isinstance(finding, dict):
+            lines.append(f"- [{finding.get('severity')}] {finding.get('code')}: {finding.get('diagnosis')}")
+    if not findings:
         lines.append("- None")
-    lines.extend(["", "### Warnings", ""])
-    lines.extend([f"- {warning}" for warning in warnings] or ["- None"])
+    lines.extend(["", "### Coverage Gaps", ""])
+    gaps = [f"{key}: {value}" for key, value in sorted(coverage.items()) if value == "insufficient"]
+    lines.extend([f"- {item}" for item in gaps] or ["- None"])
     lines.extend(["", "Semantic pacing is advisory until applied by CLI.", ""])
     atomic_write_text(path, "\n".join(lines))
 

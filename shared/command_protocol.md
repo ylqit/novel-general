@@ -23,7 +23,7 @@
 | 中文指令 | CLI 命令 | 必填参数 | 写入边界 | 说明 |
 | --- | --- | --- | --- | --- |
 | `/工程下一步` | `longform-engine production next project.yaml` | `project.yaml` | 只读 | 读取 Agent task、gate、draft/final 和 editorial 状态，输出当前最高优先级安全动作。 |
-| `/工程工单` | `longform-engine agent-task brief project.yaml TASK_OR_PATH` | `project.yaml`、`TASK_OR_PATH` | 只读 | 将兼容 v1 的 `AgentTaskManifest v2` 渲染成 Codex / ClaudeCode 可执行工作单。 |
+| `/工程工单` | `longform-engine agent-task brief project.yaml TASK_OR_PATH` | `project.yaml`、`TASK_OR_PATH` | 只读 | 将当前 `AgentTaskManifest v4` 渲染成 Codex / Claude Code 可执行中文工作单。 |
 | `/工程生产状态` | `longform-engine production status project.yaml` | `project.yaml` | 只读 | 输出 GUI/API 稳定状态摘要，包含 next action、Agent task 统计和 board totals。 |
 | `/工程生产看板` | `longform-engine production board project.yaml` | `project.yaml` | 只读 | 按章节显示 draft、final、gate、repair、graph、memory、pacing 和 editorial 状态。 |
 | `/工程推进` | `longform-engine production loop project.yaml --no-apply` | `project.yaml` | 确定性流程产物；不自动 apply/finalize | 推进确定性步骤，遇到 Agent 输出、人工确认或 canonical apply/finalize 时暂停。 |
@@ -41,7 +41,7 @@
 生产体验入口规则：
 
 - Codex / ClaudeCode 每轮优先执行 `/工程下一步`。
-- 如果下一步是 Agent task，必须执行 `/工程工单` 并只读取工作单与 manifest `input_files`。
+- 如果下一步是 Agent task，必须执行 `/工程工单` 并只读取工作单与 manifest `io.inputs`。
 - `/工程推进` 不能替代 Agent 写正文、修章、润色、语义 JSON 或审稿 JSON。
 - `/工程推进` 默认不自动进入 `chapter finalize`，也不自动 apply graph/memory/pacing。
 
@@ -87,7 +87,7 @@
 | `/工程修章` | `longform-engine repair-chapter project.yaml --chapter N --plan-only` | `--chapter N` | `50_workbench/gate_artifacts/`、`50_workbench/repair_plans/` | 生成修复计划。 |
 | `/工程候选修章` | `longform-engine repair-chapter project.yaml --chapter N --candidate-only --agent codex` | `--chapter N`、`--agent` | `50_workbench/repair_candidates/` | 生成候选修复稿，不直接进入 final。 |
 | `/工程定稿` | `longform-engine chapter finalize project.yaml --chapter N --approved-by human` | `--chapter N`、`--approved-by` | `40_manuscript/final/`、收益与结构账本 | 将通过或有效放行的章节写入唯一正文证据层；不会根据正文开头伪造摘要，也不会提前更新图谱、TCS、RAG 或 SQLite。 |
-| `/工程章节语义任务` | `longform-engine chapter semantic-task project.yaml --chapter N` | `--chapter N` | `50_workbench/semantic_tasks/` | 让 Agent 只完整读取一次 final，输出统一章节语义包；旧项目回填时显式追加 `--backfill`。 |
+| `/工程章节语义任务` | `longform-engine chapter semantic-task project.yaml --chapter N` | `--chapter N` | `50_workbench/semantic_tasks/` | 让 Agent 只完整读取一次 final，输出统一章节语义 delta。 |
 | `/工程章节语义校验` | `longform-engine chapter semantic-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation report | 校验 final hash、精确 span、实体 ID、关系旧状态、角色知识来源、伏笔 ID/窗口和完整性声明。 |
 | `/工程章节语义应用` | `longform-engine chapter semantic-apply project.yaml --chapter N --file ...` | `--chapter N`、`--file` | 语义账本、graph、角色当前视图、伏笔状态、TCS、RAG、SQLite | 显式、事务化物化全部章节知识；不同候选不得覆盖已落盘语义账本。 |
 | `/工程语义重建` | `longform-engine chapter semantic-rebuild project.yaml --through N --approved-by human` | `--through N`、`--approved-by` | graph、角色当前视图、伏笔状态、world、timeline、TCS、RAG、SQLite | 只从连续 canonical semantic ledgers 重建派生视图；用于回填完成后的迁移收口，不读取旧派生状态作为事实。 |
@@ -110,26 +110,17 @@
 | `/工程上下文` | `longform-engine rag context project.yaml --chapter N` | `--chapter N` | `60_rag/context/` | 写入下一章上下文。 |
 | `/工程语义上下文` | `longform-engine rag context project.yaml --chapter N --semantic` | `--chapter N` | `60_rag/context/` | 写入语义增强上下文。 |
 | `/工程记忆检查` | `longform-engine memory validate project.yaml` | `project.yaml` | 只读 | 校验长期记忆文件。 |
-| `/工程语义记忆任务` | `longform-engine memory semantic-task project.yaml --chapter N` | `--chapter N` | `50_workbench/memory_tasks/` | 生成语义记忆抽取任务。 |
-| `/工程语义记忆校验` | `longform-engine memory semantic-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | 只读 | 校验语义记忆 JSON。 |
-| `/工程语义记忆应用` | `longform-engine memory semantic-apply project.yaml --chapter N --file ...` | `--chapter N`、`--file` | `60_rag/memory/`、SQLite | 应用已校验的语义记忆。 |
 | `/工程TCS` | `longform-engine memory tcs project.yaml --chapter N` | `--chapter N` | `30_state/tcs/` | 生成 Temporal Context State 快照。 |
 | `/工程TCS推进` | `longform-engine memory tcs-transition project.yaml --chapter N` | `--chapter N` | `30_state/tcs/` | 根据定稿章节推进 TCS。 |
 | `/工程TCS校验` | `longform-engine memory tcs-validate project.yaml --chapter N` | `--chapter N` | 只读 | 检查未来事实泄漏和状态一致性。 |
 | `/工程记忆压缩` | `longform-engine memory compress project.yaml --scope arc --from-chapter A --to-chapter B` | `--scope`、`--from-chapter`、`--to-chapter` | `60_rag/memory/` | 压缩 scene/chapter/arc 记忆。 |
-| `/工程角色任务` | `longform-engine memory character-task project.yaml --chapter N` | `--chapter N` | `50_workbench/memory_tasks/` | 生成角色记忆任务。 |
-| `/工程角色校验` | `longform-engine memory character-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | 只读 | 校验角色记忆卡 JSON。 |
-| `/工程角色应用` | `longform-engine memory character-apply project.yaml --chapter N --file ...` | `--chapter N`、`--file` | `60_rag/memory/characters/` | 应用角色记忆卡。 |
 | `/工程角色检查` | `longform-engine memory character-check project.yaml --chapter N --file draft.md` | `--chapter N`、`--file` | 只读 | 对照角色记忆检查草稿。 |
 | `/工程图谱校验` | `longform-engine graph validate project.yaml` | `project.yaml` | 只读 | 校验 `story_graph.json`。 |
 | `/工程图谱更新` | `longform-engine graph update project.yaml --chapter N` | `--chapter N` | `30_state/story_graph.json`、SQLite | 从定稿章节更新图谱。 |
 | `/工程图谱检查` | `longform-engine graph check project.yaml` | `project.yaml` | `50_workbench/graph_reports/` | 写入图谱冲突报告。 |
 | `/工程图谱检索` | `longform-engine graph retrieve project.yaml --query "query" --chapter N --json` | `--query`、`--chapter N` | 只读 | 执行图谱遍历检索。 |
-| `/工程语义图谱任务` | `longform-engine graph semantic-task project.yaml --chapter N` | `--chapter N` | `50_workbench/graph_updates/` | 生成语义图谱抽取任务。 |
-| `/工程语义图谱校验` | `longform-engine graph semantic-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | 只读 | 校验语义图谱更新 JSON。 |
-| `/工程语义图谱应用` | `longform-engine graph semantic-apply project.yaml --chapter N --file ...` | `--chapter N`、`--file` | `30_state/story_graph.json`、SQLite | 应用已校验的语义图谱更新。 |
 
-`memory semantic-*`、`memory character-*` 与 `graph semantic-*` 只为旧项目和旧任务兼容保留。新生产链由 `chapter semantic-*` 一次抽取并统一物化，不再为同一 final 创建三套重复 Agent 任务。
+新生产链只使用 `chapter semantic-*` 一次抽取并统一物化，不再提供 graph、memory 或 character-memory 的独立 Agent 抽取任务。
 
 ## 产物归档
 
