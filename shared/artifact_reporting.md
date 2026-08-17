@@ -30,7 +30,8 @@ Include:
 - failure count or short failure list
 - `allowed_actions`
 - `next_command`
-- `repair_plan.md` when failed
+- the next review-barrier command when failed
+- the immutable `repair_plans/chNNN/rNN.plan.md` only after repair-plan validation
 
 Do not suggest continuing to the next chapter while `passed=false`.
 

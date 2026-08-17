@@ -29,9 +29,7 @@ from longform_engine.blind_review import (
 from longform_engine.character_expression import approve_voice_samples
 
 from longform_engine.agent_pipeline import validate_production_agent_result
-from longform_engine.agent_protocols import output_protocol_for_task
 from longform_engine.agent_tasks import (
-    build_manifest,
     list_manifests,
     load_manifest,
     manifest_chapter_number,
@@ -40,7 +38,6 @@ from longform_engine.agent_tasks import (
     manifest_output,
     status_summary,
     validate_manifest_strict,
-    write_manifest,
 )
 from longform_engine.agent_protocol_readiness import (
     check_agent_data_pipeline_readiness,
@@ -82,7 +79,6 @@ from longform_engine.gates import (
     gate_check,
     pacing_review,
     record_waiver,
-    repair_plan,
     semantic_pacing_apply,
     semantic_pacing_task,
     semantic_pacing_validate,
@@ -91,6 +87,15 @@ from longform_engine.gates import (
     semantic_review_validate,
 )
 from longform_engine.release_readiness import check_release_readiness, render_release_readiness
+from longform_engine.repair_coordination import (
+    RepairCoordinationError,
+    create_repair_candidate_task,
+    create_repair_synthesis_task,
+    repair_attempt_status,
+    repair_plan_status,
+    review_barrier_status,
+    validate_repair_plan,
+)
 from longform_engine.graph import (
     check_graph,
     retrieve_graph,
@@ -487,7 +492,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_compare.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     benchmark_compare.set_defaults(func=cmd_benchmark_compare)
 
-    agent_task = subparsers.add_parser("agent-task", help="Inspect current AgentTaskManifest v3 task packages.")
+    agent_task = subparsers.add_parser("agent-task", help="Inspect current AgentTaskManifest v4 task packages.")
     agent_task_subparsers = agent_task.add_subparsers(dest="agent_task_command", required=True)
 
     agent_task_list = agent_task_subparsers.add_parser("list", help="List indexed agent task manifests.")
@@ -535,7 +540,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent_task_overlay_validate.set_defaults(func=cmd_agent_task_overlay_validate)
 
-    agent_task_validate = agent_task_subparsers.add_parser("validate", help="Validate one AgentTaskManifest v3 contract.")
+    agent_task_validate = agent_task_subparsers.add_parser("validate", help="Validate one AgentTaskManifest v4 contract.")
     agent_task_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     agent_task_validate.add_argument("task", help="Task id or manifest path.")
     agent_task_validate.add_argument("--strict", action="store_true", help="Check task type, lanes, schemas, commands, and hard boundaries.")
@@ -556,7 +561,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     agent_task_readiness = agent_task_subparsers.add_parser(
         "readiness",
-        help="Check the installed Manifest v3, Chinese role, and single-process Agent protocol.",
+        help="Check the installed Manifest v4, Chinese role, and single-process Agent protocol.",
     )
     agent_task_readiness.add_argument(
         "--repository", default=".", help="Engine repository root."
@@ -1391,14 +1396,34 @@ def build_parser() -> argparse.ArgumentParser:
     semantic_pacing_apply_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     semantic_pacing_apply_cmd.set_defaults(func=cmd_pacing_semantic_apply)
 
-    repair = subparsers.add_parser("repair-chapter", help="Create a repair plan for a failed chapter.")
-    repair.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    repair.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
-    repair.add_argument("--plan-only", action="store_true", help="Only write repair_plan.md.")
-    repair.add_argument("--candidate-only", action="store_true", help="Write a repair candidate task without touching final/RAG/graph/memory.")
-    repair.add_argument("--agent", default="codex", help="Agent name for candidate task.")
-    repair.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    repair.set_defaults(func=cmd_repair_chapter)
+    repair_group = subparsers.add_parser("repair", help="Coordinate evidence-complete immutable repair rounds.")
+    repair_subparsers = repair_group.add_subparsers(dest="repair_command", required=True)
+
+    repair_status_cmd = repair_subparsers.add_parser("status", help="Show review barrier and repair-attempt status.")
+    repair_status_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    repair_status_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    repair_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    repair_status_cmd.set_defaults(func=cmd_repair_status)
+
+    repair_synthesis_task_cmd = repair_subparsers.add_parser("synthesis-task", help="Freeze reviews and create a repair-plan synthesis task.")
+    repair_synthesis_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    repair_synthesis_task_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    repair_synthesis_task_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    repair_synthesis_task_cmd.set_defaults(func=cmd_repair_synthesis_task)
+
+    repair_synthesis_validate_cmd = repair_subparsers.add_parser("synthesis-validate", help="Validate an evidence-complete repair plan.")
+    repair_synthesis_validate_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    repair_synthesis_validate_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    repair_synthesis_validate_cmd.add_argument("--file", required=True, help="Repair plan Markdown path.")
+    repair_synthesis_validate_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    repair_synthesis_validate_cmd.set_defaults(func=cmd_repair_synthesis_validate)
+
+    repair_candidate_task_cmd = repair_subparsers.add_parser("candidate-task", help="Create the immutable repair-author task for a validated plan.")
+    repair_candidate_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    repair_candidate_task_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    repair_candidate_task_cmd.add_argument("--agent", default="codex", help="Agent name for candidate task.")
+    repair_candidate_task_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    repair_candidate_task_cmd.set_defaults(func=cmd_repair_candidate_task)
 
     research = subparsers.add_parser("research", help="Manage research inbox and canon promotion.")
     research_subparsers = research.add_subparsers(dest="research_command", required=True)
@@ -1564,7 +1589,9 @@ def build_parser() -> argparse.ArgumentParser:
         semantic_pacing_task_cmd,
         semantic_pacing_validate_cmd,
         semantic_pacing_apply_cmd,
-        repair,
+        repair_synthesis_task_cmd,
+        repair_synthesis_validate_cmd,
+        repair_candidate_task_cmd,
         research_add,
         research_search,
         research_gaps,
@@ -3358,7 +3385,7 @@ def cmd_quality_payoff_validate(args: argparse.Namespace) -> int:
         print(f"Errors: {len(result.errors)}")
         print(f"Blocking findings: {len(result.blocking_findings)}")
         print(f"Next command: {result.next_command}")
-    return 0 if result.ok and result.passed else 1
+    return 0 if result.ok else 1
 
 
 def cmd_quality_feedback_status(args: argparse.Namespace) -> int:
@@ -4068,7 +4095,6 @@ def cmd_gate_check(args: argparse.Namespace) -> int:
         print(f"Passed: {result.passed}")
         print(f"Severity: {result.severity}")
         print(f"Gate result: {result.gate_result}")
-        print(f"Repair plan: {result.repair_plan}")
         print(f"Failures: {len(result.failures)}")
         print(f"Allowed actions: {', '.join(result.allowed_actions)}")
     return 0 if result.passed else 1
@@ -4199,131 +4225,79 @@ def cmd_pacing_semantic_apply(args: argparse.Namespace) -> int:
         print(f"Pacing review: {result.pacing_review}")
         print(f"Escalated failures: {result.escalated_failures}")
         print(f"Next command: {result.next_command}")
-    return 0 if result.escalated_failures == 0 else 1
-
-
-def cmd_repair_chapter(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    if args.candidate_only:
-        result = write_repair_candidate_task(config, chapter_number=args.chapter, agent=args.agent)
-        if args.json:
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-        else:
-            print("OK: repair candidate task ready")
-            print(f"Chapter: {result['chapter_number']}")
-            print(f"Candidate task: {result['candidate_task']}")
-            print(f"Candidate draft: {result['candidate_draft']}")
-            print(f"Manifest: {result['manifest_file']}")
-            print(f"Next command: {result['next_command']}")
-        return 0
-    if not args.plan_only:
-        raise GateError("Use --plan-only or --candidate-only.")
-    result = repair_plan(config, chapter_number=args.chapter)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: repair plan ready")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Gate result: {result.gate_result}")
-        print(f"Repair plan: {result.repair_plan}")
-        print(f"Next command: {result.next_command}")
     return 0
 
 
-def write_repair_candidate_task(config: ConfigDocument, *, chapter_number: int, agent: str) -> dict[str, str | int]:
-    root = resolve_project_root(config)
-    artifact_dir = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}"
-    gate_result = artifact_dir / "gate_result.json"
-    repair = artifact_dir / "repair_plan.md"
-    candidate_dir = root / "50_workbench" / "repair_candidates"
-    candidate_dir.mkdir(parents=True, exist_ok=True)
-    safe_agent = str(agent or "codex").strip().lower().replace(" ", "_")
-    task_path = candidate_dir / f"ch{chapter_number:03d}.{safe_agent}.repair_task.md"
-    manifest_file = candidate_dir / f"ch{chapter_number:03d}.{safe_agent}.repair_task.agent_task.json"
-    candidate_draft = candidate_dir / f"ch{chapter_number:03d}.{safe_agent}.repair_candidate.md"
-    gate_text = gate_result.read_text(encoding="utf-8") if gate_result.exists() else "{}"
-    repair_text = repair.read_text(encoding="utf-8") if repair.exists() else "Repair plan has not been generated yet."
+def cmd_repair_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = {
+        "barrier": review_barrier_status(config, chapter_number=args.chapter),
+        "attempts": repair_attempt_status(config, chapter_number=args.chapter),
+        "plan": repair_plan_status(config, chapter_number=args.chapter),
+    }
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(f"Review barrier: {result['barrier']['status']}")
+        print(f"Repair attempts: {result['attempts']['used']}/{result['attempts']['maximum']}")
+        print(f"Repair plan: {result['plan']['status']}")
+    return 0
+
+
+def cmd_repair_synthesis_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
     try:
-        gate_payload = json.loads(gate_text)
-    except json.JSONDecodeError:
-        gate_payload = {}
-    gate_digest = {
-        key: gate_payload.get(key)
-        for key in ("passed", "severity", "failures", "warnings", "next_command", "workflow_stage")
-        if isinstance(gate_payload, dict) and gate_payload.get(key) not in (None, "", [], {})
-    }
-    chapter_draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
-    next_command = (
-        f"longform-engine draft submit project.yaml --chapter {chapter_number} "
-        f"--file {cli_relative_path(root, candidate_draft)} --agent {safe_agent} --overwrite"
-    )
-    atomic_write_text(
-        task_path,
-        "\n".join(
-            [
-                f"# Repair Candidate Task ch{chapter_number:03d}",
-                "",
-                f"- Agent: {safe_agent}",
-                f"- Candidate draft path: `{cli_relative_path(root, candidate_draft)}`",
-                f"- Next command after writing candidate: `{next_command}`",
-                "",
-                "Write only a repair candidate. Do not edit final manuscripts, RAG, graph, memory, or SQLite.",
-                "After writing, run Humanizer v2 self-check before `draft submit`.",
-                "",
-                "## Creative Operator Requirements",
-                "",
-                "- Preserve canonical facts, approved character state, and chapter duty.",
-                "- Convert gate failures into scene-level rewrites, not abstract explanations.",
-                "- Add evidence spans for motivation, relationship turns, ability limits, and foreshadow changes.",
-                "- Remove AI templates, generic significance language, prompt residue, and same-shape paragraphs.",
-                "- Keep the repair candidate in the configured agent draft lane only.",
-                "",
-                "## Humanizer v2 Passes",
-                "",
-                "- Pass 1: remove AI templates, summary lecture, explanation tone, meta residue, and homogeneous sentence patterns.",
-                "- Pass 2: strengthen dialogue difference, action-carried psychology, paragraph rhythm, scene texture, and ending hook.",
-                "",
-                "## Gate Result",
-                "",
-                "```json",
-                json.dumps(gate_digest, ensure_ascii=False, indent=2),
-                "```",
-                "",
-                "## Repair Plan",
-                "",
-                repair_text[:5_000],
-                "",
-            ]
-        ),
-    )
-    manifest = build_manifest(
-        root,
-        task_type="repair",
-        chapter_number=chapter_number,
-        input_files=[task_path, chapter_draft],
-        allowed_output_paths=[candidate_draft],
-        output_schema=output_protocol_for_task("repair"),
-        validate_command=next_command,
-        apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
-        failure_next_command=(
-            f"longform-engine repair-chapter project.yaml --chapter {chapter_number} "
-            f"--candidate-only --agent {safe_agent}"
-        ),
-        context_policy={
-            "required_files": [task_path, chapter_draft],
-            "optional_files": [],
-            "compiled_brief": task_path,
-            "selection_report": task_path,
-        },
-    )
-    write_manifest(root, manifest, manifest_file)
-    return {
-        "chapter_number": chapter_number,
-        "candidate_task": str(task_path),
-        "candidate_draft": str(candidate_draft),
-        "manifest_file": str(manifest_file),
-        "next_command": next_command,
-    }
+        result = create_repair_synthesis_task(config, chapter_number=args.chapter)
+    except RepairCoordinationError as exc:
+        raise GateError(str(exc)) from exc
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print("OK: review bundle frozen and repair synthesis task ready")
+        print(f"Task: {result['task_id']}")
+        print(f"Review bundle: {result['review_bundle']}")
+        print(f"Plan: {result['plan_file']}")
+        print(f"Next command: {result['next_command']}")
+    return 0
+
+
+def cmd_repair_synthesis_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    try:
+        result = validate_repair_plan(
+            config,
+            chapter_number=args.chapter,
+            file_path=args.file,
+        )
+    except RepairCoordinationError as exc:
+        raise GateError(str(exc)) from exc
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print("OK: repair plan validated" if result["ok"] else "INVALID: repair plan")
+        print(f"Report: {result['report_file']}")
+        print(f"Next command: {result['next_command']}")
+    return 0 if result["ok"] else 1
+
+
+def cmd_repair_candidate_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    try:
+        result = create_repair_candidate_task(
+            config,
+            chapter_number=args.chapter,
+            agent=args.agent,
+        )
+    except RepairCoordinationError as exc:
+        raise GateError(str(exc)) from exc
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print("OK: immutable repair candidate task ready")
+        print(f"Task: {result['task_id']}")
+        print(f"Candidate: {result['candidate_draft']}")
+        print(f"Next command: {result['next_command']}")
+    return 0
 
 
 def cmd_research_add(args: argparse.Namespace) -> int:
@@ -4552,7 +4526,7 @@ def cmd_editorial_submit_review(args: argparse.Namespace) -> int:
         print(f"Aggregate: {result.aggregate_file}")
         print(f"Need human: {result.need_human}")
         print(f"Next command: {result.next_command}")
-    return 0 if not result.need_human else 1
+    return 0 if result.accepted else 1
 
 
 def cmd_editorial_aggregate(args: argparse.Namespace) -> int:
@@ -4572,7 +4546,7 @@ def cmd_editorial_aggregate(args: argparse.Namespace) -> int:
         print(f"Conditional passes: {result.conditional_passes}")
         print(f"Need human: {result.need_human}")
         print(f"Next command: {result.next_command}")
-    return 0 if not result.need_human else 1
+    return 0
 
 
 def cmd_editorial_need_human(args: argparse.Namespace) -> int:

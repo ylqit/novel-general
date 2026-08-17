@@ -33,7 +33,7 @@ from longform_engine.agent_tasks import (
 )
 from longform_engine.config import ConfigDocument
 from longform_engine.character_expression import character_expression_diagnostics
-from longform_engine.creative import creative_repair_guidance, detect_humanizer_v2_issues, reader_experience_review
+from longform_engine.creative import detect_humanizer_v2_issues, reader_experience_review
 from longform_engine.db import sync_database
 from longform_engine.graph import check_graph
 from longform_engine.memory import deterministic_evidence_gate_findings
@@ -55,7 +55,6 @@ class GateCheckResult:
     passed: bool
     severity: str
     gate_result: str
-    repair_plan: str
     failures: tuple[dict[str, Any], ...]
     allowed_actions: tuple[str, ...]
 
@@ -134,16 +133,6 @@ class SemanticReviewApplyResult:
     application_file: str
     gate_result: str
     blocking_findings: int
-    next_command: str
-
-
-@dataclass(frozen=True)
-class RepairPlanResult:
-    """Public result for repair-chapter --plan-only."""
-
-    chapter_number: int
-    repair_plan: str
-    gate_result: str
     next_command: str
 
 
@@ -564,8 +553,20 @@ def gate_check(
 
     severity = max_severity(failures)
     passed = severity not in {"P0", "P1"}
-    allowed_actions = ("continue_write",) if passed else ("repair_chapter", "rollback_chapter")
-    next_command = "continue-write" if passed else f"repair-chapter --chapter {chapter_number}"
+    reviews_pending = bool(
+        isinstance(review_state, dict)
+        and review_state.get("required") is True
+        and str(review_state.get("status") or "") != "applied"
+    )
+    if reviews_pending:
+        allowed_actions = ("complete_reviews",)
+        next_command = f"longform-engine production next project.yaml"
+    elif passed:
+        allowed_actions = ("complete_reviews", "finalize_chapter")
+        next_command = f"longform-engine production next project.yaml"
+    else:
+        allowed_actions = ("complete_reviews",)
+        next_command = f"longform-engine production next project.yaml"
 
     write_artifact_reports(
         artifact_dir,
@@ -592,13 +593,13 @@ def gate_check(
         "semantic_enabled": semantic,
         "semantic_report": str(deterministic_evidence_report) if deterministic_evidence_report else "",
         "agent_semantic_review": review_state,
+        "workflow_stage": "reviews_pending" if reviews_pending else "review_barrier",
         "reverse_brake_report": str(artifact_dir / "reverse_brake_report.md"),
         "reverse_brake": reverse_brake,
         "updated_at": utc_now(),
     }
     gate_path = artifact_dir / "gate_result.json"
     write_json(gate_path, gate_payload)
-    repair_path = write_repair_plan(artifact_dir, chapter_number, failures, warnings)
     if sync_db:
         sync_database(config)
     return GateCheckResult(
@@ -606,7 +607,6 @@ def gate_check(
         passed=passed,
         severity=gate_payload["severity"],
         gate_result=str(gate_path),
-        repair_plan=str(repair_path),
         failures=tuple(failures),
         allowed_actions=allowed_actions,
     )
@@ -911,11 +911,10 @@ def semantic_review_apply(
             result=application_file,
             from_statuses=("validated",),
         )
-        candidate_status = "validated" if gate_result.passed and not blocking else "invalid"
         update_task_status(
             root,
             candidate_task_id,
-            to_status=candidate_status,
+            to_status="submitted",
             command="gate semantic-apply",
             artifact=path,
             result=gate_result.gate_result,
@@ -940,11 +939,7 @@ def semantic_review_apply(
         application_file=str(application_file),
         gate_result=gate_result.gate_result,
         blocking_findings=blocking,
-        next_command=(
-            f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only"
-            if blocking or not gate_result.passed
-            else f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
-        ),
+        next_command="longform-engine production next project.yaml",
     )
 
 
@@ -985,12 +980,8 @@ def update_semantic_review_stage_projection(
     candidate.setdefault("task_id", str(candidate_task.get("task_id") or ""))
     candidate.setdefault("task_type", str(candidate_task.get("task_type") or ""))
     gate_payload["candidate"] = candidate
-    gate_payload["workflow_stage"] = "ready_to_finalize" if passed else "repair_pending"
-    gate_payload["next_command"] = (
-        f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
-        if passed
-        else f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only"
-    )
+    gate_payload["workflow_stage"] = "reviews_pending"
+    gate_payload["next_command"] = "longform-engine production next project.yaml"
     gate_payload["updated_at"] = utc_now()
     write_json(gate_result_path, gate_payload)
 
@@ -998,16 +989,13 @@ def update_semantic_review_stage_projection(
     state = load_json(state_path, default={})
     if not isinstance(state, dict):
         state = {}
-    state["status"] = "gate_passed_pending_finalize" if passed else "gate_failed"
+    state["status"] = "reviews_pending"
     state["current_chapter"] = chapter_number
     state["pending_gate_chapter"] = chapter_number
     state["last_gate_result"] = relative_path(root, gate_result_path)
     state["updated_at"] = utc_now()
     state.pop("pending_semantic_review_chapter", None)
-    if passed:
-        state["pending_final_chapter"] = chapter_number
-    else:
-        state.pop("pending_final_chapter", None)
+    state.pop("pending_final_chapter", None)
     write_json(state_path, state)
 
     meta_path = root / "40_manuscript" / "chapter_meta.jsonl"
@@ -1025,14 +1013,14 @@ def update_semantic_review_stage_projection(
         number = int(item.get("chapter_number") or item.get("chapter") or item.get("number") or 0)
         if number != chapter_number:
             continue
-        item["status"] = "gate_passed" if passed else "gate_failed"
+        item["status"] = "reviews_pending"
         item["gate_result"] = relative_path(root, gate_result_path)
         found = True
     if not found:
         records.append(
             {
                 "chapter_number": chapter_number,
-                "status": "gate_passed" if passed else "gate_failed",
+                "status": "reviews_pending",
                 "gate_result": relative_path(root, gate_result_path),
             }
         )
@@ -1047,7 +1035,7 @@ def update_semantic_review_stage_projection(
         raise GateError("Chapter submission metadata became unreadable during semantic apply.")
     submission["candidate_task_id"] = str(candidate_task.get("task_id") or "")
     submission["candidate_task_type"] = str(candidate_task.get("task_type") or "")
-    submission["candidate_status"] = "validated" if passed else "invalid"
+    submission["candidate_status"] = "submitted"
     submission["updated_at"] = utc_now()
     write_json(submission_path, submission)
 
@@ -1452,7 +1440,7 @@ def semantic_pacing_apply(
         ):
             raise GateError("applied semantic pacing evidence is stale or incomplete; regenerate the pacing task.")
         passed = bool(gate_payload.get("passed"))
-        next_command = "continue-write" if passed else f"repair-chapter --chapter {chapter_number} --plan-only"
+        next_command = "longform-engine production next project.yaml"
         return SemanticPacingApplyResult(
             chapter_number=chapter_number,
             applied=True,
@@ -1506,8 +1494,8 @@ def semantic_pacing_apply(
         warnings.extend(semantic_warnings)
         severity = max_severity(failures)
         passed = severity not in {"P0", "P1"}
-        allowed_actions = ("continue_write",) if passed else ("repair_chapter", "rollback_chapter")
-        next_command = "continue-write" if passed else f"repair-chapter --chapter {chapter_number} --plan-only"
+        allowed_actions = ("complete_reviews", "finalize_chapter") if passed else ("complete_reviews",)
+        next_command = "longform-engine production next project.yaml"
         gate_payload.update(
             {
                 "passed": passed,
@@ -1525,6 +1513,7 @@ def semantic_pacing_apply(
                     "result_sha256": sha256_text(safe_read_text(path)),
                     "findings": payload.get("findings", []),
                 },
+                "workflow_stage": "reviews_pending",
                 "updated_at": utc_now(),
             }
         )
@@ -1550,27 +1539,6 @@ def semantic_pacing_apply(
         pacing_review=str(pacing_path),
         escalated_failures=len(semantic_failures),
         next_command=next_command,
-    )
-
-
-def repair_plan(config: ConfigDocument, *, chapter_number: int) -> RepairPlanResult:
-    """Ensure a repair plan exists for a failed or target chapter."""
-
-    root = resolve_project_root(config)
-    artifact_dir = gate_artifact_dir(root, chapter_number)
-    gate_path = artifact_dir / "gate_result.json"
-    if not gate_path.exists():
-        result = gate_check(config, chapter_number=chapter_number)
-        gate_path = Path(result.gate_result)
-    gate = load_json(gate_path, default={})
-    failures = gate.get("failures") if isinstance(gate.get("failures"), list) else []
-    warnings = gate.get("warnings") if isinstance(gate.get("warnings"), list) else []
-    repair_path = write_repair_plan(artifact_dir, chapter_number, failures, warnings)
-    return RepairPlanResult(
-        chapter_number=chapter_number,
-        repair_plan=str(repair_path),
-        gate_result=str(gate_path),
-        next_command=f"repair-chapter --chapter {chapter_number}",
     )
 
 
@@ -2616,84 +2584,6 @@ def copyedit_warnings(text: str) -> list[str]:
     return warnings or ["No deterministic copyedit warnings."]
 
 
-def write_repair_plan(artifact_dir: Path, chapter_number: int, failures: list[dict[str, Any]], warnings: list[str]) -> Path:
-    path = artifact_dir / "repair_plan.md"
-    lines = [
-        f"# Repair Plan ch{chapter_number:03d}",
-        "",
-        "## Required Fixes",
-        "",
-    ]
-    if failures:
-        for failure in failures:
-            lines.append(f"- [{failure.get('severity')}] {failure.get('code')}: {failure.get('message')}")
-            lines.append(f"  Next: {repair_action_for_failure(failure, chapter_number)}")
-    else:
-        lines.append("- None")
-    lines.extend(["", "## Creative Rewrite Brief", ""])
-    if failures:
-        for index, failure in enumerate(failures, start=1):
-            guidance = creative_repair_guidance(failure, chapter_number)
-            lines.extend(
-                [
-                    f"### Failure {index}: {guidance['failure_code']}",
-                    "",
-                    f"- Rewrite goal: {guidance['rewrite_goal']}",
-                    f"- Preserve: {', '.join(guidance['preserve']) or 'chapter canon'}",
-                    f"- Delete or reduce: {', '.join(guidance['delete_or_reduce']) or 'none'}",
-                    f"- Add evidence: {', '.join(guidance['add_evidence']) or 'none'}",
-                    f"- Character state adjustment: {', '.join(guidance['character_state_adjustment']) or 'none'}",
-                    f"- Humanizer v2 target: {', '.join(guidance['humanizer_target']) or 'none'}",
-                    "",
-                ]
-            )
-    else:
-        lines.append("- None")
-    lines.extend(["", "## Warnings", ""])
-    lines.extend([f"- {warning}" for warning in warnings] or ["- None"])
-    lines.extend(
-        [
-            "",
-            "## Allowed Next Actions",
-            "",
-            "- repair-chapter",
-            "- rollback-chapter",
-            "",
-        ]
-    )
-    atomic_write_text(path, "\n".join(lines))
-    return path
-
-
-def repair_action_for_failure(failure: dict[str, Any], chapter_number: int) -> str:
-    code = str(failure.get("code") or "")
-    if code in {"meta_pollution", "humanizer_meta_pollution"}:
-        return f"remove prompt/meta residue, then rerun `longform-engine gate-check project.yaml --chapter {chapter_number}`"
-    if code.startswith("humanizer_"):
-        return f"run `longform-engine creative humanize-task project.yaml --chapter {chapter_number}`, submit the candidate, then rerun gate-check"
-    if code == "content_character_count":
-        return "expand or trim the draft to configured hard_min/hard_max"
-    if code == "chapter_card":
-        return f"run `longform-engine plan-chapter project.yaml --chapter {chapter_number} --overwrite` and align the draft"
-    if code == "pacing":
-        return "adjust event type, cooldown, or A/B/C reveal quota before rerunning gate-check"
-    if code in {"anchor_forbidden_reveal", "premature_resolution", "core_secret_complete_reveal"}:
-        return "remove or downgrade the reveal; if the outline intentionally allows it, run revise-outline and update allowed_reveal_level"
-    if code == "missing_tail_suspense":
-        return "add a concrete unresolved pressure, clue, threat, or changed problem in the final scene"
-    if code == "plot_quota_overflow":
-        return "keep only one A/B/C acceleration lane in this chapter and defer the others"
-    if code == "duplicate_paragraphs":
-        return "rewrite repeated paragraphs into distinct scene beats and rerun gate-check"
-    if code == "style_drift":
-        return "align the draft with 10_bible/style_profiles/current_style_profile.json sentence rhythm, paragraph scale, dialogue density, and POV"
-    if code == "graph_consistency":
-        return "run `longform-engine graph check project.yaml` and resolve canonical graph issues"
-    if code.startswith("semantic_"):
-        return f"inspect `deterministic_evidence_report.md`, repair motivation/continuity evidence, then rerun `longform-engine gate-check project.yaml --chapter {chapter_number} --semantic`"
-    return f"repair draft and rerun `longform-engine gate-check project.yaml --chapter {chapter_number}`"
-
-
 def markdown_report(title: str, issues: list[str], warnings: list[str]) -> str:
     lines = [f"# {title}", "", "## Issues", ""]
     lines.extend([f"- {issue}" for issue in issues] or ["- None"])
@@ -2723,7 +2613,7 @@ def semantic_pacing_review_status(
         )
     )
     if not required:
-        return {"required": False, "passed": True, "reason": "not_required", "review_mode": mode}
+        return {"required": False, "complete": True, "passed": True, "reason": "not_required", "review_mode": mode}
     draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
     result = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "semantic_pacing_result.json"
     gate_path = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
@@ -2731,7 +2621,7 @@ def semantic_pacing_review_status(
     payload = load_json(result, default={})
     gate = load_json(gate_path, default={})
     applied = gate.get("semantic_pacing") if isinstance(gate, dict) else None
-    passed = bool(
+    complete = bool(
         draft_hash
         and isinstance(payload, dict)
         and payload.get("schema") == EVIDENCE_REVIEW_SCHEMA
@@ -2739,13 +2629,13 @@ def semantic_pacing_review_status(
         and str(applied.get("source_path") or "") == relative_path(root, draft)
         and str(applied.get("source_sha256") or "") == draft_hash
         and str(applied.get("result_sha256") or "") == sha256_text(safe_read_text(result))
-        and str(applied.get("verdict") or "") == "pass"
-        and gate.get("passed") is True
     )
+    passed = complete and str(applied.get("verdict") or "") == "pass"
     return {
         "required": True,
+        "complete": complete,
         "passed": passed,
-        "reason": "applied" if passed else "semantic_pacing_missing_failed_or_stale",
+        "reason": "applied" if complete else "semantic_pacing_missing_invalid_or_stale",
         "review_mode": mode,
         "result_file": relative_path(root, result),
         "gate_result": relative_path(root, gate_path),
@@ -2830,13 +2720,7 @@ def semantic_review_gate_items(
         return [], [], {"required": False, "status": "not_required"}
     if not current:
         task = semantic_review_task(config, chapter_number=chapter_number, source="final" if "final" in source_path.parts else "draft")
-        failure = {
-            "code": "semantic_review_required",
-            "severity": "P1",
-            "message": "High-risk semantic evidence requires an Agent review before finalization.",
-            "repair_action": task.next_command,
-        }
-        return [failure], [], {
+        return [], [], {
             "required": True,
             "status": "awaiting_agent",
             "task": relative_path(root, Path(task.manifest_file)),

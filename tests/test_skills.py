@@ -72,7 +72,7 @@ def test_readme_is_public_pipx_skill_package_homepage():
     for term in (
         "longform-novel-engine = Python engine + Codex skill + Claude Code skill",
         "https://github.com/ylqit/novel-general",
-        "git+https://github.com/ylqit/novel-general.git@v0.4.1",
+        "git+https://github.com/ylqit/novel-general.git@v0.4.2",
         "longform-novel-engine[semantic]",
         "pipx",
         "PIPX_BIN_DIR",
@@ -118,7 +118,7 @@ def test_public_distribution_checklist_and_workflow_docs_are_linked():
         "Repository And License",
         "Wheel Resources",
         "Skill Lifecycle",
-        "AgentTaskManifest v3",
+        "AgentTaskManifest v4",
         "Quality Evidence",
         "CI And Release",
         "Definition Of Done",

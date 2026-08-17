@@ -60,6 +60,12 @@ from longform_engine.quality import (
     reader_payoff_task_is_current,
     reader_payoff_validate,
 )
+from longform_engine.repair_coordination import (
+    next_repair_round,
+    repair_attempt_status,
+    repair_plan_status,
+    review_barrier_status,
+)
 from longform_engine.roles import load_role_registry, session_directive
 from longform_engine.semantic import semantic_task as chapter_semantic_task
 from longform_engine.semantic import semantic_validate as chapter_semantic_validate
@@ -80,6 +86,7 @@ TASK_WAITING_FOR = {
     "adaptation_analysis": "adaptation_analysis_markdown",
     "design_semantic_compile": "canonical_delta_json",
     "chapter_write": "agent_draft",
+    "repair_plan_synthesis": "repair_plan_markdown",
     "repair": "repair_candidate",
     "humanize": "humanized_candidate",
     "humanize_semantic_review": "humanizer_semantic_review_json",
@@ -104,6 +111,7 @@ TASK_PRIORITY = {
     "adaptation_analysis": 6,
     "design_semantic_compile": 7,
     "chapter_write": 10,
+    "repair_plan_synthesis": 19,
     "repair": 20,
     "humanize": 21,
     "humanize_semantic_review": 22,
@@ -1263,11 +1271,13 @@ def project_readiness_action(config: ConfigDocument, root: Path) -> dict[str, An
         )
     task_type = readiness.required_task_type
     active_statuses = {"awaiting_agent", "submitted", "validated", "invalid"}
-    if any(
-        task.get("task_type") == task_type and task.get("status") in active_statuses
+    active_tasks = [
+        task
         for task in list_manifests(root, chapter_number=0)
-    ):
-        return None
+        if task.get("task_type") == task_type and task.get("status") in active_statuses
+    ]
+    if active_tasks:
+        return agent_task_action(root, sorted(active_tasks, key=task_sort_key)[0])
     return base_action(
         status="ready_for_intelligence_task",
         chapter_number=0,
@@ -1524,6 +1534,10 @@ def agent_task_action(root: Path, task: dict[str, Any]) -> dict[str, Any]:
         allowed_output_paths=[str(output.get("path") or "")],
         output_schema=str(output.get("protocol") or ""),
         validate_command=str(commands.get("validate") or ""),
+        protocol_validate_command=(
+            f"longform-engine agent-task result-validate project.yaml "
+            f"{manifest.get('task_id')} --file {output.get('path')}"
+        ),
         apply_command=str(commands.get("apply") or ""),
         failure_next_command=str(commands.get("failure") or ""),
         hard_boundaries=list(HARD_BOUNDARIES),
@@ -1625,8 +1639,88 @@ def chapter_workflow_action(config: ConfigDocument, root: Path) -> dict[str, Any
             )
         if stage_name == "editorial_pending":
             return editorial_review_action(config, root)
+        if stage_name == "repair_synthesis_pending":
+            command = f"longform-engine repair synthesis-task project.yaml --chapter {chapter_number}"
+            return base_action(
+                status="review_bundle_ready",
+                chapter_number=chapter_number,
+                blocked_by="repair_plan_required",
+                waiting_for="cli",
+                task_type="repair_plan_synthesis",
+                next_command=command,
+                failure_next_command=command,
+                human_summary=(
+                    f"ch{chapter_number:03d} completed all required reviews and needs one evidence-complete repair plan."
+                ),
+                sources=as_string_list(stage.get("sources")),
+            )
+        if stage_name == "repair_plan_validated":
+            command = (
+                f"longform-engine repair candidate-task project.yaml --chapter {chapter_number} --agent codex"
+            )
+            return base_action(
+                status="repair_plan_validated",
+                chapter_number=chapter_number,
+                blocked_by="repair_candidate_required",
+                waiting_for="cli",
+                task_type="repair",
+                next_command=command,
+                failure_next_command=command,
+                human_summary=f"ch{chapter_number:03d} repair plan validated; create the immutable repair candidate task.",
+                sources=as_string_list(stage.get("sources")),
+            )
+        if stage_name == "review_need_human":
+            command = (
+                f"longform-engine editorial need-human project.yaml --chapter {chapter_number} "
+                "--reason review_barrier_conflict"
+            )
+            return base_action(
+                status="need_human",
+                chapter_number=chapter_number,
+                blocked_by="review_barrier_conflict",
+                waiting_for="human_decision",
+                next_command=command,
+                human_summary=str(stage.get("reason") or "Review evidence requires a human decision."),
+                sources=as_string_list(stage.get("sources")),
+            )
+        if stage_name == "repair_budget_exhausted":
+            return base_action(
+                status="need_human",
+                chapter_number=chapter_number,
+                blocked_by="repair_budget_exhausted",
+                waiting_for="human_decision",
+                next_command="",
+                failure_next_command="",
+                human_summary=(
+                    f"ch{chapter_number:03d} still has P0/P1 findings after two submitted repair rounds; "
+                    "the engine will not create a third repair command."
+                ),
+                sources=as_string_list(stage.get("sources")),
+            )
+        if stage_name == "reviews_pending":
+            return base_action(
+                status="reviews_pending",
+                chapter_number=chapter_number,
+                blocked_by="review_barrier_incomplete",
+                waiting_for="review_protocol_repair",
+                next_command="longform-engine production status project.yaml",
+                human_summary=f"ch{chapter_number:03d} review barrier is incomplete or internally stale.",
+                sources=as_string_list(stage.get("sources")),
+            )
         if stage_name == "ready_to_finalize":
-            return first_gate_action(root)
+            command = (
+                f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
+            )
+            return base_action(
+                status="awaiting_finalize",
+                chapter_number=chapter_number,
+                blocked_by="review_barrier_passed",
+                waiting_for="human_finalize",
+                next_command=command,
+                apply_command=command,
+                human_summary=f"ch{chapter_number:03d} passed the complete review barrier and waits for explicit finalize.",
+                sources=as_string_list(stage.get("sources")),
+            )
         if stage_name == "repair_pending":
             return first_gate_action(root)
         if stage_name == "writing_pending":
@@ -1680,45 +1774,75 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
                 "sources": [relative_path(root, draft), relative_path(root, gate_path)],
                 "reason": "gate_source_stale",
             }
-        semantic = gate.get("agent_semantic_review")
-        declared_stage = str(gate.get("workflow_stage") or "")
-        failures = gate.get("failures") if isinstance(gate.get("failures"), list) else []
-        only_semantic_failure = bool(failures) and all(
-            isinstance(item, dict) and item.get("code") == "semantic_review_required"
-            for item in failures
-        )
-        semantic_pending = declared_stage == "semantic_review_pending" or (
-            not declared_stage
-            and only_semantic_failure
-            and isinstance(semantic, dict)
-            and semantic.get("required") is True
-            and str(semantic.get("status") or "") != "applied"
-        )
-        if semantic_pending:
-            return {"stage": "semantic_review_pending", "sources": [relative_path(root, gate_path)]}
-        if gate.get("passed") is True or gate_has_waiver(gate):
-            payoff = reader_payoff_review_status(config, chapter_number=chapter_number)
-            if payoff.get("required") and not payoff.get("passed"):
-                return {"stage": "payoff_pending", "sources": [relative_path(root, gate_path)]}
-            pacing = semantic_pacing_review_status(config, chapter_number=chapter_number)
-            if pacing.get("required") and not pacing.get("passed"):
-                return {"stage": "pacing_pending", "sources": [relative_path(root, gate_path)]}
-            reasons = editorial_review_required_reasons(config, chapter_number=chapter_number)
-            if reasons:
-                aggregate = read_json(
-                    root / "50_workbench" / "editorial_reviews" / f"ch{chapter_number:03d}.aggregate.json"
-                )
-                editorial_complete = (
-                    isinstance(aggregate, dict)
-                    and editorial_aggregate_is_current(root, chapter_number, aggregate)
-                    and aggregate.get("need_human") is not True
-                    and not aggregate.get("missing_roles")
-                    and int(aggregate.get("result_count") or 0) > 0
-                )
-                if not editorial_complete:
-                    return {"stage": "editorial_pending", "sources": [relative_path(root, gate_path)]}
+        barrier = review_barrier_status(config, chapter_number=chapter_number)
+        stages = barrier.get("stages") if isinstance(barrier.get("stages"), dict) else {}
+        for review_name, stage_name in (
+            ("semantic", "semantic_review_pending"),
+            ("payoff", "payoff_pending"),
+            ("pacing", "pacing_pending"),
+            ("editorial", "editorial_pending"),
+        ):
+            review = stages.get(review_name) if isinstance(stages.get(review_name), dict) else {}
+            if review.get("required") and not review.get("complete"):
+                return {"stage": stage_name, "sources": [relative_path(root, gate_path)]}
+        barrier_status = str(barrier.get("status") or "reviews_pending")
+        if barrier_status == "need_human":
+            return {
+                "stage": "review_need_human",
+                "sources": [relative_path(root, gate_path)],
+                "reason": "; ".join(str(item) for item in barrier.get("blockers") or []),
+            }
+        if barrier_status == "review_bundle_ready":
+            attempts = repair_attempt_status(config, chapter_number=chapter_number)
+            if attempts.get("exhausted"):
+                return {
+                    "stage": "repair_budget_exhausted",
+                    "sources": [relative_path(root, gate_path)],
+                }
+            round_number = next_repair_round(config, chapter_number=chapter_number)
+            round_token = f"r{int(round_number or 0):02d}"
+            synthesis_id = f"repair_plan_synthesis:ch{chapter_number:03d}:{round_token}:v4"
+            synthesis = next(
+                (
+                    task
+                    for task in list_manifests(root, chapter_number=chapter_number)
+                    if str(task.get("task_id") or "") == synthesis_id
+                ),
+                None,
+            )
+            plan_status = repair_plan_status(config, chapter_number=chapter_number)
+            if plan_status.get("need_human"):
+                return {
+                    "stage": "review_need_human",
+                    "sources": [str(plan_status.get("report_file") or relative_path(root, gate_path))],
+                    "reason": "repair target conflicts with the preservation ledger",
+                }
+            if synthesis is None or str(synthesis.get("status") or "") != "validated":
+                return {
+                    "stage": "repair_synthesis_pending",
+                    "sources": [relative_path(root, gate_path)],
+                }
+            repair_id = f"repair:ch{chapter_number:03d}:{round_token}:v4"
+            repair_task = next(
+                (
+                    task
+                    for task in list_manifests(root, chapter_number=chapter_number)
+                    if str(task.get("task_id") or "") == repair_id
+                ),
+                None,
+            )
+            if repair_task is None:
+                return {
+                    "stage": "repair_plan_validated",
+                    "sources": [str(synthesis.get("manifest_file") or "")],
+                }
+            return {
+                "stage": "repair_candidate_pending",
+                "sources": [str(repair_task.get("manifest_file") or "")],
+            }
+        if barrier_status == "ready_to_finalize":
             return {"stage": "ready_to_finalize", "sources": [relative_path(root, gate_path)]}
-        return {"stage": "repair_pending", "sources": [relative_path(root, gate_path)]}
+        return {"stage": "reviews_pending", "sources": [relative_path(root, gate_path)]}
     if draft.exists():
         return {"stage": "gate_pending", "sources": [relative_path(root, draft)]}
     return {"stage": "writing_pending", "sources": []}
@@ -1740,6 +1864,12 @@ def chapter_stage_task_types(stage: str) -> set[str]:
         "writing_pending": {"chapter_direction", "chapter_write"},
         "pre_gate_candidate_review": {"humanize_semantic_review"},
         "gate_pending": set(),
+        "reviews_pending": set(),
+        "review_need_human": set(),
+        "repair_synthesis_pending": {"repair_plan_synthesis"},
+        "repair_plan_validated": set(),
+        "repair_candidate_pending": {"repair"},
+        "repair_budget_exhausted": set(),
         "repair_pending": {"repair", "humanize", "content_expand", "humanize_semantic_review"},
         "semantic_review_pending": {"semantic_review"},
         "payoff_pending": {"reader_payoff_review"},
@@ -1813,11 +1943,11 @@ def reader_payoff_action(config: ConfigDocument, root: Path) -> dict[str, Any] |
         if chapter_number <= 0 or final_chapter_exists(root, chapter_number):
             continue
         payload = read_json(path)
-        if isinstance(payload, dict) and (payload.get("passed") is True or gate_has_waiver(payload)):
+        if isinstance(payload, dict):
             candidates.append(chapter_number)
     for chapter_number in sorted(set(candidates)):
         status = reader_payoff_review_status(config, chapter_number=chapter_number)
-        if not status.get("required") or status.get("passed"):
+        if not status.get("required") or status.get("complete"):
             continue
         if reader_payoff_task_is_current(config, chapter_number=chapter_number) and any(
             task.get("task_type") == "reader_payoff_review"
@@ -1843,12 +1973,10 @@ def reader_payoff_action(config: ConfigDocument, root: Path) -> dict[str, Any] |
             apply_command=(
                 f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
             ),
-            failure_next_command=(
-                f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only"
-            ),
+            failure_next_command="longform-engine production next project.yaml",
             next_command=f"longform-engine quality payoff-task project.yaml --chapter {chapter_number}",
             human_summary=(
-                f"ch{chapter_number:03d} passed deterministic gates and needs observed reader-payoff review."
+                f"ch{chapter_number:03d} needs an independent reader-payoff review before repair or finalization."
             ),
             sources=[str(status.get("report_file") or "")],
         )
@@ -1864,11 +1992,11 @@ def editorial_review_action(config: ConfigDocument, root: Path) -> dict[str, Any
         if chapter_number <= 0 or final_chapter_exists(root, chapter_number):
             continue
         payload = read_json(path)
-        if isinstance(payload, dict) and (payload.get("passed") is True or gate_has_waiver(payload)):
+        if isinstance(payload, dict):
             candidates.append(chapter_number)
     for chapter_number in sorted(set(candidates)):
         payoff_status = reader_payoff_review_status(config, chapter_number=chapter_number)
-        if payoff_status.get("required") and not payoff_status.get("passed"):
+        if payoff_status.get("required") and not payoff_status.get("complete"):
             continue
         reasons = editorial_review_required_reasons(config, chapter_number=chapter_number)
         if not reasons:
@@ -1919,7 +2047,7 @@ def first_gate_action(root: Path) -> dict[str, Any] | None:
         if payload.get("passed") is False and not gate_has_waiver(payload):
             next_command = str(
                 payload.get("next_command")
-                or f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only"
+                or "longform-engine production next project.yaml"
             )
             return base_action(
                 status="gate_failed",
@@ -2097,7 +2225,7 @@ def first_writing_task_action(root: Path) -> dict[str, Any] | None:
             output_schema=output_protocol_for_task("chapter_write"),
             validate_command=ensure_longform_prefix(next_command),
             apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
-            failure_next_command=f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only",
+            failure_next_command="longform-engine production next project.yaml",
             next_command=ensure_longform_prefix(next_command),
             human_summary=f"ch{chapter_number:03d} writing task exists and waits for an Agent draft.",
             sources=[relative_path(root, path)],
@@ -2126,6 +2254,7 @@ def base_action(
     allowed_output_paths: list[str] | None = None,
     output_schema: str = "",
     validate_command: str = "",
+    protocol_validate_command: str = "",
     apply_command: str = "",
     failure_next_command: str = "",
     hard_boundaries: list[str] | None = None,
@@ -2156,6 +2285,7 @@ def base_action(
         "allowed_output_paths": allowed_output_paths or [],
         "output_schema": output_schema,
         "validate_command": validate_command,
+        "protocol_validate_command": protocol_validate_command,
         "apply_command": apply_command,
         "failure_next_command": failure_next_command,
         "hard_boundaries": hard_boundaries or list(HARD_BOUNDARIES),
@@ -2202,6 +2332,8 @@ def task_sort_key(task: dict[str, Any]) -> tuple[int, int, int, str, str]:
 
 def command_for_task_status(manifest: dict[str, Any], status: str) -> str:
     commands = manifest_commands(manifest)
+    if status == "awaiting_agent":
+        return f"longform-engine agent-task brief project.yaml {manifest.get('task_id')}"
     if status == "invalid":
         return str(commands.get("failure") or "")
     if status == "validated":

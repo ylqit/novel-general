@@ -33,11 +33,14 @@ open-book
 -> Agent runs Humanizer v4 two-pass self-check
 -> draft submit
 -> gate-check
--> repair-chapter --plan-only if failed
+-> complete semantic / payoff / pacing / editorial reviews for the same candidate hash
+-> repair synthesis-task when the CLI review barrier freezes blocking findings
+-> Agent repair coordinator writes and validates one immutable rNN plan
 -> creative humanize-task / humanize-check when prose cleanup is needed
 -> conditional humanize-semantic-task / humanize-semantic-validate
 -> draft submit only when current source/candidate hashes pass required semantic review
--> repair-chapter --candidate-only --agent codex when rewrite task is needed
+-> repair candidate-task --agent codex when the repair plan is validated
+-> submit the immutable rNN replacement and rerun the complete review barrier
 -> quality payoff-task / payoff-validate after gate pass when required
 -> chapter finalize only after gate pass or valid waiver and a current required payoff review
 -> reward_ledger v2 / structure_history written only inside finalize

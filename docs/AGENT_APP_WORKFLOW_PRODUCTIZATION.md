@@ -96,7 +96,7 @@ Agent 默认只读取 manifest 的 `input_files` 和工作单文本。不要为�
 `continue-write` 生成下一章任务包时，应把上一章受控报告摘要写入 `feedback_carryover`：
 
 - `gate_result.json`
-- `repair_plan.md`
+- 已校验的 `repair_plans/chNNN/rNN.plan.md`
 - `humanize_check.json`
 - `semantic_pacing_result.json`
 - `editorial aggregate`

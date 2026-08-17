@@ -44,8 +44,9 @@ def test_high_risk_gate_creates_strict_semantic_review_task(tmp_path):
     manifest = load_manifest(root, "semantic_review:ch001:v4")
     strict = validate_manifest_strict(root, manifest)
 
-    assert not result.passed
-    assert any(item["code"] == "semantic_review_required" for item in result.failures)
+    assert result.passed
+    assert not any(item["code"] == "semantic_review_required" for item in result.failures)
+    assert json.loads(Path(result.gate_result).read_text(encoding="utf-8"))["workflow_stage"] == "reviews_pending"
     assert strict.ok, strict.errors
     assert manifest["io"]["output"]["protocol"] == EVIDENCE_REVIEW_SCHEMA
     assert len(manifest["io"]["inputs"]) <= 7

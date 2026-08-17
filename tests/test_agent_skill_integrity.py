@@ -27,7 +27,7 @@ def test_v041_progressive_prompts_four_protocols_and_no_pollution(tmp_path):
     registry = load_role_registry(ROOT)
     assert_current_protocol_coverage(registry)
     assert registry.registry_version == 3
-    assert len(registry.roles) == 27
+    assert len(registry.roles) == 28
     assert len(registry.playbooks) == 12
     assert "executive_editor" not in registry.roles
     assert not {"graph_extract", "memory_extract", "character_memory"} & set(TASK_CONTRACTS)
@@ -51,7 +51,7 @@ def test_v041_progressive_prompts_four_protocols_and_no_pollution(tmp_path):
             "isolated_review",
             "isolated_archival",
         }
-    assert len(TASK_CONTRACTS) == 24
+    assert len(TASK_CONTRACTS) == 25
     assert {contract["schemas"][0] for contract in TASK_CONTRACTS.values()} == set(AGENT_OUTPUT_PROTOCOLS)
     assert all(len(contract["schemas"]) == 1 for contract in TASK_CONTRACTS.values())
     facet_registries = load_facet_registries()
@@ -93,7 +93,7 @@ def test_v041_progressive_prompts_four_protocols_and_no_pollution(tmp_path):
             assert set(case) == {"positive", "negative", "boundary"}
             assert all(any("\u3400" <= char <= "\u9fff" for char in text) for text in case.values())
             calibration_texts.extend("".join(text.split()) for text in case.values())
-    assert len(calibration_texts) == 83 * 3
+    assert len(calibration_texts) == 84 * 3
     assert len(calibration_texts) == len(set(calibration_texts))
 
     professional_check = next(
@@ -101,8 +101,8 @@ def test_v041_progressive_prompts_four_protocols_and_no_pollution(tmp_path):
     )
     inventory = professional_check["detail"]["inventory"]
     assert professional_check["status"] == "pass"
-    assert inventory["item_count"] == 83
-    assert len(inventory["roles"]) == 27
+    assert inventory["item_count"] == 84
+    assert len(inventory["roles"]) == 28
     assert len(inventory["playbooks"]) == 12
     assert len(inventory["facets"]) == 44
     assert all(item["estimated_units"] > 0 and len(item["contract_hash"]) == 64 for item in inventory["roles"])
@@ -280,7 +280,7 @@ def test_v041_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
             output_schema="prose_markdown_v1",
             validate_command="longform-engine draft submit project.yaml --chapter 1 --file 50_workbench/agent_drafts/ch001.codex.md --agent codex",
             apply_command="longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
-            failure_next_command="longform-engine repair-chapter project.yaml --chapter 1 --plan-only",
+            failure_next_command="longform-engine production next project.yaml",
             context_policy={"required_files": [task_file], "compiled_brief": task_file},
         )
         manifest_file = project.root / "50_workbench" / "agent_tasks" / "adaptive.agent_task.json"
@@ -529,7 +529,7 @@ def test_failed_agent_draft_does_not_pollute_long_term_memory_or_indexes(tmp_pat
 
     assert result.passed is False
     assert gate_result["passed"] is False
-    assert state["status"] == "gate_failed"
+    assert state["status"] == "reviews_pending"
     assert state["last_finalized_chapter"] == 0
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
@@ -547,7 +547,7 @@ def test_failed_agent_draft_does_not_pollute_long_term_memory_or_indexes(tmp_pat
     assert rebuild.chapters == 1
     assert rebuild.chapter_chunks == 0
     assert rebuild.events == 0
-    assert any(row["chapter_number"] == 1 and row["status"] == "gate_failed" for row in chapters)
+    assert any(row["chapter_number"] == 1 and row["status"] == "reviews_pending" for row in chapters)
     assert not any(row["chapter_number"] == 1 and row["status"] == "final" for row in chapters)
     assert chunks == []
     assert events == []

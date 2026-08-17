@@ -66,7 +66,9 @@ def test_production_schedules_strict_bounded_reader_payoff_task(tmp_path):
         item["severity"] == "P2" and item["blocking"] is False
         for item in context["quality_guidance"]["compatibility_observations"]
     )
-    assert hashlib.sha256(text.encode("utf-8")).hexdigest() in Path(result.task_file).read_text(encoding="utf-8")
+    assert hashlib.sha256((root / "40_manuscript" / "draft" / "ch001.md").read_bytes()).hexdigest() in Path(
+        result.task_file
+    ).read_text(encoding="utf-8")
     assert "Compatibility-market observations are non-blocking P2 advice" in Path(result.task_file).read_text(
         encoding="utf-8"
     )
@@ -122,6 +124,14 @@ def test_replacing_draft_invalidates_payoff_task_and_finalize_until_regenerated(
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text(draft.read_text(encoding="utf-8") + "\n沈阙把新证据压在账册底下。", encoding="utf-8")
 
+    action = production_next(config)
+    assert action["status"] == "awaiting_gate"
+    assert action["next_command"] == "longform-engine gate-check project.yaml --chapter 1"
+
+    gate_path = root / "50_workbench" / "gate_artifacts" / "ch001" / "gate_result.json"
+    gate = read_json(gate_path)
+    gate["source_sha256"] = hashlib.sha256(draft.read_bytes()).hexdigest()
+    write_json(gate_path, gate)
     action = production_next(config)
     assert action["status"] == "ready_for_reader_payoff_task"
     assert action["next_command"] == "longform-engine quality payoff-task project.yaml --chapter 1"
@@ -351,6 +361,10 @@ def seed_payoff_project(tmp_path, *, chapter_number=1):
             "severity": "PASS",
             "failures": [],
             "warnings": [],
+            "source_path": f"40_manuscript/draft/ch{chapter_number:03d}.md",
+            "source_sha256": hashlib.sha256(draft.read_bytes()).hexdigest(),
+            "agent_semantic_review": {"required": False, "status": "not_requested"},
+            "workflow_stage": "review_barrier",
         },
     )
     return config, root, text

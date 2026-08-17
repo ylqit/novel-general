@@ -130,7 +130,9 @@ def test_gate_writes_style_humanizer_copyedit_and_memory_artifacts(tmp_path):
     assert (artifact_dir / "humanize_report.md").exists()
     assert (artifact_dir / "copyedit_report.md").exists()
     assert (artifact_dir / "memory_update.md").exists()
-    assert "Next:" in (artifact_dir / "repair_plan.md").read_text(encoding="utf-8")
+    gate_payload = json.loads((artifact_dir / "gate_result.json").read_text(encoding="utf-8"))
+    assert gate_payload["next_command"] == "longform-engine production next project.yaml"
+    assert not (artifact_dir / "repair_plan.md").exists()
 
 
 def test_editorial_research_gap_and_batch_agent_mode(tmp_path):

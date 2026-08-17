@@ -121,7 +121,9 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("pacing", "semantic-task", "project.yaml", "--chapter", "1"),
         ("pacing", "semantic-validate", "project.yaml", "--chapter", "1", "--file", "50_workbench/gate_artifacts/ch001/semantic_pacing_result.json"),
         ("pacing", "semantic-apply", "project.yaml", "--chapter", "1", "--file", "50_workbench/gate_artifacts/ch001/semantic_pacing_result.json"),
-        ("repair-chapter", "project.yaml", "--chapter", "1", "--plan-only"),
+        ("repair", "synthesis-task", "project.yaml", "--chapter", "1"),
+        ("repair", "synthesis-validate", "project.yaml", "--chapter", "1", "--file", "50_workbench/repair_plans/ch001/r01.plan.md"),
+        ("repair", "candidate-task", "project.yaml", "--chapter", "1"),
         ("creative", "brief", "project.yaml", "--init"),
         ("creative", "style-extract", "project.yaml", "--file", "sample.md", "--name", "sample"),
         ("creative", "humanize-task", "project.yaml", "--chapter", "1", "--source", "draft"),
@@ -196,6 +198,7 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("production", "status", "project.yaml"),
         ("production", "next", "project.yaml"),
         ("production", "next", "project.yaml", "--editorial"),
+        ("repair", "status", "project.yaml", "--chapter", "1"),
         ("quality", "contract", "project.yaml", "--chapter", "1"),
         ("quality", "story-profile", "project.yaml"),
         ("production", "board", "project.yaml"),
@@ -484,7 +487,7 @@ def test_cli_draft_submit_agent_draft(tmp_path):
     assert cont.returncode == 0
     assert submit.returncode == 0, submit.stderr
     assert "OK: agent draft submitted" in submit.stdout
-    assert "Next command: chapter finalize --chapter 1 --approved-by human" in submit.stdout
+    assert "Next command: longform-engine production next project.yaml" in submit.stdout
     assert (tmp_path / "novel" / "40_manuscript" / "draft" / "ch001.md").exists()
     assert (tmp_path / "novel" / "40_manuscript" / "draft" / "ch001.submission.json").exists()
     assert (tmp_path / "novel" / "50_workbench" / "gate_artifacts" / "ch001" / "gate_result.json").exists()
@@ -545,7 +548,7 @@ def test_cli_project_lock_blocks_mutating_command_but_not_read_only(tmp_path):
     assert '"exists": true' in read_only.stdout
 
 
-def test_cli_gate_check_pacing_and_repair_plan(tmp_path):
+def test_cli_failed_gate_reports_review_barrier_before_repair(tmp_path):
     init = run_cli("init-project", "--template", "qidian-longform", "--output", str(tmp_path / "novel"))
     assert init.returncode == 0
 
@@ -557,14 +560,14 @@ def test_cli_gate_check_pacing_and_repair_plan(tmp_path):
 
     gate = run_cli("gate-check", str(project_yaml), "--chapter", "1")
     pacing = run_cli("pacing-review", str(project_yaml), "--chapter", "1")
-    repair = run_cli("repair-chapter", str(project_yaml), "--chapter", "1", "--plan-only")
+    repair = run_cli("repair", "status", str(project_yaml), "--chapter", "1", "--json")
 
     assert gate.returncode == 1
     assert "Passed: False" in gate.stdout
     assert pacing.returncode in (0, 1)
     assert "OK: pacing review completed" in pacing.stdout
     assert repair.returncode == 0
-    assert "OK: repair plan ready" in repair.stdout
+    assert '"status": "reviews_pending"' in repair.stdout
 
 
 def test_cli_creative_style_extract_json(tmp_path):

@@ -176,6 +176,11 @@
       "size": 4145
     },
     {
+      "path": "config/agent_roles/prompts/repair_coordinator.md",
+      "sha256": "f577b6c428c53f5d0996d0ffe2c88045513c890afaac3de0010b52b2d0e4262e",
+      "size": 5815
+    },
+    {
       "path": "config/agent_roles/prompts/research_synthesizer.md",
       "sha256": "01aae6fe88c8f15375c624b99708d8dd865161711834420f08d397243f1d5c62",
       "size": 4058
@@ -202,13 +207,13 @@
     },
     {
       "path": "config/agent_roles/registry.json",
-      "sha256": "a9b166cee3733d4180fdb9b60fd56593c28519e40b9870361e1d4a451e49f113",
-      "size": 32987
+      "sha256": "f9d5a574d391af5bbf736a519d723c3bcca05cc4d3cb2acb88ad9893a15ba738",
+      "size": 34108
     },
     {
       "path": "config/default.engine.yaml",
-      "sha256": "0653aa0a49ce7b37734e9cc45a356a12fafd02bc21642a336f12da215aca1faa",
-      "size": 6066
+      "sha256": "16997af771ce0cb1546c62c013bd900f87efd418e56f897dbcdce31c07dd088c",
+      "size": 6105
     },
     {
       "path": "config/quality_profiles/markets/fanqie_free.yaml",
@@ -257,7 +262,7 @@
     },
     {
       "path": "config/release-channel.json",
-      "sha256": "8b6c5925aa97e6c89b446d67afae8aefe890703a12369e900ed184fc7f429f0b",
+      "sha256": "f8af0349c076128e34abc64470481c06aaa6a4d8ef4ffca415f5706d08ba3585",
       "size": 244
     },
     {
@@ -297,8 +302,8 @@
     },
     {
       "path": "config/v041_release_acceptance_fixtures.yaml",
-      "sha256": "e222250a238c2538720e3f45308b0526815c27df797baff4063c3e30b75f110a",
-      "size": 28663
+      "sha256": "0259e93673b28b45ec720672ff5d0982657319eb3ce17e8ebfdc1b6f10596d9a",
+      "size": 29186
     },
     {
       "path": "longform-novel-claude/agents/openai.yaml",
@@ -307,18 +312,18 @@
     },
     {
       "path": "longform-novel-claude/references/artifact_reporting.md",
-      "sha256": "80a8ed029966874602d85605d12c15e43d2cd9f6e0ecd1943218f8cfd01a1c47",
-      "size": 1447
+      "sha256": "453307a349f72c8210c2245ab08fde9efbc8f6aa156ca46597eece9a87a9002f",
+      "size": 1545
     },
     {
       "path": "longform-novel-claude/references/command_protocol.md",
-      "sha256": "07e5b5cf87bf187e683d70e7bcd103b466861efcce1b2b2110918cceacf9ae90",
-      "size": 28260
+      "sha256": "fed7c5efac5fafa92bdaf750222091e4130b7d78e60a218a170807b37c0ba906",
+      "size": 28793
     },
     {
       "path": "longform-novel-claude/references/creative_operator_protocol.md",
-      "sha256": "ec1eb37454e9197309914fa78178996c3b02d867506371a01c8c2d611f3f559f",
-      "size": 10065
+      "sha256": "be88f23a8a5f0696bd3c63ebfe4f5239ef4effead6d5b21f9ecf3dff24beb979",
+      "size": 10733
     },
     {
       "path": "longform-novel-claude/references/iron_laws.md",
@@ -327,13 +332,13 @@
     },
     {
       "path": "longform-novel-claude/references/workflow_mapping.md",
-      "sha256": "5a137105f844d2ddff10012c76b71ca3d0bc4fce907fb0e6e50c5d9b357418b3",
-      "size": 6950
+      "sha256": "e7d423a082d5430d32cadb5a1d666a8e54dc0d3b0ea6b9f3f14e911fa9023ebd",
+      "size": 7222
     },
     {
       "path": "longform-novel-claude/SKILL.md",
-      "sha256": "8f23699a97b8db50c3f88232407c63ef04b4b4f5bc1e3403a4a02547a1283a82",
-      "size": 5049
+      "sha256": "bbff7f25b6b7ef4bce1b526e212c16a207e89a5b8729449d18e04471bca06817",
+      "size": 5479
     },
     {
       "path": "longform-novel-codex/agents/openai.yaml",
@@ -342,18 +347,18 @@
     },
     {
       "path": "longform-novel-codex/references/artifact_reporting.md",
-      "sha256": "80a8ed029966874602d85605d12c15e43d2cd9f6e0ecd1943218f8cfd01a1c47",
-      "size": 1447
+      "sha256": "453307a349f72c8210c2245ab08fde9efbc8f6aa156ca46597eece9a87a9002f",
+      "size": 1545
     },
     {
       "path": "longform-novel-codex/references/command_protocol.md",
-      "sha256": "07e5b5cf87bf187e683d70e7bcd103b466861efcce1b2b2110918cceacf9ae90",
-      "size": 28260
+      "sha256": "fed7c5efac5fafa92bdaf750222091e4130b7d78e60a218a170807b37c0ba906",
+      "size": 28793
     },
     {
       "path": "longform-novel-codex/references/creative_operator_protocol.md",
-      "sha256": "ec1eb37454e9197309914fa78178996c3b02d867506371a01c8c2d611f3f559f",
-      "size": 10065
+      "sha256": "be88f23a8a5f0696bd3c63ebfe4f5239ef4effead6d5b21f9ecf3dff24beb979",
+      "size": 10733
     },
     {
       "path": "longform-novel-codex/references/iron_laws.md",
@@ -362,33 +367,33 @@
     },
     {
       "path": "longform-novel-codex/references/workflow_mapping.md",
-      "sha256": "5a137105f844d2ddff10012c76b71ca3d0bc4fce907fb0e6e50c5d9b357418b3",
-      "size": 6950
+      "sha256": "e7d423a082d5430d32cadb5a1d666a8e54dc0d3b0ea6b9f3f14e911fa9023ebd",
+      "size": 7222
     },
     {
       "path": "longform-novel-codex/SKILL.md",
-      "sha256": "96f7a918db9a55fef793558a206b44bfd38ab5fc3739b64ada6b97433e7afa5b",
-      "size": 5043
+      "sha256": "766c00eadd96d6056d1af9767bb7cc3d4eae566455d1fad72cc0809b9b8ffc6c",
+      "size": 5473
     },
     {
       "path": "pyproject.toml",
-      "sha256": "83b260cf4cfcc1f69ee45085f632275b78a39951fe975cf69f1a4c70ac41ae48",
+      "sha256": "fbf4781802f0d0b133da9261a04453e50f5e8cb6e00262bb75cf21b471f3e1d0",
       "size": 2065
     },
     {
       "path": "shared/artifact_reporting.md",
-      "sha256": "80a8ed029966874602d85605d12c15e43d2cd9f6e0ecd1943218f8cfd01a1c47",
-      "size": 1447
+      "sha256": "453307a349f72c8210c2245ab08fde9efbc8f6aa156ca46597eece9a87a9002f",
+      "size": 1545
     },
     {
       "path": "shared/command_protocol.md",
-      "sha256": "07e5b5cf87bf187e683d70e7bcd103b466861efcce1b2b2110918cceacf9ae90",
-      "size": 28260
+      "sha256": "fed7c5efac5fafa92bdaf750222091e4130b7d78e60a218a170807b37c0ba906",
+      "size": 28793
     },
     {
       "path": "shared/creative_operator_protocol.md",
-      "sha256": "ec1eb37454e9197309914fa78178996c3b02d867506371a01c8c2d611f3f559f",
-      "size": 10065
+      "sha256": "be88f23a8a5f0696bd3c63ebfe4f5239ef4effead6d5b21f9ecf3dff24beb979",
+      "size": 10733
     },
     {
       "path": "shared/iron_laws.md",
@@ -397,16 +402,16 @@
     },
     {
       "path": "shared/workflow_mapping.md",
-      "sha256": "5a137105f844d2ddff10012c76b71ca3d0bc4fce907fb0e6e50c5d9b357418b3",
-      "size": 6950
+      "sha256": "e7d423a082d5430d32cadb5a1d666a8e54dc0d3b0ea6b9f3f14e911fa9023ebd",
+      "size": 7222
     },
     {
       "path": "templates/qidian-longform/project.yaml",
-      "sha256": "c2c28df57e151594a2c8ef5db5e6a97d9b1cb65b055fe652b0b3764c30c9d16a",
-      "size": 4212
+      "sha256": "b6fab75f1fc312c67d39d7eec127aa4e5640fac598910cc771c9342c97baed8e",
+      "size": 4274
     }
   ],
-  "engine_version": "0.4.1",
+  "engine_version": "0.4.2",
   "hash_policy": "text-lf-v1",
   "schema": "longform_resource_manifest_v1"
 }

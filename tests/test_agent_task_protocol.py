@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 from pathlib import Path
 import pytest
 
@@ -15,13 +16,20 @@ from longform_engine.agent_tasks import (
     validate_manifest_strict,
     write_manifest,
 )
-from longform_engine.cli import write_repair_candidate_task
 from longform_engine.config import load_project_config
 from longform_engine.creative import expand_task, humanize_task
 from longform_engine.editorial import editorial_aggregate, editorial_review, editorial_submit_review
 from longform_engine.gates import GateError, gate_check, semantic_pacing_apply, semantic_pacing_task, semantic_pacing_validate
 from longform_engine.orchestration import WorkflowError, continue_write, finalize_chapter, open_book, plan_chapter, submit_agent_draft
 from longform_engine.production import production_next
+from longform_engine.repair_coordination import (
+    create_repair_candidate_task,
+    create_repair_synthesis_task,
+    next_repair_round,
+    record_repair_submission,
+    review_barrier_status,
+    validate_repair_plan,
+)
 from longform_engine.roles import load_role_registry
 from longform_engine.semantic import semantic_task
 from longform_engine.storage import init_project, resolve_project_root
@@ -59,7 +67,6 @@ def test_no_key_agent_task_chapter_loop_and_manifest_index(tmp_path, monkeypatch
     assert [item["to_status"] for item in events if item["task_id"] == "chapter_write:ch001:v4"] == [
         "awaiting_agent",
         "submitted",
-        "validated",
         "applied",
     ]
     assert events[-1]["command"] == "chapter finalize"
@@ -73,30 +80,11 @@ def test_finalize_applies_submitted_candidate_and_supersedes_unused_repair(tmp_p
     root = tmp_path / "novel"
     open_book(config)
     mark_project_ready(root, config)
-    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card = json.loads(card_path.read_text(encoding="utf-8"))
-    card["requires_semantic_review"] = True
-    card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
     continue_write(config, chapter_number=1)
     draft_path = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     draft_path.write_text(passing_text("FINALIZED_AFTER_SEMANTIC_GATE"), encoding="utf-8")
     submitted = submit_agent_draft(config, chapter_number=1, file_path=draft_path, agent="codex")
-    assert submitted.passed is False
-    gate_result = json.loads(Path(submitted.gate_result).read_text(encoding="utf-8"))
-    gate_result.update({"passed": True, "severity": "PASS", "failures": []})
-    Path(submitted.gate_result).write_text(
-        json.dumps(gate_result, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    update_task_status(
-        root,
-        "chapter_write:ch001:v4",
-        to_status="invalid",
-        command="gate-check",
-        artifact=submitted.gate_result,
-        result="semantic review required",
-    )
+    assert submitted.passed is True
 
     repair_output = root / "50_workbench" / "repair_candidates" / "ch001.codex.repair_candidate.md"
     repair_manifest = build_manifest(
@@ -137,7 +125,34 @@ def test_agent_task_manifests_for_repair_humanizer_and_unified_semantic(tmp_path
     plan_chapter(config, chapter_number=1)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text("# Chapter 1\n\nTODO short draft.\n", encoding="utf-8")
     gate_check(config, chapter_number=1)
-    repair = write_repair_candidate_task(config, chapter_number=1, agent="codex")
+    repair_output = root / "50_workbench" / "repair_candidates" / "ch001.r01.codex.md"
+    repair_task = root / "50_workbench" / "repair_plans" / "ch001" / "r01.repair_task.md"
+    repair_task.parent.mkdir(parents=True, exist_ok=True)
+    repair_task.write_text("# repair\n", encoding="utf-8")
+    repair_manifest_path = repair_task.parent / "r01.repair.agent_task.json"
+    repair_manifest_payload = build_manifest(
+        root,
+        task_type="repair",
+        chapter_number=1,
+        task_id="repair:ch001:r01:v4",
+        input_files=[repair_task, root / "40_manuscript" / "draft" / "ch001.md"],
+        allowed_output_paths=[repair_output],
+        output_schema=PROSE_MARKDOWN_SCHEMA,
+        validate_command=(
+            "longform-engine draft submit project.yaml --chapter 1 "
+            "--file 50_workbench/repair_candidates/ch001.r01.codex.md --agent codex --overwrite"
+        ),
+        apply_command="longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
+        failure_next_command="longform-engine agent-task brief project.yaml repair:ch001:r01:v4",
+        context_policy={
+            "required_files": [repair_task, root / "40_manuscript" / "draft" / "ch001.md"],
+            "optional_files": [],
+            "compiled_brief": repair_task,
+            "selection_report": repair_task,
+        },
+    )
+    write_manifest(root, repair_manifest_payload, repair_manifest_path)
+    repair = {"manifest_file": str(repair_manifest_path)}
     humanizer = humanize_task(config, chapter_number=1, source="draft")
     expand = expand_task(config, chapter_number=1, source="draft")
 
@@ -166,12 +181,112 @@ def test_agent_task_manifests_for_repair_humanizer_and_unified_semantic(tmp_path
     assert "--overwrite" in expand_manifest["commands"]["apply"]
     assert expand_manifest["commands"]["failure"].startswith("longform-engine creative expand-task ")
     humanize_manifest = load_manifest(root, "humanize:ch001:v4")
-    repair_manifest = load_manifest(root, "repair:ch001:v4")
+    repair_manifest = load_manifest(root, "repair:ch001:r01:v4")
     assert humanize_manifest["commands"]["failure"].startswith("longform-engine creative humanize-task ")
-    assert repair_manifest["commands"]["failure"].startswith("longform-engine repair-chapter ")
+    assert repair_manifest["commands"]["failure"].startswith("longform-engine agent-task brief ")
     for item in list_manifests(root, chapter_number=1):
         result = validate_manifest_strict(root, load_manifest(root, item["task_id"]))
         assert result.ok, (item["task_id"], result.errors)
+
+
+def test_failed_gate_completes_required_reviews_before_repair(tmp_path):
+    config = seed_project(tmp_path)
+    root = tmp_path / "novel"
+    open_book(config)
+    mark_project_ready(root, config)
+    config.data["quality"]["semantic_review_milestones"] = [1]
+
+    continue_write(config, chapter_number=1)
+    draft_path = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
+    draft_path.write_text(passing_text("REVIEW_BARRIER") + "\nTODO protocol-visible defect.\n", encoding="utf-8")
+    submitted = submit_agent_draft(config, chapter_number=1, file_path=draft_path, agent="codex")
+    gate = json.loads(Path(submitted.gate_result).read_text(encoding="utf-8"))
+    action = production_next(config)
+
+    assert submitted.passed is False
+    assert all(item.get("code") != "semantic_review_required" for item in gate["failures"])
+    assert gate["workflow_stage"] == "reviews_pending"
+    assert action["task_type"] == "semantic_review"
+    assert action["status"] == "agent_task_awaiting_agent"
+    assert not any(item["task_type"] == "repair" for item in list_manifests(root, chapter_number=1))
+
+
+def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_candidates(tmp_path):
+    config = seed_project(tmp_path)
+    root = tmp_path / "novel"
+    config.data["quality"]["assurance_mode"] = "light"
+    config.data["quality"]["semantic_review_milestones"] = []
+    config.data["quality"]["semantic_review_boundaries"] = False
+    config.data.setdefault("editorial", {})["review_mode"] = "off"
+
+    draft = root / "40_manuscript" / "draft" / "ch001.md"
+    draft.write_text("# Chapter 1\n\n药水必须接触瓶口并耗时饮用，随后药瓶破碎却直接恢复生命。\n", encoding="utf-8")
+    write_blocking_gate(root, draft, chapter_number=1)
+
+    first = create_repair_synthesis_task(config, chapter_number=1)
+    first_bundle = json.loads((root / first["review_bundle"]).read_text(encoding="utf-8"))
+    first_id = first_bundle["blocking_finding_ids"][0]
+    first_plan = root / first["plan_file"]
+    first_plan.write_text(repair_plan_markdown(first_bundle, first_id, conflict=True), encoding="utf-8")
+    invalid = validate_repair_plan(config, chapter_number=1, file_path=first_plan)
+
+    assert invalid["ok"] is False
+    assert "conflicts with preserve ledger" in " ".join(invalid["errors"])
+    assert invalid["provenance"]["need_human"] is True
+    assert production_next(config)["status"] == "need_human"
+    assert next_repair_round(config, chapter_number=1) == 1
+
+    first_plan_text = repair_plan_markdown(first_bundle, first_id)
+    first_plan.write_text(first_plan_text.replace(f"{first_id} P1", f"{first_id} P2"), encoding="utf-8")
+    downgraded = validate_repair_plan(config, chapter_number=1, file_path=first_plan)
+    assert downgraded["ok"] is False
+    assert any(f"{first_id} must retain severity P1" in item for item in downgraded["errors"])
+    assert next_repair_round(config, chapter_number=1) == 1
+
+    first_plan.write_text(first_plan_text, encoding="utf-8")
+    assert validate_repair_plan(config, chapter_number=1, file_path=first_plan)["ok"] is True
+    assert validate_repair_plan(config, chapter_number=1, file_path=first_plan)["ok"] is True
+    first_plan.write_text(first_plan_text + "\n不可变计划不允许追加。\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="immutable repair plan"):
+        validate_repair_plan(config, chapter_number=1, file_path=first_plan)
+    first_plan.write_text(first_plan_text, encoding="utf-8")
+    first_candidate_task = create_repair_candidate_task(config, chapter_number=1, agent="codex")
+    first_candidate = root / first_candidate_task["candidate_draft"]
+    first_candidate.write_text("# Chapter 1\n\n他挡住攻击，再把瓶口送到林澄唇边，等待药液饮尽。\n", encoding="utf-8")
+    record_repair_submission(
+        config,
+        chapter_number=1,
+        task_id=first_candidate_task["task_id"],
+        source_path=first_candidate,
+    )
+
+    draft.write_text(first_candidate.read_text(encoding="utf-8") + "仍有一处确认的规则冲突。\n", encoding="utf-8")
+    write_blocking_gate(root, draft, chapter_number=1)
+    second = create_repair_synthesis_task(config, chapter_number=1)
+    second_bundle = json.loads((root / second["review_bundle"]).read_text(encoding="utf-8"))
+    second_id = second_bundle["blocking_finding_ids"][0]
+    second_plan = root / second["plan_file"]
+    second_plan.write_text(repair_plan_markdown(second_bundle, second_id), encoding="utf-8")
+    assert validate_repair_plan(config, chapter_number=1, file_path=second_plan)["ok"] is True
+    second_candidate_task = create_repair_candidate_task(config, chapter_number=1, agent="codex")
+    second_candidate = root / second_candidate_task["candidate_draft"]
+    second_candidate.write_text("# Chapter 1\n\n第二轮完整替代稿仍等待全量复审。\n", encoding="utf-8")
+    record_repair_submission(
+        config,
+        chapter_number=1,
+        task_id=second_candidate_task["task_id"],
+        source_path=second_candidate,
+    )
+
+    assert first["task_id"] == "repair_plan_synthesis:ch001:r01:v4"
+    assert first_candidate_task["task_id"] == "repair:ch001:r01:v4"
+    assert second["task_id"] == "repair_plan_synthesis:ch001:r02:v4"
+    assert second_candidate_task["task_id"] == "repair:ch001:r02:v4"
+    assert first["review_bundle"] != second["review_bundle"]
+    assert first_candidate_task["candidate_draft"] != second_candidate_task["candidate_draft"]
+    assert next_repair_round(config, chapter_number=1) is None
+    with pytest.raises(ValueError, match="repair_budget_exhausted"):
+        create_repair_synthesis_task(config, chapter_number=1)
 
 
 def test_editorial_submit_review_aggregates_need_human_without_canon_pollution(tmp_path):
@@ -539,7 +654,7 @@ def test_strict_manifest_validation_rejects_unknown_type_and_canonical_output(tm
             output_schema=PROSE_MARKDOWN_SCHEMA,
             validate_command="longform-engine draft submit project.yaml --chapter 1 --file 50_workbench/agent_drafts/ch001.codex.md --agent codex",
             apply_command="longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
-            failure_next_command="longform-engine repair-chapter project.yaml --chapter 1 --plan-only",
+            failure_next_command="longform-engine production next project.yaml",
         )
     canonical_output = build_manifest(
         root,
@@ -572,7 +687,7 @@ def test_agent_task_lifecycle_supports_superseded_and_rolled_back_events(tmp_pat
         output_schema=PROSE_MARKDOWN_SCHEMA,
         validate_command="longform-engine draft submit project.yaml --chapter 1 --file 50_workbench/agent_drafts/ch001.codex.md --agent codex",
         apply_command="longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
-        failure_next_command="longform-engine repair-chapter project.yaml --chapter 1 --plan-only",
+        failure_next_command="longform-engine production next project.yaml",
         task_id="chapter_write:ch001:lifecycle-test",
     )
     write_manifest(root, manifest, root / "50_workbench" / "writing_tasks" / "ch001.lifecycle.agent_task.json")
@@ -602,6 +717,76 @@ def test_agent_task_lifecycle_supports_superseded_and_rolled_back_events(tmp_pat
     assert rolled_back is not None
     assert summary["by_status"]["rolled_back"] == 1
     assert [item["to_status"] for item in events] == ["awaiting_agent", "superseded", "rolled_back"]
+
+
+def write_blocking_gate(root: Path, draft: Path, *, chapter_number: int) -> None:
+    digest = sha256(draft.read_bytes()).hexdigest()
+    gate_dir = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}"
+    gate_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "chapter_number": chapter_number,
+        "passed": False,
+        "severity": "P1",
+        "source_path": draft.relative_to(root).as_posix(),
+        "source_sha256": digest,
+        "failures": [
+            {
+                "code": "ABILITY_RULE_CONFLICT",
+                "severity": "P1",
+                "message": "治疗规则前置声明与救援动作冲突。",
+                "repair_action": "重写药水接触、饮用和生效动作链。",
+                "preserve": ["主角放弃追击并优先救人"],
+            }
+        ],
+        "warnings": [],
+        "agent_semantic_review": {"required": False, "status": "not_required"},
+        "workflow_stage": "review_barrier",
+    }
+    (gate_dir / "gate_result.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def repair_plan_markdown(bundle: dict, finding_id: str, *, conflict: bool = False) -> str:
+    round_token = f"r{int(bundle['repair_round']):02d}"
+    mutable = "主角放弃追击并优先救人" if conflict else "药水接触、饮用和生效动作链"
+    return "\n".join(
+        [
+            "# 修复计划",
+            "",
+            "## 候选 hash 与修复轮次",
+            f"候选 {bundle['candidate_sha256']}，轮次 {round_token}。",
+            "",
+            "## 完整 blocking finding 清单",
+            f"- {finding_id} P1：治疗规则前置声明与救援动作冲突。",
+            "",
+            "## 共同根因分组",
+            f"- 机制根因：{finding_id} 指向未统一的治疗生效规则。",
+            "",
+            "## 修复依赖与执行顺序",
+            "先统一接触规则，再重写动作，最后核对生存结果。",
+            "",
+            "## 每组最小修改范围",
+            "从首次说明药水规则到林澄状态稳定的最后依赖句。",
+            "",
+            "## 必须保留内容",
+            "- 主角放弃追击并优先救人",
+            "",
+            "## 允许改变内容",
+            f"- {mutable}",
+            "",
+            "## 冲突与 need-human 判断",
+            "need-human: no\n无冲突。" if not conflict else "need-human: yes\n存在保护项冲突，应拒绝计划。",
+            "",
+            "## 回归检查清单",
+            "重新检查 continuity、character、payoff 和 scene causality。",
+            "",
+            "## 完成判据",
+            "规则声明、救援动作和人物生存结果形成唯一可复核因果链。",
+            "",
+        ]
+    )
 
 
 def seed_project(tmp_path):

@@ -219,13 +219,13 @@ continue-write
 ### 修章
 
 ```text
-repair-chapter --plan-only or candidate task
-  -> Agent writes 50_workbench/repair_candidates/chNNN.<agent>.repair_candidate.md
+complete review barrier -> repair synthesis-task -> validated immutable plan
+  -> repair candidate-task -> Agent writes 50_workbench/repair_candidates/chNNN.rNN.<agent>.md
   -> draft submit --overwrite
   -> gate-check
 ```
 
-修章任务必须读取 gate result、repair plan、原 draft、chapter card、constraint packet 和必要的 pacing/reverse-brake artifacts。
+修复主编只读取不可变候选、CLI 冻结的 review bundle 与紧凑章节约束；修章作者只读取不可变候选快照、已验证计划和任务说明。
 
 ### Humanizer
 
@@ -431,7 +431,7 @@ Release guard 必须覆盖：
 - `chapter finalize -> graph semantic-task -> fixture semantic graph JSON -> semantic-validate -> semantic-apply`。
 - `chapter finalize -> memory character-task -> fixture character memory JSON -> character-validate -> character-apply`。
 - invalid graph/memory/editorial/pacing Agent 输出只写 validation/report，不污染 `40_manuscript/final/`、`60_rag/`、`30_state/story_graph.json`、`30_state/tcs/` 或 `70_runtime/db/`。
-- gate fail 后的 `repair-chapter --plan-only`、`repair-chapter --candidate-only`、`creative humanize-task/check`、`creative expand-task/check`、`draft submit --overwrite` 分支。
+- gate finding 后的完整审稿屏障、`repair synthesis-task`、`repair candidate-task`、`creative humanize-task/check`、`creative expand-task/check`、`draft submit --overwrite` 分支。
 
 这些测试不是替代 schema/unit 测试，而是证明“无外部 key 的宿主 Agent 协作系统”在真实 CLI 命令流下可运行。后续新增智能任务时，必须补同类 fixture E2E：任务生成、Agent 输出、validate、apply/finalize、失败 no-pollution 和 next command。
 

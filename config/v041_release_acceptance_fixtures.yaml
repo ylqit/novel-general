@@ -173,6 +173,10 @@ professional_prompt_calibration:
       positive: "指出开篇三场对话后仍无法复述主角当前任务，并定位被说明替代的行动入口。"
       negative: "因世界真相尚未公开就判断读者完全无法理解。"
       boundary: "悬疑可以隐藏答案，但不能隐藏人物此刻为何行动和不行动的损失。"
+    repair_coordinator:
+      positive: "把药水规则、救援因果与可信度三项 finding 聚为同一机制根因，先修接触与饮用动作，再回归连续性、人物和收益，同时保留放弃追击与药水耗尽。"
+      negative: "用加强逻辑和润色战斗概括全部问题，删除少数派 P1 并顺手改写幕后真凶。"
+      boundary: "两个 finding 位于同一段但分别涉及角色知识与空间站位时，只有共享错误前提才可合并，否则应分组安排依赖。"
     repair_author:
       positive: "把对白归属 finding 映射到受影响轮次，只重排动作和称谓并保护线索结果。"
       negative: "借修章更换幕后真凶并增加主角能力。"

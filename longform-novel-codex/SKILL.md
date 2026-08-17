@@ -25,6 +25,8 @@ description: Codex App / Codex CLI 中文长篇小说生产 Skill；用户说“
 
 同人项目允许使用 manifest 声明来源中的角色名、关系、世界观、能力和时间线。先完成 `fanfiction canon-task` 与 `fanfiction design-task`，再进入纲要和章节；不得扫描未声明原作，也不得在 canon JSON 或正文中搬运、拆分重构连续 `source prose`。`rights status` 只记录和提示，不由 Agent 擅自阻断工作流。正文与修章遵守 `Humanizer v4` 和 `character_expression_packet_v1`；人物差异来自感知、决策、欲望、面具、身体和关系压力，不得强制统一对白或外貌配额。润色触发 `humanize_semantic_review` 时，必须由独立审稿角色比较来源稿与候选稿并通过 CLI 校验，不能由润色写作者自审放行。gate 通过后若出现 `reader_payoff_review`，必须按 span 证明实际收益与代价，再等待显式 finalize。
 
+发现正文问题后不要直接改稿。继续执行 `production next`，让语义、收益、节奏和风险编辑审稿全部绑定同一候选 hash；CLI 冻结 review bundle 后，由独立 `repair_coordinator` 生成不可变 `rNN.plan.md`，再由修章作者输出完整替代稿。修复主编不得删除或降级有效 P0/P1；两轮替代稿均失败时停止在 `repair_budget_exhausted`，不得创建第三轮。
+
 ## 写入边界
 
 章节正文只能写入 `50_workbench/agent_drafts/chNNN.codex.md` 或 manifest 明确允许的路径。不得直接写：

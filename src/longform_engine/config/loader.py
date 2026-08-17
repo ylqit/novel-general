@@ -133,6 +133,10 @@ BUILTIN_DEFAULTS: dict[str, Any] = {
             "structure_window": 20,
             "language_similarity_threshold": 0.72,
         },
+        "repair": {
+            "max_content_rounds": 2,
+            "selected_p2_codes": [],
+        },
         "humanizer": {
             "changed_character_warning_ratio": 0.35,
             "changed_character_human_ratio": 0.60,
@@ -440,6 +444,16 @@ def validate_config(data: dict[str, Any]) -> None:
     ):
         raise ConfigError("quality.reader_payoff.structure_window must be an integer between 10 and 20")
     _require_ratio(reader_payoff, "language_similarity_threshold", "quality.reader_payoff")
+    repair = _require_mapping(quality, "repair", "quality")
+    if repair.get("max_content_rounds") != 2:
+        raise ConfigError("quality.repair.max_content_rounds must be 2")
+    selected_p2_codes = repair.get("selected_p2_codes")
+    if (
+        not isinstance(selected_p2_codes, list)
+        or any(not isinstance(item, str) or not item.strip() for item in selected_p2_codes)
+        or len(set(selected_p2_codes)) != len(selected_p2_codes)
+    ):
+        raise ConfigError("quality.repair.selected_p2_codes must be a unique list of non-empty strings")
     humanizer = _require_mapping(quality, "humanizer", "quality")
     warning_ratio = _require_ratio(humanizer, "changed_character_warning_ratio", "quality.humanizer")
     human_ratio = _require_ratio(humanizer, "changed_character_human_ratio", "quality.humanizer")

@@ -18,12 +18,18 @@ from longform_engine.quality import (
     truncate_feedback_registry,
 )
 from longform_engine.quality.feedback import read_registry
+from longform_engine.repair_coordination import create_repair_synthesis_task, review_barrier_status
 from longform_engine.roles import load_role_registry
 from longform_engine.storage import init_project
 
 
 def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_blocker(tmp_path):
     config, root = seed_project(tmp_path)
+    config.data["quality"]["assurance_mode"] = "light"
+    config.data["quality"]["semantic_review_milestones"] = []
+    config.data["quality"]["semantic_review_boundaries"] = False
+    config.data["quality"]["reader_payoff"]["review_mode"] = "off"
+    config.data["quality"].setdefault("semantic_pacing", {})["review_mode"] = "off"
     config.data.setdefault("editorial", {})["review_roles"] = [
         "planning_chief_editor",
         "scene_prose_editor",
@@ -111,6 +117,36 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
     assert payload["human_decisions"]
     assert payload["feedback_registry"]["status"] == "updated"
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
+
+    gate_dir = root / "50_workbench" / "gate_artifacts" / "ch001"
+    gate_dir.mkdir(parents=True, exist_ok=True)
+    (gate_dir / "gate_result.json").write_text(
+        json.dumps(
+            {
+                "chapter_number": 1,
+                "passed": True,
+                "severity": "PASS",
+                "source_path": "40_manuscript/draft/ch001.md",
+                "source_sha256": hashlib.sha256(draft.read_bytes()).hexdigest(),
+                "failures": [],
+                "warnings": [],
+                "agent_semantic_review": {"required": False, "status": "not_required"},
+                "workflow_stage": "review_barrier",
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    barrier = review_barrier_status(config, chapter_number=1)
+    synthesis = create_repair_synthesis_task(config, chapter_number=1)
+    bundle = json.loads((root / synthesis["review_bundle"]).read_text(encoding="utf-8"))
+    minority = next(item for item in bundle["findings"] if item["code"] == "SPEAKER_AMBIGUOUS" and item["severity"] == "P1")
+
+    assert barrier["status"] == "review_bundle_ready"
+    assert minority["selected"] is True
+    assert minority["finding_id"] in bundle["blocking_finding_ids"]
 
 
 def test_risk_selected_editorial_v2_recognizes_chinese_payoff_and_access_gain(tmp_path):

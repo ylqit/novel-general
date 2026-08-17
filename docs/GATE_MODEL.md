@@ -15,12 +15,13 @@
 longform-engine gate-check project.yaml --chapter 12
 longform-engine gate-waiver project.yaml --chapter 12 --reason "P2 风险已人工确认"
 longform-engine pacing-review project.yaml --chapter 12
-longform-engine repair-chapter project.yaml --chapter 12 --plan-only
+longform-engine production next project.yaml
+longform-engine repair synthesis-task project.yaml --chapter 12
 ```
 
 `gate-check` 在通过时返回 0；失败时仍会完整落盘产物，但 CLI 返回 1，方便 Agent 和 CI 判断阻断状态。
 
-`repair-chapter --plan-only` 只生成修复计划；需要候选改写时使用 `repair-chapter --candidate-only --agent ...`，候选稿仍必须重新提交和定稿。
+gate 的 P0/P1 只是一类已验证 finding，不会跳过其他独立审稿。全部必审角色完成且绑定同一候选 hash 后，CLI 才冻结 review bundle；`repair synthesis-task` 让修复主编编排根因、依赖、最小修改半径与保护项，验证通过后再使用 `repair candidate-task` 创建完整替代稿任务。
 
 ## 3. 产物契约
 
@@ -34,8 +35,9 @@ longform-engine repair-chapter project.yaml --chapter 12 --plan-only
   style_review.md
   quality_report.md
   publish_ready.md
-  repair_plan.md
 ```
+
+不可变修复产物位于 `50_workbench/repair_plans/chNNN/rNN.*`；gate 目录不再自行生成第二份 `repair_plan.md`。
 
 `gate_result.json` 是机器可读事实源，核心字段为：
 
@@ -46,8 +48,8 @@ longform-engine repair-chapter project.yaml --chapter 12 --plan-only
   "severity": "P0",
   "failures": [],
   "warnings": [],
-  "allowed_actions": ["repair_chapter", "rollback_chapter"],
-  "next_command": "repair-chapter --chapter 12",
+  "allowed_actions": ["complete_reviews"],
+  "next_command": "longform-engine production next project.yaml",
   "artifact_dir": "50_workbench/gate_artifacts/ch012",
   "source_path": "40_manuscript/draft/ch012.md",
   "updated_at": "2026-06-28T00:00:00+00:00"
@@ -73,11 +75,11 @@ longform-engine repair-chapter project.yaml --chapter 12 --plan-only
 | `P1` | 正文字符数、结构、图谱、节奏等硬性质量失败 | 必须修复或回滚 |
 | `P2` | 警告级风险 | 记录到报告，不阻断 |
 
-当前版本只要存在 P0/P1 即 `passed=false`。
+确定性 gate 只要存在 P0/P1 即 `passed=false`；语义审稿尚未完成则由 `workflow_stage=reviews_pending` 表达，不再伪造一个正文 failure。
 
 ## 6. 流水线集成
 
-`continue-write` 会在生成草稿后自动执行 `gate-check`，并把结果写入 run report。下一次 `continue-write` 会读取上一章 `gate_result.json`；如果上一章 `passed=false`，命令会阻断并提示先执行修复流程。
+`continue-write` 会在生成草稿后自动执行 `gate-check`，并把结果写入 run report。之后由 `production next` 依次完成语义、收益、节奏和风险编辑审稿；只有完整屏障得出无阻断 finding 时才允许 finalize，有阻断 finding 时才允许冻结修复主编任务。
 
 这保证了长篇连载不会在已经失败的章节上继续堆叠错误。
 
@@ -103,8 +105,6 @@ waiver 会写入：
 
 并把 `gate_result.json` 标记为 `waived=true`，同时追加 `continue_write_with_waiver` 到 `allowed_actions`。
 
-## 9. 后续扩展
+## 9. 修复额度
 
-- 接入 LLM editorial review，补充风格、爽点、人物动机和读者契约检查。
-- 接入正文改写执行器，让 `repair-chapter` 不止生成计划，也能生成 rewrite candidate。
-- 将 `publish_ready.md` 接入 finalization，让通过门禁的章节进入定稿发布流程。
+每轮产物使用不可变 `r01`、`r02` 编号。只有完整替代稿成功提交才消耗一次内容额度；无效审稿 JSON、无效计划或任务重建不计次。两轮后仍存在 P0/P1 时进入 `repair_budget_exhausted`，CLI 不生成第三轮命令。

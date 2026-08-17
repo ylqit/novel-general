@@ -91,6 +91,9 @@ quality:
     review_mode: "risk_based"
     structure_window: 20
     language_similarity_threshold: 0.72
+  repair:
+    max_content_rounds: 2
+    selected_p2_codes: []
   humanizer:
     changed_character_warning_ratio: 0.35
     changed_character_human_ratio: 0.60

@@ -390,6 +390,19 @@ def test_book_ideation_invalid_selection_does_not_pollute_bible_or_state(tmp_pat
     assert brief["manifest_validation"]["ok"] is True
 
 
+def test_production_next_keeps_active_project_intelligence_ahead_of_chapter_work(tmp_path):
+    config, _ = seed_project(tmp_path)
+    task = create_intelligence_task(config, task_type="book_ideation")
+
+    action = production_next(config)
+
+    assert action["status"] == "agent_task_awaiting_agent"
+    assert action["task_id"] == task.task_id
+    assert action["task_type"] == "book_ideation"
+    assert action["next_command"] == f"longform-engine agent-task brief project.yaml {task.task_id}"
+    assert action["protocol_validate_command"].startswith("longform-engine agent-task result-validate ")
+
+
 def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
     config, root = seed_project(tmp_path)
     mark_project_ready(root, config, direction_applied=False)

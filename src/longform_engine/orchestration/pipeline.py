@@ -55,6 +55,13 @@ from longform_engine.quality import (
     record_quality_history,
 )
 from longform_engine.rag import build_context
+from longform_engine.repair_coordination import (
+    RepairCoordinationError,
+    ensure_candidate_snapshot,
+    preflight_repair_submission,
+    record_repair_submission,
+    review_barrier_status,
+)
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.text_metrics import content_character_count, display_character_count
 
@@ -909,6 +916,16 @@ def submit_agent_draft(
         raise WorkflowError(str(exc)) from exc
     candidate_task_id = str(candidate_task.get("task_id") or "")
     candidate_task_type = str(candidate_task.get("task_type") or "")
+    if candidate_task_type == "repair":
+        try:
+            preflight_repair_submission(
+                config,
+                chapter_number=chapter_number,
+                task_id=candidate_task_id,
+                source_path=source_path,
+            )
+        except RepairCoordinationError as exc:
+            raise WorkflowError(str(exc)) from exc
     replaced_task_ids = [
         str(task.get("task_id") or "")
         for task in list_manifests(root, chapter_number=chapter_number)
@@ -922,6 +939,7 @@ def submit_agent_draft(
         raise WorkflowError(f"Draft already exists for ch{chapter_number:03d}; pass --overwrite to replace it.")
 
     atomic_write_text(draft_path, text + "\n")
+    candidate_snapshot = ensure_candidate_snapshot(root, chapter_number=chapter_number)
     submitted_at = utc_now()
     submission_path = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.submission.json"
     task_path = root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.json"
@@ -946,6 +964,8 @@ def submit_agent_draft(
         "candidate_revision": previous_revision + 1,
         "candidate_source_path": relative_path(root, source_path),
         "candidate_source_hash": candidate_source_hash,
+        "candidate_snapshot_path": relative_path(root, candidate_snapshot),
+        "candidate_snapshot_hash": sha256_bytes(candidate_snapshot.read_bytes()),
         "candidate_status": "submitted",
         "replaces_task_ids": replaced_task_ids,
         "word_count": content_character_count(text),
@@ -968,22 +988,24 @@ def submit_agent_draft(
         command="draft submit",
         artifact=source_path,
     )
+    if candidate_task_type == "repair":
+        record_repair_submission(
+            config,
+            chapter_number=chapter_number,
+            task_id=candidate_task_id,
+            source_path=source_path,
+        )
     gate = gate_check(config, chapter_number=chapter_number, source="draft", semantic=True)
     gate_path = Path(gate.gate_result)
     pacing_path = gate_path.parent / "pacing_review.md"
-    semantic_review_pending = bool(gate.failures) and all(
-        isinstance(failure, dict) and failure.get("code") == "semantic_review_required"
-        for failure in gate.failures
+    gate_payload = load_json(gate_path, default={})
+    semantic_state = gate_payload.get("agent_semantic_review") if isinstance(gate_payload, dict) else {}
+    semantic_review_pending = bool(
+        isinstance(semantic_state, dict)
+        and semantic_state.get("required") is True
+        and str(semantic_state.get("status") or "") != "applied"
     )
-    next_command = (
-        f"chapter finalize --chapter {chapter_number} --approved-by human"
-        if gate.passed
-        else (
-            f"agent-task brief project.yaml semantic_review:ch{chapter_number:03d}:v4"
-            if semantic_review_pending
-            else f"repair-chapter --chapter {chapter_number} --plan-only"
-        )
-    )
+    next_command = "longform-engine production next project.yaml"
     normalize_agent_gate_result(
         gate_path,
         gate.passed,
@@ -1016,9 +1038,7 @@ def submit_agent_draft(
             "title": extract_title(text, chapter_number),
             "path": relative_path(root, draft_path),
             "status": (
-                "gate_passed"
-                if gate.passed
-                else "semantic_review_pending" if semantic_review_pending else "gate_failed"
+                "reviews_pending"
             ),
             "word_count": content_character_count(text),
             "agent": agent,
@@ -1033,9 +1053,7 @@ def submit_agent_draft(
     state.update(
         {
             "status": (
-                "gate_passed_pending_finalize"
-                if gate.passed
-                else "semantic_review_pending" if semantic_review_pending else "gate_failed"
+                "reviews_pending"
             ),
             "current_chapter": chapter_number,
             "pending_gate_chapter": chapter_number,
@@ -1047,13 +1065,11 @@ def submit_agent_draft(
             "updated_at": utc_now(),
         }
     )
-    if gate.passed:
-        state["pending_final_chapter"] = chapter_number
-    elif semantic_review_pending:
+    if semantic_review_pending:
         state["pending_semantic_review_chapter"] = chapter_number
-        state.pop("pending_final_chapter", None)
     else:
-        state.pop("pending_final_chapter", None)
+        state.pop("pending_semantic_review_chapter", None)
+    state.pop("pending_final_chapter", None)
     state.pop("pending_task_chapter", None)
     write_json(state_path, state)
 
@@ -1085,14 +1101,12 @@ def submit_agent_draft(
     update_task_status(
         root,
         candidate_task_id,
-        to_status="validated" if gate.passed else "submitted" if semantic_review_pending else "invalid",
+        to_status="submitted",
         command="gate-check",
         artifact=source_path,
         result=gate_path,
     )
-    submission["candidate_status"] = (
-        "validated" if gate.passed else "submitted" if semantic_review_pending else "invalid"
-    )
+    submission["candidate_status"] = "submitted"
     submission["updated_at"] = utc_now()
     write_json(submission_path, submission)
 
@@ -1162,6 +1176,12 @@ def finalize_chapter(
         raise WorkflowError(
             f"Chapter ch{chapter_number:03d} is not finalizable: editorial aggregate requires human review "
             f"({', '.join(editorial_blockers)})."
+        )
+    review_barrier = review_barrier_status(config, chapter_number=chapter_number)
+    if review_barrier.get("status") != "ready_to_finalize":
+        raise WorkflowError(
+            f"Chapter ch{chapter_number:03d} is not finalizable: review barrier status is "
+            f"{review_barrier.get('status') or 'unknown'}; run longform-engine production next project.yaml."
         )
 
     text = safe_read_text(draft_path).strip()
@@ -1494,7 +1514,7 @@ def write_writing_task(
                     output_schema=output_protocol_for_task("chapter_write"),
                     validate_command=draft_submit_command(root, chapter_number, recommended_draft, default_agent),
                     apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
-                    failure_next_command=f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only",
+                    failure_next_command="longform-engine production next project.yaml",
                     context_policy=chapter_write_context_policy(task_json, task_markdown),
                 ),
                 manifest_file,
@@ -1688,7 +1708,7 @@ def write_writing_task(
         output_schema=output_protocol_for_task("chapter_write"),
         validate_command=next_command,
         apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
-        failure_next_command=f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only",
+        failure_next_command="longform-engine production next project.yaml",
         context_policy=chapter_write_context_policy(task_json, task_markdown),
     )
     write_manifest(root, manifest, manifest_file)
@@ -1934,7 +1954,7 @@ def batch_write(
             failed += 1
             status = "blocked"
             stopped_reason = str(exc)
-            next_command = f"repair-chapter --chapter {chapter_number} --plan-only"
+            next_command = "longform-engine production next project.yaml"
             break
 
         if writing_mode == "agent_skill":
@@ -1947,7 +1967,7 @@ def batch_write(
             failed += 1
             status = "gate_failed"
             stopped_reason = f"gate failed for ch{chapter_number:03d}"
-            next_command = f"repair-chapter --chapter {chapter_number} --plan-only"
+            next_command = "longform-engine production next project.yaml"
             if stop_on_gate_failure:
                 break
         else:
@@ -2134,7 +2154,7 @@ def auto_write_run(config: ConfigDocument, *, chapters: int | None = None) -> Au
                     "status": "paused_gate_failed",
                     "current_chapter": current,
                     "pause_reason": f"gate failed for ch{current:03d}.",
-                    "next_command": f"longform-engine repair-chapter project.yaml --chapter {current} --plan-only",
+                    "next_command": "longform-engine production next project.yaml",
                     "failure_count": int(state.get("failure_count") or 0) + 1,
                     "updated_at": utc_now(),
                 }
@@ -2251,7 +2271,7 @@ def auto_write_blocker(root: Path, chapter_number: int) -> tuple[str, str, str, 
         return (
             "paused_gate_failed",
             f"ch{chapter_number:03d} failed gate; repair before auto-write can continue.",
-            f"longform-engine repair-chapter project.yaml --chapter {chapter_number} --plan-only",
+            "longform-engine production next project.yaml",
             True,
         )
     if isinstance(gate, dict) and (gate.get("passed") is True or gate_has_waiver(gate)):
@@ -2401,7 +2421,7 @@ def auto_write_next_command_from_error(chapter_number: int, reason: str) -> str:
     if "not closed" in reason_lower or "chapter close" in reason_lower:
         return f"longform-engine chapter close project.yaml --chapter {previous} --approved-by human"
     if "failed gate" in reason_lower:
-        return f"longform-engine repair-chapter project.yaml --chapter {previous} --plan-only"
+        return "longform-engine production next project.yaml"
     if "not finalized" in reason_lower or "gate-approved" in reason_lower:
         return f"longform-engine chapter finalize project.yaml --chapter {previous} --approved-by human"
     if "stale" in reason_lower:
@@ -2587,15 +2607,11 @@ def normalize_agent_gate_result(
     if not isinstance(payload, dict):
         return
     actions = list(payload.get("allowed_actions") or [])
-    if passed and "chapter_finalize" not in actions:
-        actions.append("chapter_finalize")
     if semantic_review_pending and "agent_semantic_review" not in actions:
         actions.append("agent_semantic_review")
     payload["allowed_actions"] = actions
     payload["next_command"] = next_command
-    payload["workflow_stage"] = (
-        "ready_to_finalize" if passed else "semantic_review_pending" if semantic_review_pending else "repair_pending"
-    )
+    payload["workflow_stage"] = "reviews_pending"
     if candidate:
         payload["candidate"] = dict(candidate)
     payload["updated_at"] = utc_now()
@@ -3937,16 +3953,26 @@ def build_feedback_carryover(root: Path, chapter_number: int) -> dict[str, Any]:
             }
         )
 
-    repair_file = gate_dir / "repair_plan.md"
-    if repair_file.exists() and not (isinstance(gate_payload, dict) and gate_payload.get("passed") is True):
+    repair_plan_dir = root / "50_workbench" / "repair_plans" / f"ch{source_chapter:03d}"
+    for validation_file in sorted(repair_plan_dir.glob("r*.validation.json"), reverse=True):
+        validation = load_json(validation_file, default={})
+        round_token = validation_file.name.split(".", 1)[0]
+        repair_file = repair_plan_dir / f"{round_token}.plan.md"
+        if not (
+            isinstance(validation, dict)
+            and validation.get("ok") is True
+            and repair_file.is_file()
+        ):
+            continue
         source_files.append(relative_path(root, repair_file))
         items.append(
             {
-                "kind": "repair_plan",
+                "kind": "validated_repair_plan",
                 "source": relative_path(root, repair_file),
                 "summary": trim_text(safe_read_text(repair_file), 700),
             }
         )
+        break
 
     humanize_file = root / "50_workbench" / "humanizer_tasks" / f"ch{source_chapter:03d}.humanize_check.json"
     humanize_payload = load_json(humanize_file, default={})
@@ -4183,7 +4209,10 @@ def verify_previous_gate(root: Path, chapter_number: int) -> None:
     gate_path = root / "50_workbench" / "gate_artifacts" / f"ch{previous:03d}" / "gate_result.json"
     payload = load_json(gate_path, default={}) if gate_path.exists() else {}
     if isinstance(payload, dict) and payload.get("passed") is False and not gate_has_waiver(payload):
-        raise WorkflowError(f"Previous chapter ch{previous:03d} failed gate; run repair-chapter before continue-write.")
+        raise WorkflowError(
+            f"Previous chapter ch{previous:03d} has not completed its review-and-repair workflow; "
+            "run production next before continue-write."
+        )
     if isinstance(payload, dict) and (payload.get("passed") is True or gate_has_waiver(payload)):
         raise WorkflowError(f"Previous chapter ch{previous:03d} is gate-approved but not finalized; run chapter finalize before continue-write.")
     if draft_chapter_exists(root, previous):

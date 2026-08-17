@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from longform_engine.config import load_project_config
-from longform_engine.gates import GateError, gate_check, pacing_review, record_waiver, repair_plan
+from longform_engine.gates import GateError, gate_check, pacing_review, record_waiver
 from longform_engine.gates.pipeline import complete_core_reveal_detected, has_tail_suspense
 from longform_engine.orchestration import continue_write, open_book, plan_chapter
 from longform_engine.planning import infer_event_types_from_text
@@ -26,8 +26,8 @@ def test_gate_check_writes_failed_schema_for_meta_pollution(tmp_path):
     assert result.severity == "P0"
     assert payload["passed"] is False
     assert payload["failures"][0]["code"] == "meta_pollution"
-    assert "repair_chapter" in payload["allowed_actions"]
-    assert (root / "50_workbench" / "gate_artifacts" / "ch001" / "repair_plan.md").exists()
+    assert payload["allowed_actions"] == ["complete_reviews"]
+    assert not (root / "50_workbench" / "gate_artifacts" / "ch001" / "repair_plan.md").exists()
 
 
 def test_tail_suspense_recognizes_chinese_deadline_pressure():
@@ -47,7 +47,7 @@ def test_gate_check_passes_reasonable_draft(tmp_path):
     assert result.severity == "PASS"
 
 
-def test_pacing_review_and_repair_plan(tmp_path):
+def test_pacing_review_and_failed_gate_wait_for_review_barrier(tmp_path):
     project_config = seed_gate_project(tmp_path)
     root = tmp_path / "novel"
     plan_chapter(project_config, chapter_number=1)
@@ -56,11 +56,11 @@ def test_pacing_review_and_repair_plan(tmp_path):
 
     pacing = pacing_review(project_config, chapter_number=1)
     gate = gate_check(project_config, chapter_number=1)
-    repair = repair_plan(project_config, chapter_number=1)
+    gate_payload = json.loads(Path(gate.gate_result).read_text(encoding="utf-8"))
 
     assert pacing.tier == "fast"
     assert gate.passed is False
-    assert repair.next_command == "repair-chapter --chapter 1"
+    assert gate_payload["next_command"] == "longform-engine production next project.yaml"
     assert (root / "50_workbench" / "gate_artifacts" / "ch001" / "pacing_review.md").exists()
 
 

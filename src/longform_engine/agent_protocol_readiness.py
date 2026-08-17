@@ -192,8 +192,8 @@ def check_agent_data_pipeline_readiness(
         ]
         if len(facet_sections) != len(set(facet_sections)):
             prompt_errors.append("Playbooks contain duplicated story-facet guidance")
-        if registry.registry_version != 3 or len(registry.roles) != 27 or len(registry.playbooks) != 12:
-            prompt_errors.append("registry must contain v3, 27 roles, and 12 playbooks")
+        if registry.registry_version != 3 or len(registry.roles) != 28 or len(registry.playbooks) != 12:
+            prompt_errors.append("registry must contain v3, 28 roles, and 12 playbooks")
     add_check(
         checks,
         "chinese_role_contracts",
@@ -295,16 +295,16 @@ def check_agent_data_pipeline_readiness(
         not professional_errors,
         {
             "item_count": professional_inventory.get("item_count", 0),
-            "expected_item_count": 83,
+            "expected_item_count": 84,
             "inventory": professional_inventory,
             "errors": professional_errors,
         },
-        "逐项补齐 27 个角色、12 个 Playbook 与 44 个故事分面的专业内容和校准证据。",
+        "逐项补齐 28 个角色、12 个 Playbook 与 44 个故事分面的专业内容和校准证据。",
     )
 
     protocol_errors: list[str] = []
-    if len(TASK_CONTRACTS) != 24:
-        protocol_errors.append(f"expected 24 task contracts, got {len(TASK_CONTRACTS)}")
+    if len(TASK_CONTRACTS) != 25:
+        protocol_errors.append(f"expected 25 task contracts, got {len(TASK_CONTRACTS)}")
     mapped_protocols: set[str] = set()
     for task_type, contract in TASK_CONTRACTS.items():
         schemas = tuple(contract.get("schemas") or ())
@@ -678,8 +678,8 @@ def professional_prompt_evidence(
     inventory["item_count"] = sum(
         len(inventory[kind]) for kind in ("roles", "playbooks", "facets")
     )
-    if inventory["item_count"] != 83:
-        errors.append(f"professional Prompt inventory must contain 83 items, got {inventory['item_count']}")
+    if inventory["item_count"] != 84:
+        errors.append(f"professional Prompt inventory must contain 84 items, got {inventory['item_count']}")
     inventory["calibration_fixture_sha256"] = sha256(fixture_path.read_bytes()).hexdigest()
     return errors, inventory
 

@@ -188,7 +188,7 @@ def prepare_book_design(config, root: Path, payload: dict):
 def test_manifest_v4_and_four_protocol_surface_rejects_history(tmp_path):
     seed_project(tmp_path)
     root = tmp_path / "novel"
-    assert len(TASK_CONTRACTS) == 24
+    assert len(TASK_CONTRACTS) == 25
     assert DESIGN_TASK_TYPES
     assert {output_protocol_for_task(task_type) for task_type in TASK_CONTRACTS} == {
         "prose_markdown_v1", "design_document_v1", "evidence_review_v1", "canonical_delta_v1"

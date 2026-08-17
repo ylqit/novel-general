@@ -247,12 +247,11 @@ def test_gate_uses_humanizer_report_for_chinese_p1_failures(tmp_path):
     gate = gate_check(project_config, chapter_number=1)
     artifact_dir = root / "50_workbench" / "gate_artifacts" / "ch001"
     humanize_report = (artifact_dir / "humanize_report.md").read_text(encoding="utf-8")
-    repair_text = (artifact_dir / "repair_plan.md").read_text(encoding="utf-8")
 
     assert gate.passed is False
     assert any(item["code"] == "humanizer_inflated_significance" and item["severity"] == "P1" for item in gate.failures)
     assert "意义膨胀" in humanize_report
-    assert "creative humanize-task" in repair_text
+    assert not (artifact_dir / "repair_plan.md").exists()
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
 
@@ -388,7 +387,7 @@ def test_semantic_reader_recognizes_chinese_deadline_as_concrete_tail_pressure(t
     assert not any("ending hook" in issue for issue in result.issues)
 
 
-def test_repair_plan_contains_creative_rewrite_brief(tmp_path):
+def test_gate_defers_repair_plan_until_review_barrier(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
     plan_chapter(project_config, chapter_number=1)
@@ -396,11 +395,13 @@ def test_repair_plan_contains_creative_rewrite_brief(tmp_path):
     draft.write_text("# Chapter 1\n\nTODO: write later. as an ai language model\n", encoding="utf-8")
 
     result = gate_check(project_config, chapter_number=1)
-    repair_text = (root / "50_workbench" / "gate_artifacts" / "ch001" / "repair_plan.md").read_text(encoding="utf-8")
+    gate_payload = json.loads(
+        (root / "50_workbench" / "gate_artifacts" / "ch001" / "gate_result.json").read_text(encoding="utf-8")
+    )
 
     assert result.passed is False
-    assert "Creative Rewrite Brief" in repair_text
-    assert "Humanizer v2 target" in repair_text
+    assert gate_payload["next_command"] == "longform-engine production next project.yaml"
+    assert not (root / "50_workbench" / "gate_artifacts" / "ch001" / "repair_plan.md").exists()
 
 
 def seed_project(tmp_path):

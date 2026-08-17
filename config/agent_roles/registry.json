@@ -72,6 +72,7 @@
     "pacing_review": "semantic_pacing_reviewer",
     "reader_payoff_review": "reader_payoff_reviewer",
     "repair": "repair_author",
+    "repair_plan_synthesis": "repair_coordinator",
     "research_synthesis": "research_synthesizer",
     "semantic_review": "semantic_continuity_reviewer",
     "style_analysis": "semantic_style_analyst"
@@ -107,6 +108,7 @@
     "reader_experience_editor": "isolated_review",
     "reader_payoff_reviewer": "isolated_review",
     "repair_author": "chapter_author",
+    "repair_coordinator": "isolated_revision",
     "research_synthesizer": "isolated_archival",
     "scene_prose_editor": "isolated_review",
     "semantic_continuity_reviewer": "isolated_review",
@@ -926,6 +928,43 @@
         "EMOTION_UNGROUNDED",
         "SCENE_FATIGUE"
       ]
+    },
+    {
+      "role_id": "repair_coordinator",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/repair_coordinator.md",
+      "output_mode": "design_document_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "target_reader",
+        "content_exclusions",
+        "approved_style_baseline"
+      ],
+      "role_family": "revision",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "repair_plan_synthesis": "diagnostics",
+        "repair_scope_conflict": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "scene_causality"
+      ],
+      "optional_playbook_ids": [
+        "world_rules_and_exposition",
+        "character_agency",
+        "dialogue_and_subtext",
+        "serial_pacing",
+        "fanfiction_canon"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
     },
     {
       "role_id": "repair_author",

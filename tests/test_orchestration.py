@@ -166,7 +166,8 @@ def test_continue_write_blocks_after_previous_gate_failure(tmp_path):
     try:
         continue_write(project_config, chapter_number=2)
     except WorkflowError as exc:
-        assert "failed gate" in str(exc)
+        assert "review-and-repair workflow" in str(exc)
+        assert "production next" in str(exc)
     else:
         raise AssertionError("Expected WorkflowError")
 
@@ -246,7 +247,7 @@ def test_auto_write_pauses_on_gate_failure(tmp_path):
     assert paused.status == "paused_gate_failed"
     assert state["failure_count"] >= 1
     assert "failed gate" in state["pause_reason"]
-    assert "repair-chapter" in state["next_command"]
+    assert state["next_command"] == "longform-engine production next project.yaml"
     assert not (root / "50_workbench" / "writing_tasks" / "ch002.md").exists()
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
@@ -330,7 +331,7 @@ def test_submit_agent_draft_records_submission_and_runs_gate(tmp_path):
     chapters = query_table(project_config, "chapters", limit=10)
 
     assert result.passed is True
-    assert result.next_command == "chapter finalize --chapter 1 --approved-by human"
+    assert result.next_command == "longform-engine production next project.yaml"
     assert draft_path.exists()
     assert submission_path.exists()
     assert gate_result.exists()
@@ -341,11 +342,11 @@ def test_submit_agent_draft_records_submission_and_runs_gate(tmp_path):
     assert submission["source_sha256"]
     assert submission["draft_sha256"]
     assert submission["submitted_at"]
-    assert gate_payload["next_command"] == "chapter finalize --chapter 1 --approved-by human"
-    assert "chapter_finalize" in gate_payload["allowed_actions"]
-    assert state["status"] == "gate_passed_pending_finalize"
-    assert state["pending_final_chapter"] == 1
-    assert any(row["chapter_number"] == 1 and row["status"] == "gate_passed" for row in chapters)
+    assert gate_payload["next_command"] == "longform-engine production next project.yaml"
+    assert gate_payload["workflow_stage"] == "reviews_pending"
+    assert state["status"] == "reviews_pending"
+    assert state["pending_gate_chapter"] == 1
+    assert any(row["chapter_number"] == 1 and row["status"] == "reviews_pending" for row in chapters)
 
 
 def test_submit_agent_draft_waits_for_required_semantic_review_without_invalidating_prose(tmp_path):
@@ -365,13 +366,14 @@ def test_submit_agent_draft_waits_for_required_semantic_review_without_invalidat
         (root / "50_workbench" / "gate_artifacts" / "ch001" / "gate_result.json").read_text(encoding="utf-8")
     )
 
-    assert result.passed is False
-    assert result.next_command == "agent-task brief project.yaml semantic_review:ch001:v4"
+    assert result.passed is True
+    assert result.next_command == "longform-engine production next project.yaml"
     assert tasks["chapter_write:ch001:v4"]["status"] == "submitted"
     assert tasks["semantic_review:ch001:v4"]["status"] == "awaiting_agent"
     assert next_action["task_type"] == "semantic_review"
     assert next_action["status"] == "agent_task_awaiting_agent"
     assert "agent_semantic_review" in gate["allowed_actions"]
+    assert gate["workflow_stage"] == "reviews_pending"
 
 
 def test_submit_agent_draft_requires_agent_draft_directory(tmp_path):
@@ -409,10 +411,10 @@ def test_failed_agent_draft_does_not_update_story_graph(tmp_path):
     chunks = query_table(project_config, "chapter_chunks", limit=20)
     assert result.passed is False
     assert state["last_finalized_chapter"] == 0
-    assert state["status"] == "gate_failed"
+    assert state["status"] == "reviews_pending"
     assert after.get("events", []) == before.get("events", [])
     assert all(not entity.get("mentions") for entity in after.get("entities", []))
-    assert any(row["chapter_number"] == 1 and row["status"] == "gate_failed" for row in chapters)
+    assert any(row["chapter_number"] == 1 and row["status"] == "reviews_pending" for row in chapters)
     assert not any(row["chapter_number"] == 1 and row["status"] == "final" for row in chapters)
     assert not chunks
 
@@ -686,7 +688,7 @@ def passing_draft_text() -> str:
 
 
 def write_repair_manifest(root):
-    candidate = root / "50_workbench" / "repair_candidates" / "ch001.codex.repair_candidate.md"
+    candidate = root / "50_workbench" / "repair_candidates" / "ch001.r01.codex.md"
     manifest = build_manifest(
         root,
         task_type="repair",
@@ -696,10 +698,10 @@ def write_repair_manifest(root):
         output_schema=PROSE_MARKDOWN_SCHEMA,
         validate_command=(
             "longform-engine draft submit project.yaml --chapter 1 "
-            "--file 50_workbench/repair_candidates/ch001.codex.repair_candidate.md --agent codex --overwrite"
+            "--file 50_workbench/repair_candidates/ch001.r01.codex.md --agent codex --overwrite"
         ),
         apply_command="longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
-        failure_next_command="longform-engine repair-chapter project.yaml --chapter 1 --plan-only",
-        task_id="repair:ch001:v4",
+        failure_next_command="longform-engine agent-task brief project.yaml repair:ch001:r01:v4",
+        task_id="repair:ch001:r01:v4",
     )
     write_manifest(root, manifest, root / "50_workbench" / "repair_candidates" / "ch001.repair_task.agent_task.json")

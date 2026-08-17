@@ -40,7 +40,7 @@ Before prose is written, the Agent must confirm these inputs from `50_workbench/
 - Pacing precheck: read `event_recommendation`, `constraint_packet.event_matrix`, recent pacing history, soft-event requirement, fast quota, and any `pacing_review` or gate history warnings.
 - Tail-hook declaration: state the intended chapter-end hook in the draft plan and preserve it in the final scene.
 - Forbidden reveal confirmation: read `reverse_brake`, `forbidden_reveals`, `this_chapter_must_not_solve`, and `must_keep_suspense`; do not close these items unless `closure_allowed=true` and `allowed_reveal_level=full`.
-- Failure repair path: if the task or previous gate says blocked, do not continue; run `repair-chapter --plan-only`, `creative humanize-task`, `editorial review`, `gate-waiver`, `revision branch`, or `revision rollback` according to the artifact.
+- Failure repair path: if a check reports a content problem, do not jump directly to rewriting. Follow `production next` until semantic, payoff, pacing and selected editorial reviews all bind to the same candidate hash. The CLI then freezes the complete finding set before `repair synthesis-task`; Humanizer, waiver, branch and rollback remain separate explicit paths.
 
 Required five-step closed loop:
 
@@ -48,7 +48,7 @@ Required five-step closed loop:
 2. Agent writes only to `50_workbench/agent_drafts/chNNN.codex.md` or `chNNN.claude.md`.
 3. Submit the candidate with `draft submit`.
 4. Run or inspect `gate-check`, including pacing, reverse brake, style, humanizer, graph, memory, and semantic checks when enabled.
-5. Finalize only through `chapter finalize`; failed or conditional chapters go to repair, waiver, branch, or rollback instead of semantic extraction.
+5. Finalize only through `chapter finalize`; a chapter with findings completes the review barrier, repair synthesis and a full re-review before it can finalize.
 6. After finalize, complete exactly one `canonical_delta_v1`, validate it, explicitly apply the CLI-normalized semantic ledger, and run `chapter close`. Do not start the next chapter before close succeeds.
 
 ## Write One Chapter
@@ -72,17 +72,13 @@ Required five-step closed loop:
 
 ## Repair A Failed Chapter
 
-1. Read `50_workbench/gate_artifacts/chNNN/gate_result.json`.
-2. Run or read `longform-engine repair-chapter project.yaml --chapter N --plan-only`.
-3. Use the Creative Rewrite Brief in `repair_plan.md`:
-   - preserve canonical facts and chapter duty,
-   - delete or reduce failed material,
-   - add evidence spans for motivation, relationship, ability, and foreshadow changes,
-   - align Character Memory and TCS,
-   - apply Humanizer v4 and the current Character Performance Packet.
-4. For a candidate task, run `longform-engine repair-chapter project.yaml --chapter N --candidate-only --agent codex`.
-5. Write only to the candidate path named by the task.
-6. Re-submit through `draft submit`; never copy the repair candidate into final.
+1. Run `longform-engine production next project.yaml` until every required independent review is complete for the current candidate hash.
+2. Run `longform-engine repair synthesis-task project.yaml --chapter N`; read only its immutable candidate snapshot, `rNN.review_bundle.json`, compact chapter constraints and work order.
+3. As `repair_coordinator`, write `rNN.plan.md`: preserve every valid P0/P1 ID and severity, cluster shared roots, order dependencies, define the smallest repair radius and merge all preservation entries. Do not write prose or rejudge reviewers.
+4. Run `longform-engine repair synthesis-validate project.yaml --chapter N --file 50_workbench/repair_plans/chNNN/rNN.plan.md`. A repair/preserve conflict must stop at `need-human`.
+5. Run `longform-engine repair candidate-task project.yaml --chapter N --agent codex`, then write one complete replacement only to the declared immutable `chNNN.rNN.codex.md` path.
+6. Re-submit through `draft submit --overwrite`; only this successful candidate submission consumes one of the two repair rounds.
+7. Rerun the complete review barrier. Invalid review JSON or task regeneration does not consume a round; after two submitted rounds with P0/P1, stop at `repair_budget_exhausted` without a third repair command.
 
 ## Humanize A Draft
 

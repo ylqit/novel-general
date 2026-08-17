@@ -84,8 +84,10 @@
 | `/工程放行` | `longform-engine gate-waiver project.yaml --chapter N --reason "reason"` | `--chapter N`、`--reason` | `50_workbench/gate_artifacts/` | 记录人工放行理由。 |
 | `/工程节奏` | `longform-engine pacing-review project.yaml --chapter N` | `--chapter N` | `50_workbench/gate_artifacts/` | 执行章节节奏检查。 |
 | `/工程语义节奏` | `longform-engine pacing-review project.yaml --chapter N --semantic-reader` | `--chapter N` | `50_workbench/gate_artifacts/` | 生成语义读者视角节奏检查。 |
-| `/工程修章` | `longform-engine repair-chapter project.yaml --chapter N --plan-only` | `--chapter N` | `50_workbench/gate_artifacts/`、`50_workbench/repair_plans/` | 生成修复计划。 |
-| `/工程候选修章` | `longform-engine repair-chapter project.yaml --chapter N --candidate-only --agent codex` | `--chapter N`、`--agent` | `50_workbench/repair_candidates/` | 生成候选修复稿，不直接进入 final。 |
+| `/工程修复状态` | `longform-engine repair status project.yaml --chapter N` | `--chapter N` | 只读 | 查看审稿屏障、当前不可变计划和已消耗修复轮次。 |
+| `/工程修复主编` | `longform-engine repair synthesis-task project.yaml --chapter N` | `--chapter N` | `50_workbench/repair_plans/chNNN/` | 仅在全部必审结果绑定同一候选 hash 后冻结 review bundle，并生成修复主编任务。 |
+| `/工程校验修复计划` | `longform-engine repair synthesis-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation report | 确认全部 P0/P1、稳定 finding ID、严重级别、最小修改范围和 preserve 冲突。 |
+| `/工程候选修章` | `longform-engine repair candidate-task project.yaml --chapter N --agent codex` | `--chapter N`、`--agent` | `50_workbench/repair_candidates/` | 根据已验证的不可变 rNN 计划生成完整替代稿任务，不直接进入 final。 |
 | `/工程定稿` | `longform-engine chapter finalize project.yaml --chapter N --approved-by human` | `--chapter N`、`--approved-by` | `40_manuscript/final/`、收益与结构账本 | 将通过或有效放行的章节写入唯一正文证据层；不会根据正文开头伪造摘要，也不会提前更新图谱、TCS、RAG 或 SQLite。 |
 | `/工程章节语义任务` | `longform-engine chapter semantic-task project.yaml --chapter N` | `--chapter N` | `50_workbench/semantic_tasks/` | 让 Agent 只完整读取一次 final，输出统一章节语义 delta。 |
 | `/工程章节语义校验` | `longform-engine chapter semantic-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation report | 校验 final hash、精确 span、实体 ID、关系旧状态、角色知识来源、伏笔 ID/窗口和完整性声明。 |

@@ -155,7 +155,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "output_prefixes": ("50_workbench/agent_drafts/",),
         "validate_prefixes": ("longform-engine draft submit ",),
         "apply_prefixes": ("longform-engine chapter finalize ",),
-        "failure_prefixes": ("longform-engine repair-chapter ",),
+        "failure_prefixes": ("longform-engine production next ",),
     },
     "repair": {
         "scope_kinds": ("chapter",),
@@ -163,7 +163,22 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "output_prefixes": ("50_workbench/repair_candidates/",),
         "validate_prefixes": ("longform-engine draft submit ",),
         "apply_prefixes": ("longform-engine chapter finalize ",),
-        "failure_prefixes": ("longform-engine repair-chapter ", "longform-engine editorial need-human "),
+        "failure_prefixes": (
+            "longform-engine agent-task brief ",
+            "longform-engine repair candidate-task ",
+            "longform-engine editorial need-human ",
+        ),
+    },
+    "repair_plan_synthesis": {
+        "scope_kinds": ("chapter",),
+        "schemas": (output_protocol_for_task("repair_plan_synthesis"),),
+        "output_prefixes": ("50_workbench/repair_plans/",),
+        "validate_prefixes": ("longform-engine repair synthesis-validate ",),
+        "apply_prefixes": ("longform-engine repair candidate-task ",),
+        "failure_prefixes": (
+            "longform-engine repair synthesis-task ",
+            "longform-engine editorial need-human ",
+        ),
     },
     "humanize": {
         "scope_kinds": ("chapter",),
@@ -191,7 +206,7 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "validate_prefixes": ("longform-engine quality payoff-validate ",),
         "apply_prefixes": ("longform-engine chapter finalize ",),
         "failure_prefixes": (
-            "longform-engine repair-chapter ",
+            "longform-engine production next ",
             "longform-engine editorial need-human ",
         ),
     },

@@ -857,8 +857,6 @@ def expand_task(
         for item in gate_failures[:8]
         if isinstance(item, dict)
     ]
-    repair_path = gate_artifact_dir / "repair_plan.md"
-    repair_text = safe_read_text(repair_path) if repair_path.exists() else "No repair_plan.md found."
     writing_task = load_json(root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.json", default={})
     next_command = (
         f"longform-engine creative expand-check project.yaml --chapter {chapter_number} "
@@ -890,10 +888,6 @@ def expand_task(
                 "```json",
                 json.dumps(gate_failures, ensure_ascii=False, indent=2),
                 "```",
-                "",
-                "## Repair Plan",
-                "",
-                clip_text(repair_text.strip(), 1_200) or "No repair plan content.",
                 "",
                 "## Writing Brief Snapshot",
                 "",

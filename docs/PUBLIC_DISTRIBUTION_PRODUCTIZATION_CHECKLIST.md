@@ -89,7 +89,7 @@
 - [x] 开发者 clone/venv/junction/symlink 说明位于 README 后半部分。
 - [x] 10 章证据完成前，README 不宣称文学质量优于 `novel-skill`。
 
-## 8. AgentTaskManifest v3
+## 8. AgentTaskManifest v4
 
 - [x] v1 manifest 继续可读取，并规范化为统一内部表示。
 - [x] v2 支持 `scope.kind = project|chapter|range` 及对应参数。

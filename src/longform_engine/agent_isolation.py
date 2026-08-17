@@ -74,6 +74,7 @@ TASK_OBJECTIVES: dict[str, str] = {
     "pacing_review": "根据正文判断压力、释放、转折、停顿和余波，不套固定配额。",
     "reader_payoff_review": "判断正文实际交付的收益、代价、承诺推进和结尾功能。",
     "repair": "只修复已验证 finding，交付一份完整替代稿。",
+    "repair_plan_synthesis": "只归并已验证 finding 的共同根因、修复依赖、最小半径与保护项，不写正文。",
     "research_synthesis": "形成可复核来源证据支持的结论，不添加无依据推断。",
     "semantic_review": "审查动机、关系、空间、能力、时间、因果与伏笔连续性。",
     "style_analysis": "描述可迁移的语义风格特征，不模仿作者身份或复制正文。",

@@ -489,7 +489,7 @@ def check_v041_legacy_runtime_removed() -> list[str]:
 
     failures: list[str] = []
     if (SRC / "legacy.py").exists():
-        failures.append("legacy.py must not ship in the v0.4.1 runtime")
+        failures.append("legacy.py must not ship in the v0.4.2 runtime")
     combined = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")
         for path in (
