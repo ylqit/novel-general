@@ -1057,19 +1057,25 @@ def check_duplicate_names(entities: list[Any], warnings: list[str]) -> None:
 
 
 def check_relationship_status_conflicts(relationships: list[Any], issues: list[str]) -> None:
-    seen: dict[tuple[str, str, str], str] = {}
+    active_states: dict[tuple[str, str, str], str] = {}
     for relationship in relationships:
         if not isinstance(relationship, dict):
+            continue
+        status = str(relationship.get("status") or "")
+        if status != "active" or relationship.get("to_chapter"):
             continue
         source = str(relationship.get("source") or relationship.get("from") or "")
         target = str(relationship.get("target") or relationship.get("to") or "")
         relation_type = str(relationship.get("type") or relationship.get("relation") or "")
-        status = str(relationship.get("status") or "")
+        state = str(relationship.get("state") or "")
         key = (source, target, relation_type)
-        if key in seen and status and seen[key] and seen[key] != status:
-            issues.append(f"relationship status conflict: {source}->{target} {relation_type} ({seen[key]} vs {status})")
+        if key in active_states and state and active_states[key] and active_states[key] != state:
+            issues.append(
+                f"active relationship state conflict: {source}->{target} {relation_type} "
+                f"({active_states[key]} vs {state})"
+            )
         else:
-            seen[key] = status
+            active_states[key] = state
 
 
 def check_ability_boundaries(entities: list[Any], warnings: list[str]) -> None:

@@ -189,6 +189,25 @@ def healthcheck(config: ConfigDocument) -> VectorHealth:
     )
 
 
+def active_source_record_count(config: ConfigDocument, source_path: str) -> int:
+    """Count active vectors bound to one canonical project-relative source."""
+
+    path = local_store_path(config)
+    if not path.is_file():
+        return 0
+    with connect(path) as conn:
+        create_schema(conn)
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM vectors
+            WHERE source_path = ? AND stale = 0 AND status != 'stale'
+            """,
+            (str(source_path),),
+        ).fetchone()
+    return int(row["count"] or 0)
+
+
 def upsert(config: ConfigDocument, records: Iterable[VectorRecord]) -> VectorWriteResult:
     cfg = vector_config(config)
     backend = cfg["backend"]

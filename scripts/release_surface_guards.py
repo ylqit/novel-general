@@ -489,7 +489,7 @@ def check_v041_legacy_runtime_removed() -> list[str]:
 
     failures: list[str] = []
     if (SRC / "legacy.py").exists():
-        failures.append("legacy.py must not ship in the v0.4.2 runtime")
+        failures.append("legacy.py must not ship in the v0.4.3 runtime")
     combined = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")
         for path in (
@@ -563,7 +563,7 @@ def check_agent_data_pipeline_readiness_guards() -> list[str]:
     script_text = script_path.read_text(encoding="utf-8", errors="ignore")
     ci_text = ci_path.read_text(encoding="utf-8", errors="ignore")
     for marker in (
-        "agent_data_pipeline_readiness_v2",
+        "agent_data_pipeline_readiness_v3",
         "ready_for_data_pipeline",
         "professional_prompt_ready",
         "professional_prompt_calibration",

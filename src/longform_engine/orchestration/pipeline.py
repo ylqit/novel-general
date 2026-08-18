@@ -27,6 +27,12 @@ from longform_engine.agent_tasks import (
     write_manifest,
 )
 from longform_engine.character_expression import build_character_expression_packet, character_expression_diagnostics
+from longform_engine.chapter_contract import (
+    ChapterContractError,
+    load_verified_chapter_contract,
+    resolve_chapter_contract_refs,
+    stamp_chapter_contract,
+)
 from longform_engine.completion import fast_completion_marker
 from longform_engine.config import ConfigDocument
 from longform_engine.creative import (
@@ -44,6 +50,7 @@ from longform_engine.graph import validate_graph
 from longform_engine.intelligence import assess_chapter_direction, assess_project_readiness
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.memory import build_tcs
+from longform_engine.models import semantic_enabled
 from longform_engine.planning import event_tier_for_types, recommend_event_types, record_event_usage
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.quality import (
@@ -375,25 +382,57 @@ def plan_chapter(config: ConfigDocument, *, chapter_number: int, overwrite: bool
         if isinstance(effective_quality_contract.get("contract"), dict)
         else {}
     )
+    book_goal = chapter_book_goal(root)
+    volume_goal = chapter_volume_goal(root, volume)
+    protagonist_goal = chapter_protagonist_goal(root, pov_character_id)
+    scene_chain = planned_chapter.get("scene_chain")
+    if not isinstance(scene_chain, list) or not scene_chain:
+        scene_chain = [
+            {
+                "scene_id": f"ch{chapter_number:03d}:primary",
+                "location": str(planned_chapter.get("location") or "由当前 TCS 确认的场景地点"),
+                "participants": featured_character_ids,
+                "desire_collision": str(
+                    planned_chapter.get("conflict")
+                    or "主角近期目标受到可观察阻力，必须作出选择。"
+                ),
+                "choice": str(
+                    planned_chapter.get("choice")
+                    or "主角采取会改变后续条件的行动。"
+                ),
+                "cost": str(
+                    planned_chapter.get("cost")
+                    or "本章收益带来义务、损失或更窄的后续选择。"
+                ),
+                "turn": str(
+                    planned_chapter.get("information_release")
+                    or "场景结束时至少一项事实、关系或行动条件发生变化。"
+                ),
+            }
+        ]
     card = {
         "chapter_number": chapter_number,
         "title": title,
+        "book_goal": book_goal,
+        "volume_goal": volume_goal,
+        "protagonist_goal": protagonist_goal,
         "volume": volume,
         "status": "planned",
         "duty": duty,
         "chapter_duty": chapter_duty,
         "conflict": planned_chapter.get("conflict") or "让主角在当前目标与外部阻力之间做出选择。",
         "information": planned_chapter.get("information_release") or "只释放与本章目标相关的一层信息，保留核心秘密。",
+        "information_release": planned_chapter.get("information_release") or "只释放与本章目标相关的一层信息，保留核心秘密。",
         "hook": planned_chapter.get("hook") or "章末留下危机升级、收益未兑现或新信息反转。",
         "outline_anchor": anchor,
         "event_recommendation": event_recommendation,
         "reader_payoff": reader_gain,
         "reader_gain": reader_gain,
-        "cost": str(planned_chapter.get("cost") or "The chapter gain must create a visible cost, obligation, or narrower choice."),
+        "cost": str(planned_chapter.get("cost") or "本章收益必须带来可见代价、义务或更窄的后续选择。"),
         "platform_promise": str(
             planned_chapter.get("platform_promise")
             or quality_body.get("platform_promise")
-            or "Advance a sustainable serial-reading promise through visible cause and consequence."
+            or "以可观察的因果变化推进可持续的连载承诺。"
         ),
         "plot_obligation": str(planned_chapter.get("plot_obligation") or chapter_duty),
         "dramatic_freedom": str(
@@ -406,7 +445,17 @@ def plan_chapter(config: ConfigDocument, *, chapter_number: int, overwrite: bool
         "scene_wants": planned_chapter.get("scene_wants") if isinstance(planned_chapter.get("scene_wants"), dict) else {},
         "opposing_wants": dedupe_strings(as_list(planned_chapter.get("opposing_wants"))),
         "hidden_agenda": dedupe_strings(as_list(planned_chapter.get("hidden_agenda"))),
-        "relationship_move": str(planned_chapter.get("relationship_move") or ""),
+        "relationship_move": str(
+            planned_chapter.get("relationship_move")
+            or "若无可见因果，不改变既有关系阶段。"
+        ),
+        "scene_chain": scene_chain,
+        "canon_refs": dedupe_strings(as_list(planned_chapter.get("canon_refs"))),
+        "world_rule_refs": dedupe_strings(as_list(planned_chapter.get("world_rule_refs"))),
+        "foreshadow_refs": dedupe_strings(
+            as_list(planned_chapter.get("foreshadow_refs"))
+            + as_list(planned_chapter.get("promise_refs"))
+        ),
         "voice_state": planned_chapter.get("voice_state") if isinstance(planned_chapter.get("voice_state"), dict) else {},
         "embodiment_strategy": str(planned_chapter.get("embodiment_strategy") or "selective scene-specific embodiment"),
         "summary_scene_policy": str(
@@ -461,6 +510,7 @@ def plan_chapter(config: ConfigDocument, *, chapter_number: int, overwrite: bool
     card["effective_quality_contract"] = compact_effective_quality_contract(
         effective_quality_contract
     )
+    stamp_chapter_contract(card)
     write_chapter_card_artifacts(root, card)
     upsert_chapter_plan(root, card)
     return ChapterPlanResult(chapter_number=chapter_number, json_file=str(json_path), markdown_file=str(md_path))
@@ -742,7 +792,11 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
         raise WorkflowError("Story graph has validation errors; run graph validate/check before continue-write.")
 
     tcs = build_tcs(config, chapter_number=chapter_number)
-    context = build_context(config, chapter_number=chapter_number)
+    context = build_context(
+        config,
+        chapter_number=chapter_number,
+        semantic=semantic_enabled(config),
+    )
     card = plan_chapter(config, chapter_number=chapter_number, overwrite=overwrite)
     beat = generate_beat_sheet(config, chapter_number=chapter_number, overwrite=overwrite)
     writing_mode = str(config.data.get("writing", {}).get("mode", "agent_skill"))
@@ -1491,6 +1545,10 @@ def write_writing_task(
     overwrite: bool,
 ) -> dict[str, str]:
     root = resolve_project_root(config)
+    try:
+        chapter_contract, chapter_contract_digest = load_verified_chapter_contract(root, chapter_number)
+    except ChapterContractError as exc:
+        raise WorkflowError(str(exc)) from exc
     writing = config.data.get("writing", {})
     agent = writing.get("agent", {}) if isinstance(writing.get("agent"), dict) else {}
     task_dir = root / str(agent.get("task_dir") or "50_workbench/writing_tasks")
@@ -1536,8 +1594,6 @@ def write_writing_task(
     graph_summary = summarize_story_graph(story_graph)
     canon_research = load_recent_research_canon(root)
     style_context = load_style_context(root)
-    gate_history = load_gate_history(root, limit=5)
-    creative_brief = load_creative_brief(root)
     tcs_path = root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json"
     tcs_payload = load_json(tcs_path, default={})
     if not isinstance(tcs_payload, dict):
@@ -1577,11 +1633,6 @@ def write_writing_task(
         style_context=style_context,
         craft_brief=craft_brief,
     )
-    beat_requirements = build_beat_expansion_requirements(
-        beat if isinstance(beat, dict) else {},
-        card=card if isinstance(card, dict) else {},
-        writing_brief=writing_brief,
-    )
     constraint_packet = build_constraint_packet(
         root,
         context_file=context_file,
@@ -1605,53 +1656,34 @@ def write_writing_task(
         character_packet=character_expression_packet,
         constraint_packet=constraint_packet,
     )
+    try:
+        resolved_contract_refs = resolve_chapter_contract_refs(root, chapter_contract)
+    except ChapterContractError as exc:
+        raise WorkflowError(str(exc)) from exc
+    fact_inventory = build_chapter_fact_inventory(
+        root,
+        chapter_contract=chapter_contract,
+        chapter_card_file=chapter_card_file,
+        character_packet=character_expression_packet,
+        constraint_packet=constraint_packet,
+        writing_brief=writing_brief,
+        craft_brief=craft_brief,
+        fanfiction_contract=fanfiction_contract,
+        feedback=feedback_carryover,
+        resolved_contract_refs=resolved_contract_refs,
+        core_context_coverage=core_context_coverage,
+        humanizer_policy=humanizer_rules().get("two_pass_workflow", {}),
+    )
     next_command = draft_submit_command(root, chapter_number, recommended_draft, default_agent)
     payload = {
-        "schema_version": 1,
+        "schema": "chapter_writing_task_v2",
         "chapter_number": chapter_number,
         "title": card.get("title", f"第{chapter_number}章"),
         "status": "task_ready",
         "writing_mode": "agent_skill",
         "target_character_count": target_characters,
-        "chapter_card": {
-            "path": relative_path(root, chapter_card_file),
-            "data": compact_chapter_card(card),
-        },
-        "beat_sheet": {
-            "path": relative_path(root, beat_sheet_file),
-            "data": compact_beat_sheet(beat),
-        },
-        "rag_context": {
-            "path": relative_path(root, context_file),
-            "text": trim_text(context_text, 1_200),
-        },
-        "story_graph": {
-            "path": relative_path(root, story_graph_path),
-            "summary": graph_summary,
-            "facts": summarize_story_graph_facts(story_graph),
-            "constraints": graph_constraints,
-        },
-        "temporal_context_state": {
-            "path": relative_path(root, tcs_path) if tcs_path.exists() else "",
-            "data": compact_tcs(tcs_payload),
-        },
-        "outline_anchor": outline_anchor,
-        "event_recommendation": event_recommendation,
-        "style_context": style_context,
-        "creative_brief": compact_creative_brief(creative_brief),
-        "fanfiction_contract": fanfiction_contract,
-        "character_expression_packet": character_expression_packet,
-        "writing_brief": writing_brief,
-        "beat_expansion_requirements": beat_requirements,
-        "constraint_packet": constraint_packet,
-        "core_context_coverage": core_context_coverage,
-        "writer_craft_brief": craft_brief,
-        "humanizer_rules": {"two_pass_workflow": humanizer_rules().get("two_pass_workflow", {})},
-        "gate_history": gate_history,
-        "feedback_carryover": feedback_carryover,
-        "canon_research": canon_research,
-        "forbidden": as_list(card.get("forbidden")),
-        "forbidden_reveals": as_list(card.get("forbidden_reveals")),
+        "chapter_contract_hash": chapter_contract_digest,
+        "fact_inventory_summary": summarize_fact_inventory(fact_inventory),
         "output_contract": {
             "format": "markdown_chapter_only",
             "target_character_count": target_characters,
@@ -1682,6 +1714,7 @@ def write_writing_task(
             beat_sheet_file,
         ),
         "created_at": utc_now(),
+        "_fact_inventory": fact_inventory,
     }
     payload["agent_task_manifest"] = relative_path(root, manifest_file)
     markdown = format_writing_task_markdown(root, payload)
@@ -1697,6 +1730,7 @@ def write_writing_task(
     markdown = format_writing_task_markdown(root, payload)
     payload["context_plan"]["estimated_units"] = estimate_text_units(markdown, contract.estimator)
     markdown = format_writing_task_markdown(root, payload)
+    payload.pop("_fact_inventory", None)
     write_json(task_json, payload)
     atomic_write_text(task_markdown, markdown)
     manifest = build_manifest(
@@ -1749,12 +1783,10 @@ def chapter_write_context_plan(
     beat_sheet_file: Path,
 ) -> dict[str, Any]:
     policy = chapter_write_context_policy(task_json, task_markdown)
-    character_packet_file = root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json"
     source_reasons = {
         context_file: "bounded RAG evidence embedded into the compiled brief",
         chapter_card_file: "chapter contract embedded into the compiled brief",
-        beat_sheet_file: "scene sequence embedded into the compiled brief",
-        character_packet_file: "voice and relationship contract embedded into the compiled brief",
+        beat_sheet_file: "scene-entry method compiled into the brief; chapter contract remains authoritative",
     }
     return {
         "schema": "writing_context_plan_v1",
@@ -1787,7 +1819,6 @@ def chapter_write_context_plan(
         ],
         "excluded_duplicates": [
             relative_path(root, task_json),
-            f"50_workbench/character_packets/ch{chapter_number:03d}.json",
             *[
                 relative_path(root, path)
                 for path in (
@@ -1802,7 +1833,6 @@ def chapter_write_context_plan(
             relative_path(root, context_file): len(safe_read_text(context_file)),
             relative_path(root, chapter_card_file): len(safe_read_text(chapter_card_file)),
             relative_path(root, beat_sheet_file): len(safe_read_text(beat_sheet_file)),
-            relative_path(root, character_packet_file): len(safe_read_text(character_packet_file)),
         },
         "truncations": [
             {
@@ -2775,7 +2805,7 @@ def build_writable_brief(
         "schema_version": 1,
         "chapter_number": chapter_number,
         "stage": stage,
-        "chapter_duty": outline_anchor.get("duty") or card.get("chapter_duty") or card.get("duty") or "advance one clear longform promise",
+        "chapter_duty": card.get("chapter_duty") or card.get("duty") or "advance one clear longform promise",
         "plot_obligation": card.get("plot_obligation") or card.get("chapter_duty") or card.get("duty"),
         "dramatic_freedom": card.get("dramatic_freedom") or "choose scene action and subtext within canonical constraints",
         "pacing_tier": infer_task_pacing_tier(config, event_recommendation),
@@ -3000,17 +3030,9 @@ def build_writing_core_context_coverage(
 ) -> dict[str, Any]:
     """Prove that core character, relationship, ability, and foreshadow facts were not cut."""
 
-    characters = load_json(root / "10_bible" / "characters.json", default=[])
-    character_rows = [item for item in characters if isinstance(item, dict)] if isinstance(characters, list) else []
-    by_name = {
-        str(item.get("name")): str(item.get("id"))
-        for item in character_rows
-        if item.get("name") and item.get("id")
-    }
     required_characters = dedupe_strings(
         [card.get("pov_character_id")]
         + as_list(card.get("featured_character_ids"))
-        + [by_name.get(str(item), str(item)) for item in as_list(tcs.get("current_characters"))]
     )
     represented_characters = dedupe_strings(
         as_list(character_packet.get("featured_character_ids"))
@@ -3085,6 +3107,257 @@ def build_writing_core_context_coverage(
             for path in source_paths
             if path.is_file()
         ],
+    }
+
+
+def build_chapter_fact_inventory(
+    root: Path,
+    *,
+    chapter_contract: dict[str, Any],
+    chapter_card_file: Path,
+    character_packet: dict[str, Any],
+    constraint_packet: dict[str, Any],
+    writing_brief: dict[str, Any],
+    craft_brief: dict[str, Any],
+    fanfiction_contract: dict[str, Any],
+    feedback: dict[str, Any],
+    resolved_contract_refs: list[dict[str, Any]],
+    core_context_coverage: dict[str, Any],
+    humanizer_policy: Any,
+) -> list[dict[str, Any]]:
+    """Compile one de-duplicated in-memory fact inventory for the chapter author."""
+
+    records: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    seen_values: set[str] = set()
+
+    def add(
+        fact_id: str,
+        category: str,
+        value: Any,
+        *,
+        source: str,
+        source_hash: str = "",
+        priority: str,
+        reason: str,
+    ) -> None:
+        if value in (None, "", [], {}):
+            return
+        if fact_id in seen_ids:
+            raise WorkflowError(f"chapter_fact_inventory_duplicate_id:{fact_id}")
+        fingerprint = hashlib.sha256(
+            json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        if fingerprint in seen_values:
+            return
+        seen_ids.add(fact_id)
+        seen_values.add(fingerprint)
+        records.append(
+            {
+                "id": fact_id,
+                "category": category,
+                "value": value,
+                "source": source,
+                "source_hash": source_hash,
+                "priority": priority,
+                "selection_reason": reason,
+            }
+        )
+
+    card_relative = relative_path(root, chapter_card_file)
+    card_hash = sha256_bytes(chapter_card_file.read_bytes())
+    add(
+        "chapter.contract",
+        "chapter_contract",
+        chapter_contract,
+        source=card_relative,
+        source_hash=card_hash,
+        priority="required",
+        reason="the single approved chapter contract",
+    )
+    add(
+        "chapter.stage_method",
+        "methods",
+        {
+            "stage": writing_brief.get("stage"),
+            "pacing_tier": writing_brief.get("pacing_tier"),
+            "scene_entry": writing_brief.get("scene_entry"),
+            "do_not_resolve": writing_brief.get("do_not_resolve"),
+            "must_preserve_suspense": writing_brief.get("must_preserve_suspense"),
+        },
+        source=card_relative,
+        source_hash=card_hash,
+        priority="required",
+        reason="current story phase and reveal boundary",
+    )
+    add(
+        "cast.performance",
+        "cast",
+        {
+            "pov_character_id": character_packet.get("pov_character_id"),
+            "featured_character_ids": character_packet.get("featured_character_ids"),
+            "narrative_expression_profile": character_packet.get("narrative_expression_profile"),
+            "contracts": character_packet.get("contracts"),
+            "approved_voice_samples": character_packet.get("approved_voice_samples"),
+            "avoid_repetition": character_packet.get("avoid_repetition"),
+        },
+        source=str(character_packet.get("source") or "10_bible/character_expression.json"),
+        source_hash=source_hash(root, str(character_packet.get("source") or "10_bible/character_expression.json")),
+        priority="required",
+        reason="only the POV and featured cast expression contracts",
+    )
+    for index, item in enumerate(resolved_contract_refs, start=1):
+        add(
+            f"hard_ref.{index:02d}.{item['ref']}",
+            "hard_rules",
+            {"kind": item["kind"], "ref": item["ref"], "value": item["value"]},
+            source=str(item["source"]),
+            source_hash=str(item["sha256"]),
+            priority="required",
+            reason="explicit stable ref declared by the chapter contract",
+        )
+    add(
+        "hard_rules.abilities",
+        "hard_rules",
+        constraint_packet.get("required_abilities"),
+        source="10_bible/abilities.json",
+        source_hash=source_hash(root, "10_bible/abilities.json"),
+        priority="required",
+        reason="chapter-relevant ability limits and costs",
+    )
+    add(
+        "hard_rules.graph_constraints",
+        "hard_rules",
+        (constraint_packet.get("story_graph") or {}).get("constraints"),
+        source="30_state/story_graph.json",
+        source_hash=source_hash(root, "30_state/story_graph.json"),
+        priority="required",
+        reason="current graph constraints selected for this chapter",
+    )
+    if fanfiction_contract.get("enabled"):
+        add(
+            "hard_rules.fanfiction",
+            "hard_rules",
+            {
+                key: fanfiction_contract.get(key)
+                for key in (
+                    "continuity_mode",
+                    "canon_cutoff",
+                    "divergence_point",
+                    "ooc_tolerance",
+                    "voice_contracts",
+                    "world_rule_changes",
+                    "butterfly_effects",
+                    "protected_reveals",
+                )
+                if fanfiction_contract.get(key) not in (None, "", [], {})
+            },
+            source=str(fanfiction_contract.get("design_path") or "10_bible/fanfiction/fanfiction_bible.json"),
+            source_hash=source_hash(root, str(fanfiction_contract.get("design_path") or "")),
+            priority="required",
+            reason="declared divergence and OOC boundaries",
+        )
+    for fact_id, value, source, reason in (
+        (
+            "history.rag",
+            (constraint_packet.get("rag") or {}).get("summary"),
+            str((constraint_packet.get("rag") or {}).get("source") or ""),
+            "retrieved final-text evidence for current decisions",
+        ),
+        (
+            "history.graph",
+            (constraint_packet.get("story_graph") or {}).get("facts"),
+            "30_state/story_graph.json",
+            "current materialized relation and event facts",
+        ),
+        (
+            "history.tcs",
+            constraint_packet.get("tcs"),
+            str((constraint_packet.get("tcs") or {}).get("source") or ""),
+            "current temporal context only",
+        ),
+        (
+            "history.character_memory",
+            constraint_packet.get("character_memory"),
+            "30_state/character_memory.json",
+            "current character state and unresolved commitments",
+        ),
+        (
+            "history.research",
+            constraint_packet.get("research_canon"),
+            "10_bible/research_canon.jsonl",
+            "promoted research facts only",
+        ),
+    ):
+        add(
+            fact_id,
+            "historical_evidence",
+            value,
+            source=source,
+            source_hash=source_hash(root, source),
+            priority="evidence",
+            reason=reason,
+        )
+    add(
+        "feedback.unresolved",
+        "feedback",
+        (feedback.get("items") or [])[:5],
+        source=str(feedback.get("source") or "controlled feedback carryover"),
+        priority="feedback",
+        reason="only unresolved findings carried from prior validated reports",
+    )
+    add(
+        "methods.quality",
+        "methods",
+        writing_brief.get("quality_contract"),
+        source="compiled effective quality contract",
+        priority="method",
+        reason="primary market, active facets, and current story phase",
+    )
+    add(
+        "methods.craft",
+        "methods",
+        craft_brief,
+        source="selected role and playbook sections",
+        priority="method",
+        reason="task-specific craft methods only",
+    )
+    add(
+        "methods.humanizer_self_check",
+        "methods",
+        humanizer_policy,
+        source="config/humanizer_rules",
+        priority="method",
+        reason="final expression self-check without changing story facts",
+    )
+    add(
+        "coverage.core",
+        "provenance",
+        core_context_coverage,
+        source="CLI context compiler",
+        priority="required",
+        reason="proof that required cast, relations, abilities, and foreshadows were retained",
+    )
+    return records
+
+
+def source_hash(root: Path, relative: str) -> str:
+    if not relative:
+        return ""
+    path = root / relative
+    return sha256_bytes(path.read_bytes()) if path.is_file() else ""
+
+
+def summarize_fact_inventory(records: list[dict[str, Any]]) -> dict[str, Any]:
+    categories: dict[str, int] = {}
+    for record in records:
+        category = str(record.get("category") or "unknown")
+        categories[category] = categories.get(category, 0) + 1
+    return {
+        "schema": "chapter_fact_inventory_summary_v1",
+        "fact_count": len(records),
+        "categories": categories,
+        "fact_ids": [str(record.get("id") or "") for record in records],
     }
 
 
@@ -3208,6 +3481,10 @@ def trim_text(text: str, max_chars: int) -> str:
 
 def format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> str:
     """Render the single compiled brief; raw sources remain optional evidence only."""
+
+    inventory = payload.get("_fact_inventory")
+    if isinstance(inventory, list):
+        return render_fact_inventory_markdown(payload, inventory)
 
     card = payload.get("chapter_card", {}).get("data", {})
     writing = payload.get("writing_brief") if isinstance(payload.get("writing_brief"), dict) else {}
@@ -3398,6 +3675,68 @@ def format_writing_task_markdown(root: Path, payload: dict[str, Any]) -> str:
             *[f"- Must not include: {item}" for item in output.get("must_not_include", [])],
             "- Do not directly write final, RAG, graph, TCS, Bible, outline, research canon, or SQLite.",
             "- After writing the declared draft, run the validate command. Finalize requires explicit human approval.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def render_fact_inventory_markdown(payload: dict[str, Any], inventory: list[dict[str, Any]]) -> str:
+    by_category: dict[str, list[dict[str, Any]]] = {}
+    for record in inventory:
+        if isinstance(record, dict):
+            by_category.setdefault(str(record.get("category") or "other"), []).append(record)
+    context_plan = payload.get("context_plan") if isinstance(payload.get("context_plan"), dict) else {}
+    output = payload.get("output_contract") if isinstance(payload.get("output_contract"), dict) else {}
+    lines = [
+        f"# 第 {int(payload['chapter_number']):03d} 章写作工作单",
+        "",
+        f"- 标题：{payload.get('title', '')}",
+        f"- 目标正文字符：{payload.get('target_character_count', '')}",
+        f"- 唯一写入路径：`{payload.get('draft_submission_path', '')}`",
+        f"- 章节合同 hash：`{payload.get('chapter_contract_hash', '')}`",
+        f"- 校验命令：`{payload.get('next_command', '')}`",
+        "",
+        "## 上下文边界",
+        "",
+        f"- 只读：{', '.join(f'`{item}`' for item in context_plan.get('required_files', [])) or 'none'}",
+        f"- 自适应预算：`{context_plan.get('budget_profile', 'standard')}`；预估 `{context_plan.get('estimated_units', 0)}` engine units。",
+        "- 不扫描项目，不读取未声明草稿、research inbox、runtime DB 或其他审稿结果。",
+        "- 下列事实已由 CLI 去重；同一事实只按其稳定 ID 执行一次。",
+        "",
+    ]
+    headings = (
+        ("chapter_contract", "唯一章节合同"),
+        ("cast", "登场人物与声音"),
+        ("hard_rules", "硬规则与受保护事实"),
+        ("historical_evidence", "历史证据"),
+        ("feedback", "未解决反馈"),
+        ("methods", "当前写作方法"),
+        ("provenance", "上下文完整性"),
+    )
+    for category, heading in headings:
+        records = by_category.get(category, [])
+        if not records:
+            continue
+        lines.extend([f"## {heading}", ""])
+        for record in records:
+            value = record.get("value")
+            source = str(record.get("source") or "")
+            source_note = f"；来源 `{source}`" if source else ""
+            lines.append(
+                f"- `{record.get('id', '')}`（{record.get('selection_reason', '')}{source_note}）："
+                f"{json.dumps(value, ensure_ascii=False, separators=(',', ':')) if not isinstance(value, str) else value}"
+            )
+        lines.append("")
+    lines.extend(
+        [
+            "## 输出与交接",
+            "",
+            *[f"- {item}" for item in output.get("must_follow", [])],
+            *[f"- 禁止包含：{item}" for item in output.get("must_not_include", [])],
+            "- 只写完整章节正文，不写提纲、分析、创作说明或自我评价。",
+            "- 不直接写 final、Bible、outline、graph、RAG、TCS 或 SQLite。",
+            f"- 写完运行：`{payload.get('next_command', '')}`",
             "",
         ]
     )
@@ -4305,10 +4644,56 @@ def infer_volume(config: ConfigDocument, chapter_number: int) -> int:
     return ((chapter_number - 1) // per_volume) + 1
 
 
+def chapter_book_goal(root: Path) -> str:
+    brief = load_json(root / "10_bible" / "creative_brief.json", default={})
+    if isinstance(brief, dict):
+        decisions = brief.get("design_decisions")
+        if isinstance(decisions, dict):
+            for key in ("long_conflict", "core_hook", "ending_boundary"):
+                value = str(decisions.get(key) or "").strip()
+                if value:
+                    return value
+        reader_contract = brief.get("reader_contract")
+        if isinstance(reader_contract, dict):
+            value = str(reader_contract.get("core_promise") or "").strip()
+            if value:
+                return value
+    return "推进已批准的全书核心冲突，并保护结局边界。"
+
+
+def chapter_volume_goal(root: Path, volume_number: int) -> str:
+    volumes = normalize_records(load_json(root / "20_outline" / "volumes.json", default=[]))
+    for index, volume in enumerate(volumes, start=1):
+        if not isinstance(volume, dict):
+            continue
+        number = int(volume.get("number") or index)
+        if number != volume_number:
+            continue
+        for key in ("goal", "promise", "conflict_escalation", "title"):
+            value = str(volume.get(key) or "").strip()
+            if value:
+                return value
+    return f"推进第 {volume_number} 卷已批准的冲突与承诺。"
+
+
+def chapter_protagonist_goal(root: Path, protagonist_id: str) -> str:
+    characters = normalize_records(load_json(root / "10_bible" / "characters.json", default=[]))
+    for character in characters:
+        if not isinstance(character, dict):
+            continue
+        if protagonist_id and str(character.get("id") or "") != protagonist_id:
+            continue
+        value = str(character.get("goal") or character.get("desire") or "").strip()
+        if value:
+            return value
+    return "在本章压力下作出会改变后续条件的主动选择。"
+
+
 def write_chapter_card_artifacts(root: Path, card: dict[str, Any]) -> None:
     """Write the synchronized JSON and Markdown views of one CLI-owned chapter card."""
 
     chapter_number = int(card["chapter_number"])
+    stamp_chapter_contract(card)
     card_dir = root / "20_outline" / "chapter_cards"
     write_json(card_dir / f"ch{chapter_number:03d}.json", card)
     anchor = card.get("outline_anchor") if isinstance(card.get("outline_anchor"), dict) else {}

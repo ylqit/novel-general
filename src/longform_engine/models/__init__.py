@@ -16,6 +16,7 @@ from .pipeline import (
     models_dir,
     shared_model_cache_root,
     rerank_pair,
+    semantic_enabled,
     verify_models,
 )
 
@@ -35,5 +36,6 @@ __all__ = [
     "models_dir",
     "shared_model_cache_root",
     "rerank_pair",
+    "semantic_enabled",
     "verify_models",
 ]

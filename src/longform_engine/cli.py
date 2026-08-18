@@ -36,7 +36,9 @@ from longform_engine.agent_tasks import (
     manifest_commands,
     manifest_input_paths,
     manifest_output,
+    reconcile_task_lineage,
     status_summary,
+    task_reconciliation_status,
     validate_manifest_strict,
 )
 from longform_engine.agent_protocol_readiness import (
@@ -558,6 +560,17 @@ def build_parser() -> argparse.ArgumentParser:
     agent_result_validate.add_argument("--file", required=True, help="Declared Agent result path.")
     agent_result_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     agent_result_validate.set_defaults(func=cmd_agent_task_result_validate)
+
+    agent_task_reconcile = agent_task_subparsers.add_parser(
+        "reconcile",
+        help="Reconcile explicit hash-proven parent-child task projections.",
+    )
+    agent_task_reconcile.add_argument(
+        "config", nargs="?", default="project.yaml", help="Path to project.yaml."
+    )
+    agent_task_reconcile.add_argument("--chapter", type=int, required=True)
+    agent_task_reconcile.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    agent_task_reconcile.set_defaults(func=cmd_agent_task_reconcile)
 
     agent_task_readiness = agent_task_subparsers.add_parser(
         "readiness",
@@ -1307,9 +1320,11 @@ def build_parser() -> argparse.ArgumentParser:
     artifacts_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     artifacts_status_cmd.set_defaults(func=cmd_artifacts_status)
 
-    artifacts_compact_cmd = artifacts_subparsers.add_parser("compact", help="Archive chapter workbench artifacts and clean committed snapshots.")
+    artifacts_compact_cmd = artifacts_subparsers.add_parser("compact", help="Archive chapter or project-setup workbench artifacts.")
     artifacts_compact_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    artifacts_compact_cmd.add_argument("--through", type=int, required=True, help="Archive chapters through this number.")
+    artifacts_compact_cmd.add_argument("--scope", choices=["chapters", "project-setup"], default="chapters", help="Artifact lifecycle scope.")
+    artifacts_compact_cmd.add_argument("--through", type=int, help="Archive chapters through this number when scope=chapters.")
+    artifacts_compact_cmd.add_argument("--approved-by", help="Reviewer identity required for a mutating compaction.")
     artifacts_compact_cmd.add_argument("--dry-run", action="store_true", help="Only report candidates; do not write or delete.")
     artifacts_compact_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     artifacts_compact_cmd.set_defaults(func=cmd_artifacts_compact)
@@ -2558,6 +2573,30 @@ def cmd_agent_task_result_validate(args: argparse.Namespace) -> int:
             print(f"Warning: {item}")
         print(f"Next command: {result.next_command}")
     return 0 if result.ok else 1
+
+
+def cmd_agent_task_reconcile(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    before = task_reconciliation_status(root, chapter_number=args.chapter)
+    if before.get("errors"):
+        payload = before
+        exit_code = 1
+    else:
+        payload = reconcile_task_lineage(root, chapter_number=args.chapter)
+        exit_code = 0
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Agent task reconciliation: {payload.get('status')}")
+        print(f"Chapter: {args.chapter}")
+        for item in payload.get("reconciled") or []:
+            print(f"- {item.get('parent_task_id')} -> {item.get('child_task_id')}")
+        for item in payload.get("errors") or []:
+            print(f"Error: {item}")
+        if payload.get("next_command"):
+            print(f"Next command: {payload['next_command']}")
+    return exit_code
 
 
 def cmd_agent_task_readiness(args: argparse.Namespace) -> int:
@@ -4026,12 +4065,24 @@ def cmd_artifacts_status(args: argparse.Namespace) -> int:
         print(f"Archived loose duplicates: {result.archived_loose_duplicates}")
         for path in result.archived_loose_duplicate_files:
             print(f"- {path}")
+        print(f"Duplicate hash groups: {result.duplicate_hash_groups} ({result.duplicate_content_files} files)")
+        print(f"Reclaimable: {result.reclaimable_files} files ({result.reclaimable_bytes} bytes)")
+        print("Retention classes: " + json.dumps(result.retention_classes, ensure_ascii=False, sort_keys=True))
     return 0
 
 
 def cmd_artifacts_compact(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = compact_artifacts(config, through=args.through, dry_run=args.dry_run)
+    if args.scope == "chapters" and args.through is None:
+        raise ValueError("--through is required when --scope=chapters")
+    if not args.dry_run and not str(args.approved_by or "").strip():
+        raise ValueError("--approved-by is required for artifact compaction")
+    result = compact_artifacts(
+        config,
+        through=int(args.through or 0),
+        dry_run=args.dry_run,
+        scope=args.scope,
+    )
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
@@ -4043,7 +4094,9 @@ def cmd_artifacts_compact(args: argparse.Namespace) -> int:
         print(f"Eligible: {result.eligible}")
         for blocker in result.blockers:
             print(f"BLOCKED: {blocker}")
-        print(f"Through chapter: {result.through}")
+        print(f"Scope: {result.scope}")
+        if result.scope == "chapters":
+            print(f"Through chapter: {result.through}")
         print(f"Candidates: {result.candidate_files} ({result.candidate_bytes} bytes)")
         print(
             f"Unique content: {result.unique_content_files} blobs ({result.unique_content_bytes} bytes); "
@@ -4065,6 +4118,7 @@ def cmd_artifacts_verify(args: argparse.Namespace) -> int:
         print(f"Status: {result.status}")
         print(f"Archives: {result.archives}")
         print(f"Entries: {result.entries}")
+        print(f"Project setup archive: {'present' if result.project_setup_archive else 'not created'}")
         for error in result.errors:
             print(f"- {error}")
     return 0 if result.ok else 1

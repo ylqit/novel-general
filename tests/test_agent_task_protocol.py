@@ -33,7 +33,7 @@ from longform_engine.repair_coordination import (
 from longform_engine.roles import load_role_registry
 from longform_engine.semantic import semantic_task
 from longform_engine.storage import init_project, resolve_project_root
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import checked_review_coverage, mark_project_ready
 
 
 def test_no_key_agent_task_chapter_loop_and_manifest_index(tmp_path, monkeypatch):
@@ -122,7 +122,9 @@ def test_finalize_applies_submitted_candidate_and_supersedes_unused_repair(tmp_p
 def test_agent_task_manifests_for_repair_humanizer_and_unified_semantic(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(config, chapter_number=1)
+    open_book(config)
+    mark_project_ready(root, config)
+    continue_write(config, chapter_number=1)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text("# Chapter 1\n\nTODO short draft.\n", encoding="utf-8")
     gate_check(config, chapter_number=1)
     repair_output = root / "50_workbench" / "repair_candidates" / "ch001.r01.codex.md"
@@ -169,6 +171,9 @@ def test_agent_task_manifests_for_repair_humanizer_and_unified_semantic(tmp_path
     assert (root / "50_workbench" / "semantic_tasks" / "ch001.semantic.agent_task.json").exists()
     assert semantic.manifest_file.endswith("ch001.semantic.agent_task.json")
     assert semantic.output_file.endswith("ch001.semantic.json")
+    semantic_task_text = Path(semantic.task_file).read_text(encoding="utf-8")
+    assert '"delta_type": "chapter_semantic"' in semantic_task_text
+    assert "40_manuscript/final/ch001.md@0:1" in semantic_task_text
     assert humanizer.candidate_file.endswith("ch001.humanized_candidate.md")
     assert expand.candidate_file.endswith("ch001.expanded_candidate.md")
     assert {"repair", "humanize", "content_expand", "chapter_semantic"}.issubset(task_types)
@@ -292,6 +297,7 @@ def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_cand
 def test_editorial_submit_review_aggregates_need_human_without_canon_pollution(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
+    plan_chapter(config, chapter_number=1)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(
         "# Chapter 1\n\nAri enters the gate, but logic break remains unresolved.\n",
         encoding="utf-8",
@@ -337,6 +343,7 @@ def test_editorial_submit_review_aggregates_need_human_without_canon_pollution(t
 def test_editorial_aggregate_reports_missing_duplicate_invalid_repeated_and_lifecycle(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
+    plan_chapter(config, chapter_number=1)
     config.data.setdefault("editorial", {})["review_roles"] = [
         "scene_prose_editor",
         "planning_chief_editor",
@@ -478,7 +485,7 @@ def test_semantic_pacing_apply_updates_gate_only_and_blocks_on_p1(tmp_path, monk
     ]
     result_file = root / "50_workbench" / "gate_artifacts" / "ch001" / "semantic_pacing_result.json"
     output = json.loads(Path(task.task_json).read_text(encoding="utf-8"))["output_schema"]
-    output.update(pacing_review_payload(blocking=True))
+    output.update(pacing_review_payload(root, root / "40_manuscript" / "draft" / "ch001.md", blocking=True))
     result_file.write_text(
         json.dumps(output, ensure_ascii=False),
         encoding="utf-8",
@@ -578,7 +585,7 @@ def test_required_semantic_pacing_blocks_finalize_until_current_v2_result_is_app
     task = semantic_pacing_task(config, chapter_number=1)
     result_file = Path(task.output_file)
     output = json.loads(Path(task.task_json).read_text(encoding="utf-8"))["output_schema"]
-    output.update(pacing_review_payload())
+    output.update(pacing_review_payload(root, root / "40_manuscript" / "draft" / "ch001.md"))
     result_file.write_text(json.dumps(output, ensure_ascii=False), encoding="utf-8")
     assert validate_production_agent_result(
         root,
@@ -605,7 +612,7 @@ def test_semantic_pacing_domain_validation_requires_current_control_plane_bindin
     manifest = load_manifest(root, task.manifest_file)
     result_file = Path(task.output_file)
     output = json.loads(Path(task.task_json).read_text(encoding="utf-8"))["output_schema"]
-    output.update(pacing_review_payload())
+    output.update(pacing_review_payload(root, draft))
     result_file.write_text(json.dumps(output, ensure_ascii=False), encoding="utf-8")
     gate_file = root / "50_workbench" / "gate_artifacts" / "ch001" / "gate_result.json"
     gate_before = gate_file.read_bytes()
@@ -803,7 +810,7 @@ def passing_text(marker: str) -> str:
     return "# Chapter\n\n" + sentence * 45 + "\n"
 
 
-def pacing_review_payload(*, blocking: bool = False) -> dict:
+def pacing_review_payload(root: Path, source: Path, *, blocking: bool = False) -> dict:
     findings = []
     if blocking:
         findings.append(
@@ -821,7 +828,11 @@ def pacing_review_payload(*, blocking: bool = False) -> dict:
     return {
         "schema": EVIDENCE_REVIEW_SCHEMA,
         "verdict": "repair" if blocking else "pass",
-        "coverage": {"pressure_release": "checked", "beat_change": "checked", "aftermath": "checked"},
+        "coverage": checked_review_coverage(
+            root,
+            source,
+            ("pressure_release", "beat_change", "aftermath"),
+        ),
         "findings": findings,
     }
 
@@ -880,7 +891,12 @@ def write_editorial_role_result(
             {
                 "schema": EVIDENCE_REVIEW_SCHEMA,
                 "verdict": "repair" if verdict in {"needs_revision", "rewrite", "blocked"} else "pass",
-                "coverage": {dimension: "checked" for dimension in dimensions},
+                "coverage": checked_review_coverage(
+                    root,
+                    chapter,
+                    dimensions,
+                    canonical_dimensions=role_contract.canonical_ref_dimensions,
+                ),
                 "findings": normalized_findings,
             },
             ensure_ascii=False,

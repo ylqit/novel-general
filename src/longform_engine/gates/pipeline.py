@@ -18,6 +18,7 @@ from longform_engine.agent_protocols import (
     validate_evidence_review,
     validate_review_evidence_for_source,
 )
+from longform_engine.chapter_contract import ChapterContractError, load_verified_chapter_contract
 from longform_engine.agent_tasks import (
     AgentTaskContractError,
     build_manifest,
@@ -155,7 +156,10 @@ def build_semantic_review_context(
     character_payload = payloads.get("10_bible/characters.json", {})
     graph_payload = payloads.get("30_state/story_graph.json", {})
     tcs_payload = payloads.get(f"30_state/tcs/ch{chapter_number:03d}.json", {})
-    anchor_payload = payloads.get("20_outline/outline_anchors.json", {})
+    try:
+        verified_contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
+    except ChapterContractError as exc:
+        raise GateError(str(exc)) from exc
     source_canon = payloads.get("10_bible/fanfiction/source_canon.json", {})
     fanfiction_bible = payloads.get("10_bible/fanfiction/fanfiction_bible.json", {})
     participant_ids = semantic_review_participant_ids(
@@ -167,29 +171,8 @@ def build_semantic_review_context(
     match_terms = dedupe_strings([*participant_ids, *canon_refs])
 
     raw_sections = {
-        "chapter_contract": {
-                key: chapter_card.get(key)
-                for key in (
-                    "chapter_number",
-                    "title",
-                    "duty",
-                    "chapter_duty",
-                    "conflict",
-                    "reader_gain",
-                    "cost",
-                    "relationship_move",
-                    "pov_character_id",
-                    "featured_character_ids",
-                    "canon_refs",
-                    "divergence_effects",
-                    "voice_refs",
-                    "protected_reveals",
-                    "forbidden_reveals",
-                )
-                if chapter_card.get(key) not in (None, "", [], {})
-        },
+        "chapter_contract": verified_contract,
         "current_state": tcs_payload,
-        "outline_anchor": semantic_review_chapter_record(anchor_payload, chapter_number),
         "characters": semantic_review_matching_records(character_payload, participant_ids),
         "story_graph": semantic_review_matching_records(graph_payload, participant_ids),
     }
@@ -214,7 +197,6 @@ def build_semantic_review_context(
     section_weights = {
         "chapter_contract": 0.19,
         "current_state": 0.11,
-        "outline_anchor": 0.08,
         "characters": 0.19,
         "story_graph": 0.10,
         "fanfiction": 0.33,
@@ -228,12 +210,17 @@ def build_semantic_review_context(
     section_selection: dict[str, dict[str, Any]] = {}
     for key, raw_value in raw_sections.items():
         terms = participant_ids if key in {"characters", "story_graph"} else match_terms
-        compiled_value = fit_semantic_context_value(raw_value, section_budgets[key], terms)
+        critical = key in {"chapter_contract", "characters", "fanfiction"} and bool(raw_value)
+        compiled_value = (
+            raw_value
+            if critical
+            else fit_semantic_context_value(raw_value, section_budgets[key], terms)
+        )
         source_chars = len(json.dumps(raw_value, ensure_ascii=False, separators=(",", ":")))
         compiled_chars = len(json.dumps(compiled_value, ensure_ascii=False, separators=(",", ":")))
         omitted = isinstance(compiled_value, dict) and compiled_value.get("omitted") is True
-        if omitted and key in {"chapter_contract", "current_state", "characters", "fanfiction"} and raw_value:
-            raise GateError(f"Critical semantic review context section cannot fit its budget: {key}.")
+        if critical and (omitted or compiled_chars < source_chars or contains_depth_limited(compiled_value)):
+            raise GateError(f"context_evidence_incomplete:{key}")
         sections[key] = compiled_value
         section_selection[key] = {
             "source_chars": source_chars,
@@ -253,6 +240,7 @@ def build_semantic_review_context(
     packet = {
         "schema": "semantic_review_context_v1",
         "chapter_number": chapter_number,
+        "chapter_contract_hash": contract_hash,
         "source_path": relative_path(root, source_path),
         "source_hash": sha256_text(source_text),
         "participant_ids": participant_ids,
@@ -267,7 +255,7 @@ def build_semantic_review_context(
             "sections": section_selection,
             "notes": [
                 "The packet is a bounded review aid; canonical files remain the facts verified by the CLI.",
-                "Only chapter participants, declared canon references, current state, and the active anchor are projected.",
+                "Only the verified chapter contract, participants, declared canon references, and current state are projected.",
             ],
         },
     }
@@ -276,6 +264,8 @@ def build_semantic_review_context(
     packet["selection"]["estimated_units"] = estimate_text_units(serialized, budget_contract.estimator)
     packet["selection"]["budget_profile"] = budget_contract.profile
     packet["selection"]["capacity_units"] = budget_contract.capacity_units
+    if packet["selection"]["estimated_units"] > budget_contract.input_hard_units:
+        raise GateError("context_evidence_incomplete:prompt_budget_exceeded")
     return packet
 
 
@@ -408,6 +398,16 @@ def fit_semantic_context_value(value: Any, max_chars: int, terms: list[str]) -> 
         "reason": "section_exceeded_budget",
         "sha256": sha256_text(json.dumps(value, ensure_ascii=False, sort_keys=True)),
     }
+
+
+def contains_depth_limited(value: Any) -> bool:
+    if value == "[depth-limited]":
+        return True
+    if isinstance(value, dict):
+        return any(contains_depth_limited(item) for item in value.values())
+    if isinstance(value, list):
+        return any(contains_depth_limited(item) for item in value)
+    return False
 
 
 def bound_semantic_context_value(
@@ -637,7 +637,6 @@ def semantic_review_task(
         root / "30_state" / "story_graph.json",
         root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
         root / "10_bible" / "characters.json",
-        root / "20_outline" / "outline_anchors.json",
     ]
     if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
         canonical_inputs.extend(
@@ -685,7 +684,7 @@ def semantic_review_task(
                 "## Output Contract",
                 "",
                 f"- Write one `{EVIDENCE_REVIEW_SCHEMA}` JSON: `{relative_path(root, output_file)}`",
-                "- coverage: canonical_fact, motivation, space_time_ability.",
+                "- coverage: canonical_fact, motivation, space_time_ability；每项写 status、1-2 个正文 evidence_ids 和 canonical_refs。",
                 "- finding codes: CANONICAL_CONFLICT, MOTIVATION_JUMP, SPACE_TIME_ABILITY_BREAK.",
                 "- evidence_ids use current source path or filename plus @start:end; CLI supplies chapter/path/hash/time.",
                 f"- Validate: `longform-engine gate semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}`",
@@ -766,6 +765,7 @@ def semantic_review_validate(
             payload,
             required_dimensions=expected_dimensions,
             allowed_finding_codes=allowed_codes,
+            canonical_ref_dimensions=expected_dimensions,
         )
     )
     source = semantic_review_source_for_task(root, task, chapter_number)
@@ -1181,6 +1181,10 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
     event_matrix_path = root / "30_state" / "event_matrix.json"
     pacing_history_path = root / "30_state" / "pacing_history.json"
     chapter_card = load_json(card_path, default={})
+    try:
+        verified_contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
+    except ChapterContractError as exc:
+        raise GateError(str(exc)) from exc
     event_matrix = load_json(event_matrix_path, default={})
     pacing_history = load_json(pacing_history_path, default=[])
     if not isinstance(chapter_card, dict):
@@ -1195,21 +1199,8 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
         "source_path": relative_path(root, chapter_path),
         "source_sha256": sha256_text(safe_read_text(chapter_path)),
         "planning_context": {
-            "chapter_contract": {
-                key: chapter_card.get(key)
-                for key in (
-                    "chapter_duty",
-                    "duty",
-                    "conflict",
-                    "reader_gain",
-                    "cost",
-                    "topology_id",
-                    "hook_mode",
-                    "pacing_tier",
-                    "requires_tail_suspense",
-                )
-                if chapter_card.get(key) not in (None, "", [], {})
-            },
+            "chapter_contract": verified_contract,
+            "chapter_contract_hash": contract_hash,
             "event_recommendation": chapter_card.get("event_recommendation")
             or event_matrix.get("latest_recommendation")
             or {},
@@ -1241,7 +1232,7 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
         "instructions": [
             "Judge semantic pacing, escalation, reader pressure, tail hook, and reverse-brake risks.",
             "Do not edit final/RAG/graph/TCS/SQLite or gate_result.json directly.",
-            "Return one evidence_review_v1 JSON at the allowed output path.",
+            "Return one evidence_review_v2 JSON at the allowed output path.",
         ],
         "created_at": utc_now(),
     }
@@ -2950,7 +2941,10 @@ def append_semantic_pacing_report(path: Path, payload: dict[str, Any], result_pa
         "",
         f"- Result: `{result_path}`",
         f"- Verdict: {payload.get('verdict', '')}",
-        "- Coverage: " + ", ".join(f"{key}={value}" for key, value in sorted(coverage.items())),
+        "- Coverage: " + ", ".join(
+            f"{key}={value.get('status', '') if isinstance(value, dict) else 'invalid'}"
+            for key, value in sorted(coverage.items())
+        ),
         "",
         "### Issues",
         "",
@@ -2961,7 +2955,11 @@ def append_semantic_pacing_report(path: Path, payload: dict[str, Any], result_pa
     if not findings:
         lines.append("- None")
     lines.extend(["", "### Coverage Gaps", ""])
-    gaps = [f"{key}: {value}" for key, value in sorted(coverage.items()) if value == "insufficient"]
+    gaps = [
+        f"{key}: insufficient"
+        for key, value in sorted(coverage.items())
+        if isinstance(value, dict) and value.get("status") == "insufficient"
+    ]
     lines.extend([f"- {item}" for item in gaps] or ["- None"])
     lines.extend(["", "Semantic pacing is advisory until applied by CLI.", ""])
     atomic_write_text(path, "\n".join(lines))

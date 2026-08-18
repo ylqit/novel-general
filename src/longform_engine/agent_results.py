@@ -219,7 +219,8 @@ def render_agent_output_instructions(contract: AgentOutputContract) -> str:
         )
     elif contract.protocol == EVIDENCE_REVIEW_SCHEMA:
         shape = (
-            "只写 evidence_review_v1 JSON；coverage 是维度状态映射，finding 不写 dimension 或 notes；"
+            "只写 evidence_review_v2 JSON；coverage 每个维度都写 status、1-2 个正文 evidence_ids "
+            "和角色要求的 canonical_refs；finding 不写 dimension 或 notes；"
             "不要回填任务、章节、路径、hash、角色、命令或时间。"
         )
     else:
@@ -249,6 +250,8 @@ def validate_agent_result_envelope(
             payload,
             required_dimensions=role.review_dimensions,
             allowed_finding_codes=role.finding_codes,
+            optional_dimensions=role.optional_review_dimensions,
+            canonical_ref_dimensions=role.canonical_ref_dimensions,
         )
     elif contract.protocol == CANONICAL_DELTA_SCHEMA:
         errors = validate_canonical_delta(payload, task_type=contract.task_type)

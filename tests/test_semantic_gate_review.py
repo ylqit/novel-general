@@ -4,12 +4,13 @@ from pathlib import Path
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
 from longform_engine.agent_tasks import load_manifest, validate_manifest_strict
+from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.gates import gate_check, semantic_review_apply, semantic_review_validate
 from longform_engine.orchestration import continue_write, open_book, submit_agent_draft
 from longform_engine.production import production_next
 from longform_engine.storage import init_project
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import checked_review_coverage, mark_project_ready
 
 
 def seed_high_risk_chapter(tmp_path: Path):
@@ -24,6 +25,7 @@ def seed_high_risk_chapter(tmp_path: Path):
     card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
     card = json.loads(card_path.read_text(encoding="utf-8"))
     card["requires_semantic_review"] = True
+    stamp_chapter_contract(card)
     card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(
@@ -63,7 +65,12 @@ def test_semantic_review_validates_spans_and_applies_only_gate_artifacts(tmp_pat
             {
                 "schema": EVIDENCE_REVIEW_SCHEMA,
                 "verdict": "pass",
-                "coverage": {"canonical_fact": "checked", "motivation": "checked", "space_time_ability": "checked"},
+                "coverage": checked_review_coverage(
+                    root,
+                    chapter,
+                    ("canonical_fact", "motivation", "space_time_ability"),
+                    canonical_dimensions=("canonical_fact", "motivation", "space_time_ability"),
+                ),
                 "findings": [],
             },
             ensure_ascii=False,
@@ -99,7 +106,12 @@ def test_semantic_review_rejects_fabricated_span_without_pollution(tmp_path):
             {
                 "schema": EVIDENCE_REVIEW_SCHEMA,
                 "verdict": "repair",
-                "coverage": {"canonical_fact": "checked", "motivation": "checked", "space_time_ability": "checked"},
+                "coverage": checked_review_coverage(
+                    root,
+                    chapter,
+                    ("canonical_fact", "motivation", "space_time_ability"),
+                    canonical_dimensions=("canonical_fact", "motivation", "space_time_ability"),
+                ),
                 "findings": [
                     {
                         "code": "CANONICAL_CONFLICT",

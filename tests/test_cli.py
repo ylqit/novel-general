@@ -664,6 +664,7 @@ def test_cli_editorial_review_and_need_human_request(tmp_path):
     assert init.returncode == 0
 
     project_yaml = tmp_path / "novel" / "project.yaml"
+    assert run_cli("plan-chapter", str(project_yaml), "--chapter", "1").returncode == 0
     draft = tmp_path / "novel" / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\nTODO verify continuity before publication.\n", encoding="utf-8")
 

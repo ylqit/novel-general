@@ -20,18 +20,27 @@ from longform_engine.agent_protocols import (
 )
 from longform_engine.agent_tasks import (
     build_manifest,
+    live_chapter_tasks,
     list_manifests,
     mark_tasks_for_output,
     manifest_output,
+    task_reconciliation_status,
     validate_current_task_result,
     write_manifest,
 )
 from longform_engine.config import ConfigDocument
-from longform_engine.db import query_table, sync_database
+from longform_engine.db import database_path, query_table, sync_database
 from longform_engine.graph.pipeline import ensure_graph_shape, load_graph, save_graph, upsert_canon_entities
 from longform_engine.memory import build_style_memory
-from longform_engine.rag import build_chunks, build_context
+from longform_engine.rag import build_chunks, build_context, build_embedding_index
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
+from longform_engine.vectorstore import (
+    active_source_record_count,
+    healthcheck as vector_healthcheck,
+    hnsw_manifest_path,
+    local_index_path,
+    local_store_path,
+)
 
 
 SCHEMA = "chapter_semantic_bundle_v1"
@@ -82,6 +91,12 @@ class SemanticApplyResult:
     validation_file: str
     transaction_file: str
     next_command: str
+    embedding_records: int = 0
+    embeddings_generated: int = 0
+    embeddings_reused: int = 0
+    active_vectors: int = 0
+    semantic_hits: int = 0
+    fallback_active: bool = False
 
 
 @dataclass(frozen=True)
@@ -219,6 +234,7 @@ def compile_semantic_context(
     graph_path = root / "30_state" / "story_graph.json"
     planned_path = root / "20_outline" / "foreshadowing_ledger.json"
     actual_path = root / "30_state" / "foreshadowing_state.json"
+    tcs_path = root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json"
     previous_ledger_path = root / "30_state" / "semantic_ledger" / f"ch{chapter_number - 1:03d}.json"
 
     text = source.read_text(encoding="utf-8")
@@ -293,21 +309,47 @@ def compile_semantic_context(
         if thread_id in planned
     ][:30]
 
-    previous_state: dict[str, Any] = {}
+    tcs = read_json(tcs_path, {})
+    tcs = tcs if isinstance(tcs, dict) else {}
+    current_state = {
+        "active_relationships": [
+            compact_fields(item, ("id", "source", "target", "type", "state"))
+            for item in objects(tcs.get("active_relationships"))
+            if relationship_touches(item, participant_set)
+        ][:20],
+        "character_current": [
+            compact_fields(
+                item,
+                ("character_id", "status", "goal", "emotion", "known_facts", "commitments"),
+            )
+            for item in objects(tcs.get("character_current"))
+            if str(item.get("character_id") or "") in participant_set
+        ][:12],
+        "foreshadow_current": [
+            compact_fields(item, ("thread_id", "status", "last_chapter"))
+            for item in objects(tcs.get("foreshadow_current"))
+            if str(item.get("thread_id") or "") in set(active_ids)
+        ][:30],
+        "known_facts": objects(tcs.get("known_facts"))[-12:],
+        "active_constraints": strings(tcs.get("active_constraints"))[:20],
+    }
+    current_state = {key: value for key, value in current_state.items() if value}
+
+    previous_digest: dict[str, Any] = {}
     previous_source: Path | None = None
     if chapter_number > 1 and previous_ledger_path.exists():
         payload = read_json(previous_ledger_path, {})
         if isinstance(payload, dict):
-            previous_state = {
+            previous_digest = {
                 "chapter_number": chapter_number - 1,
-                "chapter_digest": payload.get("chapter_digest") or {},
-                "relationship_deltas": objects(payload.get("relationship_deltas"))[-12:],
-                "character_deltas": objects(payload.get("character_deltas"))[-12:],
-                "foreshadow_deltas": objects(payload.get("foreshadow_deltas"))[-12:],
+                "chapter_digest": compact_fields(
+                    payload.get("chapter_digest") if isinstance(payload.get("chapter_digest"), dict) else {},
+                    ("summary", "causal_change", "reader_payoff", "cost"),
+                ),
             }
             previous_source = previous_ledger_path
 
-    provenance_paths = [characters_path, graph_path, planned_path, actual_path, chapter_card_path]
+    provenance_paths = [characters_path, graph_path, planned_path, actual_path, chapter_card_path, tcs_path]
     if relationship_source == relationships_path:
         provenance_paths.append(relationships_path)
     if previous_source is not None:
@@ -322,7 +364,7 @@ def compile_semantic_context(
         if path.exists()
     ]
     return {
-        "schema": "chapter_semantic_context_v1",
+        "schema": "chapter_semantic_context_v2",
         "chapter_number": chapter_number,
         "source": {
             "path": relative_path(root, source),
@@ -353,7 +395,8 @@ def compile_semantic_context(
             "relationships": relationship_projection,
             "active_threads": thread_projection,
         },
-        "previous_state": previous_state,
+        "current_state": current_state,
+        "previous_digest": previous_digest,
         "allowed_canonical_refs": [item["path"] for item in provenance],
         "provenance": provenance,
         "selection": {
@@ -716,36 +759,37 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
             raise ValueError("chapter semantic bundle did not validate; canonical state was not mutated.")
         validation_file = Path(validation.report_file)
 
-    if existing_ledger is not None:
-        return SemanticApplyResult(
-            chapter_number=chapter_number,
-            ledger_file=str(ledger_file),
-            graph_file=str(graph_file),
-            foreshadow_state_file=str(foreshadow_file),
-            summary_file=str(summary_file),
-            tcs_file=str(tcs_file),
-            character_files=tuple(str(path) for path in character_files if path.exists()),
-            validation_file=str(validation_file),
-            transaction_file="",
-            next_command=f"longform-engine chapter close project.yaml --chapter {chapter_number} --approved-by human",
-        )
-
+    vector_store_file = local_store_path(config)
+    hnsw_index_file = local_index_path(config)
     touched = [
-        ledger_file,
-        graph_file,
-        foreshadow_file,
-        timeline_file,
-        world_file,
-        summary_file,
-        tcs_file,
-        chapter_meta,
-        novel_state_file,
-        *character_files,
-        root / "60_rag" / "chunks",
-        root / "60_rag" / "context",
+        root / "60_rag" / "chunks" / f"ch{chapter_number:03d}.json",
+        root / "60_rag" / "context" / "next_plot_context.md",
+        root / "60_rag" / "query_cache",
+        root / "60_rag" / "metadata" / "embeddings.jsonl",
         root / "60_rag" / "memory" / "style",
-        root / "70_runtime" / "db",
+        database_path(config),
+        vector_store_file,
+        hnsw_index_file,
+        hnsw_manifest_path(hnsw_index_file),
     ]
+    if existing_ledger is None:
+        touched.extend(
+            [
+                ledger_file,
+                graph_file,
+                foreshadow_file,
+                timeline_file,
+                world_file,
+                summary_file,
+                tcs_file,
+                chapter_meta,
+                novel_state_file,
+                *character_files,
+            ]
+        )
+    embedding_stats = None
+    context = None
+    written_characters: tuple[Path, ...] = ()
     with apply_transaction(
         root,
         command="chapter semantic-apply",
@@ -754,49 +798,65 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
         touched_paths=touched,
         metadata={"schema": SCHEMA, "rebuild_boundaries": ["RAG", "SQLite", "TCS"]},
     ) as transaction:
-        applied_payload = dict(payload)
-        applied_payload["canonical"] = True
-        applied_payload["candidate_sha256"] = candidate_sha256
-        applied_payload["applied_at"] = utc_now()
-        applied_payload["validation_file"] = relative_path(root, validation_file)
-        atomic_write_text(ledger_file, json.dumps(applied_payload, ensure_ascii=False, indent=2) + "\n")
+        if existing_ledger is None:
+            applied_payload = dict(payload)
+            applied_payload["canonical"] = True
+            applied_payload["candidate_sha256"] = candidate_sha256
+            applied_payload["applied_at"] = utc_now()
+            applied_payload["validation_file"] = relative_path(root, validation_file)
+            atomic_write_text(ledger_file, json.dumps(applied_payload, ensure_ascii=False, indent=2) + "\n")
 
-        graph = materialize_graph(root, payload, chapter_number)
-        save_graph(root, graph)
-        foreshadow_state = materialize_foreshadow_state(root, payload, chapter_number)
-        atomic_write_text(foreshadow_file, json.dumps(foreshadow_state, ensure_ascii=False, indent=2) + "\n")
-        materialize_sequence_state(timeline_file, payload.get("timeline_deltas"), chapter_number)
-        materialize_world_state(world_file, payload.get("world_deltas"), chapter_number)
-        written_characters = materialize_character_views(root, payload, chapter_number)
-        write_semantic_summary(summary_file, payload, chapter_number)
-        update_chapter_meta_summary(chapter_meta, chapter_number, payload)
-        tcs = materialize_tcs(root, payload, chapter_number, graph, foreshadow_state)
-        tcs["source_semantic_ledger_sha256"] = sha256(ledger_file.read_bytes()).hexdigest()
-        atomic_write_text(tcs_file, json.dumps(tcs, ensure_ascii=False, indent=2) + "\n")
+            graph = materialize_graph(root, payload, chapter_number)
+            save_graph(root, graph)
+            foreshadow_state = materialize_foreshadow_state(root, payload, chapter_number)
+            atomic_write_text(foreshadow_file, json.dumps(foreshadow_state, ensure_ascii=False, indent=2) + "\n")
+            materialize_sequence_state(timeline_file, payload.get("timeline_deltas"), chapter_number)
+            materialize_world_state(world_file, payload.get("world_deltas"), chapter_number)
+            written_characters = materialize_character_views(root, payload, chapter_number)
+            write_semantic_summary(summary_file, payload, chapter_number)
+            update_chapter_meta_summary(chapter_meta, chapter_number, payload)
+            tcs = materialize_tcs(root, payload, chapter_number, graph, foreshadow_state)
+            tcs["source_semantic_ledger_sha256"] = sha256(ledger_file.read_bytes()).hexdigest()
+            atomic_write_text(tcs_file, json.dumps(tcs, ensure_ascii=False, indent=2) + "\n")
 
         style = build_style_memory(config)
         rag = build_chunks(config, chapter_numbers=(chapter_number,), sync_index=False)
         db = sync_database(config)
-        context = build_context(config, chapter_number=chapter_number + 1)
-        state = read_json(novel_state_file, {})
-        if not isinstance(state, dict):
-            state = {}
-        state.update(
-            {
-                "status": "chapter_semantics_applied",
-                "pending_close_chapter": chapter_number,
-                "last_semantic_chapter": max(int(state.get("last_semantic_chapter") or 0), chapter_number),
-                "last_semantic_ledger": relative_path(root, ledger_file),
-                "updated_at": utc_now(),
-            }
-        )
-        if int(state.get("pending_semantic_chapter") or 0) == chapter_number:
-            state.pop("pending_semantic_chapter", None)
-        atomic_write_text(novel_state_file, json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+        embedding_stats = build_embedding_index(config)
+        context = build_context(config, chapter_number=chapter_number + 1, semantic=True)
+        strict_semantic = semantic_vectors_required(config)
+        if strict_semantic and (
+            embedding_stats.fallback_active
+            or embedding_stats.active_records <= 0
+            or context.fallback_active
+            or context.semantic_hit_count <= 0
+        ):
+            raise ValueError(
+                "Semantic RAG materialization requires real active vectors and at least one semantic hit; "
+                "fallback or empty vector evidence was detected."
+            )
+        if existing_ledger is None:
+            state = read_json(novel_state_file, {})
+            if not isinstance(state, dict):
+                state = {}
+            state.update(
+                {
+                    "status": "chapter_semantics_applied",
+                    "pending_close_chapter": chapter_number,
+                    "last_semantic_chapter": max(int(state.get("last_semantic_chapter") or 0), chapter_number),
+                    "last_semantic_ledger": relative_path(root, ledger_file),
+                    "updated_at": utc_now(),
+                }
+            )
+            if int(state.get("pending_semantic_chapter") or 0) == chapter_number:
+                state.pop("pending_semantic_chapter", None)
+            atomic_write_text(novel_state_file, json.dumps(state, ensure_ascii=False, indent=2) + "\n")
         transaction.update_metadata(
             ledger_file=relative_path(root, ledger_file),
             character_files=len(written_characters),
+            idempotent_derived_rebuild=existing_ledger is not None,
             rag=asdict(rag),
+            embeddings=asdict(embedding_stats),
             context=asdict(context),
             style=asdict(style),
             db=asdict(db),
@@ -824,6 +884,15 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
         validation_file=str(validation_file),
         transaction_file=str(transaction_file),
         next_command=f"longform-engine chapter close project.yaml --chapter {chapter_number} --approved-by human",
+        embedding_records=embedding_stats.records if embedding_stats is not None else 0,
+        embeddings_generated=embedding_stats.generated if embedding_stats is not None else 0,
+        embeddings_reused=embedding_stats.reused if embedding_stats is not None else 0,
+        active_vectors=embedding_stats.active_records if embedding_stats is not None else 0,
+        semantic_hits=context.semantic_hit_count if context is not None else 0,
+        fallback_active=bool(
+            (embedding_stats.fallback_active if embedding_stats is not None else False)
+            or (context.fallback_active if context is not None else False)
+        ),
     )
 
 
@@ -1031,11 +1100,18 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
     editorial = read_json(root / "50_workbench" / "editorial_reviews" / f"ch{chapter_number:03d}.aggregate.json", {})
     if isinstance(editorial, dict) and editorial.get("need_human") is True:
         raise ValueError(f"Cannot close ch{chapter_number:03d}: editorial review still requires human resolution.")
-    active_tasks = [
-        item
-        for item in list_manifests(root, chapter_number=chapter_number)
-        if str(item.get("status") or "") in {"awaiting_agent", "submitted", "validated", "invalid"}
-    ]
+    reconciliation = task_reconciliation_status(root, chapter_number=chapter_number)
+    if reconciliation.get("status") != "ok":
+        if reconciliation.get("next_command"):
+            raise ValueError(
+                f"Cannot close ch{chapter_number:03d}: task lineage requires reconciliation; "
+                f"run `{reconciliation['next_command']}`."
+            )
+        raise ValueError(
+            f"Cannot close ch{chapter_number:03d}: task lineage is ambiguous "
+            f"({'; '.join(reconciliation.get('errors') or [])})."
+        )
+    active_tasks = live_chapter_tasks(root, chapter_number=chapter_number)
     if active_tasks:
         task_ids = ", ".join(str(item.get("task_id") or "unknown") for item in active_tasks[:5])
         raise ValueError(f"Cannot close ch{chapter_number:03d}: active Agent tasks remain ({task_ids}).")
@@ -1143,6 +1219,27 @@ def verify_materialized_chapter(
     db_chunks = query_table(config, "chapter_chunks", limit=100000)
     if not any(int(item.get("chapter_number") or 0) == chapter_number for item in db_chunks):
         raise ValueError(f"Cannot close ch{chapter_number:03d}: SQLite has no derived chapter chunk.")
+    if semantic_vectors_required(config):
+        source_path = f"40_manuscript/final/ch{chapter_number:03d}.md"
+        health = vector_healthcheck(config)
+        if not health.ok or health.record_count <= 0:
+            raise ValueError(
+                f"Cannot close ch{chapter_number:03d}: semantic vector store is empty or unhealthy ({health.message})."
+            )
+        if active_source_record_count(config, source_path) <= 0:
+            raise ValueError(
+                f"Cannot close ch{chapter_number:03d}: no active vector is bound to {source_path}."
+            )
+        context_file = root / "60_rag" / "context" / "next_plot_context.md"
+        context_text = context_file.read_text(encoding="utf-8") if context_file.is_file() else ""
+        if (
+            "- Semantic mode: enabled" not in context_text
+            or f"- Target chapter: {chapter_number + 1}" not in context_text
+            or "No retrieval hits yet." in context_text
+        ):
+            raise ValueError(
+                f"Cannot close ch{chapter_number:03d}: next-chapter semantic context is missing, stale, or empty."
+            )
 
 
 def compact_closed_artifacts(config: ConfigDocument, chapter_number: int) -> tuple[str, ...]:
@@ -1166,10 +1263,10 @@ def semantic_output_template(root: Path, source: Path, chapter_number: int) -> d
     planned = planned_threads(root)
     actual = foreshadow_state_threads(root)
     active_threads = sorted(active_planned_thread_ids(planned, actual, chapter_number))
-    evidence_id = f"ch{chapter_number:03d}@0:1"
+    evidence_id = f"{relative_path(root, source)}@0:1"
     return {
         "schema": CANONICAL_DELTA_SCHEMA,
-        "delta_type": "chapter_state",
+        "delta_type": "chapter_semantic",
         "coverage": {
             "chapter_digest": "changed",
             "scenes": "changed",
@@ -1216,6 +1313,21 @@ def semantic_output_template(root: Path, source: Path, chapter_number: int) -> d
         },
         "uncertainties": [],
     }
+
+
+def semantic_vectors_required(config: ConfigDocument) -> bool:
+    semantic = config.data.get("semantic") if isinstance(config.data.get("semantic"), dict) else {}
+    enabled = config_bool(semantic.get("enabled"), default=True)
+    fallback_allowed = config_bool(semantic.get("allow_fallback"), default=False)
+    return enabled and not fallback_allowed
+
+
+def config_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 def semantic_candidate_domain_payload(

@@ -18,6 +18,7 @@ from longform_engine.models import cosine_similarity, embed_text_with_provider, 
 from longform_engine.storage import atomic_write_text, resolve_project_root
 from longform_engine.text_metrics import content_character_count
 from longform_engine.vectorstore import VectorQuery
+from longform_engine.vectorstore import healthcheck as vector_healthcheck
 from longform_engine.vectorstore import query as query_vector_store
 from longform_engine.vectorstore import record_from_embedding
 from longform_engine.vectorstore import sync_records as sync_vector_store
@@ -81,6 +82,25 @@ class RagContextResult:
     chapter_number: int | None
     context_file: str
     hit_count: int
+    semantic_mode: bool = False
+    semantic_hit_count: int = 0
+    fallback_active: bool = False
+
+
+@dataclass(frozen=True)
+class EmbeddingBuildStats:
+    """Embedding and vector synchronization evidence for one deterministic build."""
+
+    records: int
+    generated: int
+    reused: int
+    active_records: int
+    vector_upserted: int
+    vector_unchanged: int
+    vector_stale: int
+    backend: str
+    model: str
+    fallback_active: bool
 
 
 def build_chunks(
@@ -298,6 +318,16 @@ def build_context(
         chapter_number=chapter_number,
         context_file=str(context_path),
         hit_count=len(result.hits),
+        semantic_mode=semantic,
+        semantic_hit_count=sum(1 for hit in result.hits if hit.semantic_score > 0),
+        fallback_active=bool(
+            semantic
+            and any(
+                "lexical fallback" in reason
+                for hit in result.hits
+                for reason in hit.reasons
+            )
+        ),
     )
 
 
@@ -603,6 +633,12 @@ def load_chunk_candidates(
 def build_embeddings(config: ConfigDocument) -> int:
     """Build deterministic semantic embeddings for canonical RAG/memory rows."""
 
+    return build_embedding_index(config).records
+
+
+def build_embedding_index(config: ConfigDocument) -> EmbeddingBuildStats:
+    """Build embeddings and retain reuse/vector-health evidence for transactional callers."""
+
     root = resolve_project_root(config)
     sync_database(config)
     model_status = ensure_models_ready(config, allow_download=True, require_reranker=True)
@@ -667,11 +703,38 @@ def build_embeddings(config: ConfigDocument) -> int:
                     continue
                 records.append(embedding_record_for_memory(config, root, path, payload, owner_type=owner_type, model=model_name, existing=existing))
 
+    reused = sum(
+        1
+        for record in records
+        if _embedding_record_matches(existing.get(str(record.get("id") or "")), record)
+    )
     atomic_write_text(output, "".join(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n" for record in records))
     sync_database(config)
     vector_records = [record_from_embedding(record) for record in records]
-    sync_vector_store(config, [record for record in vector_records if record is not None])
-    return len(records)
+    vector_sync = sync_vector_store(config, [record for record in vector_records if record is not None])
+    health = vector_healthcheck(config)
+    return EmbeddingBuildStats(
+        records=len(records),
+        generated=len(records) - reused,
+        reused=reused,
+        active_records=health.record_count,
+        vector_upserted=vector_sync.upserted,
+        vector_unchanged=vector_sync.unchanged,
+        vector_stale=vector_sync.stale,
+        backend=health.backend,
+        model=model_name,
+        fallback_active=model_status.fallback_active,
+    )
+
+
+def _embedding_record_matches(existing: dict[str, Any] | None, current: dict[str, Any]) -> bool:
+    return bool(
+        isinstance(existing, dict)
+        and existing.get("model") == current.get("model")
+        and existing.get("content_hash") == current.get("content_hash")
+        and isinstance(existing.get("vector"), list)
+        and existing.get("vector")
+    )
 
 
 def embedding_record_for_memory(

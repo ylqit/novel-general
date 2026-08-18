@@ -58,6 +58,48 @@ def test_graph_validate_reports_bad_entity_type(tmp_path):
     assert "unsupported type" in result.errors[0]
 
 
+def test_graph_check_allows_planned_baseline_with_one_active_relationship(tmp_path):
+    config = load_project_config(template="qidian-longform")
+    project = init_project(config, output=tmp_path / "novel")
+    graph_path = project.root / "30_state" / "story_graph.json"
+    graph_path.write_text(
+        json.dumps(
+            {
+                "entities": [
+                    {"id": "character:a", "name": "甲", "type": "character"},
+                    {"id": "character:b", "name": "乙", "type": "character"},
+                ],
+                "relationships": [
+                    {
+                        "id": "rel:planned",
+                        "source": "character:a",
+                        "target": "character:b",
+                        "type": "合作",
+                        "state": "尚未合作",
+                        "status": "planned",
+                    },
+                    {
+                        "id": "rel:active",
+                        "source": "character:a",
+                        "target": "character:b",
+                        "type": "合作",
+                        "state": "有限合作",
+                        "status": "active",
+                        "from_chapter": 3,
+                    },
+                ],
+                "events": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = check_graph(load_project_config(project.project_config))
+
+    assert result.issues == ()
+
+
 def test_graph_check_reports_agent_draft_risks_without_mutating_graph(tmp_path):
     config = load_project_config(template="qidian-longform")
     project = init_project(config, output=tmp_path / "novel")

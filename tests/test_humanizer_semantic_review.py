@@ -15,7 +15,7 @@ from longform_engine.creative import (
 from longform_engine.orchestration import WorkflowError, submit_agent_draft
 from longform_engine.production import production_loop, production_next
 from longform_engine.storage import init_project
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import checked_review_coverage, mark_project_ready
 
 
 SOURCE_TEXT = "# 第一章\n\nAri在城门前核对旧档，Mira守住门口。钟声停下时，他把缺页夹回册中。\n"
@@ -251,10 +251,15 @@ def seed_humanizer_project(tmp_path, *, milestones):
 
 
 def write_semantic_result(root):
+    source = root / "50_workbench" / "repair_candidates" / "ch001.humanized_candidate.md"
     payload = {
         "schema": EVIDENCE_REVIEW_SCHEMA,
         "verdict": "pass",
-        "coverage": {"meaning_preservation": "checked", "voice_preservation": "checked", "event_preservation": "checked"},
+        "coverage": checked_review_coverage(
+            root,
+            source,
+            ("meaning_preservation", "voice_preservation", "event_preservation"),
+        ),
         "findings": [],
     }
     output = root / "50_workbench" / "humanizer_tasks" / "ch001.semantic_review.json"

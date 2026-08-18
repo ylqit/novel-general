@@ -7,7 +7,11 @@ import pytest
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
 from longform_engine.agent_tasks import list_manifests, load_manifest
-from longform_engine.character_expression import approve_voice_samples, character_expression_diagnostics
+from longform_engine.character_expression import (
+    approve_voice_samples,
+    build_character_expression_packet,
+    character_expression_diagnostics,
+)
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_review, editorial_submit_review
 from longform_engine.gates.pipeline import check_style_and_humanizer
@@ -18,7 +22,7 @@ from longform_engine.intelligence import (
 )
 from longform_engine.orchestration import continue_write, open_book
 from longform_engine.storage import init_project
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import checked_review_coverage, mark_project_ready
 
 
 def seed_ready_project(tmp_path: Path):
@@ -92,18 +96,53 @@ def test_chapter_work_order_compiles_character_packet_inside_existing_budget(tmp
     task = json.loads((root / "50_workbench" / "writing_tasks" / "ch001.json").read_text(encoding="utf-8"))
     manifest = load_manifest(root, "chapter_write:ch001:v4")
     markdown = (root / "50_workbench" / "writing_tasks" / "ch001.md").read_text(encoding="utf-8")
-    packet = task["character_expression_packet"]
-    assert packet["schema"] == "character_expression_packet_v1"
-    assert packet["featured_character_ids"] == ["lead_ari", "ally_mira"]
-    assert len(packet["approved_voice_samples"]) <= 2
+    inventory = task["fact_inventory_summary"]
+    assert inventory["schema"] == "chapter_fact_inventory_summary_v1"
+    assert inventory["categories"]["cast"] >= 1
     inputs = [item["path"] for item in manifest["io"]["inputs"]]
     assert inputs == ["50_workbench/writing_tasks/ch001.md"]
-    assert "50_workbench/character_packets/ch001.json" in task["context_plan"]["excluded_duplicates"]
+    assert not (root / "50_workbench" / "character_packets" / "ch001.json").exists()
     assert len(inputs) <= 7
     assert task["context_plan"]["budget_profile"] == "standard"
     assert task["context_plan"]["estimated_units"] > 0
-    assert "Character Performance Packet" in markdown
-    assert "verification versus immediate access" in markdown
+    assert "登场人物与声音" in markdown
+    assert "lead_ari" in markdown and "ally_mira" in markdown
+    assert "lead_ari" in markdown and "ally_mira" in markdown
+
+
+def test_character_packet_does_not_promote_historical_tcs_cast(tmp_path):
+    _config, root = seed_ready_project(tmp_path)
+    characters_path = root / "10_bible" / "characters.json"
+    characters = json.loads(characters_path.read_text(encoding="utf-8"))
+    for index in range(5):
+        characters.append(
+            {
+                "id": f"background_{index}",
+                "name": f"Background {index}",
+                "goal": "Remain available in current state without entering this scene.",
+                "flaw": "none",
+            }
+        )
+    characters_path.write_text(json.dumps(characters, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    packet = build_character_expression_packet(
+        root,
+        chapter_number=1,
+        card={
+            "chapter_number": 1,
+            "pov_character_id": "lead_ari",
+            "featured_character_ids": ["lead_ari", "ally_mira"],
+        },
+        tcs={
+            "current_characters": [
+                "lead_ari",
+                "ally_mira",
+                *(f"background_{index}" for index in range(5)),
+            ]
+        },
+    )
+
+    assert packet["featured_character_ids"] == ["lead_ari", "ally_mira"]
 
 
 def test_dialogue_diagnostics_find_same_voice_without_mandating_dialogue_volume():
@@ -154,7 +193,11 @@ def test_character_editor_accepts_scoped_p1_with_exact_character_evidence(tmp_pa
             {
                 "schema": EVIDENCE_REVIEW_SCHEMA,
                 "verdict": "repair",
-                    "coverage": {"character_agency": "checked", "voice_distinction": "checked", "embodied_presence": "checked"},
+                "coverage": checked_review_coverage(
+                    root,
+                    draft,
+                    ("character_agency", "voice_distinction", "embodied_presence"),
+                ),
                 "findings": [
                     {
                         "code": "DIALOGUE_SWAP",
@@ -209,7 +252,13 @@ def test_range_character_audit_validates_hash_spans_and_archives_only_to_workben
     payload = {
         "schema": EVIDENCE_REVIEW_SCHEMA,
         "verdict": "pass",
-        "coverage": {"cross_chapter_character": "checked", "voice_drift": "checked", "arc_causality": "checked"},
+        "coverage": checked_review_coverage(
+            root,
+            sources[1],
+            ("cross_chapter_character", "voice_drift", "arc_causality"),
+            canonical_dimensions=("cross_chapter_character", "voice_drift", "arc_causality"),
+            canonical_ref="10_bible/character_expression.json",
+        ),
         "findings": [],
     }
     candidate = root / task.candidate_file

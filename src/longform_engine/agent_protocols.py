@@ -13,7 +13,7 @@ import yaml
 
 PROSE_MARKDOWN_SCHEMA = "prose_markdown_v1"
 DESIGN_DOCUMENT_SCHEMA = "design_document_v1"
-EVIDENCE_REVIEW_SCHEMA = "evidence_review_v1"
+EVIDENCE_REVIEW_SCHEMA = "evidence_review_v2"
 CANONICAL_DELTA_SCHEMA = "canonical_delta_v1"
 VALIDATION_REPORT_SCHEMA = "validation_report_v1"
 HARD_BOUNDARIES = (
@@ -273,6 +273,8 @@ def validate_evidence_review(
     *,
     required_dimensions: Iterable[str] = (),
     allowed_finding_codes: Iterable[str] = (),
+    optional_dimensions: Iterable[str] = (),
+    canonical_ref_dimensions: Iterable[str] = (),
 ) -> list[str]:
     errors: list[str] = []
     expected = {"schema", "verdict", "coverage", "findings"}
@@ -285,19 +287,59 @@ def validate_evidence_review(
         errors.append("verdict must be pass, repair, need_human, or insufficient_evidence")
     coverage = payload.get("coverage")
     if not isinstance(coverage, dict) or not coverage:
-        errors.append("coverage must map review dimensions to checked, insufficient, or not_applicable")
+        errors.append("coverage must map review dimensions to evidence-bound coverage records")
         coverage = {}
     else:
-        for dimension, status in coverage.items():
-            if not isinstance(dimension, str) or not dimension.strip() or status not in REVIEW_COVERAGE_STATES:
-                errors.append("coverage must map non-empty dimensions to checked, insufficient, or not_applicable")
-                break
+        optional = {str(item).strip() for item in optional_dimensions if str(item).strip()}
+        canonical_required = {
+            str(item).strip() for item in canonical_ref_dimensions if str(item).strip()
+        }
+        for dimension, record in coverage.items():
+            prefix = f"coverage.{dimension}"
+            if not isinstance(dimension, str) or not dimension.strip():
+                errors.append("coverage dimensions must be non-empty text")
+                continue
+            if not isinstance(record, dict) or set(record) != {
+                "status",
+                "evidence_ids",
+                "canonical_refs",
+            }:
+                errors.append(
+                    f"{prefix} must contain exactly status, evidence_ids, canonical_refs"
+                )
+                continue
+            status = record.get("status")
+            evidence_ids = record.get("evidence_ids")
+            canonical_refs = record.get("canonical_refs")
+            if status not in REVIEW_COVERAGE_STATES:
+                errors.append(f"{prefix}.status must be checked, insufficient, or not_applicable")
+            if not isinstance(evidence_ids, list) or any(
+                not isinstance(item, str) or not item.strip() for item in evidence_ids
+            ):
+                errors.append(f"{prefix}.evidence_ids must be a list of non-empty evidence IDs")
+                evidence_ids = []
+            if not isinstance(canonical_refs, list) or any(
+                not isinstance(item, str) or not item.strip() for item in canonical_refs
+            ):
+                errors.append(f"{prefix}.canonical_refs must be a list of non-empty references")
+                canonical_refs = []
+            if status == "checked" and not 1 <= len(evidence_ids) <= 2:
+                errors.append(f"{prefix} checked coverage requires one or two evidence IDs")
+            if status != "checked" and evidence_ids:
+                errors.append(f"{prefix} may cite evidence only when status=checked")
+            if status == "not_applicable" and dimension not in optional:
+                errors.append(f"{prefix} is not declared optional by the active role")
+            if status == "checked" and dimension in canonical_required and not canonical_refs:
+                errors.append(f"{prefix} requires at least one canonical ref")
     required = {str(item).strip() for item in required_dimensions if str(item).strip()}
     missing_dimensions = sorted(required - set(coverage))
     if missing_dimensions:
         errors.append("coverage is missing required dimensions: " + ", ".join(missing_dimensions))
     insufficient = sorted(
-        dimension for dimension in required if coverage.get(dimension) == "insufficient"
+        dimension
+        for dimension in required
+        if isinstance(coverage.get(dimension), dict)
+        and coverage[dimension].get("status") == "insufficient"
     )
     if insufficient and verdict == "pass":
         errors.append("verdict=pass is forbidden when required coverage is insufficient")
@@ -370,32 +412,38 @@ def validate_review_evidence_for_sources(
                 alias_to_path[alias] = normalized
     records: dict[str, dict[str, Any]] = {}
     errors: list[str] = []
+    evidence_groups: list[tuple[str, Iterable[Any]]] = []
+    coverage = payload.get("coverage") if isinstance(payload, dict) else {}
+    for dimension, record in (coverage.items() if isinstance(coverage, dict) else ()):
+        if isinstance(record, dict):
+            evidence_groups.append((f"coverage.{dimension}", record.get("evidence_ids") or []))
     findings = payload.get("findings") if isinstance(payload, dict) else []
     for finding_index, finding in enumerate(findings if isinstance(findings, list) else []):
-        if not isinstance(finding, dict):
-            continue
-        for raw in finding.get("evidence_ids") or []:
+        if isinstance(finding, dict):
+            evidence_groups.append((f"findings[{finding_index}]", finding.get("evidence_ids") or []))
+    for label, evidence_ids in evidence_groups:
+        for raw in evidence_ids:
             evidence_id = str(raw or "").strip().replace("\\", "/")
             if evidence_id in records:
                 continue
             match = COMPACT_EVIDENCE_PATTERN.fullmatch(evidence_id)
             if not match:
                 errors.append(
-                    f"findings[{finding_index}] evidence `{evidence_id}` must use source_ref@start:end."
+                    f"{label} evidence `{evidence_id}` must use source_ref@start:end."
                 )
                 continue
             source_path = alias_to_path.get(match.group("source"))
             if source_path is None:
-                errors.append(f"findings[{finding_index}] evidence `{evidence_id}` is undeclared.")
+                errors.append(f"{label} evidence `{evidence_id}` is undeclared.")
                 continue
             if not source_path:
-                errors.append(f"findings[{finding_index}] evidence `{evidence_id}` is ambiguous.")
+                errors.append(f"{label} evidence `{evidence_id}` is ambiguous.")
                 continue
             source_text = sources[source_path]
             start = int(match.group("start"))
             end = int(match.group("end"))
             if start < 0 or end <= start or end > len(source_text):
-                errors.append(f"findings[{finding_index}] evidence `{evidence_id}` is out of bounds.")
+                errors.append(f"{label} evidence `{evidence_id}` is out of bounds.")
                 continue
             records[evidence_id] = {
                 "source_path": source_path,

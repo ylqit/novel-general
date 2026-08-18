@@ -26,6 +26,7 @@ from longform_engine.agent_tasks import (
     write_manifest,
 )
 from longform_engine.character_expression import character_expression_diagnostics
+from longform_engine.chapter_contract import ChapterContractError, load_verified_chapter_contract
 from longform_engine.config import ConfigDocument
 from longform_engine.quality import refresh_feedback_registry
 from longform_engine.roles import load_role_registry
@@ -1080,11 +1081,33 @@ def build_editorial_context_payload(
     review_round = int(payload.get("review_round") or 1)
     context_hash = context_digest_hash(root, source_inputs)
     chapter_source = root / str(payload.get("source_path") or "")
-    projections = {
-        relative_path(root, path): editorial_source_projection(path, max_chars=700)
-        for path in source_inputs
-        if path.resolve() != chapter_source.resolve()
-    }
+    try:
+        chapter_contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
+    except ChapterContractError as exc:
+        raise ValueError(str(exc)) from exc
+    projections: dict[str, Any] = {}
+    for path in source_inputs:
+        if path.resolve() == chapter_source.resolve():
+            continue
+        relative = relative_path(root, path)
+        if relative == f"20_outline/chapter_cards/ch{chapter_number:03d}.json":
+            projections[relative] = chapter_contract
+            continue
+        projection = editorial_source_projection(
+            path,
+            max_chars=12_000 if role_id == "canon_fidelity_reviewer" else 1_200,
+            match_terms=[
+                *chapter_contract.get("featured_character_ids", []),
+                *chapter_contract.get("canon_refs", []),
+                *chapter_contract.get("world_rule_refs", []),
+            ],
+        )
+        if role_id == "canon_fidelity_reviewer" and relative in {
+            "10_bible/fanfiction/source_canon.json",
+            "10_bible/fanfiction/fanfiction_bible.json",
+        } and (not projection or projection == "[context-evidence-incomplete]"):
+            raise ValueError(f"context_evidence_incomplete:{relative}")
+        projections[relative] = projection
     return {
         "schema": "editorial_context_isolation_v1",
         "chapter_number": chapter_number,
@@ -1094,6 +1117,8 @@ def build_editorial_context_payload(
             f"editorial:{role_id}:ch{chapter_number:03d}:r{review_round}:{context_hash[:12]}"
         ),
         "context_digest_hash": context_hash,
+        "chapter_contract": chapter_contract,
+        "chapter_contract_hash": contract_hash,
         "independence_mode": "same_host_isolated_context",
         "declared_source_files": [relative_path(root, chapter_source)] if chapter_source.is_file() else [],
         "provenance_source_files": [relative_path(root, path) for path in source_inputs],
@@ -1119,18 +1144,46 @@ def build_editorial_context_payload(
     }
 
 
-def editorial_source_projection(path: Path, *, max_chars: int) -> Any:
+def editorial_source_projection(
+    path: Path,
+    *,
+    max_chars: int,
+    match_terms: list[str] | None = None,
+) -> Any:
     if path.suffix.lower() == ".json":
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             value = path.read_text(encoding="utf-8", errors="replace")
+        if match_terms:
+            records = matching_json_records(value, match_terms)
+            value = records if records else value
         rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     else:
         rendered = path.read_text(encoding="utf-8", errors="replace")
     if len(rendered) <= max_chars:
         return rendered
-    return rendered[: max(0, max_chars - 3)].rstrip() + "..."
+    return "[context-evidence-incomplete]"
+
+
+def matching_json_records(value: Any, terms: list[str]) -> list[dict[str, Any]]:
+    lowered = [str(term).casefold() for term in terms if str(term).strip()]
+    records: list[dict[str, Any]] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, dict):
+            rendered = json.dumps(node, ensure_ascii=False, separators=(",", ":")).casefold()
+            if lowered and any(term in rendered for term in lowered):
+                records.append(node)
+                return
+            for child in node.values():
+                visit(child)
+        elif isinstance(node, list):
+            for child in node:
+                visit(child)
+
+    visit(value)
+    return records[:20]
 
 
 def context_digest_hash(root: Path, paths: list[Path]) -> str:
@@ -1193,8 +1246,10 @@ def format_role_task(
             f"Write one `{EVIDENCE_REVIEW_SCHEMA}` JSON result to the output path only.",
             "Valid verdicts: pass, repair, need_human, insufficient_evidence.",
             "Coverage must contain exactly: " + ", ".join(role_contract.review_dimensions) + ".",
+            "Each coverage dimension is an object with status, one or two current-text evidence_ids, and canonical_refs.",
+            "Use not_applicable only for dimensions explicitly declared optional; insufficient can never pass.",
             "Finding codes are limited to: " + ", ".join(role_contract.finding_codes) + ".",
-            "Each finding uses the shared fields code, dimension, severity, certainty, diagnosis, evidence_ids, reader_impact, repair_target, preserve.",
+            "Each finding uses code, severity, certainty, diagnosis, evidence_ids, reader_impact, repair_target, preserve.",
             "Evidence IDs use current chapter path or filename plus @start:end; P0/P1 requires confirmed evidence.",
             "Do not fill chapter, role, product, version, context hash, path, source hash, review round or timestamps; CLI binds them.",
             "Do not read any other editorial role result before submitting this result.",
@@ -1392,6 +1447,8 @@ def validate_editorial_result_payload(
             payload,
             required_dimensions=contract.review_dimensions,
             allowed_finding_codes=contract.finding_codes,
+            optional_dimensions=contract.optional_review_dimensions,
+            canonical_ref_dimensions=contract.canonical_ref_dimensions,
         )
     )
     coverage_payload = payload.get("coverage") if isinstance(payload.get("coverage"), dict) else {}
@@ -1448,7 +1505,11 @@ def validate_editorial_result_payload(
     }.get(source_verdict, "blocked")
     coverage_status = (
         "insufficient_evidence"
-        if source_verdict == "insufficient_evidence" or "insufficient" in coverage_payload.values()
+        if source_verdict == "insufficient_evidence"
+        or any(
+            isinstance(record, dict) and record.get("status") == "insufficient"
+            for record in coverage_payload.values()
+        )
         else "complete"
     )
     context = load_editorial_context(root, chapter_number=chapter_number, role_id=role_id)

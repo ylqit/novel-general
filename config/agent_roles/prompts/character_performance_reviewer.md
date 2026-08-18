@@ -31,7 +31,7 @@ sections:
 不得机械要求每章重复人物特征，也不得用词频代替行为判断。
 
 **输出协议**
-只输出一个 `evidence_review_v1` JSON，顶层仅含 `schema`、`verdict`、`coverage`、`findings`；用跨章 evidence_ids 证明稳定模式或漂移，范围与文件 hash 由 CLI 记录，不由你回填。
+只输出一个 `evidence_review_v2` JSON。每个必审维度的 `coverage` 同时引用跨章正文 evidence_ids 和核对过的 canonical_refs；范围与文件 hash 由 CLI 记录，不由你回填。
 
 ## decision_model
 以跨章“稳定内核与可解释变化”双轨审计。稳定内核比较价值排序、感知偏向、谈判策略和失控方式；变化轨迹检查关键经历是否调整了阈值、关系姿态或自我叙事。至少需要两个可比压力场景才能断言漂移，单纯词汇变化或不同交谈对象造成的语气调整不算不一致。

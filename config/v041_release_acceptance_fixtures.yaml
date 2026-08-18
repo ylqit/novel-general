@@ -87,6 +87,48 @@ prompt_selection_cases:
     quality_focus: [interiority]
     expected_playbook: interiority_and_emotion
 
+v043_quality_regression_cases:
+  - id: mainline_invisible
+    reviewer: planning_chief_editor
+    severity: P1
+    negative: "开篇连续交代登录、街道和队伍流程，却没有让读者看见主角近期要完成什么、为何行动以及失败会失去什么。"
+    boundary: "主线答案可以延迟，但近期目标、行动动机和失败损失不能同时缺席。"
+  - id: unnamed_functional_cast
+    reviewer: character_performance_reviewer
+    severity: P2
+    negative: "反复登场并影响选择的人始终只叫短枪玩家、迟钝玩家，只有递送信息的功能，没有姓名、欲望或独立反应。"
+    boundary: "一次性路人可以使用功能称谓；承担关系或因果职责的配角必须获得稳定身份。"
+  - id: same_voice_dialogue
+    reviewer: character_editor
+    severity: P1
+    negative: "主角、情报商和队长都用相同短句、相同判断顺序和相同冷静语气回应危险，去掉姓名后无法区分。"
+    boundary: "共享术语或战场简令不等于同声，必须比较人物目的、保留信息和应答策略。"
+  - id: speaker_ambiguity
+    reviewer: scene_prose_editor
+    severity: P1
+    negative: "三人连续争执时只写不代表、那就别吓人、也不代表不会，没有动作锚点，关键决定无法确认由谁提出。"
+    boundary: "双人短轮次可省略标签；参与者变化、动作中断或关键归责处必须重新锚定说话者。"
+  - id: summary_replaces_scene
+    reviewer: scene_prose_editor
+    severity: P1
+    negative: "旁白概述众人讨论后决定撤退，没有呈现反对意见、选择发生的瞬间及其关系代价。"
+    boundary: "重复劳动和无冲突转场可以概述，改变状态的关键选择必须场景化。"
+  - id: inert_interiority
+    reviewer: character_performance_reviewer
+    severity: P2
+    negative: "内心反复说明他害怕、他更害怕、他是真的害怕，却没有改变注意对象、判断、动作或后续关系。"
+    boundary: "短暂情绪停顿可以不立刻行动，但必须改变感知、阈值或下一项选择。"
+  - id: undeclared_rule_exception
+    reviewer: semantic_continuity_reviewer
+    severity: P1
+    negative: "正文先声明药水必须接触瓶口并耗时饮用，随后药瓶在肩侧破碎即回血，且例外直接决定角色生死。"
+    boundary: "已建立并付出代价的技能或道具例外可以成立；临时为结果服务的规则变化不能通过。"
+  - id: foreshadow_without_echo
+    reviewer: reader_payoff_reviewer
+    severity: P2
+    negative: "开篇把四句异常记忆写成主线信号，后续行动、应对和调查均不引用它们，窗口内没有回响或重新解释。"
+    boundary: "长线伏笔不必立即兑现，但在批准窗口内必须影响注意、选择、误判或读者问题。"
+
 professional_prompt_calibration:
   roles:
     adaptation_analyst:

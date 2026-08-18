@@ -33,7 +33,7 @@ from longform_engine.roles import (
 from longform_engine.story_profiles import load_facet_registries
 
 
-SCHEMA = "agent_data_pipeline_readiness_v2"
+SCHEMA = "agent_data_pipeline_readiness_v3"
 FORBIDDEN_RUNTIME_MARKERS = (
     "LEGACY_COMPATIBILITY_TASK_TYPES",
     "legacy_document_json",
@@ -399,6 +399,9 @@ def check_agent_data_pipeline_readiness(
     )
 
     failures = [item for item in checks if item["status"] == "fail"]
+    protocol_ready = not failures
+    production_chain_ready = protocol_ready
+    literary_evidence_ready = False
     professional_prompt_ready = not any(
         item["id"] == "professional_prompt_calibration" and item["status"] == "fail"
         for item in checks
@@ -409,7 +412,10 @@ def check_agent_data_pipeline_readiness(
     }
     return {
         "schema": SCHEMA,
-        "ready_for_data_pipeline": not failures,
+        "ready_for_data_pipeline": protocol_ready and production_chain_ready,
+        "protocol_ready": protocol_ready,
+        "production_chain_ready": production_chain_ready,
+        "literary_evidence_ready": literary_evidence_ready,
         "professional_prompt_ready": professional_prompt_ready,
         "repository": str(root),
         "provenance": {
@@ -425,6 +431,11 @@ def check_agent_data_pipeline_readiness(
             "failures": len(failures),
         },
         "blocking_reasons": [item["id"] for item in failures],
+        "literary_evidence_blockers": [
+            "original_five_chapter_human_review_missing",
+            "fanfiction_five_chapter_human_review_missing",
+            "independent_blind_review_missing",
+        ],
         "next_command": (
             failures[0]["next_command"]
             if failures
@@ -457,6 +468,9 @@ def render_agent_data_pipeline_readiness(report: dict[str, Any]) -> str:
         f"Agent-first data pipeline readiness: {state}",
         f"Engine: {report.get('provenance', {}).get('engine_version') or 'unknown'}",
         f"Execution: {report.get('provenance', {}).get('execution_model') or 'unknown'}",
+        f"Protocol ready: {bool(report.get('protocol_ready'))}",
+        f"Production chain ready: {bool(report.get('production_chain_ready'))}",
+        f"Literary evidence ready: {bool(report.get('literary_evidence_ready'))}",
     ]
     for item in report.get("checks") or []:
         lines.append(f"[{str(item.get('status')).upper()}] {item.get('id')}")

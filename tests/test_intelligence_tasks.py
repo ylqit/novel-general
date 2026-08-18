@@ -191,7 +191,7 @@ def test_manifest_v4_and_four_protocol_surface_rejects_history(tmp_path):
     assert len(TASK_CONTRACTS) == 25
     assert DESIGN_TASK_TYPES
     assert {output_protocol_for_task(task_type) for task_type in TASK_CONTRACTS} == {
-        "prose_markdown_v1", "design_document_v1", "evidence_review_v1", "canonical_delta_v1"
+        "prose_markdown_v1", "design_document_v1", "evidence_review_v2", "canonical_delta_v1"
     }
     legacy = root / "50_workbench" / "agent_tasks" / "legacy.json"
     legacy.write_text(json.dumps({"schema_version": 3}), encoding="utf-8")

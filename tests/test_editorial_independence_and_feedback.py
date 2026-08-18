@@ -7,10 +7,11 @@ import pytest
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
 from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
+from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_aggregate, editorial_review, editorial_submit_review
 from longform_engine.orchestration.pipeline import build_feedback_carryover
-from longform_engine.production import editorial_task_is_current
+from longform_engine.production import editorial_task_is_current, production_next
 from longform_engine.quality import (
     carry_feedback,
     refresh_feedback_registry,
@@ -21,6 +22,7 @@ from longform_engine.quality.feedback import read_registry
 from longform_engine.repair_coordination import create_repair_synthesis_task, review_barrier_status
 from longform_engine.roles import load_role_registry
 from longform_engine.storage import init_project
+from tests.project_fixtures import checked_review_coverage, mark_project_ready
 
 
 def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_blocker(tmp_path):
@@ -66,7 +68,8 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
             item["path"] for item in manifest["io"]["inputs"] if item["reason"] == "compiled_task_brief"
         )
         work_order = (root / work_order_path).read_text(encoding="utf-8")
-        assert "Each finding uses the shared fields" in work_order
+        assert "Each coverage dimension is an object" in work_order
+        assert "Each finding uses code, severity, certainty" in work_order
         assert "CLI binds them" in work_order
         context_path = next(path for path in inputs if path.endswith(".context.json"))
         context = json.loads((root / context_path).read_text(encoding="utf-8"))
@@ -96,7 +99,7 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
             findings = []
         result_file.write_text(
             json.dumps(
-                editorial_payload(role_id, findings=findings),
+                editorial_payload(root, draft, role_id, findings=findings),
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -140,11 +143,14 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
         encoding="utf-8",
     )
     barrier = review_barrier_status(config, chapter_number=1)
+    next_action = production_next(config)
     synthesis = create_repair_synthesis_task(config, chapter_number=1)
     bundle = json.loads((root / synthesis["review_bundle"]).read_text(encoding="utf-8"))
     minority = next(item for item in bundle["findings"] if item["code"] == "SPEAKER_AMBIGUOUS" and item["severity"] == "P1")
 
     assert barrier["status"] == "review_bundle_ready"
+    assert next_action["status"] == "review_bundle_ready"
+    assert next_action["next_command"] == "longform-engine repair synthesis-task project.yaml --chapter 1"
     assert minority["selected"] is True
     assert minority["finding_id"] in bundle["blocking_finding_ids"]
 
@@ -152,19 +158,16 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
 def test_risk_selected_editorial_v2_recognizes_chinese_payoff_and_access_gain(tmp_path):
     config, root = seed_project(tmp_path)
     card = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card.parent.mkdir(parents=True, exist_ok=True)
-    card.write_text(
-        json.dumps(
-            {
-                "chapter_number": 1,
-                "chapter_duty": "完成军粮失踪案第一层闭环",
-                "reader_gain": "追回军粮并取得三日旧账册调查权限",
-                "ending_mode": "question",
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    card_payload = json.loads(card.read_text(encoding="utf-8"))
+    card_payload.update(
+        {
+            "chapter_duty": "完成军粮失踪案第一层闭环",
+            "reader_gain": "追回军粮并取得三日旧账册调查权限",
+            "ending_mode": "question",
+        }
     )
+    stamp_chapter_contract(card_payload)
+    card.write_text(json.dumps(card_payload, ensure_ascii=False), encoding="utf-8")
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text(
         "# 第一章\n\n沈阙追回军粮，也拿到了三日旧账册调查权限。\n",
@@ -195,7 +198,7 @@ def test_editorial_v2_rejects_stale_context_without_canonical_pollution(tmp_path
     )
     result_file = root / "50_workbench" / "editorial_reviews" / "results" / f"ch001.{role_id}.json"
     result_file.write_text(
-        json.dumps(editorial_payload(role_id), ensure_ascii=False),
+        json.dumps(editorial_payload(root, draft, role_id), ensure_ascii=False),
         encoding="utf-8",
     )
     draft.write_text("# Chapter 1\n\nAri inspects a replacement clue.\n", encoding="utf-8")
@@ -247,7 +250,7 @@ def test_partial_editorial_submissions_do_not_invalidate_peer_contexts(tmp_path)
             / f"ch001.{role_id}.json"
         )
         result_file.write_text(
-            json.dumps(editorial_payload(role_id), ensure_ascii=False),
+            json.dumps(editorial_payload(root, draft, role_id), ensure_ascii=False),
             encoding="utf-8",
         )
         submitted = submit_editorial_result(config, root, role_id, result_file)
@@ -284,7 +287,7 @@ def test_editorial_aggregate_rejects_results_for_replaced_chapter_candidate(tmp_
             / f"ch001.{role_id}.json"
         )
         result_file.write_text(
-            json.dumps(editorial_payload(role_id), ensure_ascii=False, indent=2),
+            json.dumps(editorial_payload(root, draft, role_id), ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         submit_editorial_result(config, root, role_id, result_file)
@@ -347,6 +350,8 @@ def test_editorial_v2_requires_exact_chapter_evidence_for_blocking_finding(tmp_p
     result_file.write_text(
         json.dumps(
             editorial_payload(
+                root,
+                draft,
                 role_id,
                 findings=[
                     {
@@ -468,13 +473,18 @@ def test_corrupt_feedback_registry_uses_bounded_fallback_without_canonical_write
     assert canonical_hashes(root) == canonical_before
 
 
-def editorial_payload(role_id: str, *, findings: list[dict] | None = None) -> dict:
+def editorial_payload(root: Path, source: Path, role_id: str, *, findings: list[dict] | None = None) -> dict:
     contract = load_role_registry().resolve("editorial_review", declared_role_id=role_id)
     items = list(findings or [])
     return {
         "schema": EVIDENCE_REVIEW_SCHEMA,
         "verdict": "repair" if items else "pass",
-        "coverage": {dimension: "checked" for dimension in contract.review_dimensions},
+        "coverage": checked_review_coverage(
+            root,
+            source,
+            contract.review_dimensions,
+            canonical_dimensions=contract.canonical_ref_dimensions,
+        ),
         "findings": items,
     }
 
@@ -521,7 +531,9 @@ def submit_editorial_result(config, root: Path, role_id: str, result_file: Path)
 def seed_project(tmp_path: Path):
     template = load_project_config(template="qidian-longform")
     project = init_project(template, output=tmp_path / "novel")
-    return load_project_config(project.project_config), project.root
+    config = load_project_config(project.project_config)
+    mark_project_ready(project.root, config)
+    return config, project.root
 
 
 def feedback_observation(issue_code: str, severity: str, evidence_hash: str) -> dict:

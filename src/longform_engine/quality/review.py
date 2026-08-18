@@ -17,6 +17,7 @@ from longform_engine.agent_protocols import (
     validate_evidence_review,
     validate_review_evidence_for_source,
 )
+from longform_engine.chapter_contract import ChapterContractError, load_verified_chapter_contract
 from longform_engine.agent_tasks import (
     build_manifest,
     mark_tasks_for_output,
@@ -129,6 +130,10 @@ def reader_payoff_task(
     validation_file = task_dir / f"ch{chapter_number:03d}.reader_payoff.validation.json"
     context_file = task_dir / f"ch{chapter_number:03d}.reader_payoff.context.json"
     card = load_json(card_path, default={})
+    try:
+        verified_contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
+    except ChapterContractError as exc:
+        raise ValueError(str(exc)) from exc
     text = draft.read_text(encoding="utf-8")
     payoff_context = build_payoff_context(
         config,
@@ -138,6 +143,8 @@ def reader_payoff_task(
         card_path=card_path,
         gate=gate,
         gate_path=gate_path,
+        verified_contract=verified_contract,
+        contract_hash=contract_hash,
     )
     validate_command = (
         f"longform-engine quality payoff-validate project.yaml --chapter {chapter_number} "
@@ -176,7 +183,7 @@ def reader_payoff_task(
             "## 单一审稿输出",
             "",
             f"- 只写：`{relative_path(root, output_file)}`，协议为 `{EVIDENCE_REVIEW_SCHEMA}`。",
-            "- coverage 必须覆盖 reader_gain、cost、promise_progress。",
+            "- coverage 必须覆盖 reader_gain、cost、promise_progress；每项写 status、1-2 个正文 evidence_ids 和 canonical_refs。",
             "- 缺陷 finding 使用 PAYOFF_MISSING、COST_MISSING、FALSE_PAYOFF。",
             "- pass 也必须用 P3 + confirmed 的 PAYOFF_DELIVERED、COST_VISIBLE（有承诺时再用 PROMISE_ADVANCED）引用实际兑现证据。",
             "- evidence_ids 使用当前草稿路径或文件名加 @start:end；不要回填章节、路径、hash 或时间。",
@@ -189,17 +196,6 @@ def reader_payoff_task(
         ]
     )
     context_text = json.dumps(payoff_context, ensure_ascii=False, indent=2) + "\n"
-    if len(context_text) > 6_000:
-        raise ValueError(
-            f"Reader payoff compact context exceeds budget: {len(context_text)} > 6000; "
-            "reduce chapter-card or active-promise facts before regenerating the task."
-        )
-    total_chars = len(task_text) + len(text) + len(context_text)
-    if total_chars > 15_000:
-        raise ValueError(
-            f"Reader payoff three-input work order exceeds budget: {total_chars} > 15000; "
-            "reduce the current draft or compact source facts before regenerating the task."
-        )
     write_json(context_file, payoff_context)
     atomic_write_text(task_file, task_text)
     inputs = [task_file, draft, context_file]
@@ -286,6 +282,7 @@ def reader_payoff_validate(
             payload,
             required_dimensions=expected_dimensions,
             allowed_finding_codes=allowed_codes,
+            canonical_ref_dimensions=expected_dimensions,
         )
     )
     draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
@@ -475,9 +472,14 @@ def reader_payoff_task_is_current(config: ConfigDocument, *, chapter_number: int
     context = load_json(context_file, default={})
     if not isinstance(context, dict) or context.get("schema") != "reader_payoff_context_v2":
         return False
+    try:
+        _contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
+    except ChapterContractError:
+        return False
     return bool(
         str(context.get("source_path") or "") == relative_path(root, draft)
         and str(context.get("source_hash") or "") == sha256_file(draft)
+        and str(context.get("chapter_contract_hash") or "") == contract_hash
     )
 
 
@@ -490,6 +492,8 @@ def build_payoff_context(
     card_path: Path,
     gate: dict[str, Any],
     gate_path: Path,
+    verified_contract: dict[str, Any],
+    contract_hash: str,
 ) -> dict[str, Any]:
     """Compile one provenance-bearing payoff packet without duplicating full source documents."""
 
@@ -507,7 +511,7 @@ def build_payoff_context(
     )
     promise_path = root / "20_outline" / "foreshadowing_ledger.json"
     promises = load_json(promise_path, default=[])
-    declared = {str(item) for item in card.get("promise_refs", []) if str(item)}
+    declared = {str(item) for item in verified_contract.get("foreshadow_refs", []) if str(item)}
     if len(declared) > 8:
         raise ValueError(
             "Reader payoff context cannot fit all declared promise_refs within the eight-promise review limit."
@@ -554,52 +558,7 @@ def build_payoff_context(
             break
     effective = compile_effective_quality_contract(config, chapter_number=chapter_number)
     contract = effective.get("contract") if isinstance(effective.get("contract"), dict) else {}
-    chapter_contract = {
-        "chapter_duty": bounded_fact(
-            card.get("chapter_duty") or card.get("duty"),
-            420,
-            truncations=truncations,
-            source_ref="chapter_card",
-            field="chapter_duty",
-        ),
-        "reader_gain": bounded_fact(
-            card.get("reader_gain") or card.get("reader_payoff"),
-            420,
-            truncations=truncations,
-            source_ref="chapter_card",
-            field="reader_gain",
-        ),
-        "cost": bounded_fact(
-            card.get("cost"),
-            360,
-            truncations=truncations,
-            source_ref="chapter_card",
-            field="cost",
-        ),
-        "promise_refs": sorted(declared),
-        "platform_promise": bounded_fact(
-            card.get("platform_promise") or contract.get("platform_promise"),
-            420,
-            truncations=truncations,
-            source_ref="chapter_card",
-            field="platform_promise",
-        ),
-        "topology_id": bounded_fact(
-            card.get("topology_id"),
-            100,
-            truncations=truncations,
-            source_ref="chapter_card",
-            field="topology_id",
-        ),
-        "relationship_move": bounded_fact(
-            card.get("relationship_move") or card.get("relationship_impact"),
-            300,
-            truncations=truncations,
-            source_ref="chapter_card",
-            field="relationship_move",
-        ),
-        "source_ref": "chapter_card",
-    }
+    chapter_contract = {**verified_contract, "source_ref": "chapter_card"}
     source_catalog = [
         source_record(root, "chapter_card", card_path, "planned chapter payoff contract"),
         source_record(root, "gate_result", gate_path, "deterministic gate confirmation only"),
@@ -688,6 +647,7 @@ def build_payoff_context(
         "source_path": relative_path(root, draft_path),
         "source_hash": sha256_file(draft_path),
         "chapter_contract": chapter_contract,
+        "chapter_contract_hash": contract_hash,
         "gate_confirmation": {
             "passed": gate.get("passed") is True,
             "severity": bounded_text(gate.get("severity") or "PASS", 40),

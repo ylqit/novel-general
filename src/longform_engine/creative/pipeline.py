@@ -19,6 +19,7 @@ from longform_engine.agent_protocols import (
     validate_evidence_review,
     validate_review_evidence_for_sources,
 )
+from longform_engine.chapter_contract import ChapterContractError, load_verified_chapter_contract
 from longform_engine.agent_tasks import (
     build_manifest,
     list_manifests,
@@ -857,7 +858,7 @@ def expand_task(
         for item in gate_failures[:8]
         if isinstance(item, dict)
     ]
-    writing_task = load_json(root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.json", default={})
+    chapter_contract = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
     next_command = (
         f"longform-engine creative expand-check project.yaml --chapter {chapter_number} "
         f"--file {relative_path(root, candidate_file)}"
@@ -889,9 +890,10 @@ def expand_task(
                 json.dumps(gate_failures, ensure_ascii=False, indent=2),
                 "```",
                 "",
-                "## Writing Brief Snapshot",
+                "## Writing Contract",
                 "",
-                writing_brief_snapshot(writing_task, max_chars=2_000),
+                f"- Read the unique chapter contract: `{relative_path(root, chapter_contract)}`",
+                "- Treat the source candidate as the complete prose and voice baseline for this repair.",
                 "",
                 "## Candidate Contract",
                 "",
@@ -908,7 +910,7 @@ def expand_task(
         root,
         task_type="content_expand",
         chapter_number=chapter_number,
-        input_files=[task_file, source_path],
+        input_files=[task_file, source_path, chapter_contract],
         allowed_output_paths=[candidate_file],
         output_schema=output_protocol_for_task("content_expand"),
         validate_command=next_command,
@@ -918,7 +920,7 @@ def expand_task(
         ),
         failure_next_command=f"longform-engine creative expand-task project.yaml --chapter {chapter_number} --source {source}",
         context_policy={
-            "required_files": [task_file, source_path],
+            "required_files": [task_file, source_path, chapter_contract],
             "optional_files": [],
             "compiled_brief": task_file,
             "selection_report": task_file,
@@ -1452,8 +1454,24 @@ def humanize_semantic_task(
     task_file = task_dir / f"ch{chapter_number:03d}.semantic_review.md"
     manifest_file = task_dir / f"ch{chapter_number:03d}.semantic_review.agent_task.json"
     output_file = task_dir / f"ch{chapter_number:03d}.semantic_review.json"
+    contract_context = task_dir / f"ch{chapter_number:03d}.semantic_review.contract.json"
+    try:
+        chapter_contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
+    except ChapterContractError as exc:
+        raise ValueError(str(exc)) from exc
+    write_json(
+        contract_context,
+        {
+            "schema": "humanizer_contract_context_v1",
+            "chapter_contract": chapter_contract,
+            "chapter_contract_hash": contract_hash,
+            "allowed_canonical_refs": [
+                f"20_outline/chapter_cards/ch{chapter_number:03d}.json"
+            ],
+        },
+    )
     context_candidates = [
-        root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
+        contract_context,
         root / "10_bible" / "style_profiles" / "current_style_profile.json",
         root / "10_bible" / "style_bible.md",
         root / "10_bible" / "characters.json",
@@ -1509,7 +1527,7 @@ def humanize_semantic_task(
                 "## Output Contract",
                 "",
                 f"- Write one `{EVIDENCE_REVIEW_SCHEMA}` JSON: `{relative_path(root, output_file)}`",
-                "- coverage: meaning_preservation, voice_preservation, event_preservation.",
+                "- coverage: meaning_preservation, voice_preservation, event_preservation；每项写 status、1-2 个正文 evidence_ids 和 canonical_refs。",
                 "- codes: HUMANIZE_FACT_DRIFT, HUMANIZE_VOICE_LOSS, HUMANIZE_EVENT_CHANGE.",
                 "- evidence_ids may cite source or candidate as path/filename@start:end; CLI supplies hashes and scope.",
                 f"- Validate: `{validate_command}`",
@@ -2460,19 +2478,6 @@ def expansion_instructions(expansion_types: tuple[str, ...]) -> list[str]:
         "transition": "Transition smoothing: connect scene turns with time, cause, decision, or consequence beats.",
     }
     return [catalog[item] for item in expansion_types]
-
-
-def writing_brief_snapshot(payload: Any, *, max_chars: int = 2_000) -> str:
-    if not isinstance(payload, dict):
-        return "No writing task JSON found."
-    snapshot = {
-        "chapter_number": payload.get("chapter_number"),
-        "writing_brief": payload.get("writing_brief", {}),
-        "beat_expansion_requirements": payload.get("beat_expansion_requirements", []),
-        "constraint_packet": payload.get("constraint_packet", {}),
-    }
-    rendered = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
-    return "\n".join(["```json", clip_text(rendered, max_chars), "```"])
 
 
 def clip_text(text: str, max_chars: int) -> str:

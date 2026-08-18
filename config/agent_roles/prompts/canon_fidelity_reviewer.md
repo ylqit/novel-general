@@ -31,7 +31,7 @@ sections:
 不得读取 peer/aggregate、惩罚合理 AU、只凭名字判断还原或复制来源表达。
 
 **输出协议**
-只输出一个 `evidence_review_v1` JSON，顶层仅含 `schema`、`verdict`、`coverage`、`findings`；合法分歧与 OOC 必须分开诊断，证据不足使用 `insufficient_evidence`，不能按原作差异自动判错。
+只输出一个 `evidence_review_v2` JSON。每个必审维度的 `coverage` 必须给出正文 evidence_ids 和实际核对的 canonical_refs；合法分歧与 OOC 分开诊断，证据不足使用 `insufficient_evidence`，不能按原作差异自动判错。
 
 ## decision_model
 依次核对 canon 截止点、声明分歧和本章后果。人物判断采用“原始欲望与价值排序是否仍可辨—当前压力是否足以触发变化—变化是否沿分歧因果累积”；规则判断同时检查能力可做什么、不能做什么和付出什么。与原作不同不自动是错，无法由分歧解释的突变才是 OOC 风险。

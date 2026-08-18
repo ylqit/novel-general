@@ -147,9 +147,9 @@ def test_chapter_card_writer_brief_and_humanizer_share_one_bounded_contract(tmp_
     assert card["reader_gain"]
     assert card["cost"]
     assert "relationship_move" in card
-    assert task["writing_brief"]["quality_contract"] == card["effective_quality_contract"]
-    assert "Compatibility advisory only" in task_markdown
-    assert "not a fixed sentence, dialogue, pace, or cliffhanger template" in task_markdown
+    assert task["chapter_contract_hash"] == card["chapter_contract_hash"]
+    assert task["fact_inventory_summary"]["categories"]["methods"] >= 2
+    assert "fanqie_free" in task_markdown
     assert len(manifest["io"]["inputs"]) <= 7
     assert task["context_plan"]["budget_profile"] == "standard"
     assert task["context_plan"]["budget_status"] in {"within_soft_target", "advisory"}

@@ -16,12 +16,21 @@ import tempfile
 import zipfile
 
 from longform_engine.config import ConfigDocument
-from longform_engine.agent_tasks import compact_task_projection, task_archive_projection
+from longform_engine.agent_tasks import (
+    compact_project_task_projection,
+    compact_task_projection,
+    list_manifests,
+    manifest_input_paths,
+    manifest_output,
+    project_task_archive_projection,
+    task_archive_projection,
+)
 from longform_engine.storage import atomic_write_text, resolve_project_root
 
 
 CHAPTER_PATTERN = re.compile(r"(?:^|[._/-])ch0*(\d+)(?:[._/-]|$)", re.IGNORECASE)
 ARCHIVE_ROOT = "70_runtime/artifacts/chapters"
+PROJECT_SETUP_ARCHIVE = "70_runtime/artifacts/project-setup.zip"
 SCAN_ROOTS = (
     "30_state/tcs",
     "40_manuscript/draft",
@@ -41,6 +50,7 @@ AUDIT_MANIFEST_MEMBER = "_audit/manifest.json"
 AUDIT_BLOB_PREFIX = "_audit/blobs/"
 AUDIT_TASKS_MEMBER = "_audit/agent_tasks.json"
 AUDIT_EVENTS_MEMBER = "_audit/agent_events.jsonl"
+PROJECT_SETUP_ARCHIVE_SCHEMA = "project_setup_artifact_archive_v1"
 RETAINED_EVIDENCE = (
     ("final", "40_manuscript/final/ch{chapter:03d}.md"),
     ("semantic_ledger", "30_state/semantic_ledger/ch{chapter:03d}.json"),
@@ -73,10 +83,16 @@ class ArtifactStatusResult:
     active_buffer_chapters: tuple[int, ...]
     compacted_through: int
     root: str
+    retention_classes: dict[str, int]
+    duplicate_hash_groups: int
+    duplicate_content_files: int
+    reclaimable_files: int
+    reclaimable_bytes: int
 
 
 @dataclass(frozen=True)
 class ArtifactCompactResult:
+    scope: str
     through: int
     dry_run: bool
     eligible: bool
@@ -106,6 +122,7 @@ class ArtifactVerifyResult:
     errors: tuple[str, ...]
     pending_close_chapters: tuple[int, ...]
     migration_required_chapters: tuple[int, ...]
+    project_setup_archive: bool
 
 
 @dataclass(frozen=True)
@@ -120,19 +137,30 @@ def artifact_status(config: ConfigDocument) -> ArtifactStatusResult:
     root = resolve_project_root(config)
     archive_dir = root / ARCHIVE_ROOT
     archive_paths = list(archive_dir.glob("ch*.zip")) if archive_dir.exists() else []
+    project_setup_archive = root / PROJECT_SETUP_ARCHIVE
+    all_archives = archive_paths + ([project_setup_archive] if project_setup_archive.is_file() else [])
     snapshots = committed_snapshot_paths(root)
     transaction_diagnostics = transaction_snapshot_diagnostics(root)
-    loose_paths = [path for path in root.rglob("*") if path.is_file() and archive_dir not in path.parents]
+    artifact_root = root / "70_runtime" / "artifacts"
+    loose_paths = [path for path in root.rglob("*") if path.is_file() and artifact_root not in path.parents]
     orphans = orphan_agent_task_artifacts(root)
     duplicate_files = archived_loose_files(root, archive_paths)
     closed = closed_chapter_numbers(root)
     active = tuple(sorted(closed)[-2:])
     compacted_through = max((chapter_from_archive(path) for path in archive_paths), default=0)
+    duplicate_groups = duplicate_loose_hashes(loose_paths)
+    retention_classes = classify_retention(root, loose_paths)
+    reclaimable_files = len(orphans) + len(duplicate_files) + sum(len(paths) - 1 for paths in duplicate_groups.values())
+    reclaimable_bytes = (
+        int(transaction_diagnostics["reclaimable_bytes"])
+        + sum(path.stat().st_size for path in orphans if path.is_file())
+        + sum((len(paths) - 1) * paths[0].stat().st_size for paths in duplicate_groups.values())
+    )
     return ArtifactStatusResult(
         loose_files=len(loose_paths),
         loose_bytes=sum(path.stat().st_size for path in loose_paths),
-        archive_files=len(archive_paths),
-        archive_bytes=sum(path.stat().st_size for path in archive_paths),
+        archive_files=len(all_archives),
+        archive_bytes=sum(path.stat().st_size for path in all_archives),
         committed_snapshot_dirs=len(snapshots),
         committed_snapshot_bytes=sum(directory_size(path) for path in snapshots),
         pending_transactions=len(transaction_diagnostics["pending"]),
@@ -145,6 +173,11 @@ def artifact_status(config: ConfigDocument) -> ArtifactStatusResult:
         active_buffer_chapters=active,
         compacted_through=compacted_through,
         root=str(root),
+        retention_classes=retention_classes,
+        duplicate_hash_groups=len(duplicate_groups),
+        duplicate_content_files=sum(len(paths) for paths in duplicate_groups.values()),
+        reclaimable_files=reclaimable_files,
+        reclaimable_bytes=reclaimable_bytes,
     )
 
 
@@ -184,12 +217,60 @@ def orphan_agent_task_artifacts(root: Path) -> list[Path]:
     return sorted(set(result))
 
 
-def compact_artifacts(config: ConfigDocument, *, through: int, dry_run: bool = True) -> ArtifactCompactResult:
+def classify_retention(root: Path, paths: list[Path]) -> dict[str, int]:
+    counts = {
+        "canonical_evidence": 0,
+        "active_workbench": 0,
+        "derived_runtime": 0,
+        "project_configuration": 0,
+        "other": 0,
+    }
+    for path in paths:
+        relative = relative_path(root, path)
+        if relative.startswith(("10_bible/", "20_outline/", "30_state/semantic_ledger/", "30_state/chapter_closures/", "40_manuscript/final/")):
+            counts["canonical_evidence"] += 1
+        elif relative.startswith("50_workbench/"):
+            counts["active_workbench"] += 1
+        elif relative.startswith(("60_rag/", "70_runtime/")):
+            counts["derived_runtime"] += 1
+        elif relative in {"project.yaml", "config.yaml"} or relative.startswith("00_project/"):
+            counts["project_configuration"] += 1
+        else:
+            counts["other"] += 1
+    return counts
+
+
+def duplicate_loose_hashes(paths: list[Path]) -> dict[str, list[Path]]:
+    candidates = [
+        path
+        for path in paths
+        if path.is_file()
+        and path.stat().st_size > 0
+        and "50_workbench" in path.parts
+    ]
+    grouped: dict[str, list[Path]] = {}
+    for path in candidates:
+        grouped.setdefault(file_hash(path), []).append(path)
+    return {digest: values for digest, values in grouped.items() if len(values) > 1}
+
+
+def compact_artifacts(
+    config: ConfigDocument,
+    *,
+    through: int = 0,
+    dry_run: bool = True,
+    scope: str = "chapters",
+) -> ArtifactCompactResult:
+    if scope == "project-setup":
+        return compact_project_setup(config, dry_run=dry_run)
+    if scope != "chapters":
+        raise ValueError("artifact compaction scope must be chapters or project-setup")
     if through < 0:
         raise ValueError("through must be zero or positive.")
     root = resolve_project_root(config)
     blockers = compaction_blockers(root, through)
     candidates = chapter_candidates(root, through)
+    candidate_bytes = sum(path.stat().st_size for _chapter, path in candidates if path.is_file())
     snapshots = committed_snapshot_paths(root)
     snapshot_bytes = sum(directory_size(path) for path in snapshots)
     unique_content: dict[tuple[int, str], int] = {}
@@ -218,15 +299,10 @@ def compact_artifacts(config: ConfigDocument, *, through: int, dry_run: bool = T
         for chapter_number, path in candidates:
             by_chapter.setdefault(chapter_number, []).append(path)
         for chapter_number, paths in sorted(by_chapter.items()):
+            paths = sorted(set(paths), key=lambda item: relative_path(root, item))
             archive_file, manifest_file = write_chapter_archive(root, chapter_number, paths)
             archive_files.append(str(archive_file))
             manifest_files.append(str(manifest_file))
-            for path in paths:
-                if path.exists():
-                    removed_bytes += path.stat().st_size
-                    path.unlink()
-                    removed_files += 1
-            remove_empty_workbench_dirs(root)
         compact_task_projection(
             root,
             through=through,
@@ -235,10 +311,18 @@ def compact_artifacts(config: ConfigDocument, *, through: int, dry_run: bool = T
                 for path in archive_files
             },
         )
+        protected_shared_blobs = live_candidate_blob_paths(root, through=through)
+        for path in sorted({path for _chapter, path in candidates} - protected_shared_blobs):
+            if path.exists():
+                removed_bytes += path.stat().st_size
+                path.unlink()
+                removed_files += 1
+        remove_empty_workbench_dirs(root)
         for snapshot in snapshots:
             shutil.rmtree(snapshot)
 
     return ArtifactCompactResult(
+        scope=scope,
         through=through,
         dry_run=dry_run,
         eligible=not blockers,
@@ -246,7 +330,7 @@ def compact_artifacts(config: ConfigDocument, *, through: int, dry_run: bool = T
         compact_through=through,
         active_buffer=tuple(sorted(closed_chapter_numbers(root))[-2:]),
         candidate_files=len(candidates),
-        candidate_bytes=sum(path.stat().st_size for _chapter, path in candidates if path.exists()),
+        candidate_bytes=candidate_bytes,
         unique_content_files=len(stored_content),
         unique_content_bytes=sum(stored_content.values()),
         deduplicated_files=len(candidates) - len(stored_content),
@@ -258,6 +342,167 @@ def compact_artifacts(config: ConfigDocument, *, through: int, dry_run: bool = T
         archive_files=tuple(archive_files),
         manifest_files=tuple(manifest_files),
     )
+
+
+def compact_project_setup(config: ConfigDocument, *, dry_run: bool) -> ArtifactCompactResult:
+    root = resolve_project_root(config)
+    projection = project_task_archive_projection(root)
+    tasks = [item for item in projection.get("tasks", []) if isinstance(item, dict)]
+    blockers = [
+        f"project setup task is still active: {item.get('task_id')} ({item.get('status')})"
+        for item in tasks
+        if str(item.get("status") or "") not in {"invalid", "applied", "superseded", "rolled_back"}
+    ]
+    candidates = project_setup_candidates(root, tasks)
+    candidate_bytes = sum(path.stat().st_size for path in candidates if path.is_file())
+    unique = {file_hash(path): path.stat().st_size for path in candidates}
+    archive = root / PROJECT_SETUP_ARCHIVE
+    manifest_file = archive.with_suffix(".manifest.json")
+    removed_files = 0
+    removed_bytes = 0
+    if not dry_run:
+        if blockers:
+            raise ValueError("Cannot compact project setup: " + "; ".join(blockers))
+        write_project_setup_archive(root, candidates, projection)
+        compact_project_task_projection(root, archive_ref=relative_path(root, archive))
+        for path in candidates:
+            if path.is_file():
+                removed_bytes += path.stat().st_size
+                path.unlink()
+                removed_files += 1
+        remove_empty_workbench_dirs(root)
+    return ArtifactCompactResult(
+        scope="project-setup",
+        through=0,
+        dry_run=dry_run,
+        eligible=not blockers,
+        blockers=tuple(blockers),
+        compact_through=0,
+        active_buffer=tuple(sorted(closed_chapter_numbers(root))[-2:]),
+        candidate_files=len(candidates),
+        candidate_bytes=candidate_bytes,
+        unique_content_files=len(unique),
+        unique_content_bytes=sum(unique.values()),
+        deduplicated_files=len(candidates) - len(unique),
+        removed_files=removed_files,
+        removed_bytes=removed_bytes,
+        committed_snapshots=0,
+        committed_snapshot_bytes=0,
+        reclaimable_snapshot_bytes=0,
+        archive_files=(str(archive),) if not dry_run else (),
+        manifest_files=(str(manifest_file),) if not dry_run else (),
+    )
+
+
+def project_setup_candidates(root: Path, tasks: list[dict[str, Any]]) -> list[Path]:
+    protected: set[str] = set()
+    for task in list_manifests(root):
+        scope = task.get("scope") if isinstance(task.get("scope"), dict) else {}
+        if str(scope.get("kind") or "") == "project":
+            continue
+        protected.update(manifest_input_paths(task))
+        output = str(manifest_output(task).get("path") or "")
+        if output:
+            protected.add(output)
+    relative_candidates: set[str] = set()
+    for task in tasks:
+        manifest_file = str(task.get("manifest_file") or "")
+        if manifest_file:
+            relative_candidates.add(manifest_file)
+        relative_candidates.update(manifest_input_paths(task))
+        output = str(manifest_output(task).get("path") or "")
+        if output:
+            relative_candidates.add(output)
+        binding = task.get("current_result") if isinstance(task.get("current_result"), dict) else {}
+        diagnostic = str(binding.get("diagnostic_file") or "")
+        if diagnostic:
+            relative_candidates.add(diagnostic)
+    result: list[Path] = []
+    for relative in sorted(relative_candidates - protected):
+        normalized = relative.replace("\\", "/")
+        if not normalized.startswith(("50_workbench/", "70_runtime/run_reports/")):
+            continue
+        ensure_safe_archive_path(normalized)
+        path = (root / normalized).resolve()
+        path.relative_to(root.resolve())
+        if path.is_file():
+            result.append(path)
+    return result
+
+
+def write_project_setup_archive(root: Path, paths: list[Path], projection: dict[str, Any]) -> tuple[Path, Path]:
+    archive = root / PROJECT_SETUP_ARCHIVE
+    manifest_file = archive.with_suffix(".manifest.json")
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    if archive.exists():
+        manifest = read_json(manifest_file, {})
+        errors = verify_project_setup_archive(root, archive, manifest)
+        if errors:
+            raise ValueError("Existing project setup archive is invalid: " + "; ".join(errors))
+        existing = {str(item.get("path") or ""): item for item in manifest.get("entries", []) if isinstance(item, dict)}
+        for path in paths:
+            relative = relative_path(root, path)
+            if relative not in existing or file_hash(path) != str(existing[relative].get("sha256") or ""):
+                raise ValueError("Project setup archive is immutable and does not match current candidates.")
+        return archive, manifest_file
+    task_bytes = (json.dumps(projection.get("tasks", []), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    event_bytes = "".join(
+        json.dumps(item, ensure_ascii=False) + "\n" for item in projection.get("events", [])
+    ).encode("utf-8")
+    blobs: dict[str, Path] = {}
+    entries: list[dict[str, Any]] = []
+    for path in sorted(set(paths), key=lambda item: relative_path(root, item)):
+        digest = file_hash(path)
+        blobs.setdefault(digest, path)
+        entries.append(
+            {
+                "path": relative_path(root, path),
+                "sha256": digest,
+                "size": path.stat().st_size,
+                "member": f"{AUDIT_BLOB_PREFIX}{digest}",
+            }
+        )
+    payload = {
+        "schema": PROJECT_SETUP_ARCHIVE_SCHEMA,
+        "entries": entries,
+        "entry_count": len(entries),
+        "stored_blob_count": len(blobs),
+        "agent_task_projection": {
+            "schema": str(projection.get("schema") or ""),
+            "tasks_member": AUDIT_TASKS_MEMBER,
+            "tasks_sha256": sha256(task_bytes).hexdigest(),
+            "task_count": len(projection.get("tasks", [])),
+            "events_member": AUDIT_EVENTS_MEMBER,
+            "events_sha256": sha256(event_bytes).hexdigest(),
+            "event_count": len(projection.get("events", [])),
+        },
+        "retention_policy": {
+            "retained": "canonical design Markdown, approved state views, outline, and Bible",
+            "archived": "completed project-scope work orders, candidates, diagnostics, and manifests",
+        },
+        "created_at": utc_now(),
+    }
+    descriptor, temp_name = tempfile.mkstemp(prefix="project-setup.", suffix=".zip", dir=archive.parent)
+    os.close(descriptor)
+    temp = Path(temp_name)
+    try:
+        with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as handle:
+            handle.writestr(AUDIT_MANIFEST_MEMBER, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            handle.writestr(AUDIT_TASKS_MEMBER, task_bytes)
+            handle.writestr(AUDIT_EVENTS_MEMBER, event_bytes)
+            for digest, path in sorted(blobs.items()):
+                handle.write(path, arcname=f"{AUDIT_BLOB_PREFIX}{digest}")
+        temp.replace(archive)
+    finally:
+        temp.unlink(missing_ok=True)
+    manifest = {**payload, "archive_sha256": file_hash(archive)}
+    atomic_write_text(manifest_file, json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+    errors = verify_project_setup_archive(root, archive, manifest)
+    if errors:
+        archive.unlink(missing_ok=True)
+        manifest_file.unlink(missing_ok=True)
+        raise ValueError("Project setup archive verification failed: " + "; ".join(errors))
+    return archive, manifest_file
 
 
 def ensure_compaction_boundary(root: Path, through: int) -> None:
@@ -289,6 +534,13 @@ def verify_artifacts(config: ConfigDocument) -> ArtifactVerifyResult:
     errors: list[str] = []
     entries = 0
     archives = sorted((root / ARCHIVE_ROOT).glob("ch*.zip"))
+    project_setup_archive = root / PROJECT_SETUP_ARCHIVE
+    if project_setup_archive.is_file():
+        project_manifest = read_json(project_setup_archive.with_suffix(".manifest.json"), {})
+        errors.extend(verify_project_setup_archive(root, project_setup_archive, project_manifest))
+        for item in project_manifest.get("entries", []) if isinstance(project_manifest, dict) else []:
+            if isinstance(item, dict) and (root / str(item.get("path") or "")).is_file():
+                errors.append(f"Archived project setup artifact still exists as a loose duplicate: {item.get('path')}")
     for archive in archives:
         manifest_path = archive.with_suffix(".manifest.json")
         manifest = read_json(manifest_path, {})
@@ -352,7 +604,51 @@ def verify_artifacts(config: ConfigDocument) -> ArtifactVerifyResult:
         errors=tuple(errors),
         pending_close_chapters=tuple(pending_close),
         migration_required_chapters=tuple(migration_required),
+        project_setup_archive=project_setup_archive.is_file(),
     )
+
+
+def verify_project_setup_archive(root: Path, archive: Path, manifest: Any) -> list[str]:
+    if not isinstance(manifest, dict) or manifest.get("schema") != PROJECT_SETUP_ARCHIVE_SCHEMA:
+        return ["Project setup archive manifest is missing or invalid"]
+    if not archive.is_file():
+        return ["Project setup archive file is missing"]
+    if file_hash(archive) != str(manifest.get("archive_sha256") or ""):
+        return ["Project setup archive hash mismatch"]
+    errors: list[str] = []
+    try:
+        with zipfile.ZipFile(archive, "r") as handle:
+            names = set(handle.namelist())
+            for member in (AUDIT_MANIFEST_MEMBER, AUDIT_TASKS_MEMBER, AUDIT_EVENTS_MEMBER):
+                if member not in names:
+                    errors.append(f"Project setup archive is missing {member}")
+            projection = manifest.get("agent_task_projection") if isinstance(manifest.get("agent_task_projection"), dict) else {}
+            for member_key, hash_key in (("tasks_member", "tasks_sha256"), ("events_member", "events_sha256")):
+                member = str(projection.get(member_key) or "")
+                if member in names and sha256(handle.read(member)).hexdigest() != str(projection.get(hash_key) or ""):
+                    errors.append(f"Project setup projection hash mismatch: {member}")
+            for item in manifest.get("entries", []):
+                if not isinstance(item, dict):
+                    errors.append("Project setup archive contains a malformed entry")
+                    continue
+                relative = str(item.get("path") or "")
+                try:
+                    ensure_safe_archive_path(relative)
+                except ValueError as exc:
+                    errors.append(str(exc))
+                    continue
+                if not relative.startswith(("50_workbench/", "70_runtime/run_reports/")):
+                    errors.append(f"Project setup entry is outside non-canonical lanes: {relative}")
+                member = str(item.get("member") or "")
+                if member not in names:
+                    errors.append(f"Project setup archive member is missing: {member}")
+                    continue
+                data = handle.read(member)
+                if sha256(data).hexdigest() != str(item.get("sha256") or ""):
+                    errors.append(f"Project setup entry hash mismatch: {relative}")
+    except (OSError, zipfile.BadZipFile) as exc:
+        errors.append(f"Project setup archive is unreadable: {exc}")
+    return errors
 
 
 def verify_task_projection_state(root: Path, archives: list[Path]) -> list[str]:
@@ -474,6 +770,27 @@ def chapter_candidates(root: Path, through: int) -> list[tuple[int, Path]]:
             chapter_number = chapter_from_path(relative_path(root, path))
             if chapter_number and chapter_number <= through:
                 candidates.append((chapter_number, path))
+    for task in list_manifests(root):
+        scope = task.get("scope") if isinstance(task.get("scope"), dict) else {}
+        chapter_number = int(scope.get("chapter_number") or 0)
+        if chapter_number <= 0 or chapter_number > through:
+            continue
+        referenced = set(manifest_input_paths(task))
+        output = str(manifest_output(task).get("path") or "")
+        if output:
+            referenced.add(output)
+        binding = task.get("current_result") if isinstance(task.get("current_result"), dict) else {}
+        result_path = str(binding.get("path") or "")
+        if result_path:
+            referenced.add(result_path)
+        for relative in referenced:
+            normalized = relative.replace("\\", "/")
+            if not normalized.startswith("50_workbench/candidate_blobs/"):
+                continue
+            path = (root / normalized).resolve()
+            path.relative_to(root.resolve())
+            if path.is_file():
+                candidates.append((chapter_number, path))
     transaction_dir = root / TRANSACTION_ROOT
     if transaction_dir.exists():
         for path in transaction_dir.glob("*.json"):
@@ -481,7 +798,24 @@ def chapter_candidates(root: Path, through: int) -> list[tuple[int, Path]]:
             chapter_number = int(payload.get("chapter_number") or 0) if isinstance(payload, dict) else 0
             if chapter_number and chapter_number <= through:
                 candidates.append((chapter_number, path))
-    return sorted(candidates, key=lambda item: (item[0], relative_path(root, item[1])))
+    return sorted(set(candidates), key=lambda item: (item[0], relative_path(root, item[1])))
+
+
+def live_candidate_blob_paths(root: Path, *, through: int) -> set[Path]:
+    result: set[Path] = set()
+    for task in list_manifests(root):
+        scope = task.get("scope") if isinstance(task.get("scope"), dict) else {}
+        if int(scope.get("chapter_number") or 0) <= through:
+            continue
+        referenced = set(manifest_input_paths(task))
+        output = str(manifest_output(task).get("path") or "")
+        if output:
+            referenced.add(output)
+        for relative in referenced:
+            normalized = relative.replace("\\", "/")
+            if normalized.startswith("50_workbench/candidate_blobs/"):
+                result.add((root / normalized).resolve())
+    return result
 
 
 def write_chapter_archive(root: Path, chapter_number: int, paths: list[Path]) -> tuple[Path, Path]:
@@ -942,6 +1276,12 @@ def chapter_numbers_in(directory: Path, pattern: str) -> set[int]:
 
 def archived_loose_files(root: Path, archives: list[Path]) -> list[str]:
     duplicates: set[str] = set()
+    active_refs: set[str] = set()
+    for task in list_manifests(root):
+        active_refs.update(manifest_input_paths(task))
+        output = str(manifest_output(task).get("path") or "")
+        if output:
+            active_refs.add(output)
     for archive in archives:
         manifest = read_json(archive.with_suffix(".manifest.json"), {})
         entries = manifest.get("entries") if isinstance(manifest, dict) else []
@@ -954,6 +1294,8 @@ def archived_loose_files(root: Path, archives: list[Path]) -> list[str]:
             try:
                 ensure_safe_archive_path(relative)
             except ValueError:
+                continue
+            if relative.startswith("50_workbench/candidate_blobs/") and relative in active_refs:
                 continue
             if (root / relative).is_file():
                 duplicates.add(relative)
@@ -971,6 +1313,8 @@ def ensure_archivable_chapter_path(value: str, chapter_number: int) -> None:
     normalized = value.replace("\\", "/")
     finalization = f"40_manuscript/final/ch{chapter_number:03d}.finalization.json"
     if normalized == finalization:
+        return
+    if re.fullmatch(r"50_workbench/candidate_blobs/[0-9a-f]{64}\.md", normalized):
         return
     if normalized.startswith("70_runtime/transactions/"):
         relative = normalized.removeprefix("70_runtime/transactions/")

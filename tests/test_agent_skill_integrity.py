@@ -115,6 +115,20 @@ def test_v041_progressive_prompts_four_protocols_and_no_pollution(tmp_path):
         assert "保护项" in playbook.source.sections["repair"]
     assert len(fixtures["original_scenarios"]) == 6
     assert fixtures["fanfiction_scenario"]["chapter_count"] == 20
+    regressions = fixtures["v043_quality_regression_cases"]
+    assert {item["id"] for item in regressions} == {
+        "mainline_invisible",
+        "unnamed_functional_cast",
+        "same_voice_dialogue",
+        "speaker_ambiguity",
+        "summary_replaces_scene",
+        "inert_interiority",
+        "undeclared_rule_exception",
+        "foreshadow_without_echo",
+    }
+    assert all(item["reviewer"] in registry.roles for item in regressions)
+    assert {item["severity"] for item in regressions} <= {"P1", "P2"}
+    assert all(item["negative"] and item["boundary"] for item in regressions)
     for case in fixtures["prompt_selection_cases"]:
         selection = registry.select_prompt(
             case["task_type"],
@@ -137,7 +151,13 @@ def test_v041_progressive_prompts_four_protocols_and_no_pollution(tmp_path):
     unsupported_blocker = {
         "schema": EVIDENCE_REVIEW_SCHEMA,
         "verdict": "repair",
-        "coverage": {"motivation": "checked"},
+        "coverage": {
+            "motivation": {
+                "status": "checked",
+                "evidence_ids": ["40_manuscript/draft/ch001.md@0:1"],
+                "canonical_refs": ["20_outline/chapter_cards/ch001.json"],
+            }
+        },
         "findings": [
             {
                 "code": "MOTIVATION_JUMP",

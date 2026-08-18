@@ -181,8 +181,14 @@ def semantic_bool(config: ConfigDocument, key: str, default: bool) -> bool:
     return bool(value)
 
 
+def semantic_enabled(config: ConfigDocument) -> bool:
+    """Return whether production context retrieval should use semantic search."""
+
+    return semantic_bool(config, "enabled", True)
+
+
 def require_real_model(config: ConfigDocument) -> bool:
-    return semantic_bool(config, "require_real_model", semantic_bool(config, "enabled", True))
+    return semantic_bool(config, "require_real_model", semantic_enabled(config))
 
 
 def allow_fallback(config: ConfigDocument) -> bool:

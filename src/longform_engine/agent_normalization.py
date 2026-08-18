@@ -349,17 +349,46 @@ def normalize_and_validate_agent_result(
                     loaded,
                     required_dimensions=role.review_dimensions,
                     allowed_finding_codes=role.finding_codes,
+                    optional_dimensions=role.optional_review_dimensions,
+                    canonical_ref_dimensions=role.canonical_ref_dimensions,
                 )
             )
             verdict = str(loaded.get("verdict") or "")
             findings = list_of_dicts(loaded.get("findings"))
             validate_review_scope(role, loaded, errors, need_human)
+            coverage_records = [
+                item
+                for item in (loaded.get("coverage") or {}).values()
+                if isinstance(item, dict)
+            ]
             evidence = compact_evidence_records(
-                (evidence_id for item in findings for evidence_id in item.get("evidence_ids") or []),
+                (
+                    evidence_id
+                    for item in [*coverage_records, *findings]
+                    for evidence_id in item.get("evidence_ids") or []
+                ),
                 registry,
                 errors,
                 need_human,
             )
+            declared_refs = {
+                str(ref)
+                for item in coverage_records
+                for ref in item.get("canonical_refs") or []
+            }
+            allowed_ref_set = {
+                str(item.get("path") or "")
+                for item in allowed_refs
+                if isinstance(item, dict) and item.get("path")
+            }
+            unknown_refs = sorted(
+                ref for ref in declared_refs if ref.split("#", 1)[0] not in allowed_ref_set
+            )
+            if unknown_refs:
+                errors.append(
+                    "coverage references undeclared canonical sources: "
+                    + ", ".join(unknown_refs)
+                )
         elif role.output_mode == CANONICAL_DELTA_SCHEMA:
             errors.extend(validate_canonical_delta(loaded, task_type=task_type))
             evidence_map = loaded.get("evidence") if isinstance(loaded.get("evidence"), dict) else {}
@@ -609,9 +638,13 @@ def validate_review_scope(
     missing_coverage = sorted(allowed_dimensions - coverage)
     if missing_coverage:
         need_human.append("review_coverage_incomplete:" + ",".join(missing_coverage))
-    for dimension, status in coverage_payload.items():
+    optional_dimensions = set(role.optional_review_dimensions)
+    for dimension, record in coverage_payload.items():
+        status = record.get("status") if isinstance(record, dict) else ""
         if dimension in allowed_dimensions and status == "insufficient":
             need_human.append(f"review_dimension_insufficient:{dimension}")
+        if status == "not_applicable" and dimension not in optional_dimensions:
+            errors.append(f"coverage.{dimension} is not optional for role `{role.role_id}`.")
     for index, finding in enumerate(list_of_dicts(payload.get("findings"))):
         code = str(finding.get("code") or "")
         if code not in allowed_codes:

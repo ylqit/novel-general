@@ -31,7 +31,7 @@ sections:
 不得要求所有章节高速、把安静后果当停滞或读取其他 review。
 
 **输出协议**
-只输出一个 `evidence_review_v1` JSON，顶层仅含 `schema`、`verdict`、`coverage`、`findings`；用 evidence_ids 证明压力、释放、转折或余波问题，source path/hash 由 CLI 绑定。
+只输出一个 `evidence_review_v2` JSON。压力、释放、转折与余波的每个 `coverage` 维度都必须引用一至两个正文 evidence_ids；source path/hash 由 CLI 绑定。
 
 ## decision_model
 绘制“压力—选择—结果—释放/余波”的节奏曲线，并为每个场景标记其改变的条件。节奏好坏取决于章节职责：追逐需要压缩决策间隔，关系余波需要允许反应完成，但任何停顿都应改变理解、关系或下一选择。重复 beat 是功能重复，不是句子长度相似。

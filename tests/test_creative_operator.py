@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from longform_engine.agent_tasks import load_manifest, status_summary, validate_manifest_strict
+from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.creative import expand_check, expand_task, humanize_check, humanize_task, style_extract
 from longform_engine.gates import gate_check, pacing_review
@@ -30,12 +31,11 @@ def test_open_book_creates_creative_brief_and_continue_write_injects_craft_input
 
     assert result.status == "task_ready"
     assert brief["target_audience"]
-    assert task["creative_brief"]["status"] == "confirmed"
-    assert task["writer_craft_brief"]["reader_payoff"]
-    assert task["humanizer_rules"]["two_pass_workflow"]["pass_1_remove_ai_templates"]
-    assert "Creative Brief" in task_md
-    assert "Writer Craft Brief" in task_md
-    assert "Humanizer v2" in task_md
+    assert task["fact_inventory_summary"]["categories"]["chapter_contract"] == 1
+    assert task["fact_inventory_summary"]["categories"]["methods"] >= 2
+    assert "唯一章节合同" in task_md
+    assert "当前写作方法" in task_md
+    assert "## Creative Brief" not in task_md
 
 
 def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp_path):
@@ -84,45 +84,20 @@ def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp
             "must_preserve_suspense": ["who controls the bell"],
         }
     )
+    stamp_chapter_contract(card)
     card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     continue_write(project_config, chapter_number=1)
 
     task = json.loads((root / "50_workbench" / "writing_tasks" / "ch001.json").read_text(encoding="utf-8"))
     task_md = (root / "50_workbench" / "writing_tasks" / "ch001.md").read_text(encoding="utf-8")
-    writing_brief = task["writing_brief"]
-    beat_requirements = task["beat_expansion_requirements"]
-    constraints = task["constraint_packet"]
-    reverse_brake = writing_brief["reverse_brake"]
-
-    assert writing_brief["stage"]["strategy"]
-    assert writing_brief["chapter_duty"] == "plant the bell debt without solving it"
-    assert writing_brief["pacing_tier"]
-    assert writing_brief["scene_entry"]["mode"] == "in_scene"
-    assert "Dragon Crown" in writing_brief["forbidden_reveals"]
-    assert "ultimate patron" in writing_brief["do_not_resolve"]
-    assert "who controls the bell" in writing_brief["must_preserve_suspense"]
-    assert "ultimate patron" in writing_brief["this_chapter_must_not_solve"]
-    assert "who controls the bell" in writing_brief["must_keep_suspense"]
-    assert reverse_brake["allowed_reveal_level"] == "hint"
-    assert constraints["reverse_brake"]["allowed_reveal_level"] == "hint"
-    assert len(beat_requirements) == 5
-    assert all(item["scene_goal"] for item in beat_requirements)
-    assert all(item["conflict_point"] for item in beat_requirements)
-    assert all(item["information_release"] for item in beat_requirements)
-    assert all("psychology" in item["expansion_requirements"] for item in beat_requirements)
-    assert all("Dragon Crown" in item["forbidden_reveals"] for item in beat_requirements)
-    assert constraints["rag"]["source"].endswith("next_plot_context.md")
-    assert "story_graph" in constraints
-    assert "tcs" in constraints
-    assert constraints["character_memory"]["status"] == "available"
-    assert constraints["event_matrix"]["source"].endswith("event_matrix.json")
-    assert constraints["style_profile"]["source"].endswith("style_bible.md")
-    assert "Writable Brief" in task_md
-    assert "Beat Expansion Requirements" in task_md
-    assert "Constraint Packet" in task_md
-    assert "Reverse Brake" in task_md
-    assert "Forbidden reveals: Dragon Crown" in task_md
+    assert task["fact_inventory_summary"]["categories"]["chapter_contract"] == 1
+    assert task["fact_inventory_summary"]["categories"]["historical_evidence"] >= 1
+    assert "plant the bell debt without solving it" in task_md
+    assert "Dragon Crown" in task_md
+    assert "ultimate patron" in task_md
+    assert "who controls the bell" in task_md
+    assert task_md.count("唯一章节合同") == 1
 
 
 def test_continue_write_blocks_missing_applied_creative_brief(tmp_path):
@@ -321,9 +296,10 @@ def test_style_extract_writes_sample_profile_and_continue_write_uses_it(tmp_path
     assert current["sample_sources"][0]["source_project"] == "reference-book"
     assert current["profile"]["fingerprint"]["dialogue_ratio"] > 0
     assert current["profile"]["common_phrases"]
-    assert task["style_context"]["source"].endswith("current_style_profile.json")
-    assert task["style_context"]["profile_type"] == "sample_extract"
-    assert task["constraint_packet"]["style_profile"]["fingerprint"]["avg_sentence_chars"] == result.fingerprint["avg_sentence_chars"]
+    task_md = (root / "50_workbench" / "writing_tasks" / "ch001.md").read_text(encoding="utf-8")
+    assert task["fact_inventory_summary"]["categories"]["methods"] >= 2
+    assert "current_style_profile.json" in task_md
+    assert "sample_extract" in task_md
 
 
 def test_gate_detects_obvious_style_drift_from_active_sample_profile(tmp_path):

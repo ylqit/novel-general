@@ -2,6 +2,8 @@
 
 > v0.4.0 的字数主导、滚动纲要和可组合题材协议以 [`V0_4_0_WORD_BUDGET_AND_COMPOSABLE_PROFILE_CHECKLIST.md`](V0_4_0_WORD_BUDGET_AND_COMPOSABLE_PROFILE_CHECKLIST.md) 为当前验收源。本文件中早期 `market + genre + phase` 与条件式章节方向描述仅保留为历史设计背景，不再是源码主线协议。
 
+v0.4.3 RC 的有证据审稿、唯一章节合同、上下文去重、通用生命周期对账与项目准备期归档，以 [`V0_4_3_PROTOCOL_HOTFIX_CHECKLIST.md`](V0_4_3_PROTOCOL_HOTFIX_CHECKLIST.md) 为当前实现验收源。
+
 起点主合同、番茄非阻断兼容视图、阶段覆盖、合同解释和真实盲评边界见 [`PLATFORM_WRITING_ADAPTATION_CHECKLIST.md`](PLATFORM_WRITING_ADAPTATION_CHECKLIST.md)。平台工程能力完成不等于推荐效果或文学质量已经得到证明。
 
 人物表现合同、章节人物包、场景化章节职责、对白可交换诊断和人物编辑的独立验收见 [`CHARACTER_EXPRESSION_AND_SCENE_NARRATIVE_CHECKLIST.md`](CHARACTER_EXPRESSION_AND_SCENE_NARRATIVE_CHECKLIST.md)。工程能力与真实 15 章质量证据必须分别标记。

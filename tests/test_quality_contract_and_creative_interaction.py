@@ -150,6 +150,7 @@ def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str
         "book_goal": "Expose who controls collective memory.",
         "volume_goal": "Prove the archive is being altered from inside.",
         "protagonist_goal": "Preserve evidence without treating Mira as a tool.",
+        "featured_character_ids": ["lead_ari", "ally_mira"],
         "scene_chain": scene_chain,
         "cast_desires": {
             "lead_ari": "Verify the physical trace before pursuit.",
@@ -168,30 +169,31 @@ def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str
         "relationship_move": "The alliance gains a shared obligation.",
         "ending_mode": "changed_problem",
         "main_risks": ["Too much procedure could flatten the choice."],
+        "canon_refs": [],
+        "world_rule_refs": [],
+        "foreshadow_refs": [],
+        "forbidden_reveals": ["identity of the archive editor"],
     }
+    selected = {
+        "id": "verify_witness",
+        "title": "先核验目击者",
+        "chapter_duty": "用一次有代价的核验排除最显眼的错误判断。",
+        **common,
+    }
+    selected["reader_gain"] = selected.pop("local_payoff")
+    selected["cost"] = selected.pop("character_cost")
     return {
         "schema": "chapter_direction_candidate_v2",
         "chapter_number": chapter_number,
         "chapter_card_sha256": sha256(card.read_bytes()).hexdigest(),
         "trigger_reasons": reasons,
-        "directions": [
-            {
-                "id": "verify_witness",
-                "title": "先核验目击者",
-                "chapter_duty": "用一次有代价的核验排除最显眼的错误判断。",
-                **common,
-            },
-            {
-                "id": "follow_decoy",
-                "title": "追踪诱饵",
-                "chapter_duty": "让主角主动犯下有依据的错误判断。",
-                **{**common, "character_cost": "Ari loses the seal evidence and must admit the shortcut later."},
-            },
-        ],
+        "selected_direction": selected,
         "selection": {
             "direction_id": "verify_witness",
             "user_adjustments": {},
         },
+        "canonical_refs": selected["canon_refs"],
+        "introduced_elements": [],
     }
 
 
@@ -493,7 +495,7 @@ def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
     applied_card = json.loads(card.read_text(encoding="utf-8"))
     assert applied.status == "applied"
     assert applied_card["direction_selection"]["direction_id"] == "verify_witness"
-    assert applied_card["reader_gain"] == valid["directions"][0]["local_payoff"]
+    assert applied_card["reader_gain"] == valid["selected_direction"]["reader_gain"]
     assert assess_chapter_direction(config, 1)["required"] is False
     assert production_next(config)["status"] == "ready_for_continue_write"
 

@@ -31,7 +31,7 @@ sections:
 不得要求全短句、高对白、口语化或悬崖结尾，也不得读取其他审稿结果。
 
 **输出协议**
-只输出一个 `evidence_review_v1` JSON，顶层仅含 `schema`、`verdict`、`coverage`、`findings`；每条 finding 必须给出可回读 evidence_ids、读者影响、修复目标和保护项，证据不足使用 `insufficient_evidence`。
+只输出一个 `evidence_review_v2` JSON。每个必审维度的 `coverage` 必须给出状态和一至两个可回读正文 evidence_ids；每条 finding 给出读者影响、修复目标和保护项，证据不足使用 `insufficient_evidence`。
 
 ## decision_model
 按“功能重复而非词语出现”诊断：先标记段落承担的信息、情绪和场景功能，再检查相邻或跨段是否反复完成同一件事，是否用抽象结论替代人物行动，是否让不同角色共享同一分析语气。只有模式达到可观察重复并确实压缩人物或场景差异时才报告。

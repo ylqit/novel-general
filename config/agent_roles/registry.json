@@ -154,7 +154,7 @@
       "role_id": "anti_ai_editor",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/anti_ai_editor.md",
-      "output_mode": "evidence_review_v1",
+      "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
         "target_reader",
@@ -234,7 +234,7 @@
       "role_id": "canon_fidelity_reviewer",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/canon_fidelity_reviewer.md",
-      "output_mode": "evidence_review_v1",
+      "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
         "character_voice_contracts",
@@ -264,6 +264,10 @@
         "canon_fidelity",
         "ooc_causality",
         "original_contribution"
+      ],
+      "canonical_ref_dimensions": [
+        "canon_fidelity",
+        "ooc_causality"
       ],
       "finding_codes": [
         "CANON_CONFLICT",
@@ -388,7 +392,7 @@
       "role_id": "character_editor",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/character_editor.md",
-      "output_mode": "evidence_review_v1",
+      "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
         "character_voice_contracts",
@@ -467,7 +471,7 @@
       "role_id": "character_performance_reviewer",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/character_performance_reviewer.md",
-      "output_mode": "evidence_review_v1",
+      "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
         "character_voice_contracts",
@@ -495,6 +499,11 @@
       ],
       "max_active_playbooks": 2,
       "review_dimensions": [
+        "cross_chapter_character",
+        "voice_drift",
+        "arc_causality"
+      ],
+      "canonical_ref_dimensions": [
         "cross_chapter_character",
         "voice_drift",
         "arc_causality"
@@ -726,7 +735,7 @@
       "role_id": "humanizer_semantic_reviewer",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/humanizer_semantic_reviewer.md",
-      "output_mode": "evidence_review_v1",
+      "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
         "character_voice_contracts",
@@ -806,7 +815,7 @@
       "role_id": "planning_chief_editor",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/planning_chief_editor.md",
-      "output_mode": "evidence_review_v1",
+      "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
         "target_reader",
@@ -847,7 +856,7 @@
       "role_id": "reader_payoff_reviewer",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/reader_payoff_reviewer.md",
-      "output_mode": "evidence_review_v1",
+      "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
         "target_reader",
@@ -878,6 +887,11 @@
         "cost",
         "promise_progress"
       ],
+      "canonical_ref_dimensions": [
+        "reader_gain",
+        "cost",
+        "promise_progress"
+      ],
       "finding_codes": [
         "PAYOFF_MISSING",
         "COST_MISSING",
@@ -891,7 +905,7 @@
       "role_id": "reader_experience_editor",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/reader_experience_editor.md",
-      "output_mode": "evidence_review_v1",
+      "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
         "target_reader",
@@ -1039,7 +1053,7 @@
       "role_id": "scene_prose_editor",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/scene_prose_editor.md",
-      "output_mode": "evidence_review_v1",
+      "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
         "narrative_person",
@@ -1083,7 +1097,7 @@
       "role_id": "semantic_continuity_reviewer",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/semantic_continuity_reviewer.md",
-      "output_mode": "evidence_review_v1",
+      "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [],
       "role_family": "review",
@@ -1111,6 +1125,11 @@
         "motivation",
         "space_time_ability"
       ],
+      "canonical_ref_dimensions": [
+        "canonical_fact",
+        "motivation",
+        "space_time_ability"
+      ],
       "finding_codes": [
         "CANONICAL_CONFLICT",
         "MOTIVATION_JUMP",
@@ -1121,7 +1140,7 @@
       "role_id": "semantic_pacing_reviewer",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/semantic_pacing_reviewer.md",
-      "output_mode": "evidence_review_v1",
+      "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
         "target_reader",

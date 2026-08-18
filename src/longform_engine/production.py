@@ -27,6 +27,7 @@ from longform_engine.agent_tasks import (
     manifest_policy,
     manifest_role,
     status_summary,
+    task_reconciliation_status,
     validate_manifest_strict,
 )
 from longform_engine.config import ConfigDocument
@@ -61,6 +62,7 @@ from longform_engine.quality import (
     reader_payoff_validate,
 )
 from longform_engine.repair_coordination import (
+    editorial_human_resolution_reasons,
     next_repair_round,
     repair_attempt_status,
     repair_plan_status,
@@ -173,6 +175,7 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
         )
     action = (
         first_need_human_action(root)
+        or task_lifecycle_reconciliation_action(root)
         or chapter_semantic_lifecycle_action(root)
         or chapter_workflow_action(config, root)
         or project_readiness_action(config, root)
@@ -193,6 +196,58 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
         next_command=f"longform-engine continue-write project.yaml --chapter {chapter_number}",
         human_summary=f"No blocker found. Generate the ch{chapter_number:03d} writing task.",
     )
+
+
+def task_lifecycle_reconciliation_action(root: Path) -> dict[str, Any] | None:
+    """Expose a read-only next command for explicit parent-child projection drift."""
+
+    chapters = sorted(
+        {
+            manifest_chapter_number(task)
+            for task in list_manifests(root)
+            if str((task.get("scope") or {}).get("kind") or "") == "chapter"
+        }
+    )
+    for chapter_number in chapters:
+        if chapter_number <= 0:
+            continue
+        status = task_reconciliation_status(root, chapter_number=chapter_number)
+        if status.get("status") == "need_human":
+            return base_action(
+                status="need_human",
+                chapter_number=chapter_number,
+                blocked_by="agent_task_lineage_ambiguous",
+                waiting_for="human_decision",
+                next_command="",
+                human_summary="; ".join(str(item) for item in status.get("errors") or []),
+                sources=[
+                    str(task.get("manifest_file") or "")
+                    for task in list_manifests(root, chapter_number=chapter_number)
+                    if task.get("consumes_task_id") or task.get("consumed_by_task_id")
+                ],
+            )
+        if status.get("recoverable"):
+            command = str(status.get("next_command") or "")
+            relation = status["recoverable"][0]
+            return base_action(
+                status="agent_task_lifecycle_reconciliation_required",
+                chapter_number=chapter_number,
+                blocked_by="agent_task_parent_projection_stale",
+                waiting_for="cli",
+                task_id=str(relation.get("parent_task_id") or ""),
+                task_type="agent_task_reconcile",
+                next_command=command,
+                failure_next_command=command,
+                human_summary=(
+                    f"ch{chapter_number:03d} has an explicit hash-proven child task, but its parent "
+                    "projection still needs deterministic reconciliation."
+                ),
+                sources=[
+                    str(relation.get("parent_task_id") or ""),
+                    str(relation.get("child_task_id") or ""),
+                ],
+            )
+    return None
 
 
 def production_status(config: ConfigDocument) -> dict[str, Any]:
@@ -1402,6 +1457,8 @@ def first_need_human_action(root: Path) -> dict[str, Any] | None:
         }
         if missing_roles and set(missing_roles) <= active_roles:
             continue
+        if not editorial_human_resolution_reasons(payload):
+            continue
         next_command = str(
             payload.get("next_command")
             or f"longform-engine editorial need-human project.yaml --chapter {chapter_number} --reason editorial_aggregate"
@@ -1817,11 +1874,6 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
                     "sources": [str(plan_status.get("report_file") or relative_path(root, gate_path))],
                     "reason": "repair target conflicts with the preservation ledger",
                 }
-            if synthesis is None or str(synthesis.get("status") or "") != "validated":
-                return {
-                    "stage": "repair_synthesis_pending",
-                    "sources": [relative_path(root, gate_path)],
-                }
             repair_id = f"repair:ch{chapter_number:03d}:{round_token}:v4"
             repair_task = next(
                 (
@@ -1831,14 +1883,27 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
                 ),
                 None,
             )
-            if repair_task is None:
+            if repair_task is not None:
+                if synthesis is not None and str(synthesis.get("status") or "") == "validated":
+                    return {
+                        "stage": "repair_lifecycle_reconciliation_required",
+                        "sources": [
+                            str(synthesis.get("manifest_file") or ""),
+                            str(repair_task.get("manifest_file") or ""),
+                        ],
+                    }
                 return {
-                    "stage": "repair_plan_validated",
-                    "sources": [str(synthesis.get("manifest_file") or "")],
+                    "stage": "repair_candidate_pending",
+                    "sources": [str(repair_task.get("manifest_file") or "")],
+                }
+            if synthesis is None or str(synthesis.get("status") or "") != "validated":
+                return {
+                    "stage": "repair_synthesis_pending",
+                    "sources": [relative_path(root, gate_path)],
                 }
             return {
-                "stage": "repair_candidate_pending",
-                "sources": [str(repair_task.get("manifest_file") or "")],
+                "stage": "repair_plan_validated",
+                "sources": [str(synthesis.get("manifest_file") or "")],
             }
         if barrier_status == "ready_to_finalize":
             return {"stage": "ready_to_finalize", "sources": [relative_path(root, gate_path)]}
@@ -1868,6 +1933,7 @@ def chapter_stage_task_types(stage: str) -> set[str]:
         "review_need_human": set(),
         "repair_synthesis_pending": {"repair_plan_synthesis"},
         "repair_plan_validated": set(),
+        "repair_lifecycle_reconciliation_required": set(),
         "repair_candidate_pending": {"repair"},
         "repair_budget_exhausted": set(),
         "repair_pending": {"repair", "humanize", "content_expand", "humanize_semantic_review"},

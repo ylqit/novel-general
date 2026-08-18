@@ -22,6 +22,9 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     template = load_project_config(template="qidian-longform")
     project = init_project(template, output=tmp_path / "novel")
     config = load_project_config(project.project_config)
+    config.data["rag"]["embedding"]["profile"] = "local-hash"
+    config.data["semantic"]["allow_fallback"] = True
+    config.data["semantic"]["vector_store"]["backend"] = "local_sqlite"
     root = project.root
     write_json(
         root / "10_bible" / "characters.json",
@@ -81,7 +84,7 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
         "50_workbench/semantic_tasks/ch001.semantic_context.json",
     ]
     context = json.loads(Path(task.context_file).read_text(encoding="utf-8"))
-    assert context["schema"] == "chapter_semantic_context_v1"
+    assert context["schema"] == "chapter_semantic_context_v2"
     assert {item["id"] for item in context["stable_ids"]["characters"]} == {"char_shen", "char_he"}
     assert "char_future" not in json.dumps(context, ensure_ascii=False)
     assert manifest["policy"]["context"]["overflow_policy"] == "split_context"
@@ -179,7 +182,8 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     ledger_hash_after_first_apply = sha256(Path(applied.ledger_file).read_bytes()).hexdigest()
     repeated = semantic_apply(config, chapter_number=1, file_path=output)
     assert repeated.ledger_file == applied.ledger_file
-    assert repeated.transaction_file == ""
+    assert repeated.transaction_file
+    assert repeated.embeddings_reused > 0
     assert sha256(Path(applied.ledger_file).read_bytes()).hexdigest() == ledger_hash_after_first_apply
 
     ledger = json.loads(Path(applied.ledger_file).read_text(encoding="utf-8"))
@@ -240,7 +244,7 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     assert repeated_close.approved_by == "tester"
     closure_hash = sha256(Path(closed.closure_file).read_bytes()).hexdigest()
     closed_reapply = semantic_apply(config, chapter_number=1, file_path=output)
-    assert closed_reapply.transaction_file == ""
+    assert closed_reapply.transaction_file
     assert sha256(Path(applied.ledger_file).read_bytes()).hexdigest() == ledger_hash_after_first_apply
     assert sha256(Path(closed.closure_file).read_bytes()).hexdigest() == closure_hash
 

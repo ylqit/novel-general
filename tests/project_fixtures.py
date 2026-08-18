@@ -7,6 +7,7 @@ import yaml
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import CANONICAL_DELTA_SCHEMA
 from longform_engine.agent_tasks import load_manifest
+from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.semantic import chapter_close, semantic_apply, semantic_task
 from longform_engine.semantic.pipeline import active_planned_thread_ids, foreshadow_state_threads, planned_threads
 from longform_engine.lengths import compile_length_forecast
@@ -28,6 +29,9 @@ def mark_project_ready(
     config.data["quality"]["semantic_review_boundaries"] = False
     config.data["quality"]["assurance_mode"] = "light"
     config.data.setdefault("editorial", {})["review_mode"] = "off"
+    config.data.setdefault("semantic", {})["allow_fallback"] = True
+    config.data["semantic"].setdefault("vector_store", {})["backend"] = "local_sqlite"
+    config.data.setdefault("rag", {}).setdefault("embedding", {})["profile"] = "local-hash"
     project_yaml = (root / "project.yaml").resolve()
     if config.path is not None and config.path.resolve() == project_yaml and project_yaml.is_file():
         payload = yaml.safe_load(project_yaml.read_text(encoding="utf-8"))
@@ -35,6 +39,9 @@ def mark_project_ready(
         payload["quality"]["semantic_review_boundaries"] = False
         payload["quality"]["assurance_mode"] = "light"
         payload.setdefault("editorial", {})["review_mode"] = "off"
+        payload.setdefault("semantic", {})["allow_fallback"] = True
+        payload["semantic"].setdefault("vector_store", {})["backend"] = "local_sqlite"
+        payload.setdefault("rag", {}).setdefault("embedding", {})["profile"] = "local-hash"
         project_yaml.write_text(
             yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
             encoding="utf-8",
@@ -211,9 +218,13 @@ def mark_project_ready(
             card = {
                 **row,
                 "status": "planned",
+                "book_goal": "Resolve who controls collective memory.",
+                "volume_goal": "Resolve the current evidence escalation layer.",
+                "protagonist_goal": characters[0]["goal"],
                 "pov_character_id": row["featured_character_ids"][0],
                 "chapter_duty": row["duty"],
                 "information": row["information_release"],
+                "information_release": row["information_release"],
                 "reader_gain": row["reader_payoff"],
                 "cost": "The chosen gain narrows the protagonist's next safe option.",
                 "platform_promise": str(quality_body.get("platform_promise") or ""),
@@ -231,12 +242,17 @@ def mark_project_ready(
                         "turn": "The evidence points to internal access.",
                     }
                 ],
+                "canon_refs": [],
+                "world_rule_refs": ["10_bible/world.md", "10_bible/power_system.md"],
+                "foreshadow_refs": ["thread_false_treaty"],
+                "forbidden_reveals": list(row.get("forbidden_reveals") or []),
                 "direction_selection": {
                     "status": "applied",
                     "direction_id": "fixture_human_choice",
                     "approved_by": "human",
                 },
             }
+            stamp_chapter_contract(card)
             write_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", card)
             (root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.md").write_text(
                 f"# Chapter Card ch{chapter_number:03d}\n\nHuman-approved fixture direction.\n",
@@ -252,6 +268,28 @@ def mark_project_ready(
         "character_expression_design": {"status": "applied", "candidate_hash": "test-expression"},
     }
     write_json(state_path, state)
+
+
+def checked_review_coverage(
+    root: Path,
+    source: Path,
+    dimensions,
+    *,
+    canonical_dimensions=(),
+    canonical_ref: str = "20_outline/chapter_cards/ch001.json",
+) -> dict:
+    text = source.read_text(encoding="utf-8")
+    end = min(max(len(text), 1), 48)
+    evidence_id = f"{source.relative_to(root).as_posix()}@0:{end}"
+    canonical = set(canonical_dimensions)
+    return {
+        str(dimension): {
+            "status": "checked",
+            "evidence_ids": [evidence_id],
+            "canonical_refs": [canonical_ref] if dimension in canonical else [],
+        }
+        for dimension in dimensions
+    }
 
 
 def write_json(path: Path, payload) -> None:
@@ -391,7 +429,7 @@ def prepare_unified_semantic_bundle(root: Path, config, chapter_number: int) -> 
     text = final.read_text(encoding="utf-8")
     start = next((index for index, character in enumerate(text) if not character.isspace()), 0)
     end = min(len(text), max(start + 1, start + 24))
-    evidence_id = f"ch{chapter_number:03d}.md@{start}:{end}"
+    evidence_id = f"40_manuscript/final/ch{chapter_number:03d}.md@{start}:{end}"
     active_threads = sorted(
         active_planned_thread_ids(
             planned_threads(root),

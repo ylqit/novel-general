@@ -129,6 +129,8 @@ class RoleContract:
     optional_playbook_ids: tuple[str, ...]
     max_active_playbooks: int
     review_dimensions: tuple[str, ...]
+    optional_review_dimensions: tuple[str, ...]
+    canonical_ref_dimensions: tuple[str, ...]
     finding_codes: tuple[str, ...]
 
     @property
@@ -314,7 +316,7 @@ def _load_role_registry_cached(
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise RoleRegistryError(f"roles[{index}] must be an object.")
-        expected_fields = {
+        required_fields = {
             "role_id",
             "role_version",
             "prompt_path",
@@ -331,9 +333,14 @@ def _load_role_registry_cached(
             "review_dimensions",
             "finding_codes",
         }
-        if set(entry) != expected_fields:
+        optional_fields = {"optional_review_dimensions", "canonical_ref_dimensions"}
+        if not required_fields <= set(entry) or not set(entry) <= required_fields | optional_fields:
             raise RoleRegistryError(
-                f"roles[{index}] fields must be exactly: {', '.join(sorted(expected_fields))}."
+                "roles[{}] fields must contain {} and may add {}.".format(
+                    index,
+                    ", ".join(sorted(required_fields)),
+                    ", ".join(sorted(optional_fields)),
+                )
             )
         role_id = normalize_id(entry.get("role_id"))
         if not ROLE_ID_PATTERN.fullmatch(role_id):
@@ -419,6 +426,22 @@ def _load_role_registry_cached(
         review_dimensions = validate_optional_string_list(
             entry.get("review_dimensions"), field=f"roles[{index}].review_dimensions"
         )
+        optional_review_dimensions = validate_optional_string_list(
+            entry.get("optional_review_dimensions", []),
+            field=f"roles[{index}].optional_review_dimensions",
+        )
+        canonical_ref_dimensions = validate_optional_string_list(
+            entry.get("canonical_ref_dimensions", []),
+            field=f"roles[{index}].canonical_ref_dimensions",
+        )
+        if not set(optional_review_dimensions) <= set(review_dimensions):
+            raise RoleRegistryError(
+                f"Role `{role_id}` optional_review_dimensions must be review dimensions."
+            )
+        if not set(canonical_ref_dimensions) <= set(review_dimensions):
+            raise RoleRegistryError(
+                f"Role `{role_id}` canonical_ref_dimensions must be review dimensions."
+            )
         finding_codes = validate_optional_string_list(
             entry.get("finding_codes"), field=f"roles[{index}].finding_codes"
         )
@@ -465,6 +488,8 @@ def _load_role_registry_cached(
             optional_playbook_ids=optional_playbooks,
             max_active_playbooks=max_active_playbooks,
             review_dimensions=review_dimensions,
+            optional_review_dimensions=optional_review_dimensions,
+            canonical_ref_dimensions=canonical_ref_dimensions,
             finding_codes=finding_codes,
         )
 

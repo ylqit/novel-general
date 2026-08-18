@@ -2,7 +2,7 @@
 
 公开发行源：`https://github.com/ylqit/novel-general`。普通用户使用 pipx 安装 engine，再由 `longform-engine skills` 管理内置的自包含 Skill；无需手工复制 `shared/`，也无需 OpenAI、Anthropic 或 provider API key。
 
-`v0.4.2` 不承诺兼容 v0.4.0 及更早项目协议；请创建新项目。升级 engine 后必须同步更新 Skill 并重新运行 doctor。
+当前公开稳定版是 `v0.4.2`。源码仓库正在准备未发布的 `v0.4.3` Release Candidate，因此公开安装命令必须继续固定到真实存在的 `v0.4.2` tag。它不承诺兼容 v0.4.0 及更早项目协议；请创建新项目。升级 engine 后必须同步更新 Skill 并重新运行 doctor。
 
 ## Public Install
 

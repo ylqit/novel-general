@@ -329,7 +329,11 @@ def seed_project(tmp_path):
         ),
         encoding="utf-8",
     )
-    return load_project_config(project.project_config)
+    config = load_project_config(project.project_config)
+    config.data["rag"]["embedding"]["profile"] = "local-hash"
+    config.data["semantic"]["allow_fallback"] = True
+    config.data["semantic"]["vector_store"]["backend"] = "local_sqlite"
+    return config
 
 
 def passing_agent_draft_text() -> str:

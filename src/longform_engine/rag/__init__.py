@@ -1,11 +1,13 @@
 """Retrieval augmented generation package."""
 
 from .pipeline import (
+    EmbeddingBuildStats,
     RagBuildStats,
     RagContextResult,
     RagHit,
     RagQueryResult,
     build_embeddings,
+    build_embedding_index,
     build_chunks,
     build_context,
     query,
@@ -27,11 +29,13 @@ from .production_benchmark import (
 )
 
 __all__ = [
+    "EmbeddingBuildStats",
     "RagBuildStats",
     "RagContextResult",
     "RagHit",
     "RagQueryResult",
     "build_embeddings",
+    "build_embedding_index",
     "build_chunks",
     "build_context",
     "query",

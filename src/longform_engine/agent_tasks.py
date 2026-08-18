@@ -50,6 +50,7 @@ AGENT_TASK_STATUSES = (
     "superseded",
     "rolled_back",
 )
+TERMINAL_TASK_STATUSES = frozenset({"invalid", "applied", "superseded", "rolled_back"})
 CHAPTER_CANDIDATE_TASK_TYPES = frozenset({"chapter_write", "repair", "humanize", "content_expand"})
 DEFAULT_FORBIDDEN_CONTEXT = (
     "40_manuscript/final/",
@@ -57,6 +58,12 @@ DEFAULT_FORBIDDEN_CONTEXT = (
     "50_workbench/research_inbox/ (unless explicitly declared)",
     "60_rag/query_cache/",
     "70_runtime/db/",
+)
+TASK_RELATION_FIELDS = (
+    "consumes_task_id",
+    "consumed_by_task_id",
+    "satisfied_by_result_sha256",
+    "supersedes_task_ids",
 )
 class AgentTaskContractError(ValueError):
     """Raised before an invalid Agent task can enter the project task index."""
@@ -535,7 +542,14 @@ def build_manifest(
         }
 
 
-def write_manifest(root: Path, manifest: dict[str, Any], manifest_file: str | Path) -> str:
+def write_manifest(
+    root: Path,
+    manifest: dict[str, Any],
+    manifest_file: str | Path,
+    *,
+    consumes_task_id: str = "",
+    supersedes_task_ids: Iterable[str] = (),
+) -> str:
     """Persist a manifest and update the project-level read-only index."""
 
     path = resolve_under_root(root, manifest_file)
@@ -551,11 +565,24 @@ def write_manifest(root: Path, manifest: dict[str, Any], manifest_file: str | Pa
     if output:
         resolve_under_root(root, output).parent.mkdir(parents=True, exist_ok=True)
     atomic_write_text(path, json.dumps(dict(normalized), ensure_ascii=False, indent=2) + "\n")
-    register_manifest(root, normalized, path)
+    register_manifest(
+        root,
+        normalized,
+        path,
+        consumes_task_id=consumes_task_id,
+        supersedes_task_ids=supersedes_task_ids,
+    )
     return str(path)
 
 
-def register_manifest(root: Path, manifest: dict[str, Any], manifest_file: Path) -> None:
+def register_manifest(
+    root: Path,
+    manifest: dict[str, Any],
+    manifest_file: Path,
+    *,
+    consumes_task_id: str = "",
+    supersedes_task_ids: Iterable[str] = (),
+) -> None:
     index_path = agent_task_index_file(root)
     payload = read_json(index_path, default={})
     if not isinstance(payload, dict):
@@ -575,6 +602,29 @@ def register_manifest(root: Path, manifest: dict[str, Any], manifest_file: Path)
         None,
     )
     new_status = "awaiting_agent"
+    consumed_parent = next(
+        (
+            item
+            for item in tasks
+            if isinstance(item, dict) and item.get("task_id") == consumes_task_id
+        ),
+        None,
+    ) if consumes_task_id else None
+    if consumes_task_id and consumed_parent is None:
+        raise AgentTaskContractError(f"consumed parent task is not indexed: {consumes_task_id}")
+    if isinstance(consumed_parent, dict):
+        parent_status = normalize_status(str(consumed_parent.get("status") or "awaiting_agent"))
+        if parent_status not in {"validated", "approved", "applied"}:
+            raise AgentTaskContractError(
+                f"consumed parent task must be validated or approved; got {parent_status}"
+            )
+        parent_result = consumed_parent.get("current_result")
+        if not isinstance(parent_result, dict) or parent_result.get("ok") is not True:
+            raise AgentTaskContractError("consumed parent task has no valid bound result")
+        parent_output = str((load_manifest(root, consumes_task_id).get("io") or {}).get("output", {}).get("path") or "")
+        if parent_output not in manifest_input_paths(manifest):
+            raise AgentTaskContractError("child task must declare the consumed parent output as an input")
+    superseded_ids = sorted({str(item).strip() for item in supersedes_task_ids if str(item).strip()})
     scope = manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {}
     entry = {
         "task_id": manifest["task_id"],
@@ -585,9 +635,35 @@ def register_manifest(root: Path, manifest: dict[str, Any], manifest_file: Path)
         "manifest_file": rel_file,
         "created_at": manifest.get("created_at", ""),
         "updated_at": utc_now(),
+        "consumes_task_id": consumes_task_id,
+        "consumed_by_task_id": "",
+        "satisfied_by_result_sha256": "",
+        "supersedes_task_ids": superseded_ids,
     }
     tasks = [item for item in tasks if not (isinstance(item, dict) and item.get("task_id") == manifest["task_id"])]
     tasks.append(entry)
+    parent_transition: tuple[str, str] | None = None
+    if isinstance(consumed_parent, dict):
+        parent_from = normalize_status(str(consumed_parent.get("status") or "awaiting_agent"))
+        consumed_parent["status"] = "applied"
+        consumed_parent["consumed_by_task_id"] = str(manifest["task_id"])
+        consumed_parent["satisfied_by_result_sha256"] = str(
+            (consumed_parent.get("current_result") or {}).get("sha256") or ""
+        )
+        consumed_parent["updated_at"] = utc_now()
+        entry["satisfied_by_result_sha256"] = consumed_parent["satisfied_by_result_sha256"]
+        parent_transition = (parent_from, "applied")
+    superseded_transitions: list[tuple[str, str]] = []
+    for item in tasks:
+        if not isinstance(item, dict) or item.get("task_id") not in superseded_ids:
+            continue
+        prior = normalize_status(str(item.get("status") or "awaiting_agent"))
+        if prior in {"applied", "rolled_back", "superseded"}:
+            continue
+        item["status"] = "superseded"
+        item["consumed_by_task_id"] = str(manifest["task_id"])
+        item["updated_at"] = utc_now()
+        superseded_transitions.append((str(item.get("task_id") or ""), prior))
     payload["tasks"] = sorted(
         tasks,
         key=lambda item: (
@@ -611,6 +687,32 @@ def register_manifest(root: Path, manifest: dict[str, Any], manifest_file: Path)
             command="agent-task create",
             artifact=rel_file,
             result=rel_file,
+            consumes_task_id=consumes_task_id,
+            satisfied_by_result_sha256=str(entry.get("satisfied_by_result_sha256") or ""),
+            supersedes_task_ids=superseded_ids,
+        )
+    if parent_transition is not None and parent_transition[0] != "applied":
+        record_task_event(
+            root,
+            task_id=consumes_task_id,
+            from_status=parent_transition[0],
+            to_status="applied",
+            command="agent-task child registered",
+            artifact=rel_file,
+            result=rel_file,
+            consumed_by_task_id=str(manifest["task_id"]),
+            satisfied_by_result_sha256=str(entry.get("satisfied_by_result_sha256") or ""),
+        )
+    for task_id, prior in superseded_transitions:
+        record_task_event(
+            root,
+            task_id=task_id,
+            from_status=prior,
+            to_status="superseded",
+            command="agent-task replacement registered",
+            artifact=rel_file,
+            result=rel_file,
+            consumed_by_task_id=str(manifest["task_id"]),
         )
 
 
@@ -634,6 +736,9 @@ def list_manifests(root: Path, *, chapter_number: int | None = None) -> list[dic
             view["updated_at"] = str(item.get("updated_at") or "")
             if isinstance(item.get("current_result"), dict):
                 view["current_result"] = dict(item["current_result"])
+            for field in TASK_RELATION_FIELDS:
+                if item.get(field) not in (None, "", []):
+                    view[field] = item[field]
             result.append(view)
         else:
             result.append(dict(item))
@@ -674,6 +779,9 @@ def load_manifest(root: Path, task: str | Path) -> dict[str, Any]:
         normalized["updated_at"] = str(projection.get("updated_at") or "")
         if isinstance(projection.get("current_result"), dict):
             normalized["current_result"] = dict(projection["current_result"])
+        for field in TASK_RELATION_FIELDS:
+            if projection.get(field) not in (None, "", []):
+                normalized[field] = projection[field]
     return normalized
 
 
@@ -918,7 +1026,55 @@ def supersede_other_candidate_tasks(
         )
         if result_item is not None:
             results.append(result_item)
+    if results:
+        record_supersession_projection(
+            root,
+            task_id=current_task_id,
+            supersedes_task_ids=[item.task_id for item in results],
+            command=command,
+            artifact=artifact,
+        )
     return tuple(results)
+
+
+def record_supersession_projection(
+    root: Path,
+    *,
+    task_id: str,
+    supersedes_task_ids: Iterable[str],
+    command: str,
+    artifact: str | Path,
+) -> None:
+    ids = sorted({str(item).strip() for item in supersedes_task_ids if str(item).strip()})
+    if not ids:
+        return
+    index_path = agent_task_index_file(root)
+    payload = read_json(index_path, default={})
+    tasks = payload.get("tasks") if isinstance(payload, dict) else None
+    if not isinstance(tasks, list):
+        return
+    selected = next(
+        (item for item in tasks if isinstance(item, dict) and item.get("task_id") == task_id),
+        None,
+    )
+    if not isinstance(selected, dict):
+        return
+    selected["supersedes_task_ids"] = sorted(
+        set(str(item) for item in selected.get("supersedes_task_ids") or []) | set(ids)
+    )
+    selected["updated_at"] = utc_now()
+    payload["updated_at"] = utc_now()
+    atomic_write_text(index_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    status = normalize_status(str(selected.get("status") or "awaiting_agent"))
+    record_task_event(
+        root,
+        task_id=task_id,
+        from_status=status,
+        to_status=status,
+        command=command,
+        artifact=artifact,
+        supersedes_task_ids=ids,
+    )
 
 
 def mark_tasks_for_chapter_type(
@@ -1046,6 +1202,174 @@ def status_summary(root: Path, *, chapter_number: int | None = None) -> dict[str
         "items": tasks,
         "archived_terminal": archived_terminal,
     }
+
+
+def task_reconciliation_status(root: Path, *, chapter_number: int) -> dict[str, Any]:
+    """Inspect explicit parent-child projections without mutating project state."""
+
+    index = read_json(agent_task_index_file(root), default={})
+    tasks = index.get("tasks") if isinstance(index, dict) else []
+    if not isinstance(tasks, list):
+        return {
+            "status": "invalid",
+            "chapter_number": chapter_number,
+            "recoverable": [],
+            "errors": ["agent task index is unreadable"],
+        }
+    scoped = [
+        item
+        for item in tasks
+        if isinstance(item, dict) and int(item.get("chapter_number") or 0) == chapter_number
+    ]
+    by_id = {str(item.get("task_id") or ""): item for item in scoped}
+    consumers: dict[str, list[dict[str, Any]]] = {}
+    for item in scoped:
+        parent_id = str(item.get("consumes_task_id") or "")
+        if parent_id:
+            consumers.setdefault(parent_id, []).append(item)
+    errors: list[str] = []
+    recoverable: list[dict[str, Any]] = []
+    for parent_id, children in sorted(consumers.items()):
+        if len(children) != 1:
+            errors.append(f"parent task {parent_id} has {len(children)} consuming children")
+            continue
+        parent = by_id.get(parent_id)
+        child = children[0]
+        child_id = str(child.get("task_id") or "")
+        if not isinstance(parent, dict):
+            errors.append(f"consumed parent task is missing from the active projection: {parent_id}")
+            continue
+        try:
+            parent_manifest = read_json(root / str(parent.get("manifest_file") or ""), default={})
+            child_manifest = read_json(root / str(child.get("manifest_file") or ""), default={})
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        parent_validation = validate_manifest_strict(root, parent_manifest)
+        child_validation = validate_manifest_strict(root, child_manifest)
+        if not parent_validation.ok or not child_validation.ok:
+            errors.extend(parent_validation.errors)
+            errors.extend(child_validation.errors)
+            continue
+        binding = parent.get("current_result")
+        if not isinstance(binding, dict) or binding.get("ok") is not True:
+            errors.append(f"consumed parent task has no valid result binding: {parent_id}")
+            continue
+        parent_output = str(manifest_output(parent_manifest).get("path") or "")
+        if parent_output not in manifest_input_paths(child_manifest):
+            errors.append(f"child task does not declare parent output: {child_id}")
+            continue
+        output_path = resolve_under_root(root, parent_output)
+        current_hash = sha256(output_path.read_bytes()).hexdigest() if output_path.is_file() else ""
+        expected_hash = str(binding.get("sha256") or "")
+        if not current_hash or current_hash != expected_hash:
+            errors.append(f"consumed parent result hash drifted: {parent_id}")
+            continue
+        consistent = (
+            str(parent.get("status") or "") == "applied"
+            and str(parent.get("consumed_by_task_id") or "") == child_id
+            and str(parent.get("satisfied_by_result_sha256") or "") == expected_hash
+            and str(child.get("satisfied_by_result_sha256") or "") == expected_hash
+        )
+        if not consistent:
+            recoverable.append(
+                {
+                    "parent_task_id": parent_id,
+                    "child_task_id": child_id,
+                    "satisfied_by_result_sha256": expected_hash,
+                }
+            )
+    return {
+        "schema": "agent_task_reconciliation_status_v1",
+        "status": "need_human" if errors else ("reconciliation_required" if recoverable else "ok"),
+        "chapter_number": chapter_number,
+        "recoverable": recoverable,
+        "errors": sorted(set(errors)),
+        "next_command": (
+            f"longform-engine agent-task reconcile project.yaml --chapter {chapter_number}"
+            if recoverable and not errors
+            else ""
+        ),
+    }
+
+
+def reconcile_task_lineage(root: Path, *, chapter_number: int) -> dict[str, Any]:
+    """Repair only explicit, hash-proven parent-child task projections."""
+
+    status = task_reconciliation_status(root, chapter_number=chapter_number)
+    if status["errors"]:
+        raise AgentTaskContractError("; ".join(status["errors"]))
+    recoverable = status.get("recoverable") or []
+    if not recoverable:
+        return {**status, "status": "ok", "reconciled": []}
+    index_path = agent_task_index_file(root)
+    payload = read_json(index_path, default={})
+    tasks = payload.get("tasks") if isinstance(payload, dict) else []
+    by_id = {
+        str(item.get("task_id") or ""): item for item in tasks if isinstance(item, dict)
+    }
+    transitions: list[tuple[str, str, str, str]] = []
+    for relation in recoverable:
+        parent_id = str(relation["parent_task_id"])
+        child_id = str(relation["child_task_id"])
+        digest = str(relation["satisfied_by_result_sha256"])
+        parent = by_id[parent_id]
+        child = by_id[child_id]
+        prior = normalize_status(str(parent.get("status") or "awaiting_agent"))
+        parent["status"] = "applied"
+        parent["consumed_by_task_id"] = child_id
+        parent["satisfied_by_result_sha256"] = digest
+        parent["updated_at"] = utc_now()
+        child["consumes_task_id"] = parent_id
+        child["satisfied_by_result_sha256"] = digest
+        child["updated_at"] = utc_now()
+        transitions.append((parent_id, child_id, prior, digest))
+    payload["updated_at"] = utc_now()
+    atomic_write_text(index_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    for parent_id, child_id, prior, digest in transitions:
+        record_task_event(
+            root,
+            task_id=parent_id,
+            from_status=prior,
+            to_status="applied",
+            command="agent-task reconcile",
+            result=child_id,
+            consumed_by_task_id=child_id,
+            satisfied_by_result_sha256=digest,
+        )
+    return {
+        **task_reconciliation_status(root, chapter_number=chapter_number),
+        "status": "reconciled",
+        "reconciled": [
+            {"parent_task_id": parent, "child_task_id": child}
+            for parent, child, _prior, _digest in transitions
+        ],
+    }
+
+
+def live_chapter_tasks(root: Path, *, chapter_number: int) -> list[dict[str, Any]]:
+    """Return active tasks in the explicit current lineage without type-based exceptions."""
+
+    tasks = list_manifests(root, chapter_number=chapter_number)
+    ids = {str(item.get("task_id") or "") for item in tasks}
+    superseded = {
+        str(task_id)
+        for item in tasks
+        for task_id in item.get("supersedes_task_ids") or []
+        if str(task_id)
+    }
+    consumed = {
+        str(item.get("task_id") or "")
+        for item in tasks
+        if str(item.get("consumed_by_task_id") or "") in ids
+    }
+    terminal = {"applied", "superseded", "rolled_back"}
+    return [
+        item
+        for item in tasks
+        if str(item.get("task_id") or "") not in superseded | consumed
+        and normalize_status(str(item.get("status") or "awaiting_agent")) not in terminal
+    ]
 
 
 def normalize_scope(scope: dict[str, Any] | None, *, chapter_number: int | None) -> dict[str, Any]:
@@ -1382,6 +1706,10 @@ def record_task_event(
     command: str,
     artifact: str | Path = "",
     result: str | Path = "",
+    consumes_task_id: str = "",
+    consumed_by_task_id: str = "",
+    satisfied_by_result_sha256: str = "",
+    supersedes_task_ids: Iterable[str] = (),
 ) -> Path:
     normalized_to = normalize_status(to_status)
     normalized_from = normalize_status(from_status) if str(from_status).strip() else ""
@@ -1399,6 +1727,12 @@ def record_task_event(
         "command": command,
         "artifact": relative_path(root, artifact) if str(artifact).strip() else "",
         "result": relative_path(root, result) if str(result).strip() else "",
+        "consumes_task_id": str(consumes_task_id or ""),
+        "consumed_by_task_id": str(consumed_by_task_id or ""),
+        "satisfied_by_result_sha256": str(satisfied_by_result_sha256 or ""),
+        "supersedes_task_ids": sorted(
+            {str(item).strip() for item in supersedes_task_ids if str(item).strip()}
+        ),
         "created_at": utc_now(),
     }
     with path.open("a", encoding="utf-8", newline="\n") as handle:
@@ -1457,6 +1791,75 @@ def task_archive_projection(root: Path, chapter_number: int) -> dict[str, Any]:
         "chapter_number": chapter_number,
         "tasks": tasks,
         "events": events,
+    }
+
+
+def project_task_archive_projection(root: Path) -> dict[str, Any]:
+    tasks = [item for item in list_manifests(root) if manifest_chapter_number(item) == 0]
+    task_ids = {str(item.get("task_id") or "") for item in tasks}
+    events = [
+        item
+        for item in read_task_events(root)
+        if int(item.get("chapter_number") or 0) == 0
+        or str(item.get("task_id") or "") in task_ids
+    ]
+    return {
+        "schema": "project_agent_task_projection_v1",
+        "tasks": tasks,
+        "events": events,
+    }
+
+
+def compact_project_task_projection(root: Path, *, archive_ref: str) -> dict[str, Any]:
+    index_path = agent_task_index_file(root)
+    payload = read_json(index_path, default={})
+    if not isinstance(payload, dict):
+        payload = new_task_index()
+    tasks = [dict(item) for item in payload.get("tasks", []) if isinstance(item, dict)]
+    project_tasks = [item for item in tasks if int(item.get("chapter_number") or 0) == 0]
+    nonterminal = [item for item in project_tasks if str(item.get("status") or "") not in TERMINAL_TASK_STATUSES]
+    if nonterminal:
+        names = ", ".join(str(item.get("task_id") or "") for item in nonterminal[:5])
+        raise ValueError(f"Cannot compact project setup with active tasks: {names}")
+    retained = [item for item in tasks if item not in project_tasks]
+    counts = payload.get("terminal_counts") if isinstance(payload.get("terminal_counts"), dict) else {}
+    by_status = dict(counts.get("by_status") or {})
+    by_type = dict(counts.get("by_type") or {})
+    for item in project_tasks:
+        status = str(item.get("status") or "unknown")
+        task_type = str(item.get("task_type") or "unknown")
+        by_status[status] = int(by_status.get(status) or 0) + 1
+        by_type[task_type] = int(by_type.get(task_type) or 0) + 1
+    payload.update(
+        {
+            "schema": AGENT_TASK_INDEX_SCHEMA,
+            "schema_version": AGENT_TASK_SCHEMA_VERSION,
+            "tasks": retained,
+            "terminal_counts": {
+                "total": int(counts.get("total") or 0) + len(project_tasks),
+                "by_status": by_status,
+                "by_type": by_type,
+            },
+            "project_setup_archive": {
+                "archive": archive_ref,
+                "task_count": len(project_tasks),
+            },
+            "updated_at": utc_now(),
+        }
+    )
+    atomic_write_text(index_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+    events = read_task_events(root)
+    retained_events = [item for item in events if int(item.get("chapter_number") or 0) != 0]
+    atomic_write_text(
+        agent_task_events_file(root),
+        "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in retained_events),
+    )
+    return {
+        "archived_tasks": len(project_tasks),
+        "retained_tasks": len(retained),
+        "archived_events": len(events) - len(retained_events),
+        "retained_events": len(retained_events),
     }
 
 

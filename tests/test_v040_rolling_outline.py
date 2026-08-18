@@ -159,6 +159,7 @@ def direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> 
         "book_goal": "Expose who controls collective memory.",
         "volume_goal": "Prove the border archive is being altered from inside.",
         "protagonist_goal": "Preserve evidence without treating Mira as a tool.",
+        "featured_character_ids": ["lead_ari", "ally_mira"],
         "scene_chain": scene_chain,
         "cast_desires": {
             "lead_ari": "Verify the physical trace before pursuit.",
@@ -177,22 +178,28 @@ def direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> 
         "relationship_move": "The uneasy alliance gains a shared operational obligation.",
         "ending_mode": "changed_problem",
         "main_risks": ["Too much procedural explanation could flatten the choice."],
+        "canon_refs": [],
+        "world_rule_refs": [],
+        "foreshadow_refs": [],
+        "forbidden_reveals": ["identity of the archive editor"],
     }
+    selected = {
+        "id": "verify_seal",
+        "title": "Verify the seal",
+        "chapter_duty": "Trade pursuit speed for reliable evidence.",
+        **common,
+    }
+    selected["reader_gain"] = selected.pop("local_payoff")
+    selected["cost"] = selected.pop("character_cost")
     return {
         "schema": "chapter_direction_candidate_v2",
         "chapter_number": chapter_number,
         "chapter_card_sha256": sha256(card.read_bytes()).hexdigest(),
         "trigger_reasons": reasons,
-        "directions": [
-            {"id": "verify_seal", "title": "Verify the seal", "chapter_duty": "Trade pursuit speed for reliable evidence.", **common},
-            {
-                "id": "follow_witness",
-                "title": "Follow the witness",
-                "chapter_duty": "Let Ari choose speed and incur an evidence debt.",
-                **{**common, "character_cost": "Ari loses the seal evidence and must later admit the shortcut."},
-            },
-        ],
+        "selected_direction": selected,
         "selection": {"direction_id": "verify_seal", "user_adjustments": {}},
+        "canonical_refs": selected["canon_refs"],
+        "introduced_elements": [],
     }
 
 

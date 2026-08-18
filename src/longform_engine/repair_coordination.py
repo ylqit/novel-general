@@ -18,7 +18,10 @@ from longform_engine.agent_tasks import (
     build_manifest,
     list_manifests,
     load_manifest,
+    manifest_input_records,
+    manifest_output,
     update_task_status,
+    validate_manifest_strict,
     write_manifest,
 )
 from longform_engine.config import ConfigDocument
@@ -34,10 +37,84 @@ REPAIR_PLAN_VALIDATION_SCHEMA = "validation_report_v1"
 BLOCKING_SEVERITIES = frozenset({"P0", "P1"})
 REVIEW_ORDER = ("semantic", "payoff", "pacing", "editorial")
 FINDING_ID_PATTERN = re.compile(r"RF-[0-9a-f]{12}")
+REPAIR_CARD_FIELDS = (
+    "chapter_number",
+    "title",
+    "chapter_duty",
+    "conflict",
+    "hook",
+    "reader_gain",
+    "cost",
+    "platform_promise",
+    "plot_obligation",
+    "dramatic_freedom",
+    "pov_character_id",
+    "featured_character_ids",
+    "scene_wants",
+    "opposing_wants",
+    "hidden_agenda",
+    "relationship_move",
+    "voice_state",
+    "embodiment_strategy",
+    "summary_scene_policy",
+    "irreversible_action",
+    "emotional_aftereffect",
+    "forbidden_reveals",
+    "canon_refs",
+    "divergence_effects",
+    "voice_refs",
+    "original_contribution",
+    "protected_reveals",
+    "scene_chain",
+    "dialogue_ownership",
+    "interiority_function",
+    "ending_mode",
+    "longline_impact",
+    "character_arc_move",
+    "foreshadow_impact",
+    "relationship_impact",
+)
+REPAIR_TCS_FIELDS = (
+    "active_relationships",
+    "open_foreshadows",
+    "foreshadow_current",
+    "character_current",
+    "current_characters",
+    "locations",
+    "active_constraints",
+    "reader_progress",
+    "known_facts",
+    "character_knowledge",
+    "active_plot_threads",
+    "spoiler_guard",
+)
+EDITORIAL_REPAIRABLE_REASONS = frozenset(
+    {"unresolved_P0", "unresolved_P1", "editorial_blocking_verdict", "minority_P0_P1"}
+)
 
 
 class RepairCoordinationError(ValueError):
     """Raised when the review barrier or immutable repair contract is violated."""
+
+
+def editorial_human_resolution_reasons(aggregate: dict[str, Any]) -> list[str]:
+    """Return only editorial reasons that cannot be handled by repair synthesis."""
+
+    human_reasons = {str(item) for item in aggregate.get("need_human_reasons") or []}
+    minority_codes = {
+        str(item.get("issue_code") or "")
+        for item in aggregate.get("minority_blockers") or []
+        if isinstance(item, dict)
+    }
+    conflict_codes = {
+        str(item.get("issue_code") or "")
+        for item in aggregate.get("human_decisions") or []
+        if isinstance(item, dict)
+    }
+    repairable = set(EDITORIAL_REPAIRABLE_REASONS)
+    if conflict_codes and conflict_codes.issubset(minority_codes):
+        repairable.add("editorial_evidence_conflict")
+    return sorted(human_reasons - repairable)
 
 
 def review_barrier_status(config: ConfigDocument, *, chapter_number: int) -> dict[str, Any]:
@@ -132,7 +209,7 @@ def create_repair_synthesis_task(config: ConfigDocument, *, chapter_number: int)
     plan_dir.mkdir(parents=True, exist_ok=True)
     bundle_file = plan_dir / f"{round_token}.review_bundle.json"
     task_file = plan_dir / f"{round_token}.task.md"
-    context_file = plan_dir / f"{round_token}.context.json"
+    context_file = plan_dir / f"{round_token}.constraints.json"
     plan_file = plan_dir / f"{round_token}.plan.md"
     manifest_file = plan_dir / f"{round_token}.plan.agent_task.json"
     task_id = f"repair_plan_synthesis:ch{chapter_number:03d}:{round_token}:v4"
@@ -145,6 +222,29 @@ def create_repair_synthesis_task(config: ConfigDocument, *, chapter_number: int)
             and bundle_file.is_file()
             and manifest_file.is_file()
         ):
+            if not context_file.is_file():
+                if str(existing.get("status") or "") != "awaiting_agent" or plan_file.is_file():
+                    raise RepairCoordinationError(
+                        "existing repair synthesis task cannot refresh its context after Agent output"
+                    )
+                snapshot = root / str(existing_bundle.get("candidate_snapshot") or "")
+                if not snapshot.is_file() or _file_hash(snapshot) != barrier["candidate_sha256"]:
+                    raise RepairCoordinationError("existing repair synthesis snapshot lineage is invalid")
+                _write_immutable_json(
+                    context_file,
+                    _repair_context(root, chapter_number, barrier["candidate_sha256"]),
+                )
+                manifest = _repair_synthesis_manifest(
+                    root,
+                    chapter_number=chapter_number,
+                    task_id=task_id,
+                    task_file=task_file,
+                    snapshot=snapshot,
+                    bundle_file=bundle_file,
+                    context_file=context_file,
+                    plan_file=plan_file,
+                )
+                write_manifest(root, manifest, manifest_file)
             return {
                 "schema": "repair_synthesis_task_result_v1",
                 "chapter_number": chapter_number,
@@ -207,31 +307,15 @@ def create_repair_synthesis_task(config: ConfigDocument, *, chapter_number: int)
         )
         + "\n",
     )
-    manifest = build_manifest(
+    manifest = _repair_synthesis_manifest(
         root,
-        task_type="repair_plan_synthesis",
         chapter_number=chapter_number,
         task_id=task_id,
-        input_files=[task_file, snapshot, bundle_file, context_file],
-        allowed_output_paths=[plan_file],
-        output_schema=output_protocol_for_task("repair_plan_synthesis"),
-        validate_command=(
-            f"longform-engine repair synthesis-validate project.yaml --chapter {chapter_number} "
-            f"--file {relative_path(root, plan_file)}"
-        ),
-        apply_command=(
-            f"longform-engine repair candidate-task project.yaml --chapter {chapter_number} --agent codex"
-        ),
-        failure_next_command=(
-            f"longform-engine repair synthesis-task project.yaml --chapter {chapter_number}"
-        ),
-        context_policy={
-            "required_files": [task_file, snapshot, bundle_file, context_file],
-            "optional_files": [],
-            "compiled_brief": task_file,
-            "selection_report": task_file,
-            "trigger_codes": ["repair_plan_synthesis"],
-        },
+        task_file=task_file,
+        snapshot=snapshot,
+        bundle_file=bundle_file,
+        context_file=context_file,
+        plan_file=plan_file,
     )
     write_manifest(root, manifest, manifest_file)
     return {
@@ -287,6 +371,15 @@ def validate_repair_plan(
         ):
             return {**prior, "report_file": relative_path(root, report_file)}
         raise RepairCoordinationError("a validated immutable repair plan cannot be replaced or revalidated")
+    from longform_engine.agent_pipeline import validate_production_agent_result
+
+    control = validate_production_agent_result(
+        root,
+        load_manifest(root, str(task.get("task_id") or "")),
+        result_file=output,
+    )
+    if not control.ok:
+        errors.extend(control.normalization.errors)
     bundle = load_json(bundle_file, default={})
     if not isinstance(bundle, dict) or bundle.get("schema") != REVIEW_BUNDLE_SCHEMA:
         errors.append("review bundle is missing or invalid")
@@ -400,35 +493,51 @@ def create_repair_candidate_task(
     """Register a repair author task bound to one validated immutable plan."""
 
     root = resolve_project_root(config)
-    synthesis = _current_task(root, chapter_number, "repair_plan_synthesis")
-    if synthesis is None or str(synthesis.get("status") or "") != "validated":
+    synthesis = _repair_plan_for_candidate_command(root, chapter_number)
+    if synthesis is None:
         raise RepairCoordinationError("repair plan must validate before creating a repair candidate task")
     round_number = _round_from_task(str(synthesis.get("task_id") or ""))
-    if next_repair_round(config, chapter_number=chapter_number) != round_number:
-        raise RepairCoordinationError("repair plan round is stale or repair budget is exhausted")
     round_token = f"r{round_number:02d}"
     plan_dir = root / "50_workbench" / "repair_plans" / f"ch{chapter_number:03d}"
     plan_file = plan_dir / f"{round_token}.plan.md"
+    task_file = plan_dir / f"{round_token}.repair_task.md"
     report_file = plan_dir / f"{round_token}.validation.json"
-    report = load_json(report_file, default={})
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
-    snapshot = root / str(load_json(plan_dir / f"{round_token}.review_bundle.json", default={}).get("candidate_snapshot") or "")
-    if not (
-        isinstance(report, dict)
-        and report.get("ok") is True
-        and str((report.get("provenance") or {}).get("candidate_sha256") or "") == _file_hash(draft)
-        and str((report.get("provenance") or {}).get("plan_sha256") or "") == _file_hash(plan_file)
-        and snapshot.is_file()
-        and _file_hash(snapshot) == _file_hash(draft)
-    ):
-        raise RepairCoordinationError("validated repair plan is stale for the current candidate")
     safe_agent = re.sub(r"[^a-z0-9_-]+", "_", str(agent or "codex").strip().lower()) or "codex"
     candidate_dir = root / "50_workbench" / "repair_candidates"
     candidate_dir.mkdir(parents=True, exist_ok=True)
-    task_file = plan_dir / f"{round_token}.repair_task.md"
     candidate_file = candidate_dir / f"ch{chapter_number:03d}.{round_token}.{safe_agent}.md"
     manifest_file = plan_dir / f"{round_token}.repair.agent_task.json"
     task_id = f"repair:ch{chapter_number:03d}:{round_token}:v4"
+    existing = _task_by_id(root, task_id)
+    lineage = _validate_repair_plan_lineage(
+        root,
+        chapter_number=chapter_number,
+        round_number=round_number,
+        synthesis=synthesis,
+        child=existing,
+        expected_output=candidate_file,
+    )
+    snapshot = lineage["snapshot"]
+    if existing is not None:
+        reconciled = _mark_repair_plan_consumed(root, synthesis, child=existing)
+        return _repair_candidate_task_result(
+            root,
+            chapter_number=chapter_number,
+            round_number=round_number,
+            task_id=task_id,
+            task_file=task_file,
+            candidate_file=candidate_file,
+            manifest_file=manifest_file,
+            reconciled=reconciled,
+        )
+
+    if str(synthesis.get("status") or "") != "validated":
+        raise RepairCoordinationError("repair plan has already been consumed but its repair child is missing")
+    if next_repair_round(config, chapter_number=chapter_number) != round_number:
+        raise RepairCoordinationError("repair plan round is stale or repair budget is exhausted")
+    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    if not draft.is_file() or _file_hash(draft) != str(lineage["candidate_sha256"]):
+        raise RepairCoordinationError("validated repair plan is stale for the current candidate")
     _write_immutable_text(
         task_file,
         "\n".join(
@@ -443,34 +552,143 @@ def create_repair_candidate_task(
         )
         + "\n",
     )
-    existing = _task_by_id(root, task_id)
-    if existing is None:
-        submit_command = (
-            f"longform-engine draft submit project.yaml --chapter {chapter_number} "
-            f"--file {relative_path(root, candidate_file)} --agent {safe_agent} --overwrite"
-        )
-        manifest = build_manifest(
-            root,
-            task_type="repair",
-            chapter_number=chapter_number,
-            task_id=task_id,
-            input_files=[task_file, snapshot, plan_file],
-            allowed_output_paths=[candidate_file],
-            output_schema=output_protocol_for_task("repair"),
-            validate_command=submit_command,
-            apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
-            failure_next_command=(
-                f"longform-engine agent-task brief project.yaml {task_id}"
-            ),
-            context_policy={
-                "required_files": [task_file, snapshot, plan_file],
-                "optional_files": [],
-                "compiled_brief": task_file,
-                "selection_report": task_file,
-                "trigger_codes": ["repair"],
-            },
-        )
-        write_manifest(root, manifest, manifest_file)
+    submit_command = (
+        f"longform-engine draft submit project.yaml --chapter {chapter_number} "
+        f"--file {relative_path(root, candidate_file)} --agent {safe_agent} --overwrite"
+    )
+    manifest = build_manifest(
+        root,
+        task_type="repair",
+        chapter_number=chapter_number,
+        task_id=task_id,
+        input_files=[task_file, snapshot, plan_file],
+        allowed_output_paths=[candidate_file],
+        output_schema=output_protocol_for_task("repair"),
+        validate_command=submit_command,
+        apply_command=f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human",
+        failure_next_command=(
+            f"longform-engine agent-task brief project.yaml {task_id}"
+        ),
+        context_policy={
+            "required_files": [task_file, snapshot, plan_file],
+            "optional_files": [],
+            "compiled_brief": task_file,
+            "selection_report": task_file,
+            "trigger_codes": ["repair"],
+        },
+    )
+    write_manifest(
+        root,
+        manifest,
+        manifest_file,
+        consumes_task_id=str(synthesis.get("task_id") or ""),
+    )
+    child = _task_by_id(root, task_id)
+    if child is None:
+        raise RepairCoordinationError("repair child registration did not enter the task index")
+    _validate_repair_plan_lineage(
+        root,
+        chapter_number=chapter_number,
+        round_number=round_number,
+        synthesis=synthesis,
+        child=child,
+        expected_output=candidate_file,
+    )
+    _mark_repair_plan_consumed(root, synthesis, child=child)
+    return _repair_candidate_task_result(
+        root,
+        chapter_number=chapter_number,
+        round_number=round_number,
+        task_id=task_id,
+        task_file=task_file,
+        candidate_file=candidate_file,
+        manifest_file=manifest_file,
+        reconciled=False,
+    )
+
+
+def repair_lifecycle_reconciliation_status(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+) -> dict[str, Any]:
+    """Report a validated parent whose already-created child can safely consume it."""
+
+    root = resolve_project_root(config)
+    parents = [
+        task
+        for task in list_manifests(root, chapter_number=chapter_number)
+        if str(task.get("task_type") or "") == "repair_plan_synthesis"
+        and str(task.get("status") or "") == "validated"
+    ]
+    recoverable: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for parent in parents:
+        try:
+            round_number = _round_from_task(str(parent.get("task_id") or ""))
+        except RepairCoordinationError as exc:
+            errors.append(str(exc))
+            continue
+        child_id = f"repair:ch{chapter_number:03d}:r{round_number:02d}:v4"
+        child = _task_by_id(root, child_id)
+        if child is None:
+            continue
+        output = root / str(manifest_output(child).get("path") or "")
+        try:
+            _validate_repair_plan_lineage(
+                root,
+                chapter_number=chapter_number,
+                round_number=round_number,
+                synthesis=parent,
+                child=child,
+                expected_output=output,
+            )
+        except RepairCoordinationError as exc:
+            errors.append(str(exc))
+            continue
+        recoverable.append({"parent": parent, "child": child, "round": round_number})
+    if errors or len(recoverable) > 1:
+        return {
+            "status": "need_human",
+            "recoverable": False,
+            "chapter_number": chapter_number,
+            "errors": errors or ["multiple repair parent-child lineages require reconciliation"],
+            "next_command": "",
+        }
+    if not recoverable:
+        return {
+            "status": "none",
+            "recoverable": False,
+            "chapter_number": chapter_number,
+            "errors": [],
+            "next_command": "",
+        }
+    item = recoverable[0]
+    return {
+        "status": "agent_task_lifecycle_reconciliation_required",
+        "recoverable": True,
+        "chapter_number": chapter_number,
+        "repair_round": item["round"],
+        "parent_task_id": str(item["parent"].get("task_id") or ""),
+        "child_task_id": str(item["child"].get("task_id") or ""),
+        "errors": [],
+        "next_command": (
+            f"longform-engine repair candidate-task project.yaml --chapter {chapter_number} --agent codex"
+        ),
+    }
+
+
+def _repair_candidate_task_result(
+    root: Path,
+    *,
+    chapter_number: int,
+    round_number: int,
+    task_id: str,
+    task_file: Path,
+    candidate_file: Path,
+    manifest_file: Path,
+    reconciled: bool,
+) -> dict[str, Any]:
     return {
         "schema": "repair_candidate_task_result_v1",
         "chapter_number": chapter_number,
@@ -479,8 +697,150 @@ def create_repair_candidate_task(
         "candidate_task": relative_path(root, task_file),
         "candidate_draft": relative_path(root, candidate_file),
         "manifest_file": relative_path(root, manifest_file),
+        "parent_plan_status": "applied",
+        "lifecycle_reconciled": reconciled,
         "next_command": f"longform-engine agent-task brief project.yaml {task_id}",
     }
+
+
+def _repair_plan_for_candidate_command(root: Path, chapter_number: int) -> dict[str, Any] | None:
+    plans = [
+        task
+        for task in list_manifests(root, chapter_number=chapter_number)
+        if str(task.get("task_type") or "") == "repair_plan_synthesis"
+    ]
+    validated = [task for task in plans if str(task.get("status") or "") == "validated"]
+    if len(validated) > 1:
+        raise RepairCoordinationError("multiple validated repair plans make the active round ambiguous")
+    if validated:
+        return validated[0]
+    reusable = []
+    for plan in plans:
+        if str(plan.get("status") or "") != "applied":
+            continue
+        round_number = _round_from_task(str(plan.get("task_id") or ""))
+        child_id = f"repair:ch{chapter_number:03d}:r{round_number:02d}:v4"
+        if _task_by_id(root, child_id) is not None:
+            reusable.append(plan)
+    if not reusable:
+        return None
+    return sorted(reusable, key=lambda item: _round_from_task(str(item.get("task_id") or "")))[-1]
+
+
+def _validate_repair_plan_lineage(
+    root: Path,
+    *,
+    chapter_number: int,
+    round_number: int,
+    synthesis: dict[str, Any],
+    child: dict[str, Any] | None,
+    expected_output: Path,
+) -> dict[str, Any]:
+    round_token = f"r{round_number:02d}"
+    plan_dir = root / "50_workbench" / "repair_plans" / f"ch{chapter_number:03d}"
+    plan_file = plan_dir / f"{round_token}.plan.md"
+    task_file = plan_dir / f"{round_token}.repair_task.md"
+    bundle_file = plan_dir / f"{round_token}.review_bundle.json"
+    report_file = plan_dir / f"{round_token}.validation.json"
+    bundle = load_json(bundle_file, default={})
+    report = load_json(report_file, default={})
+    provenance = report.get("provenance") if isinstance(report, dict) and isinstance(report.get("provenance"), dict) else {}
+    snapshot_text = str(bundle.get("candidate_snapshot") or "") if isinstance(bundle, dict) else ""
+    snapshot = root / snapshot_text
+    candidate_sha256 = str(provenance.get("candidate_sha256") or "")
+    errors: list[str] = []
+    if str(synthesis.get("task_id") or "") != f"repair_plan_synthesis:ch{chapter_number:03d}:{round_token}:v4":
+        errors.append("repair parent task id does not match chapter and round")
+    if not isinstance(report, dict) or report.get("ok") is not True:
+        errors.append("repair plan validation report is missing or unsuccessful")
+    if int(provenance.get("chapter_number") or 0) != chapter_number or int(provenance.get("repair_round") or 0) != round_number:
+        errors.append("repair plan validation provenance does not match chapter and round")
+    if not plan_file.is_file() or str(provenance.get("plan_sha256") or "") != _file_hash(plan_file):
+        errors.append("repair plan hash does not match its validation report")
+    if not bundle_file.is_file() or str(provenance.get("review_bundle_sha256") or "") != _file_hash(bundle_file):
+        errors.append("repair review bundle hash does not match its validation report")
+    if not isinstance(bundle, dict) or bundle.get("schema") != REVIEW_BUNDLE_SCHEMA:
+        errors.append("repair review bundle schema is invalid")
+    elif (
+        int(bundle.get("chapter_number") or 0) != chapter_number
+        or int(bundle.get("repair_round") or 0) != round_number
+        or str(bundle.get("candidate_sha256") or "") != candidate_sha256
+    ):
+        errors.append("repair review bundle provenance does not match the validated plan")
+    if not snapshot_text or not snapshot.is_file() or _file_hash(snapshot) != candidate_sha256:
+        errors.append("repair candidate snapshot is missing or has changed")
+    parent_output = str(manifest_output(synthesis).get("path") or "")
+    if parent_output != relative_path(root, plan_file):
+        errors.append("repair parent output does not point to the validated plan")
+    parent_result = synthesis.get("current_result") if isinstance(synthesis.get("current_result"), dict) else {}
+    if parent_result and (
+        parent_result.get("ok") is not True
+        or str(parent_result.get("path") or "") != relative_path(root, plan_file)
+        or str(parent_result.get("sha256") or "") != _file_hash(plan_file)
+    ):
+        errors.append("repair parent control-plane result is missing or stale")
+
+    if child is not None:
+        child_id = f"repair:ch{chapter_number:03d}:{round_token}:v4"
+        if str(child.get("task_id") or "") != child_id or str(child.get("task_type") or "") != "repair":
+            errors.append("repair child identity does not match the parent round")
+        validation = validate_manifest_strict(
+            root,
+            load_json(root / str(child.get("manifest_file") or ""), default={}),
+        )
+        if not validation.ok:
+            errors.extend(f"repair child manifest: {item}" for item in validation.errors)
+        output_path = str(manifest_output(child).get("path") or "")
+        expected_pattern = re.compile(
+            rf"^50_workbench/repair_candidates/ch{chapter_number:03d}\.r{round_number:02d}\.[a-z0-9_-]+\.md$"
+        )
+        if output_path != relative_path(root, expected_output) or not expected_pattern.fullmatch(output_path):
+            errors.append("repair child output path does not match the deterministic round path")
+        expected_inputs = {
+            relative_path(root, task_file): _file_hash(task_file),
+            relative_path(root, snapshot): _file_hash(snapshot),
+            relative_path(root, plan_file): _file_hash(plan_file),
+        }
+        inputs = {
+            str(item.get("path") or ""): str(item.get("sha256") or "")
+            for item in manifest_input_records(child)
+        }
+        for path, digest in expected_inputs.items():
+            if inputs.get(path) != digest:
+                errors.append(f"repair child input lineage does not match `{path}`")
+    if errors:
+        raise RepairCoordinationError("repair lifecycle lineage is invalid: " + "; ".join(errors))
+    return {
+        "plan": plan_file,
+        "review_bundle": bundle_file,
+        "snapshot": snapshot,
+        "candidate_sha256": candidate_sha256,
+    }
+
+
+def _mark_repair_plan_consumed(
+    root: Path,
+    synthesis: dict[str, Any],
+    *,
+    child: dict[str, Any],
+) -> bool:
+    status = str(synthesis.get("status") or "")
+    if status == "applied":
+        return False
+    if status != "validated":
+        raise RepairCoordinationError(f"repair parent cannot be consumed from lifecycle status `{status}`")
+    child_manifest = str(child.get("manifest_file") or "")
+    result = update_task_status(
+        root,
+        str(synthesis.get("task_id") or ""),
+        to_status="applied",
+        command="repair candidate-task",
+        artifact=child_manifest,
+        result=child_manifest,
+    )
+    if result is None:
+        raise RepairCoordinationError("repair parent task is missing from the task index")
+    return True
 
 
 def record_repair_submission(
@@ -615,7 +975,7 @@ def ensure_candidate_snapshot(root: Path, *, chapter_number: int) -> Path:
     if not draft.is_file():
         raise RepairCoordinationError("current chapter draft is missing")
     digest = _file_hash(draft)
-    snapshot = root / "50_workbench" / "candidate_snapshots" / f"ch{chapter_number:03d}" / f"{digest}.md"
+    snapshot = root / "50_workbench" / "candidate_blobs" / f"{digest}.md"
     snapshot.parent.mkdir(parents=True, exist_ok=True)
     if snapshot.exists():
         if _file_hash(snapshot) != digest:
@@ -710,28 +1070,13 @@ def _editorial_stage(config: ConfigDocument, root: Path, chapter: int, candidate
         and int(aggregate.get("result_count") or 0) > 0
         and not structural
     )
-    human_reasons = set(str(item) for item in aggregate.get("need_human_reasons") or []) if isinstance(aggregate, dict) else set()
-    minority_codes = {
-        str(item.get("issue_code") or "")
-        for item in aggregate.get("minority_blockers") or []
-        if isinstance(item, dict)
-    } if isinstance(aggregate, dict) else set()
-    conflict_codes = {
-        str(item.get("issue_code") or "")
-        for item in aggregate.get("human_decisions") or []
-        if isinstance(item, dict)
-    } if isinstance(aggregate, dict) else set()
-    minority_only_conflict = bool(conflict_codes and conflict_codes.issubset(minority_codes))
-    content_reasons = {"unresolved_P0", "unresolved_P1", "editorial_blocking_verdict", "minority_P0_P1"}
-    if minority_only_conflict:
-        content_reasons.add("editorial_evidence_conflict")
-    protocol_or_conflict = human_reasons - content_reasons
+    protocol_or_conflict = editorial_human_resolution_reasons(aggregate) if isinstance(aggregate, dict) else []
     return {
         "required": True,
         "complete": complete,
         "need_human": complete and bool(protocol_or_conflict),
         "reason": "aggregated" if complete else "editorial reviews missing, invalid, duplicate, or stale",
-        "need_human_reasons": sorted(protocol_or_conflict),
+        "need_human_reasons": protocol_or_conflict,
     }
 
 
@@ -832,27 +1177,84 @@ def _admit_finding(
 
 
 def _repair_context(root: Path, chapter: int, candidate_hash: str) -> dict[str, Any]:
-    files = [
-        root / "20_outline" / "chapter_cards" / f"ch{chapter:03d}.json",
-        root / "30_state" / "tcs" / f"ch{chapter:03d}.json",
+    sources = [
+        (
+            root / "20_outline" / "chapter_cards" / f"ch{chapter:03d}.json",
+            REPAIR_CARD_FIELDS,
+            "chapter repair contract",
+        ),
+        (
+            root / "30_state" / "tcs" / f"ch{chapter:03d}.json",
+            REPAIR_TCS_FIELDS,
+            "current canonical constraints",
+        ),
     ]
     constraints = []
-    for path in files:
+    for path, fields, selection_reason in sources:
         if path.is_file():
+            content = load_json(path, default={})
+            if not isinstance(content, dict):
+                raise RepairCoordinationError(f"repair constraint source is not a JSON object: {path}")
             constraints.append(
                 {
                     "path": relative_path(root, path),
                     "sha256": _file_hash(path),
-                    "content": load_json(path, default={}),
+                    "selection_reason": selection_reason,
+                    "projection": {
+                        field: content[field]
+                        for field in fields
+                        if field in content and content[field] not in (None, "", [], {})
+                    },
                 }
             )
     return {
-        "schema": "repair_synthesis_context_v1",
+        "schema": "repair_synthesis_context_v2",
         "chapter_number": chapter,
         "candidate_sha256": candidate_hash,
         "constraints": constraints,
         "hard_boundary": "reference only; cannot write canonical state",
     }
+
+
+def _repair_synthesis_manifest(
+    root: Path,
+    *,
+    chapter_number: int,
+    task_id: str,
+    task_file: Path,
+    snapshot: Path,
+    bundle_file: Path,
+    context_file: Path,
+    plan_file: Path,
+) -> dict[str, Any]:
+    """Build the immutable repair-plan contract from its compact evidence packet."""
+
+    return build_manifest(
+        root,
+        task_type="repair_plan_synthesis",
+        chapter_number=chapter_number,
+        task_id=task_id,
+        input_files=[task_file, snapshot, bundle_file, context_file],
+        allowed_output_paths=[plan_file],
+        output_schema=output_protocol_for_task("repair_plan_synthesis"),
+        validate_command=(
+            f"longform-engine repair synthesis-validate project.yaml --chapter {chapter_number} "
+            f"--file {relative_path(root, plan_file)}"
+        ),
+        apply_command=(
+            f"longform-engine repair candidate-task project.yaml --chapter {chapter_number} --agent codex"
+        ),
+        failure_next_command=(
+            f"longform-engine repair synthesis-task project.yaml --chapter {chapter_number}"
+        ),
+        context_policy={
+            "required_files": [task_file, snapshot, bundle_file, context_file],
+            "optional_files": [],
+            "compiled_brief": task_file,
+            "selection_report": task_file,
+            "trigger_codes": ["repair_plan_synthesis"],
+        },
+    )
 
 
 def _barrier_result(

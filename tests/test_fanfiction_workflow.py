@@ -362,7 +362,8 @@ def test_fanfiction_design_compiles_realistic_canon_into_bounded_context(tmp_pat
         "50_workbench/intelligence_context/fanfiction_design.project.context.json",
         "50_workbench/intelligence_tasks/fanfiction_design.project.md",
     ]
-    assert len(context_path.read_text(encoding="utf-8")) <= 16_000
+    assert context["selection_report"]["estimated_units"] > 0
+    assert context["selection_report"]["estimated_units"] < context["selection_report"]["capacity_units"]
     assert context["schema"] == "fanfiction_design_context_v1"
     assert context["selection_report"]["omitted_counts"]["classic:characters"] == 28
     assert {item["path"] for item in context["canonical_provenance"]} == {
@@ -636,6 +637,7 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
         "book_goal": "Resolve who controls the alternate gate.",
         "volume_goal": "Make the first divergence create a visible obligation.",
         "protagonist_goal": "Test the gate without surrendering agency.",
+        "featured_character_ids": ["classic:lin_zhou", "classic:gatekeeper"],
         "scene_chain": [
             {
                 "scene_id": "test_threshold",
@@ -673,27 +675,28 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
         "relationship_move": "Mutual testing becomes a temporary operational bargain.",
         "ending_mode": "changed_problem",
         "main_risks": ["Canon terminology could replace visible consequence."],
+        "canon_refs": ["classic:event_warning"],
+        "world_rule_refs": ["classic:rule_fire"],
+        "foreshadow_refs": [],
+        "forbidden_reveals": ["identity of the original gate controller"],
     }
+    selected_direction = {
+        "id": "test_gate",
+        "title": "Test the gate",
+        "chapter_duty": "Turn the first divergence into a costly choice.",
+        **direction,
+    }
+    selected_direction["reader_gain"] = selected_direction.pop("local_payoff")
+    selected_direction["cost"] = selected_direction.pop("character_cost")
     direction_payload = {
         "schema": "chapter_direction_candidate_v2",
         "chapter_number": 1,
         "chapter_card_sha256": sha256(card_path.read_bytes()).hexdigest(),
         "trigger_reasons": reasons,
-        "directions": [
-            {
-                "id": "test_gate",
-                "title": "Test the gate",
-                "chapter_duty": "Turn the first divergence into a costly choice.",
-                **direction,
-            },
-            {
-                "id": "trust_keeper",
-                "title": "Trust the keeper",
-                "chapter_duty": "Trade immediate agency for one protected canon fact.",
-                **{**direction, "character_cost": "Lin Zhou accepts the keeper's binding condition."},
-            },
-        ],
+        "selected_direction": selected_direction,
         "selection": {"direction_id": "test_gate", "user_adjustments": {}},
+        "canonical_refs": selected_direction["canon_refs"],
+        "introduced_elements": [],
     }
     write_design_candidate(
         direction_candidate,

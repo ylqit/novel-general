@@ -31,7 +31,7 @@ sections:
 不得把计划字段算成收益、强制悬崖、读取 peer 结果或用速度代替质量。
 
 **输出协议**
-只输出一个 `evidence_review_v1` JSON，顶层仅含 `schema`、`verdict`、`coverage`、`findings`；收益、代价与承诺推进都必须由正文 evidence_ids 证明，计划字段不能替正文通过。
+只输出一个 `evidence_review_v2` JSON。收益、代价与承诺推进的 `coverage` 都必须由正文 evidence_ids 和对应 canonical_refs 共同证明，计划字段不能替正文通过。
 
 ## decision_model
 用“读者获得—人物付出—承诺状态”三联判断。获得可以是事实答案、能力边界、关系变化、情绪释放、策略优势或新问题，但必须改变读者理解；代价必须真实限制人物后续选择；承诺推进区分兑现、复杂化和有证据的延迟。只有刺激没有状态变化属于虚假收益。

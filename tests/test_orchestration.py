@@ -123,15 +123,11 @@ def test_continue_write_creates_agent_writing_task_by_default(tmp_path):
     assert task["writing_mode"] == "agent_skill"
     assert task["draft_submission_path"] == "50_workbench/agent_drafts/ch001.codex.md"
     assert "draft submit" in task["next_command"]
-    assert task["feedback_carryover"]["status"] == "none"
-    assert task["feedback_carryover"]["source_files"] == []
-    assert "Writing Task ch001" in task_md
-    assert "## Feedback Carryover" in task_md
-    assert "- TCS constraints:" not in task_md
-    assert "- Reverse brake:" not in task_md
-    assert "- Style profile:" not in task_md
-    assert "## Temporal Context State" in task_md
-    assert "## Reverse Brake" in task_md
+    assert task["fact_inventory_summary"]["categories"].get("feedback", 0) == 0
+    assert "第 001 章写作工作单" in task_md
+    assert "## 未解决反馈" not in task_md
+    assert "## 唯一章节合同" in task_md
+    assert "## 当前写作方法" in task_md
     assert report["artifacts"]["writing_task_markdown"].endswith("ch001.md")
 
     state = json.loads((root / "30_state" / "novel_state.json").read_text(encoding="utf-8"))
@@ -281,6 +277,7 @@ def test_auto_write_recognizes_repair_semantic_and_editorial_agent_waits(tmp_pat
 
     semantic_config = seed_project(tmp_path / "semantic")
     semantic_root = tmp_path / "semantic" / "novel"
+    plan_chapter(semantic_config, chapter_number=1)
     (semantic_root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_draft_text(), encoding="utf-8")
     semantic_pacing_task(semantic_config, chapter_number=1)
     auto_write_plan(semantic_config)
@@ -289,6 +286,7 @@ def test_auto_write_recognizes_repair_semantic_and_editorial_agent_waits(tmp_pat
 
     editorial_config = seed_project(tmp_path / "editorial")
     editorial_root = tmp_path / "editorial" / "novel"
+    plan_chapter(editorial_config, chapter_number=1)
     (editorial_root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_draft_text(), encoding="utf-8")
     editorial_review(editorial_config, chapter_number=1)
     auto_write_plan(editorial_config)
@@ -626,26 +624,14 @@ def test_continue_write_carries_previous_controlled_feedback_forward(tmp_path):
     task = json.loads(task_path.read_text(encoding="utf-8"))
     task_md = (root / "50_workbench" / "writing_tasks" / "ch002.md").read_text(encoding="utf-8")
     manifest = json.loads((root / "50_workbench" / "writing_tasks" / "ch002.agent_task.json").read_text(encoding="utf-8"))
-    feedback = task["feedback_carryover"]
-
-    assert feedback["status"] == "available"
-    assert feedback["source_chapter"] == 1
-    assert "50_workbench/gate_artifacts/ch001/gate_result.json" in feedback["source_files"]
-    assert "50_workbench/gate_artifacts/ch001/repair_plan.md" not in feedback["source_files"]
-    assert "50_workbench/humanizer_tasks/ch001.humanize_check.json" in feedback["source_files"]
-    assert "50_workbench/gate_artifacts/ch001/semantic_pacing_result.json" in feedback["source_files"]
-    assert "50_workbench/editorial_reviews/ch001.aggregate.json" in feedback["source_files"]
-    assert not any(item["kind"] == "repair_plan" for item in feedback["items"])
-    assert any(item["kind"] == "humanize_check" and "summary" in item for item in feedback["items"])
-    assert "story graph must remain frozen" not in json.dumps(feedback, ensure_ascii=False)
-    assert "graph update waits for chapter finalize" not in json.dumps(feedback, ensure_ascii=False)
-    assert "## Feedback Carryover" in task_md
+    assert task["fact_inventory_summary"]["categories"]["feedback"] == 1
+    assert "## 未解决反馈" in task_md
     assert "humanizer_summary_voice" in task_md
+    assert "story graph must remain frozen" not in task_md
+    assert "graph update waits for chapter finalize" not in task_md
     manifest_inputs = {item["path"] for item in manifest["io"]["inputs"]}
-    for source in feedback["source_files"]:
-        assert source not in manifest_inputs
     assert len(manifest_inputs) <= 7
-    assert set(feedback["source_files"]).issubset(set(task["context_plan"]["excluded_duplicates"]))
+    assert manifest_inputs == {"50_workbench/writing_tasks/ch002.md"}
     assert not (root / "40_manuscript" / "final" / "ch002.md").exists()
     assert not (root / "60_rag" / "chunks" / "ch002.json").exists()
     story_graph = json.loads((root / "30_state" / "story_graph.json").read_text(encoding="utf-8"))

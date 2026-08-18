@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -68,11 +69,13 @@ def test_platform_descriptions_are_mutually_exclusive():
 def test_readme_is_public_pipx_skill_package_homepage():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     lower = readme.lower()
+    release_channel = json.loads((ROOT / "config" / "release-channel.json").read_text(encoding="utf-8"))
+    public_version = release_channel["public_stable_version"]
 
     for term in (
         "longform-novel-engine = Python engine + Codex skill + Claude Code skill",
         "https://github.com/ylqit/novel-general",
-        "git+https://github.com/ylqit/novel-general.git@v0.4.2",
+        f"git+https://github.com/ylqit/novel-general.git@v{public_version}",
         "longform-novel-engine[semantic]",
         "pipx",
         "PIPX_BIN_DIR",

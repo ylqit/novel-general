@@ -72,8 +72,8 @@
     },
     {
       "path": "config/agent_roles/prompts/anti_ai_editor.md",
-      "sha256": "7433948c85c342873510e7ecbb30a6a9b4b43455cb2c32d2decdb4756187d09a",
-      "size": 4369
+      "sha256": "af5c666a83986f03921de4ed7c3cd13abb2383704cf636d4bc298990c80f6440",
+      "size": 4373
     },
     {
       "path": "config/agent_roles/prompts/book_architect.md",
@@ -82,8 +82,8 @@
     },
     {
       "path": "config/agent_roles/prompts/canon_fidelity_reviewer.md",
-      "sha256": "1fe6f8d6d068cd4decfc40f623f0d31654d8b10d459edd4a572233121dabd8b3",
-      "size": 4434
+      "sha256": "1f06696684cf283ba407c59b4ad37cd13844ff33059d3de9b1389d36a084c75f",
+      "size": 4467
     },
     {
       "path": "config/agent_roles/prompts/canonical_semantic_archivist.md",
@@ -102,8 +102,8 @@
     },
     {
       "path": "config/agent_roles/prompts/character_editor.md",
-      "sha256": "7956e05e111969f09827686a93b8e9162a1f118f1509830ee3c7f2d2b94288c8",
-      "size": 4249
+      "sha256": "9ebaf8f84094743043a7fc02b21c5d4dde68c9d76e91a3e3c528e8e7eb15b4db",
+      "size": 4268
     },
     {
       "path": "config/agent_roles/prompts/character_performance_architect.md",
@@ -112,8 +112,8 @@
     },
     {
       "path": "config/agent_roles/prompts/character_performance_reviewer.md",
-      "sha256": "6091ff51803b024144ae185c1f10434d3535a8a62d8ac6d57206f4f81e6c8bb8",
-      "size": 4223
+      "sha256": "17e7de4bf6ad26baabc968754898a335ae5678ea05111e20027627680c668490",
+      "size": 4212
     },
     {
       "path": "config/agent_roles/prompts/continuity_outline_editor.md",
@@ -147,8 +147,8 @@
     },
     {
       "path": "config/agent_roles/prompts/humanizer_semantic_reviewer.md",
-      "sha256": "1da2f64afc023c0769e6846875fc4de92fc7d846d707fc4e09f8cf83c32788bf",
-      "size": 4282
+      "sha256": "25de1b2393f786aafc103cb3f50228f0c66a6fff66a0c583b1f3a9c4da01c40a",
+      "size": 4271
     },
     {
       "path": "config/agent_roles/prompts/longform_outline_architect.md",
@@ -157,18 +157,18 @@
     },
     {
       "path": "config/agent_roles/prompts/planning_chief_editor.md",
-      "sha256": "5c2bb169b99fd4b01ad7abb1e11e54e94cb92eb68ac77f41d0f63dc71f233e79",
-      "size": 4152
+      "sha256": "6f5c6f768fb216145d48d7c27a4cded39e034b60aa38d524a0e29b6f1b09e6a1",
+      "size": 4159
     },
     {
       "path": "config/agent_roles/prompts/reader_experience_editor.md",
-      "sha256": "63f38d20fc619182c9820e35eee8ca767a3006d5fbfd5a725093eb17be2e0868",
-      "size": 4221
+      "sha256": "000039911d124964931a8fcbfca520060748d9d1b4992df9cb152f0ba4ae122b",
+      "size": 4198
     },
     {
       "path": "config/agent_roles/prompts/reader_payoff_reviewer.md",
-      "sha256": "5852ec6c584280247c2101c61928ad92f5fcd3d19bc09acb46cfc90113a6d0b2",
-      "size": 4267
+      "sha256": "9e670052c9f7fd509ba0c1e5bfef5d7eb2ddaf4d91f286f33d0527b56d20386a",
+      "size": 4251
     },
     {
       "path": "config/agent_roles/prompts/repair_author.md",
@@ -187,18 +187,18 @@
     },
     {
       "path": "config/agent_roles/prompts/scene_prose_editor.md",
-      "sha256": "7ff0a4e10691badcc89e6e2348dfe4da286c55d31ea4360046a5c23a05f4e758",
-      "size": 4127
+      "sha256": "29987e58a1b7b44e2cee6820c2e82ef926517d1ade2ca0cef5fb218025174f70",
+      "size": 4137
     },
     {
       "path": "config/agent_roles/prompts/semantic_continuity_reviewer.md",
-      "sha256": "15e9b10f50af495f1f6803405a16213458720873a68e734dbd8b25af92adeebc",
-      "size": 4470
+      "sha256": "c273256fa38f26deec1ecf291abb3867f6c4459cf0c0a11b0182d832f1b0d5d7",
+      "size": 4471
     },
     {
       "path": "config/agent_roles/prompts/semantic_pacing_reviewer.md",
-      "sha256": "316c9c82b70220d0706b15ace9b810ed9e31d84b87b224cf81161b2cbae99def",
-      "size": 4093
+      "sha256": "0de95f2a72c03f63e6f8b18f5deed458be0b7903e9c1d091153823141c62bf34",
+      "size": 4075
     },
     {
       "path": "config/agent_roles/prompts/semantic_style_analyst.md",
@@ -207,8 +207,8 @@
     },
     {
       "path": "config/agent_roles/registry.json",
-      "sha256": "f9d5a574d391af5bbf736a519d723c3bcca05cc4d3cb2acb88ad9893a15ba738",
-      "size": 34108
+      "sha256": "b5bed8391762b2b8267a14f1e1e4e823d553dfda52713db87370920e305717be",
+      "size": 34563
     },
     {
       "path": "config/default.engine.yaml",
@@ -262,8 +262,8 @@
     },
     {
       "path": "config/release-channel.json",
-      "sha256": "f8af0349c076128e34abc64470481c06aaa6a4d8ef4ffca415f5706d08ba3585",
-      "size": 244
+      "sha256": "af68cdcadd21115f34e7f90d28212b2e95eb0b388fca77a9a9e088c7dfd57531",
+      "size": 306
     },
     {
       "path": "config/story_facets/narrative_forms.yaml",
@@ -302,8 +302,8 @@
     },
     {
       "path": "config/v041_release_acceptance_fixtures.yaml",
-      "sha256": "0259e93673b28b45ec720672ff5d0982657319eb3ce17e8ebfdc1b6f10596d9a",
-      "size": 29186
+      "sha256": "259e1b03d36b20eb6bebc51eca0b6969dd36abe53e24aa96b31fd0ca2f0e71d4",
+      "size": 32052
     },
     {
       "path": "longform-novel-claude/agents/openai.yaml",
@@ -377,7 +377,7 @@
     },
     {
       "path": "pyproject.toml",
-      "sha256": "fbf4781802f0d0b133da9261a04453e50f5e8cb6e00262bb75cf21b471f3e1d0",
+      "sha256": "4bcb7e730078b1462b0a90e42a652b2420cc45f57415696b40b9875a48f0341c",
       "size": 2065
     },
     {
@@ -411,7 +411,7 @@
       "size": 4274
     }
   ],
-  "engine_version": "0.4.2",
+  "engine_version": "0.4.3",
   "hash_policy": "text-lf-v1",
   "schema": "longform_resource_manifest_v1"
 }

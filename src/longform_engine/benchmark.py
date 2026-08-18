@@ -1082,7 +1082,7 @@ def rag_threshold_errors(payload: dict[str, Any], *, require_claim_grade: bool =
             errors.append("production queries do not cover every required retrieval category.")
         if not str(payload.get("incremental_index_mode") or "").strip():
             errors.append("incremental indexing measurement mode is missing.")
-        if float(payload.get("incremental_index_ms") or -1) < 0:
+        if numeric_value(payload.get("incremental_index_ms"), default=-1) < 0:
             errors.append("incremental indexing latency is missing or invalid.")
     if numeric_value(payload.get("scale_chapters"), default=0) < RAG_CLAIM_THRESHOLDS["scale_chapters"]:
         errors.append("scale is below 500 chapters.")

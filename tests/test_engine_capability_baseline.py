@@ -138,6 +138,7 @@ def test_gate_writes_style_humanizer_copyedit_and_memory_artifacts(tmp_path):
 def test_editorial_research_gap_and_batch_agent_mode(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
+    plan_chapter(config, chapter_number=1)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(
         "# Chapter 1\n\nTODO verify: medieval gate tax. Ari enters the city.\n",
         encoding="utf-8",
@@ -171,6 +172,7 @@ def test_editorial_batch_review_generates_editorial_team_health_reports(tmp_path
     root = tmp_path / "novel"
     draft_dir = root / "40_manuscript" / "draft"
     for chapter in range(1, 11):
+        plan_chapter(config, chapter_number=chapter)
         draft_dir.joinpath(f"ch{chapter:03d}.md").write_text(
             (
                 f"# Chapter {chapter}\n\n"

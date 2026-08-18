@@ -973,6 +973,12 @@ def render_design_compile_instruction(
     domain_schema: str,
     output: str,
 ) -> str:
+    task_specific = (
+        "chapter_direction 只编译 selected_direction、selection、canonical_refs、introduced_elements；"
+        "不得把未选方向复制进 delta。"
+        if task_type == "chapter_direction"
+        else "只编译文档中经人工批准的最终设计事实。"
+    )
     return "\n".join(
         (
             "# 设计文档语义编译任务",
@@ -988,6 +994,7 @@ def render_design_compile_instruction(
             "changes 使用目标领域字段，但不要写 schema、路径、hash、章节范围、命令或时间。",
             "evidence 必须使用 /changes/... JSON Pointer 映射到 document@start:end。",
             "备选方案、被否决内容、示例和分析理由不能作为已批准事实。",
+            task_specific,
             "任何稳定 ID、窗口、关系或语义存在歧义时写入 uncertainties；CLI 将阻止 apply。",
             "",
         )
@@ -1479,11 +1486,11 @@ def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
         ],
     }
     rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    if len(rendered) > 16_000:
-        raise ValueError(
-            "fanfiction_design context compilation exceeds 16000 characters after deterministic selection; "
-            "reduce configured source scope or split the design decision."
-        )
+    budget = resolve_context_budget_contract(root)
+    payload["selection_report"]["estimated_units"] = estimate_text_units(rendered, budget.estimator)
+    payload["selection_report"]["budget_profile"] = budget.profile
+    payload["selection_report"]["capacity_units"] = budget.capacity_units
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     target = root / "50_workbench" / "intelligence_context" / "fanfiction_design.project.context.json"
     atomic_write_text(target, rendered)
     return target
@@ -2319,8 +2326,10 @@ def validate_chapter_direction(
         "chapter_number",
         "chapter_card_sha256",
         "trigger_reasons",
-        "directions",
+        "selected_direction",
         "selection",
+        "canonical_refs",
+        "introduced_elements",
     }
     require_keys(payload, required, required, errors)
     chapter_number = payload.get("chapter_number")
@@ -2342,8 +2351,7 @@ def validate_chapter_direction(
     if not isinstance(reasons, list) or sorted(str(item) for item in reasons) != sorted(status["reasons"]):
         errors.append("trigger_reasons must match CLI-computed chapter direction reasons.")
 
-    directions = payload.get("directions")
-    direction_ids: set[str] = set()
+    direction = payload.get("selected_direction")
     required_direction = {
         "id",
         "title",
@@ -2352,83 +2360,96 @@ def validate_chapter_direction(
         "protagonist_goal",
         "chapter_duty",
         "scene_chain",
+        "featured_character_ids",
         "cast_desires",
         "dialogue_ownership",
         "embodiment_plan",
         "interiority_function",
         "conflict",
         "information_release",
-        "local_payoff",
-        "character_cost",
+        "reader_gain",
+        "cost",
         "mainline_move",
         "character_arc_move",
         "foreshadow_move",
         "relationship_move",
+        "canon_refs",
+        "world_rule_refs",
+        "foreshadow_refs",
+        "forbidden_reveals",
         "ending_mode",
         "main_risks",
     }
-    if not isinstance(directions, list) or not 2 <= len(directions) <= 3:
-        errors.append("directions must contain two or three choices.")
+    if not isinstance(direction, dict) or set(direction) != required_direction:
+        errors.append(
+            "selected_direction must contain exactly: "
+            + ", ".join(sorted(required_direction))
+            + "."
+        )
+        direction = {}
+    direction_id = stable_id(direction.get("id"))
+    if not direction_id:
+        errors.append("selected_direction.id must be stable.")
+    for field in (
+        "title", "book_goal", "volume_goal", "protagonist_goal", "chapter_duty",
+        "dialogue_ownership", "embodiment_plan", "interiority_function", "conflict",
+        "information_release", "reader_gain", "cost", "mainline_move",
+        "character_arc_move", "foreshadow_move", "relationship_move", "ending_mode",
+    ):
+        if not isinstance(direction.get(field), str) or not direction[field].strip():
+            errors.append(f"selected_direction.{field} must be non-empty text.")
+    for field in (
+        "featured_character_ids", "canon_refs", "world_rule_refs", "foreshadow_refs",
+        "forbidden_reveals", "main_risks",
+    ):
+        values = direction.get(field)
+        if not isinstance(values, list) or any(not isinstance(item, str) or not item.strip() for item in values):
+            errors.append(f"selected_direction.{field} must be a string list.")
+    scenes = direction.get("scene_chain")
+    scene_fields = {
+        "scene_id", "location", "participants", "desire_collision", "choice", "cost", "turn",
+    }
+    if not isinstance(scenes, list) or not 2 <= len(scenes) <= 5:
+        errors.append("selected_direction.scene_chain must contain two to five scenes.")
     else:
-        for index, direction in enumerate(directions):
-            if not isinstance(direction, dict) or set(direction) != required_direction:
+        for scene_index, scene in enumerate(scenes):
+            if not isinstance(scene, dict) or set(scene) != scene_fields:
                 errors.append(
-                    f"directions[{index}] must contain exactly: {', '.join(sorted(required_direction))}."
+                    f"selected_direction.scene_chain[{scene_index}] must contain exactly: "
+                    f"{', '.join(sorted(scene_fields))}."
                 )
                 continue
-            direction_id = str(direction.get("id") or "")
-            if not stable_id(direction_id) or direction_id in direction_ids:
-                errors.append(f"directions[{index}].id must be stable and unique.")
-            direction_ids.add(direction_id)
-            text_fields = required_direction - {"id", "main_risks", "scene_chain", "cast_desires"}
-            for key in sorted(text_fields):
-                if not isinstance(direction.get(key), str) or not direction[key].strip():
-                    errors.append(f"directions[{index}].{key} must be a non-empty string.")
-            scenes = direction.get("scene_chain")
-            scene_fields = {
-                "scene_id", "location", "participants", "desire_collision", "choice", "cost", "turn",
-            }
-            if not isinstance(scenes, list) or not 2 <= len(scenes) <= 5:
-                errors.append(f"directions[{index}].scene_chain must contain two to five scenes.")
-            else:
-                for scene_index, scene in enumerate(scenes):
-                    if not isinstance(scene, dict) or set(scene) != scene_fields:
-                        errors.append(
-                            f"directions[{index}].scene_chain[{scene_index}] must contain exactly: "
-                            f"{', '.join(sorted(scene_fields))}."
-                        )
-                        continue
-                    for key in scene_fields - {"participants"}:
-                        if not isinstance(scene.get(key), str) or not scene[key].strip():
-                            errors.append(
-                                f"directions[{index}].scene_chain[{scene_index}].{key} must be non-empty."
-                            )
-                    if not isinstance(scene.get("participants"), list) or not scene["participants"]:
-                        errors.append(
-                            f"directions[{index}].scene_chain[{scene_index}].participants must be non-empty."
-                        )
-            cast_desires = direction.get("cast_desires")
-            if not isinstance(cast_desires, dict) or not cast_desires:
-                errors.append(f"directions[{index}].cast_desires must be a non-empty character-id object.")
-            elif any(not stable_id(key) or not isinstance(value, str) or not value.strip() for key, value in cast_desires.items()):
-                errors.append(f"directions[{index}].cast_desires must map stable character ids to visible desires.")
-            risks = direction.get("main_risks")
-            if not isinstance(risks, list) or not risks or any(
-                not isinstance(item, str) or not item.strip() for item in risks
-            ):
-                errors.append(f"directions[{index}].main_risks must be a non-empty string list.")
+            for key in scene_fields - {"participants"}:
+                if not isinstance(scene.get(key), str) or not scene[key].strip():
+                    errors.append(f"selected_direction.scene_chain[{scene_index}].{key} must be non-empty.")
+            if not isinstance(scene.get("participants"), list) or not scene["participants"]:
+                errors.append(f"selected_direction.scene_chain[{scene_index}].participants must be non-empty.")
+    cast_desires = direction.get("cast_desires")
+    if not isinstance(cast_desires, dict) or not cast_desires:
+        errors.append("selected_direction.cast_desires must be a non-empty character-id object.")
+    elif any(
+        not stable_id(key) or not isinstance(value, str) or not value.strip()
+        for key, value in cast_desires.items()
+    ):
+        errors.append("selected_direction.cast_desires must map stable character IDs to visible desires.")
     selection = payload.get("selection")
     if not isinstance(selection, dict) or set(selection) != {"direction_id", "user_adjustments"}:
         errors.append("selection must contain direction_id and user_adjustments only.")
         return
-    if selection.get("direction_id") not in direction_ids:
-        errors.append("selection.direction_id must reference a declared direction.")
+    if selection.get("direction_id") != direction_id:
+        errors.append("selection.direction_id must reference selected_direction.id.")
     adjustments = selection.get("user_adjustments")
     allowed_adjustments = required_direction - {"id", "title", "main_risks"}
     if not isinstance(adjustments, dict) or set(adjustments) - allowed_adjustments:
         errors.append("selection.user_adjustments contains unsupported fields.")
     elif any(value in (None, "", [], {}) for value in adjustments.values()):
         errors.append("selection.user_adjustments values must be non-empty.")
+    if not isinstance(payload.get("canonical_refs"), list):
+        errors.append("canonical_refs must be a list.")
+    elif sorted(payload["canonical_refs"]) != sorted(direction.get("canon_refs") or []):
+        errors.append("canonical_refs must match selected_direction.canon_refs.")
+    if not isinstance(payload.get("introduced_elements"), list):
+        errors.append("introduced_elements must be a list.")
 
 
 def validate_book_design(payload: dict[str, Any], errors: list[str]) -> None:
@@ -4057,6 +4078,7 @@ def write_book_ideation_decision(root: Path, payload: dict[str, Any]) -> None:
 
 
 def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
+    from longform_engine.chapter_contract import stamp_chapter_contract
     from longform_engine.orchestration.pipeline import upsert_chapter_plan, write_chapter_card_artifacts
 
     chapter_number = int(payload["chapter_number"])
@@ -4065,9 +4087,7 @@ def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
     if not isinstance(card, dict):
         raise ValueError("Chapter card must be a JSON object.")
     selection = payload["selection"]
-    selected = next(
-        item for item in payload["directions"] if item["id"] == selection["direction_id"]
-    )
+    selected = payload["selected_direction"]
     resolved = dict(selected)
     resolved.update(selection["user_adjustments"])
     card.update(
@@ -4076,13 +4096,16 @@ def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
             "chapter_duty": resolved["chapter_duty"],
             "conflict": resolved["conflict"],
             "information": resolved["information_release"],
-            "reader_payoff": resolved["local_payoff"],
-            "reader_gain": resolved["local_payoff"],
-            "cost": resolved["character_cost"],
+            "information_release": resolved["information_release"],
+            "reader_payoff": resolved["reader_gain"],
+            "reader_gain": resolved["reader_gain"],
+            "cost": resolved["cost"],
             "book_goal": resolved["book_goal"],
             "volume_goal": resolved["volume_goal"],
             "protagonist_goal": resolved["protagonist_goal"],
+            "platform_promise": resolved["chapter_duty"],
             "scene_chain": resolved["scene_chain"],
+            "featured_character_ids": resolved["featured_character_ids"],
             "scene_wants": resolved["cast_desires"],
             "dialogue_ownership": resolved["dialogue_ownership"],
             "embodiment_strategy": resolved["embodiment_plan"],
@@ -4093,6 +4116,10 @@ def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
             "foreshadow_impact": resolved["foreshadow_move"],
             "relationship_impact": resolved["relationship_move"],
             "relationship_move": resolved["relationship_move"],
+            "canon_refs": resolved["canon_refs"],
+            "world_rule_refs": resolved["world_rule_refs"],
+            "foreshadow_refs": resolved["foreshadow_refs"],
+            "forbidden_reveals": resolved["forbidden_reveals"],
             "direction_risks": list(selected["main_risks"]),
             "direction_selection": {
                 "status": "applied",
@@ -4106,6 +4133,7 @@ def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
             },
         }
     )
+    stamp_chapter_contract(card)
     write_chapter_card_artifacts(root, card)
     upsert_chapter_plan(root, card)
 
@@ -4178,7 +4206,8 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "路径、hash、scope、角色和时间由 CLI 提供。"
         ),
         EVIDENCE_REVIEW_SCHEMA: (
-            "只写 evidence_review_v1 JSON。coverage 使用维度状态映射，证据 ID 使用 source_ref@start:end；"
+            "只写 evidence_review_v2 JSON。coverage 每个维度包含 status、正文 evidence_ids 和所需 canonical_refs；"
+            "checked 必须给出一至两个可回读正文证据，证据 ID 使用 source_ref@start:end；"
             "不要回填任务、路径、hash、角色、scope 或时间。"
         ),
     }[protocol]

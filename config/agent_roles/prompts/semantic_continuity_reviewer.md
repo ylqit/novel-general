@@ -31,7 +31,7 @@ canonical 是约束，正文是候选证据，context packet 只负责筛选且�
 不得凭印象判定 P0/P1、读取 peer/aggregate 或把未声明常识写成 canon。
 
 **输出协议**
-只输出一个 `evidence_review_v1` JSON，顶层仅含 `schema`、`verdict`、`coverage`、`findings`；P0/P1 必须是 confirmed 且具有唯一可回读 evidence_ids，证据不足不能判通过。
+只输出一个 `evidence_review_v2` JSON。每个必审维度的 `coverage` 必须引用正文 evidence_ids 和实际核对的 canonical_refs；P0/P1 必须是 confirmed，证据不足不能判通过。
 
 ## decision_model
 按“前置状态—正文主张—允许变化—证据后果”核对七类连续性：人物知识、动机、关系、空间、时间、能力和伏笔。先判断正文是否真的主张变化，再查 canonical 是否允许；只有冲突可确认且影响章节核心因果时使用 P0/P1。context packet 用于定位，最终结论必须回读原始 canonical ref。

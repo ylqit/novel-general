@@ -292,6 +292,7 @@ def build_character_expression_packet(
     chapter_number: int,
     card: dict[str, Any],
     tcs: dict[str, Any],
+    persist: bool = False,
 ) -> dict[str, Any]:
     """Compile the smallest character-specific packet needed by a chapter writer."""
 
@@ -301,23 +302,13 @@ def build_character_expression_packet(
     memory = read_json(root / "30_state" / "character_memory.json", {})
     character_rows = [item for item in characters if isinstance(item, dict)] if isinstance(characters, list) else []
     by_id = {str(item.get("id")): item for item in character_rows if item.get("id")}
-    by_name = {str(item.get("name")): str(item.get("id")) for item in character_rows if item.get("name") and item.get("id")}
     requested = [str(item) for item in card.get("featured_character_ids") or [] if str(item).strip()]
     pov = str(card.get("pov_character_id") or "").strip()
     if pov:
         requested.insert(0, pov)
-    tcs_characters = list(tcs.get("current_characters") or [])
-    if not tcs_characters:
-        tcs_characters = [
-            str(item.get("character_id") or "")
-            for item in tcs.get("character_current") or []
-            if isinstance(item, dict)
-        ]
-    for value in tcs_characters:
-        character_id = str(value)
-        character_id = by_name.get(character_id, character_id)
-        if character_id in by_id:
-            requested.append(character_id)
+    # TCS contains the current state of historical characters, not the cast contract
+    # for this chapter. Only the chapter card can promote a character into the
+    # full expression packet; background state remains available through RAG/TCS.
     if not requested and character_rows:
         requested.append(str(character_rows[0].get("id") or ""))
     featured = dedupe(item for item in requested if item in by_id)
@@ -408,8 +399,9 @@ def build_character_expression_packet(
         )[:6],
         "source": "10_bible/character_expression.json",
     }
-    path = root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json"
-    atomic_write_text(path, json.dumps(packet, ensure_ascii=False, indent=2) + "\n")
+    if persist:
+        path = root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json"
+        atomic_write_text(path, json.dumps(packet, ensure_ascii=False, indent=2) + "\n")
     return packet
 
 
