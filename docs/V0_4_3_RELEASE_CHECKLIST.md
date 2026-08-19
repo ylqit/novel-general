@@ -65,9 +65,9 @@
 - [x] GitHub Release 成功。Release #8 全部步骤通过：<https://github.com/ylqit/novel-general/actions/runs/32235769503>；Release URL：<https://github.com/ylqit/novel-general/releases/tag/v0.4.3>。
 - [x] wheel、sdist 和校验信息均存在。资产摘要：`longform_novel_engine-0.4.3-py3-none-any.whl` 803895 bytes，SHA-256 `8b3db05f55809a770bd7126e5ae97a4f36246be19fde87ca5204795e7c99fc1a`；`longform_novel_engine-0.4.3.tar.gz` 883263 bytes，SHA-256 `741905c25c56955ac4cbb749a2094b1b74583630ca02a94d1764430e0b71bc0a`；`SHA256SUMS` 212 bytes，SHA-256 `52a616b8cc6a8217758ca6cea617e7082543041eec02aa0969eea45e48d35a7c`。
 - [x] 从远程 `v0.4.3` tag 归档在 Python 3.12 短路径 venv 隔离安装 `[semantic]`，完成 CLI、配置来源、doctor 与临时 Skill 命令 smoke。结果：`longform-engine 0.4.3`，Codex/Claude Code Skill 均为 `current`，Semantic 依赖存在，doctor `ok=true`；未修改用户全局 Skill。
-- [ ] 远程证据回写提交已推送，且该提交 CI 成功。提交号与运行 URL：等待本清单证据提交完成后记录。
+- [x] 远程证据回写提交已推送，且该提交 CI 成功。提交号：`6b2a9d7d72399797f6c358b6ae7a2549e2c6f39a`；CI #22 的 8 个作业全部通过，运行 URL：<https://github.com/ylqit/novel-general/actions/runs/32237608138>。
 
 ## 发布结论
 
-- 当前状态：`v0.4.3` 已正式发布，Release 资产与远程标签隔离安装均已验证；等待证据提交 CI 收敛。
+- 当前状态：`v0.4.3` 已正式发布，Release 资产、远程标签隔离安装与证据提交 CI 均已验证，发布清单收敛完成。
 - 文学证据状态：`literary_evidence_ready=false`。
