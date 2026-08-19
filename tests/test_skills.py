@@ -121,7 +121,7 @@ def test_current_release_checklist_and_management_docs_are_linked():
         "配置与覆盖来源",
         "统一章节路径",
         "内部质量证据",
-        "单进程完整验证",
+        "单进程定向验证",
         "远程发布证据",
     ):
         assert section in checklist

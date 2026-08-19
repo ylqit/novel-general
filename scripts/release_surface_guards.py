@@ -148,7 +148,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
             "配置与覆盖来源",
             "统一章节路径",
             "内部质量证据",
-            "单进程完整验证",
+            "单进程定向验证",
             "literary_evidence_ready=false",
         ),
     ),
