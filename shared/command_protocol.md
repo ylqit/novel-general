@@ -30,7 +30,7 @@
 | `/工程生产看板` | `longform-engine production board project.yaml` | `project.yaml` | 只读 | 按章节显示 draft、final、gate、repair、graph、memory、pacing 和 editorial 状态。 |
 | `/工程推进` | `longform-engine production loop project.yaml --no-apply` | `project.yaml` | 确定性流程产物；不自动 apply/finalize | 推进确定性步骤，遇到 Agent 输出、人工确认或 canonical apply/finalize 时暂停。 |
 | `/工程创意工单` | `longform-engine intelligence task project.yaml --task-type book_ideation` | `project.yaml` | workbench 候选 | 每轮只处理一个创意维度，Agent 给 2-3 个带取舍的选项；必须记录用户明确选择。 |
-| `/工程章节方向` | `longform-engine intelligence task project.yaml --task-type chapter_direction --chapter N` | `--chapter N` | workbench 候选 | 仅在 production next 判定需要时生成 2-3 个方向；人工 apply 后由 CLI 更新章节卡。 |
+| `/工程章节方向` | `longform-engine intelligence task project.yaml --task-type chapter_direction --chapter N` | `--chapter N` | workbench 候选 | 每个尚未应用方向的章节都生成 2-3 个因果不同且带代价的方向；人工 apply 后由 CLI 更新章节卡。 |
 | `/工程人物设计` | `longform-engine character design-task project.yaml` | `project.yaml` | workbench 候选 | 生成 `character_expression_profile_v1` 工单；旧 Book Design v1 会在写第一章前进入此补全步骤。 |
 | `/工程人物设计校验` | `longform-engine character design-validate project.yaml --file ...` | `--file` | validation 报告 | 校验叙事表达画像、人物覆盖、声音/行为/身体/面具/反差合同，不写 Bible。 |
 | `/工程人物设计应用` | `longform-engine character design-apply project.yaml --file ... --approved-by human` | `--file`、人工确认 | `10_bible/character_expression.json` | 事务应用人物表达合同；Agent 不能直接写 Bible。 |
@@ -45,7 +45,7 @@
 - Codex / ClaudeCode 每轮优先执行 `/工程下一步`。
 - 如果下一步是 Agent task，必须执行 `/工程工单` 并只读取工作单与 manifest `io.inputs`。
 - `/工程推进` 不能替代 Agent 写正文、修章、润色、语义 JSON 或审稿 JSON。
-- `/工程推进` 默认不自动进入 `chapter finalize`，也不自动 apply graph/memory/pacing。
+- `/工程推进` 默认不自动进入 `chapter finalize`，也不自动执行 `chapter semantic-apply` 或 `chapter close`。
 
 ## 创作模式、同人与发布
 
@@ -120,7 +120,7 @@
 | `/工程记忆压缩` | `longform-engine memory compress project.yaml --scope arc --from-chapter A --to-chapter B` | `--scope`、`--from-chapter`、`--to-chapter` | `60_rag/memory/` | 压缩 scene/chapter/arc 记忆。 |
 | `/工程角色检查` | `longform-engine memory character-check project.yaml --chapter N --file draft.md` | `--chapter N`、`--file` | 只读 | 对照角色记忆检查草稿。 |
 | `/工程图谱校验` | `longform-engine graph validate project.yaml` | `project.yaml` | 只读 | 校验 `story_graph.json`。 |
-| `/工程图谱更新` | `longform-engine graph update project.yaml --chapter N` | `--chapter N` | `30_state/story_graph.json`、SQLite | 从定稿章节更新图谱。 |
+| `/工程图谱更新` | `longform-engine graph update project.yaml --chapter N` | `--chapter N` | `30_state/story_graph.json`、SQLite | 人工维护/诊断入口；默认生产由 `chapter semantic-apply` 统一物化图谱，不需逐章另跑。 |
 | `/工程图谱检查` | `longform-engine graph check project.yaml` | `project.yaml` | `50_workbench/graph_reports/` | 写入图谱冲突报告。 |
 | `/工程图谱检索` | `longform-engine graph retrieve project.yaml --query "query" --chapter N --json` | `--query`、`--chapter N` | 只读 | 执行图谱遍历检索。 |
 

@@ -10,17 +10,18 @@ import json
 import re
 import shutil
 
-from longform_engine.agent_tasks import mark_tasks_rolled_back
+from longform_engine.agent_tasks import agent_task_events_file, agent_task_index_file, mark_tasks_rolled_back
 from longform_engine.config import ConfigDocument
-from longform_engine.db import sync_database
+from longform_engine.db import database_path, sync_database
 from longform_engine.memory import mark_memory_stale
 from longform_engine.quality import truncate_feedback_registry, truncate_quality_history
-from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import (
     existing_manuscript_chapter_path,
     list_canonical_chapter_files,
     manuscript_chapter_path,
 )
+from longform_engine.vectorstore import hnsw_manifest_path, local_index_path, local_store_path
 
 
 class RevisionError(ValueError):
@@ -67,13 +68,25 @@ class RevisionRollbackResult:
     """Result of rolling back to an earlier chapter."""
 
     to_chapter: int
-    snapshot_dir: str | None
     detached_dir: str
     detached_files: tuple[str, ...]
     stale_chapters: tuple[int, ...]
     stale_report: str
     impact_report: str
     state_file: str
+    transaction_report: str
+
+
+@dataclass(frozen=True)
+class _RollbackPlan:
+    """Complete mutation inventory for one transaction-backed rollback."""
+
+    timestamp: str
+    detached_dir: Path
+    moves: tuple[tuple[Path, Path], ...]
+    affected_chapters: tuple[int, ...]
+    source_paths: tuple[Path, ...]
+    touched_paths: tuple[Path, ...]
 
 
 @dataclass(frozen=True)
@@ -232,72 +245,83 @@ def rollback(config: ConfigDocument, *, to_chapter: int) -> RevisionRollbackResu
     if to_chapter < 0:
         raise RevisionError("to_chapter must be zero or positive.")
     root = resolve_project_root(config)
-    timestamp = timestamp_slug()
-    snapshot_dir = create_snapshot(root, f"rollback_to_ch{to_chapter:03d}_{timestamp}")
-
-    detached_dir = root / "40_manuscript" / "detached" / f"rollback_to_ch{to_chapter:03d}_{timestamp}"
-    detached_files: list[str] = []
-    affected: set[int] = set()
-    for source_group in ("final", "draft", "summaries"):
-        source_dir = root / "40_manuscript" / source_group
-        for number, path in list_canonical_chapter_files(source_dir):
-            if number <= to_chapter:
-                continue
-            target = unique_path(detached_dir / source_group / path.name)
+    plan = _build_rollback_plan(config, to_chapter=to_chapter)
+    with apply_transaction(
+        root,
+        command="revision rollback",
+        chapter_number=to_chapter,
+        source_paths=plan.source_paths,
+        touched_paths=plan.touched_paths,
+        metadata={
+            "to_chapter": to_chapter,
+            "affected_chapters": list(plan.affected_chapters),
+            "detached_dir": relative_path(root, plan.detached_dir),
+            "write_boundary": "detach_future_and_invalidate_derived_state",
+        },
+    ) as transaction:
+        for path, target in plan.moves:
             target.parent.mkdir(parents=True, exist_ok=True)
             path.replace(target)
-            detached_files.append(relative_path(root, target))
-            affected.add(number)
 
-    affected.update(mark_future_chapter_cards_stale(root, to_chapter))
-    affected.update(mark_future_writing_tasks_stale(root, to_chapter))
-    mark_chapter_plan_stale(root, to_chapter)
-    rebuilt_quality_indexes = (
-        *truncate_quality_history(root, to_chapter=to_chapter),
-        *truncate_feedback_registry(root, to_chapter=to_chapter),
-    )
-    stale_report = write_stale_markers(
-        root,
-        to_chapter=to_chapter,
-        stale_chapters=sorted(affected),
-        timestamp=timestamp,
-        rebuilt_quality_indexes=rebuilt_quality_indexes,
-    )
-    mark_memory_stale(config, from_chapter=to_chapter + 1, reason=f"rollback_to_ch{to_chapter:03d}")
-    state_file = update_rollback_state(root, to_chapter=to_chapter, stale_chapters=sorted(affected), timestamp=timestamp, detached_dir=detached_dir)
-
-    for number in sorted(affected):
-        detached_path = first_detached_file_for_chapter(detached_dir, number)
-        upsert_chapter_meta(
+        mark_future_chapter_cards_stale(root, to_chapter)
+        mark_future_writing_tasks_stale(root, to_chapter)
+        mark_chapter_plan_stale(root, to_chapter)
+        rebuilt_quality_indexes = (
+            *truncate_quality_history(root, to_chapter=to_chapter),
+            *truncate_feedback_registry(root, to_chapter=to_chapter),
+        )
+        stale_report = write_stale_markers(
             root,
-            {
-                "chapter_number": number,
-                "status": "detached" if detached_path else "stale",
-                "path": relative_path(root, detached_path) if detached_path else None,
-                "title": extract_title(safe_read_text(detached_path), detached_path) if detached_path else f"Chapter {number}",
-                "updated_at": utc_now(),
-            },
+            to_chapter=to_chapter,
+            stale_chapters=list(plan.affected_chapters),
+            timestamp=plan.timestamp,
+            rebuilt_quality_indexes=rebuilt_quality_indexes,
+        )
+        mark_memory_stale(
+            config,
+            from_chapter=to_chapter + 1,
+            reason=f"rollback_to_ch{to_chapter:03d}",
+        )
+        state_file = update_rollback_state(
+            root,
+            to_chapter=to_chapter,
+            stale_chapters=list(plan.affected_chapters),
+            timestamp=plan.timestamp,
+            detached_dir=plan.detached_dir,
         )
 
-    impact = write_rollback_impact_report(config)
-    sync_database(config)
-    for number in sorted(affected):
-        mark_tasks_rolled_back(
-            root,
-            chapter_number=number,
-            command="revision rollback",
-            artifact=detached_dir,
-            result=stale_report,
-        )
+        for number in plan.affected_chapters:
+            detached_path = first_detached_file_for_chapter(plan.detached_dir, number)
+            upsert_chapter_meta(
+                root,
+                {
+                    "chapter_number": number,
+                    "status": "detached" if detached_path else "stale",
+                    "path": relative_path(root, detached_path) if detached_path else None,
+                    "title": extract_title(safe_read_text(detached_path), detached_path) if detached_path else f"Chapter {number}",
+                    "updated_at": utc_now(),
+                },
+            )
+
+        impact = write_rollback_impact_report(config)
+        for number in plan.affected_chapters:
+            mark_tasks_rolled_back(
+                root,
+                chapter_number=number,
+                command="revision rollback",
+                artifact=plan.detached_dir,
+                result=stale_report,
+            )
+        sync_database(config)
     return RevisionRollbackResult(
         to_chapter=to_chapter,
-        snapshot_dir=str(snapshot_dir) if snapshot_dir else None,
-        detached_dir=str(detached_dir),
-        detached_files=tuple(detached_files),
-        stale_chapters=tuple(sorted(affected)),
+        detached_dir=str(plan.detached_dir),
+        detached_files=tuple(relative_path(root, target) for _source, target in plan.moves),
+        stale_chapters=plan.affected_chapters,
         stale_report=str(stale_report),
         impact_report=impact.report_file,
         state_file=str(state_file),
+        transaction_report=relative_path(root, transaction.report_file),
     )
 
 
@@ -307,28 +331,72 @@ def rollback_impact(config: ConfigDocument) -> RollbackImpactResult:
     return write_rollback_impact_report(config)
 
 
-def create_snapshot(root: Path, name: str) -> Path:
-    """Create a lightweight filesystem snapshot before mutation."""
+def _build_rollback_plan(config: ConfigDocument, *, to_chapter: int) -> _RollbackPlan:
+    """Inventory every path a rollback may mutate before opening the transaction."""
 
-    snapshot = root / "70_runtime" / "snapshots" / name
-    snapshot.mkdir(parents=True, exist_ok=True)
-    for relative in (
-        "30_state",
-        "40_manuscript",
-        "20_outline/chapter_cards",
-        "60_rag/chunks",
-        "60_rag/context",
-    ):
-        source = root / relative
-        if not source.exists():
-            continue
-        target = snapshot / relative
-        if source.is_dir():
-            shutil.copytree(source, target, dirs_exist_ok=True)
-        else:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
-    return snapshot
+    root = resolve_project_root(config)
+    timestamp = timestamp_slug()
+    detached_dir = root / "40_manuscript" / "detached" / f"rollback_to_ch{to_chapter:03d}_{timestamp}"
+    moves: list[tuple[Path, Path]] = []
+    affected: set[int] = set()
+    for source_group in ("final", "draft", "summaries"):
+        source_dir = root / "40_manuscript" / source_group
+        for number, path in list_canonical_chapter_files(source_dir):
+            if number <= to_chapter:
+                continue
+            moves.append((path, unique_path(detached_dir / source_group / path.name)))
+            affected.add(number)
+
+    future_cards = [
+        path
+        for path in sorted((root / "20_outline" / "chapter_cards").glob("ch*.json"))
+        if (parse_chapter_number(path) or 0) > to_chapter
+    ]
+    future_tasks = [
+        path
+        for path in sorted((root / "50_workbench" / "writing_tasks").glob("ch*.json"))
+        if (parse_chapter_number(path) or 0) > to_chapter
+    ]
+    affected.update(parse_chapter_number(path) or 0 for path in (*future_cards, *future_tasks))
+    affected.discard(0)
+
+    vector_index = local_index_path(config)
+    report_base = root / "50_workbench" / "impact_reports" / f"rollback_to_ch{to_chapter:03d}"
+    touched_paths = [
+        *(source for source, _target in moves),
+        detached_dir,
+        *future_cards,
+        *future_tasks,
+        root / "20_outline" / "chapter_plan.json",
+        root / "30_state" / "reward_ledger.jsonl",
+        root / "30_state" / "quality" / "structure_history.jsonl",
+        root / "50_workbench" / "quality_feedback" / "registry.jsonl",
+        root / "30_state" / "stale_indexes.json",
+        root / "60_rag" / "stale.json",
+        root / "30_state" / "story_graph_stale.json",
+        root / "30_state" / "event_matrix_stale.json",
+        root / "50_workbench" / "writing_tasks" / "stale.json",
+        root / "60_rag" / "memory" / "stale.json",
+        root / "30_state" / "novel_state.json",
+        root / "40_manuscript" / "chapter_meta.jsonl",
+        report_base.with_suffix(".md"),
+        report_base.with_suffix(".json"),
+        agent_task_index_file(root),
+        agent_task_events_file(root),
+        root / "70_runtime" / "artifacts" / "events",
+        database_path(config),
+        local_store_path(config),
+        vector_index,
+        hnsw_manifest_path(vector_index),
+    ]
+    return _RollbackPlan(
+        timestamp=timestamp,
+        detached_dir=detached_dir,
+        moves=tuple(moves),
+        affected_chapters=tuple(sorted(affected)),
+        source_paths=tuple(source for source, _target in moves),
+        touched_paths=tuple(touched_paths),
+    )
 
 
 def write_rollback_impact_report(config: ConfigDocument) -> RollbackImpactResult:

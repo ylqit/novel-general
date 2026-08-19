@@ -280,7 +280,7 @@ def test_every_chapter_requires_a_human_selected_scene_direction(tmp_path):
     mark_project_ready(root, config, direction_applied=False)
     status = assess_chapter_direction(config, 1)
     assert status["required"] is True
-    assert "guided_mode" in status["reasons"]
+    assert "mandatory_chapter_direction" in status["reasons"]
 
     task = create_intelligence_task(config, task_type="chapter_direction", chapter_number=1)
     manifest = load_manifest(root, task.task_id)

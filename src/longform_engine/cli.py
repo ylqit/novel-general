@@ -591,7 +591,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--repository", default=".", help="Engine repository root."
     )
     agent_task_readiness.add_argument(
-        "--json", action="store_true", help="Print agent_data_pipeline_readiness_v3 JSON."
+        "--json", action="store_true", help="Print agent_data_pipeline_readiness_v4 JSON."
     )
     agent_task_readiness.set_defaults(func=cmd_agent_task_readiness)
 
@@ -4419,6 +4419,7 @@ def cmd_research_promote(args: argparse.Namespace) -> int:
         print(f"Context: {result.context_file}")
         print(f"Graph: {result.graph_file}")
         print(f"SQLite chunks: {result.db_chunks}")
+        print(f"Transaction: {result.transaction_report}")
     return 0
 
 
@@ -4475,12 +4476,12 @@ def cmd_revision_rollback(args: argparse.Namespace) -> int:
     else:
         print("OK: rollback completed")
         print(f"To chapter: {result.to_chapter}")
-        print(f"Snapshot: {result.snapshot_dir or 'none'}")
         print(f"Detached dir: {result.detached_dir}")
         print(f"Detached files: {len(result.detached_files)}")
         print(f"Stale chapters: {', '.join(str(item) for item in result.stale_chapters) if result.stale_chapters else 'none'}")
         print(f"Stale report: {result.stale_report}")
         print(f"Impact report: {result.impact_report}")
+        print(f"Transaction: {result.transaction_report}")
     return 0
 
 

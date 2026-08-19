@@ -1692,7 +1692,7 @@ def write_writing_task(
                 "只输出小说正文和章节标题。",
                 "遵守章节卡职责、Beat Sheet 顺序和 RAG 上下文。",
                 "不得直接修改 final、RAG、story_graph 或 SQLite。",
-                "遵守 Creative Brief、Writer Craft Brief 和 Humanizer v2 自查规则。",
+                "遵守 Creative Brief、Writer Craft Brief 和 Humanizer v4 自查规则。",
             ],
         },
         "draft_submission_path": relative_path(root, recommended_draft),
@@ -3980,7 +3980,7 @@ def build_feedback_carryover(root: Path, chapter_number: int) -> dict[str, Any]:
             failures = []
             ignored_warning_markers = (
                 "gate failed; story graph must remain frozen",
-                "draft is not final; graph update waits for chapter finalize",
+                "draft is not final; semantic materialization waits for chapter finalize",
                 "previous finalized chapter is",
             )
             warnings = [

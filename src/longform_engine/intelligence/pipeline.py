@@ -1839,7 +1839,7 @@ def assess_chapter_direction(config: ConfigDocument, chapter_number: int) -> dic
         ),
         {},
     ) if isinstance(plan, list) else {}
-    reasons: list[str] = ["guided_mode"]
+    reasons: list[str] = ["mandatory_chapter_direction"]
     text = " ".join(
         str(planned.get(key) or "")
         for key in ("title", "chapter_duty", "conflict", "information_release", "hook")

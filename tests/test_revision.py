@@ -1,9 +1,13 @@
 import json
 
+import pytest
+
 from longform_engine.config import load_project_config
 from longform_engine.db import query_table, status as db_status
 from longform_engine.revision import create_revision_branch, project_status, rollback, rollback_impact
+from longform_engine.revision import pipeline as revision_pipeline
 from longform_engine.storage import init_project
+from longform_engine.vectorstore import VectorRecord, active_source_record_count, upsert
 
 
 def test_revision_branch_creates_candidate_without_overwriting_final(tmp_path):
@@ -31,8 +35,10 @@ def test_revision_rollback_detaches_future_files_marks_stale_and_reports(tmp_pat
     result = rollback(project_config, to_chapter=1)
 
     assert result.to_chapter == 1
-    assert result.snapshot_dir is not None
     assert result.detached_files
+    transaction = json.loads((root / result.transaction_report).read_text(encoding="utf-8"))
+    assert transaction["status"] == "applied"
+    assert transaction["metadata"]["affected_chapters"] == [2, 3, 4]
     assert (root / "40_manuscript" / "final" / "ch001.md").exists()
     assert not (root / "40_manuscript" / "final" / "ch002.md").exists()
     assert not (root / "40_manuscript" / "draft" / "ch004.md").exists()
@@ -75,6 +81,58 @@ def test_revision_rollback_detaches_future_files_marks_stale_and_reports(tmp_pat
     current_db_status = db_status(project_config)
     assert "story_graph" in current_db_status.stale
     assert "writing_tasks_after_rollback" in current_db_status.stale
+
+
+def test_revision_rollback_late_failure_restores_files_vector_and_sqlite(tmp_path, monkeypatch):
+    project_config = seed_revision_project(tmp_path)
+    root = tmp_path / "novel"
+    create_revision_branch(project_config, chapter_number=2)
+    upsert(
+        project_config,
+        [
+            VectorRecord(
+                id="rollback:ch002",
+                owner_type="chapter_memory",
+                owner_id="ch002",
+                vector=(1.0, 0.0),
+                source_path="40_manuscript/final/ch002.md",
+                chapter_number=2,
+                metadata={"content_hash": "rollback:ch002", "model": "test-vector"},
+            )
+        ],
+    )
+    tracked_files = {
+        path: path.read_bytes()
+        for path in (
+            root / "40_manuscript" / "final" / "ch002.md",
+            root / "40_manuscript" / "draft" / "ch004.md",
+            root / "20_outline" / "chapter_cards" / "ch002.json",
+            root / "30_state" / "novel_state.json",
+        )
+    }
+    database_rows = query_table(project_config, "chapters", limit=20)
+    assert active_source_record_count(project_config, "40_manuscript/final/ch002.md") == 1
+    detached_before = tuple((root / "40_manuscript" / "detached").iterdir())
+    real_sync = revision_pipeline.sync_database
+
+    def fail_after_database_sync(config):
+        real_sync(config)
+        raise RuntimeError("injected late revision rollback failure")
+
+    monkeypatch.setattr(revision_pipeline, "sync_database", fail_after_database_sync)
+    with pytest.raises(RuntimeError, match="injected late revision rollback failure"):
+        rollback(project_config, to_chapter=1)
+
+    for path, content in tracked_files.items():
+        assert path.read_bytes() == content
+    assert query_table(project_config, "chapters", limit=20) == database_rows
+    assert active_source_record_count(project_config, "40_manuscript/final/ch002.md") == 1
+    assert tuple((root / "40_manuscript" / "detached").iterdir()) == detached_before
+    assert not (root / "60_rag" / "memory" / "stale.json").exists()
+    assert not (root / "50_workbench" / "impact_reports" / "rollback_to_ch001.json").exists()
+    reports = sorted((root / "70_runtime" / "transactions").glob("*revision_rollback*.json"))
+    assert reports
+    assert json.loads(reports[0].read_text(encoding="utf-8"))["status"] == "rolled_back"
 
 
 def seed_revision_project(tmp_path):

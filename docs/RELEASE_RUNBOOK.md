@@ -1,6 +1,6 @@
 # Public Release Runbook
 
-公开源固定为 `https://github.com/ylqit/novel-general`，默认分支为 `master`。发布工具只负责诊断，不会自动 commit、push、tag 或创建 Release。版本级执行证据统一记录在 `V0_4_3_RELEASE_CHECKLIST.md`。
+公开源固定为 `https://github.com/ylqit/novel-general`，默认分支为 `master`。发布工具只负责诊断，不会自动 commit、push、tag 或创建 Release。v0.4.4 的仓库内门禁记录在 `V0_4_4_RELEASE_CHECKLIST.md`，远程 Actions 与 Release assets 是公开发布证据源。
 
 ## 1. 完成实现
 
@@ -42,9 +42,9 @@ python scripts/build_release_checksums.py --check
 
 ```powershell
 git add --all
-git commit -m "release: publish v0.4.3"
+git commit -m "release: publish v0.4.4"
 git switch master
-git merge --ff-only codex/v043-architecture-convergence
+git merge --ff-only codex/v044-transaction-convergence
 longform-engine release check --repository . --channel public --json
 git push origin master
 ```
@@ -56,15 +56,15 @@ git push origin master
 主分支 CI 成功后执行：
 
 ```powershell
-git tag -a v0.4.3 -m "longform-novel-engine v0.4.3"
-longform-engine release check --repository . --channel public --tag v0.4.3 --json
-git push origin v0.4.3
-longform-engine release check --repository . --channel public --check-remote --tag v0.4.3 --json
+git tag -a v0.4.4 -m "longform-novel-engine v0.4.4"
+longform-engine release check --repository . --channel public --tag v0.4.4 --json
+git push origin v0.4.4
+longform-engine release check --repository . --channel public --check-remote --tag v0.4.4 --json
 ```
 
 Release workflow 必须从 tag 重新运行验证、构建 wheel/sdist、执行分发审计，并上传两个包及 `SHA256SUMS`。tag 不得移动或覆盖；发布后缺陷使用新的补丁版本。
 
-## 5. 远程 Tag Smoke 与证据回写
+## 5. 远程 Tag Smoke 与证据
 
 从远程 tag 在新临时环境安装，执行：
 
@@ -75,4 +75,4 @@ longform-engine skills status --tool all --json
 longform-engine doctor --tool all --json
 ```
 
-Skill 状态和 doctor 使用临时目录环境变量，不写用户全局目录。确认 GitHub Release、wheel、sdist 与校验信息后，将 URL、提交号、tag 对象、资产 SHA-256 和 smoke 结果写回清单，单独提交并推送；最后等待该文档提交的 CI 成功。
+Skill 状态和 doctor 使用临时目录环境变量，不写用户全局目录。确认 GitHub Release、wheel、sdist 与校验信息后，以 Actions run、不可变 tag 和 Release assets 作为权威证据；v0.4.4 不追加发布后证据提交。

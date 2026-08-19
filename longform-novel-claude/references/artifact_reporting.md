@@ -47,6 +47,7 @@ For promoted items, include:
 - `60_rag/chunks/<id>.json`
 - graph file
 - SQLite sync status
+- transaction report
 
 ## Revision
 
@@ -54,13 +55,13 @@ For rewrite branches, include source path, candidate path, report path, and stat
 
 For rollback, include:
 
-- snapshot path
 - detached directory
 - detached file count
 - stale chapters
 - `30_state/stale_indexes.json`
 - `60_rag/stale.json`
 - rollback impact report
+- transaction report
 
 ## Failure
 

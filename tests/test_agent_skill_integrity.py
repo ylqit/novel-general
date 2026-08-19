@@ -69,6 +69,9 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
 
     readiness = check_agent_data_pipeline_readiness(ROOT)
     assert readiness["ready_for_data_pipeline"] is True
+    assert readiness["schema"] == "agent_data_pipeline_readiness_v4"
+    assert readiness["production_contract_ready"] is True
+    assert "production_chain_ready" not in readiness
     assert readiness["professional_prompt_ready"] is True
     assert readiness["provenance"]["execution_model"] == "single_process_sequential"
 
@@ -115,7 +118,7 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
         assert "保护项" in playbook.source.sections["repair"]
     assert len(fixtures["original_scenarios"]) == 6
     assert fixtures["fanfiction_scenario"]["chapter_count"] == 20
-    regressions = fixtures["v043_quality_regression_cases"]
+    regressions = fixtures["v044_quality_regression_cases"]
     assert {item["id"] for item in regressions} == {
         "mainline_invisible",
         "unnamed_functional_cast",
@@ -369,9 +372,9 @@ def test_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
     assert {item["aggregation"] for item in batches} == {"deterministic_source_hash_and_evidence_id"}
 
 
-def test_release_guard_tracks_current_v043_contracts():
+def test_release_guard_tracks_current_v044_contracts():
     guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_4_3_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_4_4_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
     production = (ROOT / "src" / "longform_engine" / "production.py").read_text(encoding="utf-8")
 
     for marker in (
@@ -388,7 +391,7 @@ def test_release_guard_tracks_current_v043_contracts():
         "配置与覆盖来源",
         "统一章节路径",
         "内部质量证据",
-        "单进程完整验证",
+        "单进程定向验证",
         "发布前本地证据",
         "远程发布证据",
     ):
@@ -424,7 +427,8 @@ def test_release_guard_covers_agent_data_pipeline_readiness_gate():
 
     for marker in (
         "check_agent_data_pipeline_readiness_guards",
-        "agent_data_pipeline_readiness_v3",
+        "agent_data_pipeline_readiness_v4",
+        "production_contract_ready",
         "ready_for_data_pipeline",
         "professional_prompt_ready",
         "professional_prompt_calibration",

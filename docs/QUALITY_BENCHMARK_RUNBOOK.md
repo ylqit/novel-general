@@ -7,7 +7,7 @@
 使用 `host_product` 标明承载 Agent 会话的宿主：
 
 ```powershell
-longform-engine benchmark init project.yaml --run-id current-codex-10 --host-product codex --chapters 10 --scenario-id setting-v1 --scenario-file scenario.json --agent-model MODEL --host-version VERSION --workflow-version 0.4.3
+longform-engine benchmark init project.yaml --run-id current-codex-10 --host-product codex --chapters 10 --scenario-id setting-v1 --scenario-file scenario.json --agent-model MODEL --host-version VERSION --workflow-version 0.4.4
 longform-engine benchmark init project.yaml --run-id variant-codex-10 --host-product codex --chapters 10 --scenario-id setting-v1 --scenario-file scenario.json --agent-model MODEL --host-version VERSION --workflow-version variant-a
 ```
 

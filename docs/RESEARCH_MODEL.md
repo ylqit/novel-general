@@ -7,7 +7,7 @@
 - 防止未经审核的外部资料污染正式设定。
 - 支持手动资料和联网检索两种入口。
 - 入库前生成影响分析，帮助作者判断会影响哪些人物、章节、伏笔、图谱节点和未来章节卡。
-- promote 后同步 `10_bible/`、`20_outline/`、`30_state/story_graph.json`、`60_rag/chunks/` 和 SQLite。
+- promote 后在一个 transaction v3 中同步 `10_bible/`、`20_outline/`、inbox 状态、`30_state/story_graph.json`、RAG context/cache 和 SQLite。
 - 所有数据库内容都可从文件重建。
 
 ## 2. 命令
@@ -107,6 +107,8 @@ SQLite 同步后，promoted research 会进入：
 - `chapter_chunks`: 用于 RAG 查询。
 - `events`: 以 `research:<id>` 事件记录进入 story graph 镜像。
 - `rag_queries`: 后续 query cache 仍按文件同步。
+
+成功结果同时返回项目相对的 `transaction_report`。promote 后段任一步骤失败时，transaction v3 会恢复 canon、impact ledger、inbox、RAG、graph、query cache 和 SQLite；事务开始前生成的 workbench impact report仍保留供诊断。
 
 ## 6. Agent 使用规则
 

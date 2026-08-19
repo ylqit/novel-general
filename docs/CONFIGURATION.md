@@ -193,4 +193,4 @@ python -m longform_engine.cli init-project --template qidian-longform --output n
 python -m longform_engine.cli quality story-profile novels/demo/project.yaml --json
 ```
 
-当前配置与发布验收状态见 [`V0_4_3_RELEASE_CHECKLIST.md`](V0_4_3_RELEASE_CHECKLIST.md)。
+当前配置与发布验收状态见 [`V0_4_4_RELEASE_CHECKLIST.md`](V0_4_4_RELEASE_CHECKLIST.md)。

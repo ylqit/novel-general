@@ -9,6 +9,7 @@
 - 回滚不删除后续内容，而是移动到 detached draft。
 - 回滚后不假装索引仍然可信，必须标记章节卡、RAG、图谱和事件矩阵 stale。
 - 回滚必须生成 impact report，提示受影响的设定、伏笔、人物状态和摘要。
+- 回滚的移动、stale、quality、memory/vector、任务生命周期和 SQLite 变更必须共用一个 transaction v3，失败时精确恢复。
 
 ## 2. 章节状态
 
@@ -52,15 +53,17 @@ longform-engine revision branch project.yaml --chapter 12
 longform-engine revision rollback project.yaml --to-chapter 12
 ```
 
-该命令会：
+该命令先生成完整 `RollbackPlan`，再在 transaction v3 中：
 
-- 创建轻量 snapshot 到 `70_runtime/snapshots/`。
 - 将 `to_chapter` 之后的 final、draft、summaries 移入 `40_manuscript/detached/rollback_to_chNNN_<timestamp>/`。
 - 将后续章节卡标记为 `stale`。
 - 写入 `30_state/stale_indexes.json`、`30_state/event_matrix_stale.json`、`60_rag/stale.json`。
+- 截断后续质量记录和反馈，标记 memory/vector 与 Agent task lifecycle stale/rolled_back。
 - 更新 `30_state/novel_state.json` 的 `current_chapter`、`last_finalized_chapter`、`stale`、`stale_chapters` 和 `last_rollback`。
 - 写入 rollback impact report。
 - 同步 SQLite。
+
+成功结果返回 `transaction_report`，不再返回 rollback 专用 `snapshot_dir`。detached 目录是成功回滚后的持久审计材料；transaction snapshot 只用于失败恢复，并在成功后清理。
 
 ## 5. 回滚影响分析
 

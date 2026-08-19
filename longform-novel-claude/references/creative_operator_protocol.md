@@ -25,7 +25,7 @@ Canonical state changes must go through CLI commands: `draft submit`, `chapter f
 
 - After `open-book`, follow `production next` through `book_ideation`. Each work order asks one core question and offers two or three options with tradeoffs. Do not infer a selection from silence.
 - Write only `book_ideation_candidate_v1`; the CLI saves one explicitly selected/provided answer through `intelligence apply --approved-by human`.
-- When `production next` requests `chapter_direction`, offer two or three causally distinct directions and record the user's explicit selection. Do not write chapter prose in this task.
+- Every unapplied chapter reaches `chapter_direction` before prose: offer two or three causally distinct directions with costs and record the user's explicit selection. Do not write chapter prose in this task.
 - Read the `effective_quality_contract_v1` embedded in the chapter card/writing brief. It combines market, genre, phase, approved baseline, and project overrides, but is not a universal sentence-length, dialogue-density, pace, or cliffhanger template.
 - Never add a finalized chapter to the approved style baseline automatically. Only the explicit `quality baseline-approve` CLI command may add its prose-free craft fingerprint.
 

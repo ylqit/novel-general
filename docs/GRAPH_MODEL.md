@@ -1,12 +1,12 @@
 # 知识图谱模型
 
-本地 story graph 的事实源是：
+本地 story graph 的当前物化视图是：
 
 ```text
 30_state/story_graph.json
 ```
 
-SQLite 里的 `entities`、`entity_mentions`、`events` 只是 mirror，可通过 `db sync` 或图谱更新后自动重建。
+章节 final 与经证据校验的 semantic ledger 才是生产事实源。默认生产通过显式 `chapter semantic-apply` 在 transaction v3 中统一物化 story graph、角色状态、伏笔、TCS、RAG 和 SQLite。SQLite 里的 `entities`、`entity_mentions`、`events` 只是 mirror。
 
 ## 命令
 
@@ -54,9 +54,9 @@ v1 支持的实体类型：
 
 有 error 时命令返回非 0；warning 不阻断。
 
-## Update
+## Manual Update
 
-`graph update --chapter N` 是保守更新，不凭空发明设定：
+`graph update --chapter N` 是保留的人工维护和诊断入口，不属于默认逐章生产链。它进行保守更新，不凭空发明设定：
 
 1. 读取 `40_manuscript/final/chNNN.md`。
 2. 从 `10_bible/characters.json`、`locations.json`、`factions.json` 和已有 `story_graph.json` 获取 canon 实体。
@@ -65,6 +65,8 @@ v1 支持的实体类型：
 5. 基于章节标题和摘要写入一个章节事件。
 6. 保存 `story_graph.json`。
 7. 自动执行 `db sync`，镜像到 SQLite。
+
+正常章节无需另跑此命令；`chapter semantic-apply` 已从一次 `canonical_delta_v1` 统一生成同一批派生视图。`graph extract/apply` 同样只用于显式维护、回填或诊断。
 
 ## Check
 

@@ -7,7 +7,7 @@
     },
     {
       "path": "config/agent_protocol_acceptance_fixtures.yaml",
-      "sha256": "93e5be635fb3a6ce511d14243cfd26359c4339800087ca5dcc055b68a85e18b9",
+      "sha256": "e251911b0216b2a8d1f8569d3e485417bd5928003f1c24912111fb009348c3f1",
       "size": 32054
     },
     {
@@ -267,7 +267,7 @@
     },
     {
       "path": "config/release-channel.json",
-      "sha256": "cb2409b704ccab33b204d3ea6e05b5e1ead064f9370de40e75e8a85cf7b31236",
+      "sha256": "063bcd9520008eb2415c7c376768d079c31fccb4686517473a8407cbd6ab8722",
       "size": 244
     },
     {
@@ -312,33 +312,33 @@
     },
     {
       "path": "longform-novel-claude/references/artifact_reporting.md",
-      "sha256": "453307a349f72c8210c2245ab08fde9efbc8f6aa156ca46597eece9a87a9002f",
-      "size": 1545
+      "sha256": "201189863f849eff3c336117f199f813587b9c64ed014f8aac472a6f6ba8abc7",
+      "size": 1571
     },
     {
       "path": "longform-novel-claude/references/command_protocol.md",
-      "sha256": "ce7a2f2988aa411745278ba9e0cd1ef3363b2f0688fbdf3886b787ff45184513",
-      "size": 30436
+      "sha256": "dea1f78f13a1f0301ece0160ddf67eea9a33b9d102f7e1698dad07f6ebebf080",
+      "size": 30567
     },
     {
       "path": "longform-novel-claude/references/creative_operator_protocol.md",
-      "sha256": "e5bc627afa6996254f7e958d2a78a0e189053edb3e1691652172a1d10b40e348",
-      "size": 10572
+      "sha256": "4149a6e9b7ed75a2fb27004c2f0f5db0da1fcac4df31aef647b818cd579858c4",
+      "size": 10596
     },
     {
       "path": "longform-novel-claude/references/iron_laws.md",
-      "sha256": "fbb14735dc24fd57768664ff15f77dd2c18a58cacd1ebd1b55b580b3f7cee2c8",
-      "size": 6759
+      "sha256": "f5db662001d22552f903d789ce1dfa5ae725d062e008212c8882fbf156037d73",
+      "size": 6815
     },
     {
       "path": "longform-novel-claude/references/workflow_mapping.md",
-      "sha256": "f830ee42c54d2f71e8c897857fef33fd6fe6aa5d0012dd06dda625bbf006e0b4",
-      "size": 7232
+      "sha256": "8d455d0601973af351fb2fdec6767d8c77abd28ba1f40418a3177ebaf4456a52",
+      "size": 7246
     },
     {
       "path": "longform-novel-claude/SKILL.md",
-      "sha256": "bbff7f25b6b7ef4bce1b526e212c16a207e89a5b8729449d18e04471bca06817",
-      "size": 5479
+      "sha256": "d5e8a96af9ea7dc995a246dc95fc49a3f21ae55a17f97327a7bcfb14c71c1887",
+      "size": 5532
     },
     {
       "path": "longform-novel-codex/agents/openai.yaml",
@@ -347,63 +347,63 @@
     },
     {
       "path": "longform-novel-codex/references/artifact_reporting.md",
-      "sha256": "453307a349f72c8210c2245ab08fde9efbc8f6aa156ca46597eece9a87a9002f",
-      "size": 1545
+      "sha256": "201189863f849eff3c336117f199f813587b9c64ed014f8aac472a6f6ba8abc7",
+      "size": 1571
     },
     {
       "path": "longform-novel-codex/references/command_protocol.md",
-      "sha256": "ce7a2f2988aa411745278ba9e0cd1ef3363b2f0688fbdf3886b787ff45184513",
-      "size": 30436
+      "sha256": "dea1f78f13a1f0301ece0160ddf67eea9a33b9d102f7e1698dad07f6ebebf080",
+      "size": 30567
     },
     {
       "path": "longform-novel-codex/references/creative_operator_protocol.md",
-      "sha256": "e5bc627afa6996254f7e958d2a78a0e189053edb3e1691652172a1d10b40e348",
-      "size": 10572
+      "sha256": "4149a6e9b7ed75a2fb27004c2f0f5db0da1fcac4df31aef647b818cd579858c4",
+      "size": 10596
     },
     {
       "path": "longform-novel-codex/references/iron_laws.md",
-      "sha256": "fbb14735dc24fd57768664ff15f77dd2c18a58cacd1ebd1b55b580b3f7cee2c8",
-      "size": 6759
+      "sha256": "f5db662001d22552f903d789ce1dfa5ae725d062e008212c8882fbf156037d73",
+      "size": 6815
     },
     {
       "path": "longform-novel-codex/references/workflow_mapping.md",
-      "sha256": "f830ee42c54d2f71e8c897857fef33fd6fe6aa5d0012dd06dda625bbf006e0b4",
-      "size": 7232
+      "sha256": "8d455d0601973af351fb2fdec6767d8c77abd28ba1f40418a3177ebaf4456a52",
+      "size": 7246
     },
     {
       "path": "longform-novel-codex/SKILL.md",
-      "sha256": "766c00eadd96d6056d1af9767bb7cc3d4eae566455d1fad72cc0809b9b8ffc6c",
-      "size": 5473
+      "sha256": "f3f0fc9ab0b453ce312ef797d3f74f63629c5fb4b4c8a59f8f5534de85d660c6",
+      "size": 5526
     },
     {
       "path": "pyproject.toml",
-      "sha256": "606980ce41589fbd4dcfca601edda1d1e9147b59ba1ede0ea2305611eef6dbcb",
+      "sha256": "684c13c011b637bd7516cff3ffcbc1d901ab656f960da4298c9c83ced5251de0",
       "size": 2621
     },
     {
       "path": "shared/artifact_reporting.md",
-      "sha256": "453307a349f72c8210c2245ab08fde9efbc8f6aa156ca46597eece9a87a9002f",
-      "size": 1545
+      "sha256": "201189863f849eff3c336117f199f813587b9c64ed014f8aac472a6f6ba8abc7",
+      "size": 1571
     },
     {
       "path": "shared/command_protocol.md",
-      "sha256": "ce7a2f2988aa411745278ba9e0cd1ef3363b2f0688fbdf3886b787ff45184513",
-      "size": 30436
+      "sha256": "dea1f78f13a1f0301ece0160ddf67eea9a33b9d102f7e1698dad07f6ebebf080",
+      "size": 30567
     },
     {
       "path": "shared/creative_operator_protocol.md",
-      "sha256": "e5bc627afa6996254f7e958d2a78a0e189053edb3e1691652172a1d10b40e348",
-      "size": 10572
+      "sha256": "4149a6e9b7ed75a2fb27004c2f0f5db0da1fcac4df31aef647b818cd579858c4",
+      "size": 10596
     },
     {
       "path": "shared/iron_laws.md",
-      "sha256": "fbb14735dc24fd57768664ff15f77dd2c18a58cacd1ebd1b55b580b3f7cee2c8",
-      "size": 6759
+      "sha256": "f5db662001d22552f903d789ce1dfa5ae725d062e008212c8882fbf156037d73",
+      "size": 6815
     },
     {
       "path": "shared/workflow_mapping.md",
-      "sha256": "f830ee42c54d2f71e8c897857fef33fd6fe6aa5d0012dd06dda625bbf006e0b4",
-      "size": 7232
+      "sha256": "8d455d0601973af351fb2fdec6767d8c77abd28ba1f40418a3177ebaf4456a52",
+      "size": 7246
     },
     {
       "path": "templates/qidian-longform/project.yaml",
@@ -411,7 +411,7 @@
       "size": 780
     }
   ],
-  "engine_version": "0.4.3",
+  "engine_version": "0.4.4",
   "hash_policy": "text-lf-v1",
   "schema": "longform_resource_manifest_v1"
 }
