@@ -15,9 +15,9 @@ import json
 import re
 
 from longform_engine.config import ConfigDocument
-from longform_engine.db import query_table, sync_database
-from longform_engine.rag import build_context
-from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.db import database_path, query_table, sync_database
+from longform_engine.rag import build_context, query_cache_path
+from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import list_canonical_chapter_files, list_finalized_chapter_files
 from longform_engine.text_metrics import content_character_count
 
@@ -67,6 +67,7 @@ class ResearchPromoteResult:
     graph_file: str
     db_chunks: int
     canon_paths: tuple[str, ...]
+    transaction_report: str
 
 
 @dataclass(frozen=True)
@@ -274,39 +275,67 @@ def promote_research(
     research_config = config.data.get("research", {})
     canon_path = root / str(research_config.get("canon_file", "10_bible/research_canon.jsonl"))
     impact_ledger = root / str(research_config.get("impact_ledger", "20_outline/research_impact_ledger.jsonl"))
-    upsert_jsonl(canon_path, canon_record)
-    upsert_jsonl(
-        impact_ledger,
-        {
-            "id": item["id"],
-            "title": item.get("title"),
+    rag_chunk = root / "60_rag" / "chunks" / f"{item['id']}.json"
+    graph_file = root / "30_state" / "story_graph.json"
+    context_file = root / "60_rag" / "context" / "next_plot_context.md"
+    context_query = research_context_query(canon_record, impact.keywords)
+    cache_file = query_cache_path(config, context_query)
+    db_file = database_path(config)
+    with apply_transaction(
+        root,
+        command="research promote",
+        source_paths=(item_path, impact.report_file, impact.report_json),
+        touched_paths=(
+            canon_path,
+            impact_ledger,
+            item_path,
+            rag_chunk,
+            graph_file,
+            context_file,
+            cache_file,
+            db_file,
+        ),
+        metadata={
+            "research_item_id": str(item["id"]),
+            "approved_by": approved_by,
             "impact_report": relative_path(root, Path(impact.report_file)),
-            "impacts": asdict(impact),
-            "promoted_at": promoted_at,
+            "write_boundary": "reviewed_research_to_canonical_and_derived_views",
         },
-    )
-    rag_chunk = write_research_rag_chunk(config, canon_record)
-    graph_file = update_research_graph(config, canon_record)
-    context = build_context(
-        config,
-        chapter_number=next_context_chapter(root),
-        query_text=research_context_query(canon_record, impact.keywords),
-    )
+    ) as transaction:
+        upsert_jsonl(canon_path, canon_record)
+        upsert_jsonl(
+            impact_ledger,
+            {
+                "id": item["id"],
+                "title": item.get("title"),
+                "impact_report": relative_path(root, Path(impact.report_file)),
+                "impacts": asdict(impact),
+                "promoted_at": promoted_at,
+            },
+        )
+        write_research_rag_chunk(config, canon_record)
+        update_research_graph(config, canon_record)
 
-    item["status"] = "promoted"
-    item["promoted_at"] = promoted_at
-    item["approved_by"] = approved_by
-    item["review_note"] = review_note
-    item["impact_report"] = relative_path(root, Path(impact.report_file))
-    item["canon_paths"] = [
-        relative_path(root, canon_path),
-        relative_path(root, impact_ledger),
-        relative_path(root, rag_chunk),
-        relative_path(root, graph_file),
-    ]
-    atomic_write_text(item_path, json.dumps(item, ensure_ascii=False, indent=2) + "\n")
-    sync_database(config)
-    chunk_count = len(query_table(config, "chapter_chunks", limit=10000))
+        item["status"] = "promoted"
+        item["promoted_at"] = promoted_at
+        item["approved_by"] = approved_by
+        item["review_note"] = review_note
+        item["impact_report"] = relative_path(root, Path(impact.report_file))
+        item["canon_paths"] = [
+            relative_path(root, canon_path),
+            relative_path(root, impact_ledger),
+            relative_path(root, rag_chunk),
+            relative_path(root, graph_file),
+        ]
+        atomic_write_text(item_path, json.dumps(item, ensure_ascii=False, indent=2) + "\n")
+        sync_database(config)
+        context = build_context(
+            config,
+            chapter_number=next_context_chapter(root),
+            query_text=context_query,
+        )
+        sync_database(config)
+        chunk_count = len(query_table(config, "chapter_chunks", limit=10000))
     return ResearchPromoteResult(
         item_id=str(item["id"]),
         status="promoted",
@@ -317,6 +346,7 @@ def promote_research(
         graph_file=str(graph_file),
         db_chunks=chunk_count,
         canon_paths=tuple(item["canon_paths"]),
+        transaction_report=relative_path(root, transaction.report_file),
     )
 
 

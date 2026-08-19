@@ -74,7 +74,7 @@ Semantic RAG now has a graph-aware path in addition to chunk and memory retrieva
 - `rag query project.yaml "query" --semantic --chapter N` can fuse final chunks, scene/chapter memory, Character Memory Cards, and local graph traversal hits.
 - `graph retrieve project.yaml --query "..." --chapter N --json` performs entity/alias seed matching, 1-2 hop relationship/event traversal, foreshadow and ability expansion, and chapter/status/stale filtering.
 - Graph hits expose `graph_score`, `hop_distance`, `path_reason`, `evidence_span`, and `source_path` so Agent reviewers can see why a relationship, event, clue, or ability constraint was retrieved.
-- Character memory lives at `60_rag/memory/characters/<character_id>.json` and is only written by `memory character-apply` after workbench validation.
+- Character memory lives at `60_rag/memory/characters/<character_id>.json` and is materialized from the evidence-bound chapter semantic ledger by explicit `chapter semantic-apply`.
 - TCS state machine files at `30_state/tcs/current.json` and `30_state/tcs/transitions/chNNN.json` provide reader progress, known facts, character knowledge, relationship state, spoiler guard, and state transitions for RAG and semantic gates.
 
 ## Creative Operator Inputs
@@ -83,7 +83,7 @@ Semantic RAG now has a graph-aware path in addition to chunk and memory retrieva
 
 - `10_bible/creative_brief.json`,
 - Writer Craft Brief,
-- Humanizer v2 rules,
+- Humanizer v4 rules,
 - Style Memory,
 - TCS,
 - Character Memory,

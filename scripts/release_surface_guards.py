@@ -143,7 +143,7 @@ SINGLE_PROJECT_FORBIDDEN_TERMS = tuple(
 
 REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
-        "docs/V0_4_3_RELEASE_CHECKLIST.md",
+        "docs/V0_4_4_RELEASE_CHECKLIST.md",
         (
             "配置与覆盖来源",
             "统一章节路径",
@@ -229,7 +229,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "docs/V0_4_3_RELEASE_CHECKLIST.md",
+        "docs/V0_4_4_RELEASE_CHECKLIST.md",
         (
             "发布前本地证据",
             "远程发布证据",
@@ -241,7 +241,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "tests/test_agent_skill_integrity.py",
         (
-            "test_release_guard_tracks_current_v043_contracts",
+            "test_release_guard_tracks_current_v044_contracts",
             "check_experience_layer_guards",
             "DIRECT_WRITER_PATTERNS",
         ),
@@ -250,7 +250,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         "tests/test_agent_skill_integrity.py",
         (
             "test_progressive_prompts_cover_four_protocols_without_pollution",
-            "agent_data_pipeline_readiness_v3",
+            "agent_data_pipeline_readiness_v4",
             "single_process_sequential",
         ),
     ),
@@ -658,7 +658,7 @@ def check_removed_runtime_guards() -> list[str]:
     failures: list[str] = []
     retired_module = "leg" + "acy.py"
     if (SRC / retired_module).exists():
-        failures.append(f"{retired_module} must not ship in the v0.4.3 runtime")
+        failures.append(f"{retired_module} must not ship in the v0.4.4 runtime")
     combined = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")
         for path in (
@@ -733,7 +733,8 @@ def check_agent_data_pipeline_readiness_guards() -> list[str]:
     script_text = script_path.read_text(encoding="utf-8", errors="ignore")
     ci_text = ci_path.read_text(encoding="utf-8", errors="ignore")
     for marker in (
-        "agent_data_pipeline_readiness_v3",
+        "agent_data_pipeline_readiness_v4",
+        "production_contract_ready",
         "ready_for_data_pipeline",
         "professional_prompt_ready",
         "professional_prompt_calibration",

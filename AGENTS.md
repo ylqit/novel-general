@@ -25,9 +25,9 @@ python scripts/check_agent_data_pipeline_readiness.py
 
 ## 2. 当前发布状态
 
-- 当前稳定版为 `v0.4.3`。
-- v0.4.3 包含 repair 生命周期、Semantic RAG 增量索引、transaction v3/显式恢复、有证据审稿、唯一章节合同、上下文去重、通用任务对账、产物归档和严格配置契约。
-- 协议与生产链 readiness 以 `scripts/check_agent_data_pipeline_readiness.py` 的输出为准。
+- 当前稳定版为 `v0.4.4`。
+- v0.4.4 将 research promote 与 revision rollback 纳入 transaction v3，统一每章方向合同，并收敛 readiness 与语义物化说明。
+- 协议与生产合同 readiness 以 `scripts/check_agent_data_pipeline_readiness.py` 的输出为准。
 - `literary_evidence_ready` 保持 `false`，直到真实章节与独立盲评证据完整。
 - 不要把任一本地小说运行、全局 Skill 状态或历史阶段文档当作源码事实源。
 
@@ -314,7 +314,7 @@ task event/index 记录：
 1. `README.md`
 2. `docs/ARCHITECTURE.md`
 3. `docs/STORAGE_MODEL.md`
-4. `docs/V0_4_3_RELEASE_CHECKLIST.md`
+4. `docs/V0_4_4_RELEASE_CHECKLIST.md`
 5. `docs/GATE_MODEL.md`
 6. `docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`
 7. `docs/CONFIGURATION.md`

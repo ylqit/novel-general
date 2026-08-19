@@ -87,7 +87,7 @@ prompt_selection_cases:
     quality_focus: [interiority]
     expected_playbook: interiority_and_emotion
 
-v043_quality_regression_cases:
+v044_quality_regression_cases:
   - id: mainline_invisible
     reviewer: planning_chief_editor
     severity: P1

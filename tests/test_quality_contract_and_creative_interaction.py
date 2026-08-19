@@ -498,7 +498,7 @@ def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
     assert production_next(config)["status"] == "ready_for_continue_write"
 
 
-def test_guided_direction_still_requires_human_choice_for_specific_chapter(tmp_path):
+def test_specific_chapter_requires_mandatory_direction_and_regenerates_retired_reason(tmp_path):
     config, root = seed_project(tmp_path)
     mark_project_ready(root, config, direction_applied=False)
     plan_path = root / "20_outline" / "chapter_plan.json"
@@ -516,7 +516,36 @@ def test_guided_direction_still_requires_human_choice_for_specific_chapter(tmp_p
     status = assess_chapter_direction(config, 2)
 
     assert status["required"] is True
-    assert "guided_mode" in status["reasons"]
+    assert "mandatory_chapter_direction" in status["reasons"]
+
+    task = create_intelligence_task(config, task_type="chapter_direction", chapter_number=2)
+    candidate = root / task.candidate_file
+    retired = valid_direction_candidate(root, 2, ["guided_mode"])
+    write_design_candidate(candidate, "chapter_direction", retired)
+    delta = prepare_design_delta(config, root, "chapter_direction", candidate, retired)
+    delta_payload = json.loads(delta.read_text(encoding="utf-8"))
+    assert "trigger_reasons" not in delta_payload["changes"]
+    validation = validate_design_compile_delta(
+        config,
+        task_type="chapter_direction",
+        document_path=candidate,
+        delta_path=delta,
+    )
+    assert validation.ok, validation.errors
+
+    applied = apply_compiled_design(
+        config,
+        task_type="chapter_direction",
+        document_path=candidate,
+        delta_path=delta,
+        approved_by="human",
+    )
+    card = json.loads(
+        (root / "20_outline" / "chapter_cards" / "ch002.json").read_text(encoding="utf-8")
+    )
+    assert applied.status == "applied"
+    assert card["direction_selection"]["trigger_reasons"] == status["reasons"]
+    assert "guided_mode" not in card["direction_selection"]["trigger_reasons"]
 
 
 def test_chapter_direction_apply_failure_rolls_back_card_and_plan(tmp_path, monkeypatch):

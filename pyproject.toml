@@ -1,6 +1,6 @@
 [project]
 name = "longform-novel-engine"
-version = "0.4.3"
+version = "0.4.4"
 description = "Engineering-first AI engine for million-word Chinese longform novels."
 readme = "README.md"
 license = { file = "LICENSE" }

@@ -33,7 +33,7 @@ from longform_engine.roles import (
 from longform_engine.story_profiles import load_facet_registries
 
 
-SCHEMA = "agent_data_pipeline_readiness_v3"
+SCHEMA = "agent_data_pipeline_readiness_v4"
 RETIRED_RUNTIME_MARKERS = (
     "LEGACY" + "_COMPATIBILITY_TASK_TYPES",
     "legacy" + "_document_json",
@@ -400,7 +400,7 @@ def check_agent_data_pipeline_readiness(
 
     failures = [item for item in checks if item["status"] == "fail"]
     protocol_ready = not failures
-    production_chain_ready = protocol_ready
+    production_contract_ready = protocol_ready
     literary_evidence_ready = False
     professional_prompt_ready = not any(
         item["id"] == "professional_prompt_calibration" and item["status"] == "fail"
@@ -412,9 +412,9 @@ def check_agent_data_pipeline_readiness(
     }
     return {
         "schema": SCHEMA,
-        "ready_for_data_pipeline": protocol_ready and production_chain_ready,
+        "ready_for_data_pipeline": protocol_ready and production_contract_ready,
         "protocol_ready": protocol_ready,
-        "production_chain_ready": production_chain_ready,
+        "production_contract_ready": production_contract_ready,
         "literary_evidence_ready": literary_evidence_ready,
         "professional_prompt_ready": professional_prompt_ready,
         "repository": str(root),
@@ -469,7 +469,7 @@ def render_agent_data_pipeline_readiness(report: dict[str, Any]) -> str:
         f"Engine: {report.get('provenance', {}).get('engine_version') or 'unknown'}",
         f"Execution: {report.get('provenance', {}).get('execution_model') or 'unknown'}",
         f"Protocol ready: {bool(report.get('protocol_ready'))}",
-        f"Production chain ready: {bool(report.get('production_chain_ready'))}",
+        f"Production contract ready: {bool(report.get('production_contract_ready'))}",
         f"Literary evidence ready: {bool(report.get('literary_evidence_ready'))}",
     ]
     for item in report.get("checks") or []:

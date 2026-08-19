@@ -10,6 +10,7 @@ from .pipeline import (
     build_chunks,
     build_context,
     query,
+    query_cache_path,
     rebuild_embedding_index,
 )
 from .scale_benchmark import (
@@ -38,6 +39,7 @@ __all__ = [
     "build_chunks",
     "build_context",
     "query",
+    "query_cache_path",
     "rebuild_embedding_index",
     "RAG_SCALE_BENCHMARK_SCHEMA",
     "RAG_SCALE_DATASET_ID",

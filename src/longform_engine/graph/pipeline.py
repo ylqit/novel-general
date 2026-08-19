@@ -1108,7 +1108,7 @@ def collect_agent_draft_risks(root: Path, graph: dict[str, Any]) -> list[str]:
             )
         else:
             risks.append(
-                f"Agent draft timeline risk ch{chapter_number:03d}: draft is not final; graph update waits for chapter finalize."
+                f"Agent draft timeline risk ch{chapter_number:03d}: draft is not final; semantic materialization waits for chapter finalize."
             )
 
         character_matches = find_matching_entities(text, canon_entities, "character")

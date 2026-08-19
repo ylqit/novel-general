@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from longform_engine.config import load_project_config
 from longform_engine.db import query_table
 from longform_engine.orchestration import continue_write
@@ -102,6 +104,9 @@ def test_research_impact_promote_syncs_canon_rag_graph_and_sqlite(tmp_path):
     context_text = (root / "60_rag" / "context" / "next_plot_context.md").read_text(encoding="utf-8")
     assert promoted.context_file.endswith("next_plot_context.md")
     assert "PROMOTED_CANON_MARKER" in context_text
+    transaction = json.loads((root / promoted.transaction_report).read_text(encoding="utf-8"))
+    assert transaction["status"] == "applied"
+    assert transaction["metadata"]["research_item_id"] == item.item_id
 
     inbox_payload = json.loads((root / "50_workbench" / "research_inbox" / f"{item.item_id}.json").read_text(encoding="utf-8"))
     assert inbox_payload["status"] == "promoted"
@@ -126,6 +131,39 @@ def test_research_impact_promote_syncs_canon_rag_graph_and_sqlite(tmp_path):
     task = (root / "50_workbench" / "writing_tasks" / "ch002.md").read_text(encoding="utf-8")
     assert "PROMOTED_CANON_MARKER" in task
     assert "research_canon.jsonl" in task
+
+
+def test_research_promote_late_failure_restores_files_cache_and_sqlite(tmp_path, monkeypatch):
+    project_config = seed_research_project(tmp_path)
+    root = tmp_path / "novel"
+    note = tmp_path / "note.md"
+    note.write_text("# Rollback note\n\nTRANSACTION_ROLLBACK_MARKER must not survive failure.\n", encoding="utf-8")
+    item = add_research(project_config, file_path=note)
+    item_path = root / "50_workbench" / "research_inbox" / f"{item.item_id}.json"
+    graph_path = root / "30_state" / "story_graph.json"
+    context_path = root / "60_rag" / "context" / "next_plot_context.md"
+    before_item = item_path.read_bytes()
+    before_graph = graph_path.read_bytes()
+    before_context = context_path.read_bytes()
+
+    def fail_after_all_writes(*args, **kwargs):
+        raise RuntimeError("injected late research promotion failure")
+
+    monkeypatch.setattr("longform_engine.research.pipeline.query_table", fail_after_all_writes)
+    with pytest.raises(RuntimeError, match="injected late research promotion failure"):
+        promote_research(project_config, research_item=item.item_id, approved_by="test")
+
+    assert item_path.read_bytes() == before_item
+    assert graph_path.read_bytes() == before_graph
+    assert not (root / "10_bible" / "research_canon.jsonl").exists()
+    assert not (root / "20_outline" / "research_impact_ledger.jsonl").exists()
+    assert not (root / "60_rag" / "chunks" / f"{item.item_id}.json").exists()
+    assert context_path.read_bytes() == before_context
+    assert not list((root / "60_rag" / "query_cache").glob("*.json"))
+    assert not (root / "70_runtime" / "db" / "longform_engine.sqlite").exists()
+    reports = sorted((root / "70_runtime" / "transactions").glob("*research_promote*.json"))
+    assert reports
+    assert json.loads(reports[0].read_text(encoding="utf-8"))["status"] == "rolled_back"
 
 
 def seed_research_project(tmp_path):

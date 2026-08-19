@@ -21,7 +21,7 @@ description: Codex App / Codex CLI 中文长篇小说生产 Skill；用户说“
 
 上下文采用 `compact/standard/large` 自适应容量。字符数和文件数只是诊断；遇到顺序批次时按清单读取，不把范围证据一次塞满。章节正文始终一次输出完整正文；工作单出现 `prompt_budget_exceeded` 或 `need_human` 时停止，不静默截断核心事实。
 
-开书阶段按 `book_ideation -> book_design -> outline_design` 推进。`book_ideation` 每轮只问一个问题，必须先取得用户明确选择再写权威 Markdown；不得替用户默选。章节出现 `chapter_direction` 时同样先给 2-3 个因果方向并记录人工选择。写正文时遵守工作单内的 `effective_quality_contract_v1`，但不能把平台画像机械化为统一短句、对白率、快节奏或悬崖结尾。
+开书阶段按 `book_ideation -> book_design -> outline_design` 推进。`book_ideation` 每轮只问一个问题，必须先取得用户明确选择再写权威 Markdown；不得替用户默选。每个尚未应用方向的章节都必须先完成 `chapter_direction`：给出 2-3 个因果不同且带代价的方向并记录人工选择。写正文时遵守工作单内的 `effective_quality_contract_v1`，但不能把平台画像机械化为统一短句、对白率、快节奏或悬崖结尾。
 
 同人项目允许使用 manifest 声明来源中的角色名、关系、世界观、能力和时间线。先完成 `fanfiction canon-task` 与 `fanfiction design-task`，再进入纲要和章节；不得扫描未声明原作，也不得在 canon JSON 或正文中搬运、拆分重构连续 `source prose`。`rights status` 只记录和提示，不由 Agent 擅自阻断工作流。正文与修章遵守 `Humanizer v4` 和 `character_expression_packet_v1`；人物差异来自感知、决策、欲望、面具、身体和关系压力，不得强制统一对白或外貌配额。润色触发 `humanize_semantic_review` 时，必须由独立审稿角色比较来源稿与候选稿并通过 CLI 校验，不能由润色写作者自审放行。gate 通过后若出现 `reader_payoff_review`，必须按 span 证明实际收益与代价，再等待显式 finalize。
 

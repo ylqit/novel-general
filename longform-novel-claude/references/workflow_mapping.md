@@ -22,7 +22,7 @@ open-book
 -> character_expression_design when the current book design requests expression enrichment
 -> outline_design
 -> agent-task brief when an Agent task exists
--> conditional chapter_direction before chapter card/write task
+-> mandatory chapter_direction before every unapplied chapter card/write task
 -> continue-write
 -> /工程续章 pre-write guide:
    user preference, automatic fallback, pacing precheck, tail-hook declaration, forbidden reveal confirmation, failure repair path

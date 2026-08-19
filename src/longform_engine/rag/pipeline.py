@@ -1242,11 +1242,9 @@ def memory_text(payload: dict[str, Any]) -> str:
 
 
 def write_query_cache(config: ConfigDocument, query_text: str, hits: list[RagHit]) -> Path:
-    root = resolve_project_root(config)
-    cache_dir = root / "60_rag" / "query_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    signature = hashlib.sha256(query_text.encode("utf-8")).hexdigest()[:16]
-    path = cache_dir / f"{signature}.json"
+    path = query_cache_path(config, query_text)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    signature = path.stem
     payload = {
         "id": signature,
         "query": query_text,
@@ -1257,6 +1255,14 @@ def write_query_cache(config: ConfigDocument, query_text: str, hits: list[RagHit
     }
     atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     return path
+
+
+def query_cache_path(config: ConfigDocument, query_text: str) -> Path:
+    """Return the deterministic cache path owned by one RAG query."""
+
+    root = resolve_project_root(config)
+    signature = hashlib.sha256(query_text.encode("utf-8")).hexdigest()[:16]
+    return root / "60_rag" / "query_cache" / f"{signature}.json"
 
 
 def format_recent_chapters(config: ConfigDocument, *, chapter_number: int | None) -> list[str]:

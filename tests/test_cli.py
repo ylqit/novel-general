@@ -789,6 +789,7 @@ def test_cli_research_add_impact_promote(tmp_path):
     assert "OK: research impact report written" in impact.stdout
     assert promote.returncode == 0
     assert "OK: research item promoted to canon" in promote.stdout
+    assert "Transaction: 70_runtime/transactions/" in promote.stdout
     assert rag_query.returncode == 0
     assert "Hits: 1" in rag_query.stdout
 
@@ -818,6 +819,8 @@ def test_cli_revision_branch_rollback_and_impact(tmp_path):
     assert "OK: rewrite candidate created" in branch.stdout
     assert rollback.returncode == 0
     assert "OK: rollback completed" in rollback.stdout
+    assert "Transaction: 70_runtime/transactions/" in rollback.stdout
+    assert "Snapshot:" not in rollback.stdout
     assert impact.returncode == 0
     assert "OK: rollback impact report written" in impact.stdout
     assert status.returncode == 0

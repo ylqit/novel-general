@@ -26,7 +26,7 @@ These rules apply to Codex, ClaudeCode, and any other Agent-Skill user of `longf
 22. Unfinalized payoff reviews remain in `50_workbench/quality_reviews/`. Only `chapter finalize` may write `reader_reward_entry_v2` and `30_state/quality/structure_history.jsonl`.
 23. Structure observation must not impose a universal cliffhanger, battle, reversal, upgrade, short-sentence, or dialogue template. One repeated dimension is a warning; only combined structure, language, and payoff repetition may block.
 24. `book_ideation` asks one question per round. Agents may offer options, but only a user's explicit selection or provided answer may enter `10_bible/creative_decisions.json`.
-25. `chapter_direction` is conditional. It may interrupt guided, abstract, boundary, major-turn, repeated-repair, or multi-plotline chapters, but must not add a mandatory choice to every stable chapter.
+25. Every unapplied chapter requires `chapter_direction`: the Agent offers two or three causally distinct options with costs, and only the user's explicit selection may unlock the chapter card and writing task. An already applied direction remains resumable.
 26. The effective quality contract is compiled from resource profiles and explicit project state. Agents must not treat it as a fixed sentence, dialogue, pace, or ending template.
 27. Approved style baselines never auto-expand. Only an explicit CLI command with a named human approver may add a finalized chapter's prose-free craft observation.
 28. Editorial roles are risk-selected and context-isolated. A role reads only its manifest inputs and must not read peer results before submitting `editorial_role_review_v2`.

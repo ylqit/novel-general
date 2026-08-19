@@ -1,6 +1,6 @@
 # Architecture
 
-本文描述 `longform-novel-engine` v0.4.3 的当前实现边界。发生冲突时，以源码、`AGENTS.md`、本文件、`STORAGE_MODEL.md` 和 `V0_4_3_RELEASE_CHECKLIST.md` 为准。
+本文描述 `longform-novel-engine` v0.4.4 的当前实现边界。发生冲突时，以源码、`AGENTS.md`、本文件、`STORAGE_MODEL.md` 和 `V0_4_4_RELEASE_CHECKLIST.md` 为准。
 
 ## 1. 系统定位
 
