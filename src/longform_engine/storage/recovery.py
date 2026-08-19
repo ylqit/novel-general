@@ -555,7 +555,11 @@ def process_is_alive(pid: int) -> bool | None:
             import ctypes
             from ctypes import wintypes
 
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            win_dll: Any = getattr(ctypes, "WinDLL", None)
+            get_last_error: Any = getattr(ctypes, "get_last_error", None)
+            if win_dll is None or get_last_error is None:
+                return None
+            kernel32 = win_dll("kernel32", use_last_error=True)
             kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
             kernel32.OpenProcess.restype = wintypes.HANDLE
             kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
@@ -564,7 +568,7 @@ def process_is_alive(pid: int) -> bool | None:
             kernel32.CloseHandle.restype = wintypes.BOOL
             process = kernel32.OpenProcess(0x1000, False, pid)
             if not process:
-                return False if ctypes.get_last_error() == 87 else None
+                return False if get_last_error() == 87 else None
             try:
                 exit_code = wintypes.DWORD()
                 if not kernel32.GetExitCodeProcess(process, ctypes.byref(exit_code)):
