@@ -36,7 +36,7 @@ jobs:
       - run: python -c "import pathlib,subprocess,sys; wheels=list(pathlib.Path('dist').glob('*.whl')); assert len(wheels)==1; subprocess.check_call([sys.executable,'-m','pip','install','--force-reinstall','--no-deps',str(wheels[0])])"
       - run: longform-engine --version
       - run: longform-engine validate-config --template qidian-longform
-      - run: longform-engine release check --repository . --channel rc --skip-contracts --allow-detached --json
+      - run: longform-engine release check --repository . --channel public --skip-contracts --allow-detached --json
 
   semantic-smoke:
     runs-on: ubuntu-latest
