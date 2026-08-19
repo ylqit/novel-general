@@ -404,7 +404,7 @@ def build_outline_anchors(
             {
                 "chapter_number": chapter,
                 "title": item.get("title") or f"Anchor ch{chapter:03d}",
-                "duty": item.get("duty") or item.get("goal") or "maintain longform promise",
+                "duty": item.get("chapter_duty") or item.get("goal") or "maintain longform promise",
                 "status": "stale_pending_review" if chapter >= from_chapter else "locked",
                 "forbidden_reveals": list(event_values(item.get("forbidden_reveals"))),
                 "resolution_markers": list(event_values(item.get("resolution_markers"))) or ["core longform mystery", "main volume conflict"],

@@ -26,9 +26,9 @@ from longform_engine.agent_tasks import (
 )
 from longform_engine.config import ConfigDocument
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import manuscript_chapter_path
 
 from .contracts import compile_effective_quality_contract
-from .history import analyze_structure_pattern, build_structure_observation
 
 
 OPENING_MODES = {"action", "dialogue", "aftermath", "discovery", "reflection", "travel", "description", "other"}
@@ -71,7 +71,8 @@ def payoff_review_required_reasons(config: ConfigDocument, *, chapter_number: in
 
     root = resolve_project_root(config)
     quality = config.data.get("quality", {}) if isinstance(config.data.get("quality"), dict) else {}
-    mode = str(quality.get("assurance_mode") or "balanced")
+    profile = quality.get("profile") if isinstance(quality.get("profile"), dict) else {}
+    mode = str(profile.get("strictness") or "balanced")
     payoff_config = quality.get("reader_payoff") if isinstance(quality.get("reader_payoff"), dict) else {}
     review_mode = str(payoff_config.get("review_mode") or "risk_based")
     card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
@@ -81,8 +82,8 @@ def payoff_review_required_reasons(config: ConfigDocument, *, chapter_number: in
     if mode == "strict" or review_mode == "always":
         reasons.append("strict_assurance")
     if mode == "balanced" and (
-        str(card.get("reader_gain") or card.get("reader_payoff") or "").strip()
-        or str(card.get("chapter_duty") or card.get("duty") or "").strip()
+        str(card.get("reader_gain") or "").strip()
+        or str(card.get("chapter_duty") or "").strip()
     ):
         reasons.append("planned_reader_contract")
     if bool(card.get("requires_reader_payoff_review")):
@@ -111,7 +112,7 @@ def reader_payoff_task(
     if chapter_number <= 0:
         raise ValueError("chapter_number must be positive.")
     root = resolve_project_root(config)
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
     gate_path = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
     if not draft.exists():
@@ -134,7 +135,6 @@ def reader_payoff_task(
         verified_contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
     except ChapterContractError as exc:
         raise ValueError(str(exc)) from exc
-    text = draft.read_text(encoding="utf-8")
     payoff_context = build_payoff_context(
         config,
         root=root,
@@ -195,7 +195,6 @@ def reader_payoff_task(
             "",
         ]
     )
-    context_text = json.dumps(payoff_context, ensure_ascii=False, indent=2) + "\n"
     write_json(context_file, payoff_context)
     atomic_write_text(task_file, task_text)
     inputs = [task_file, draft, context_file]
@@ -285,7 +284,7 @@ def reader_payoff_validate(
             canonical_ref_dimensions=expected_dimensions,
         )
     )
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     text = draft.read_text(encoding="utf-8") if draft.exists() else ""
     if not draft.exists():
         errors.append("current chapter draft is missing.")
@@ -424,10 +423,9 @@ def reader_payoff_review_status(config: ConfigDocument, *, chapter_number: int) 
     reasons = payoff_review_required_reasons(config, chapter_number=chapter_number)
     if not reasons:
         return {"required": False, "complete": True, "passed": True, "reason": "not_required", "reasons": []}
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     output = root / "50_workbench" / "quality_reviews" / f"ch{chapter_number:03d}.reader_payoff.json"
     report_file = root / "50_workbench" / "quality_reviews" / f"ch{chapter_number:03d}.reader_payoff.validation.json"
-    text = draft.read_text(encoding="utf-8") if draft.exists() else ""
     report = load_json(report_file, default={})
     review = load_json(output, default={})
     provenance = report.get("provenance") if isinstance(report.get("provenance"), dict) else {}
@@ -460,7 +458,7 @@ def reader_payoff_task_is_current(config: ConfigDocument, *, chapter_number: int
     """Return whether the payoff work order was compiled for the current draft."""
 
     root = resolve_project_root(config)
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     context_file = (
         root
         / "50_workbench"
@@ -497,8 +495,7 @@ def build_payoff_context(
 ) -> dict[str, Any]:
     """Compile one provenance-bearing payoff packet without duplicating full source documents."""
 
-    draft_path = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
-    draft_text = draft_path.read_text(encoding="utf-8") if draft_path.is_file() else ""
+    draft_path = manuscript_chapter_path(root, chapter_number, lane="draft")
     truncations: list[dict[str, str | int]] = []
     reward_path = root / "30_state" / "reward_ledger.jsonl"
     previous = next(
@@ -756,8 +753,8 @@ def validate_planned(value: Any, card: dict[str, Any], errors: list[str]) -> Non
         return
     require_exact_keys(value, expected_keys, "planned", errors)
     expected = {
-        "chapter_duty": str(card.get("chapter_duty") or card.get("duty") or ""),
-        "reader_gain": str(card.get("reader_gain") or card.get("reader_payoff") or ""),
+        "chapter_duty": str(card.get("chapter_duty") or ""),
+        "reader_gain": str(card.get("reader_gain") or ""),
         "cost": str(card.get("cost") or ""),
         "promise_refs": [str(item) for item in card.get("promise_refs", []) if str(item)],
     }

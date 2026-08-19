@@ -20,7 +20,6 @@ from longform_engine.agent_protocols import (
 )
 from longform_engine.roles import (
     RoleRegistryError,
-    load_role_registry,
     validate_manifest_role_metadata,
     validate_role_task_coverage,
 )
@@ -1112,41 +1111,6 @@ def mark_tasks_for_chapter_type(
     return tuple(results)
 
 
-def mark_existing_tasks_superseded(
-    root: Path,
-    *,
-    chapter_number: int,
-    task_type: str,
-    replacement_task_id: str,
-    command: str,
-    artifact: str | Path,
-) -> tuple[AgentTaskLifecycleResult, ...]:
-    """Mark older same-lane tasks as superseded when a replacement task is created."""
-
-    results: list[AgentTaskLifecycleResult] = []
-    normalized_type = normalize_token(task_type)
-    for task in list_manifests(root, chapter_number=chapter_number):
-        task_id = str(task.get("task_id") or "")
-        if task_id == replacement_task_id:
-            continue
-        if normalize_token(str(task.get("task_type") or "")) != normalized_type:
-            continue
-        current = normalize_status(str(task.get("status") or "awaiting_agent"))
-        if current in {"applied", "rolled_back", "superseded"}:
-            continue
-        result_item = update_task_status(
-            root,
-            task_id,
-            to_status="superseded",
-            command=command,
-            artifact=artifact,
-            result=replacement_task_id,
-        )
-        if result_item is not None:
-            results.append(result_item)
-    return tuple(results)
-
-
 def mark_tasks_rolled_back(
     root: Path,
     *,
@@ -1394,7 +1358,7 @@ def normalize_scope(scope: dict[str, Any] | None, *, chapter_number: int | None)
 
 
 def normalize_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the current v4 manifest without adding compatibility fields."""
+    """Normalize the current v4 manifest without adding removed fields."""
 
     if not isinstance(manifest, dict):
         raise ValueError("Agent task manifest must be a JSON object.")

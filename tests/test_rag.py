@@ -1,10 +1,22 @@
 import json
+from hashlib import sha256
+from pathlib import Path
+
+import pytest
 
 from longform_engine.config import load_project_config
-from longform_engine.db import query_table, status
+from longform_engine.db import query_table, status, sync_semantic_delta
+from longform_engine.memory import apply_style_memory_delta, build_style_memory
 from longform_engine.orchestration import continue_write, finalize_chapter, open_book, submit_agent_draft
-from longform_engine.rag import build_chunks, build_context, query
+from longform_engine.rag import (
+    apply_embedding_delta,
+    build_chunks,
+    build_context,
+    query,
+    rebuild_embedding_index,
+)
 from longform_engine.storage import init_project
+from longform_engine.vectorstore import active_source_hash_count, active_source_record_count
 from tests.project_fixtures import mark_project_ready
 
 
@@ -46,6 +58,119 @@ def test_rag_query_cache_is_reused_as_file_fact(tmp_path):
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
     assert payload["query"] == "青铜铃"
     assert payload["hits"]
+
+
+def test_embedding_delta_replaces_only_changed_source_and_preserves_full_snapshot(tmp_path):
+    project_config = seed_rag_project(tmp_path)
+    root = tmp_path / "novel"
+    project_config.data["semantic"]["profile"] = "local-hash"
+    project_config.data["semantic"]["allow_fallback"] = True
+    project_config.data["semantic"]["require_real_model"] = False
+    project_config.data["semantic"]["vector_store"]["backend"] = "local_sqlite"
+    build_chunks(project_config)
+    rebuilt = rebuild_embedding_index(project_config)
+    snapshot = root / "60_rag" / "metadata" / "embeddings.jsonl"
+    snapshot_hash = sha256(snapshot.read_bytes()).hexdigest()
+    chapter_one_count = active_source_record_count(project_config, "40_manuscript/final/ch001.md")
+    chapter_one_db_ids = {
+        item["id"]
+        for item in query_table(project_config, "chapter_chunks", limit=10000)
+        if int(item.get("chapter_number") or 0) == 1
+    }
+
+    chapter_two = root / "40_manuscript" / "final" / "ch002.md"
+    chapter_two.write_text(
+        chapter_two.read_text(encoding="utf-8") + "\n\n新的代价证据迫使林迟改变下一步选择。\n",
+        encoding="utf-8",
+    )
+    build_chunks(project_config, chapter_numbers=(2,), sync_index=False)
+    db_delta = sync_semantic_delta(project_config, chapter_number=2, refresh_graph=False)
+    delta = apply_embedding_delta(project_config, chapter_numbers=(2,))
+    chapter_two_hash = sha256(chapter_two.read_bytes()).hexdigest()
+
+    assert rebuilt.records > delta.records > 0
+    assert db_delta.chapter_chunks > 0
+    assert sha256(snapshot.read_bytes()).hexdigest() == snapshot_hash
+    assert {
+        item["id"]
+        for item in query_table(project_config, "chapter_chunks", limit=10000)
+        if int(item.get("chapter_number") or 0) == 1
+    } == chapter_one_db_ids
+    assert active_source_record_count(project_config, "40_manuscript/final/ch001.md") == chapter_one_count
+    chapter_two_count = active_source_record_count(project_config, "40_manuscript/final/ch002.md")
+    assert active_source_hash_count(
+        project_config,
+        "40_manuscript/final/ch002.md",
+        chapter_two_hash,
+    ) == chapter_two_count
+
+
+def test_full_rebuild_rejects_noncanonical_final_source(tmp_path):
+    project_config = seed_rag_project(tmp_path)
+    root = tmp_path / "novel"
+    (root / "40_manuscript" / "final" / "ch001.txt").write_text(
+        "duplicate canonical source",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Non-canonical manuscript filename"):
+        build_chunks(project_config)
+
+
+def test_style_memory_delta_reads_only_declared_finalized_chapter(tmp_path, monkeypatch):
+    import longform_engine.memory.pipeline as memory_pipeline
+
+    project_config = seed_rag_project(tmp_path)
+    root = tmp_path / "novel"
+    apply_style_memory_delta(project_config, chapter_numbers=(1,))
+    real_read = memory_pipeline.safe_read_text
+    reads = []
+
+    def tracked_read(path):
+        reads.append(path.resolve())
+        return real_read(path)
+
+    monkeypatch.setattr(memory_pipeline, "safe_read_text", tracked_read)
+    result = apply_style_memory_delta(project_config, chapter_numbers=(2,))
+    payload = json.loads((root / result.style_file).read_text(encoding="utf-8"))
+
+    assert (root / "40_manuscript" / "final" / "ch001.md").resolve() not in reads
+    assert (root / "40_manuscript" / "final" / "ch002.md").resolve() in reads
+    assert payload["source_chapters"] == [1, 2]
+    assert payload["aggregation_mode"] == "per_source_incremental_v1"
+
+
+def test_style_memory_delta_rejects_inconsistent_existing_provenance(tmp_path):
+    project_config = seed_rag_project(tmp_path)
+    result = apply_style_memory_delta(project_config, chapter_numbers=(1,))
+    style_file = Path(result.style_file)
+    payload = json.loads(style_file.read_text(encoding="utf-8"))
+    payload["source_hash"] = "0" * 64
+    style_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source hash is inconsistent"):
+        apply_style_memory_delta(project_config, chapter_numbers=(2,))
+
+
+def test_style_memory_delta_rejects_sample_path_chapter_mismatch(tmp_path):
+    project_config = seed_rag_project(tmp_path)
+    root = tmp_path / "novel"
+    build_style_memory(project_config)
+    style_file = root / "60_rag" / "memory" / "style" / "style_fingerprint.json"
+    payload = json.loads(style_file.read_text(encoding="utf-8"))
+    chapter_sample = next(item for item in payload["style_samples"] if item["chapter"] > 0)
+    chapter_sample["chapter"] += 1
+    payload["source_hash"] = sha256(
+        json.dumps(
+            {item["source_path"]: item["source_sha256"] for item in payload["style_samples"]},
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    style_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="sample provenance is ambiguous"):
+        apply_style_memory_delta(project_config, chapter_numbers=(2,))
 
 
 def test_failed_agent_draft_and_draft_chunk_do_not_enter_rag(tmp_path):

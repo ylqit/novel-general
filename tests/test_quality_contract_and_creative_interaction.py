@@ -6,7 +6,6 @@ import pytest
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import (
     CANONICAL_DELTA_SCHEMA,
-    DESIGN_DOCUMENT_SCHEMA,
     DESIGN_REQUIRED_HEADINGS,
 )
 from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
@@ -276,7 +275,7 @@ def test_effective_contract_applies_current_arc_focus_after_story_facets(tmp_pat
     (
         ({"profile": {"phase": "midgame"}}, "quality.profile.phase"),
         ({"profile": {"strictness": "maximum"}}, "quality.profile.strictness"),
-        ({"creative_guidance": {"mode": "always_interrupt"}}, "creative_guidance.mode"),
+        ({"creative_guidance": {"mode": "always_interrupt"}}, "Removed config field"),
     ),
 )
 def test_quality_profile_config_rejects_unknown_contract_dimensions(override, message):
@@ -408,7 +407,6 @@ def test_production_next_keeps_active_project_intelligence_ahead_of_chapter_work
 def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
     config, root = seed_project(tmp_path)
     mark_project_ready(root, config, direction_applied=False)
-    config.data["quality"]["creative_guidance"]["mode"] = "guided"
 
     next_action = production_next(config)
     assert next_action["task_type"] == "chapter_direction"
@@ -503,13 +501,12 @@ def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
 def test_guided_direction_still_requires_human_choice_for_specific_chapter(tmp_path):
     config, root = seed_project(tmp_path)
     mark_project_ready(root, config, direction_applied=False)
-    config.data["quality"]["creative_guidance"]["mode"] = "guided"
     plan_path = root / "20_outline" / "chapter_plan.json"
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     plan[1].update(
         {
             "title": "第二份口供",
-            "duty": "核对两份口供中的时间差并迫使主角放弃一个先入判断。",
+            "chapter_duty": "核对两份口供中的时间差并迫使主角放弃一个先入判断。",
             "conflict": "证人安全与当夜追踪机会不能同时保全。",
             "information_release": "门禁记录证明嫌疑人离开时间被提前登记。",
             "hook": "错误记录使用了主角父亲旧案的编号规则。",
@@ -525,7 +522,6 @@ def test_guided_direction_still_requires_human_choice_for_specific_chapter(tmp_p
 def test_chapter_direction_apply_failure_rolls_back_card_and_plan(tmp_path, monkeypatch):
     config, root = seed_project(tmp_path)
     mark_project_ready(root, config, direction_applied=False)
-    config.data["quality"]["creative_guidance"]["mode"] = "guided"
     task = create_intelligence_task(config, task_type="chapter_direction", chapter_number=1)
     candidate = root / task.candidate_file
     reasons = assess_chapter_direction(config, 1)["reasons"]

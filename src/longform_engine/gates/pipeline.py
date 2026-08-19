@@ -12,7 +12,6 @@ import re
 
 from longform_engine.agent_protocols import (
     EVIDENCE_REVIEW_SCHEMA,
-    VALIDATION_REPORT_SCHEMA,
     build_validation_report,
     output_protocol_for_task,
     validate_evidence_review,
@@ -34,13 +33,19 @@ from longform_engine.agent_tasks import (
 )
 from longform_engine.config import ConfigDocument
 from longform_engine.character_expression import character_expression_diagnostics
-from longform_engine.creative import detect_humanizer_v2_issues, reader_experience_review
-from longform_engine.db import sync_database
+from longform_engine.creative import detect_humanizer_issues, reader_experience_review
+from longform_engine.db import database_path, sync_database
 from longform_engine.graph import check_graph
 from longform_engine.memory import deterministic_evidence_gate_findings
 from longform_engine.planning import evaluate_event_matrix, event_type_marker_count, infer_event_types_from_text
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import (
+    chapter_filename,
+    existing_manuscript_chapter_path,
+    manuscript_chapter_path,
+    parse_canonical_chapter_number,
+)
 from longform_engine.text_metrics import content_character_count
 
 
@@ -560,13 +565,13 @@ def gate_check(
     )
     if reviews_pending:
         allowed_actions = ("complete_reviews",)
-        next_command = f"longform-engine production next project.yaml"
+        next_command = "longform-engine production next project.yaml"
     elif passed:
         allowed_actions = ("complete_reviews", "finalize_chapter")
-        next_command = f"longform-engine production next project.yaml"
+        next_command = "longform-engine production next project.yaml"
     else:
         allowed_actions = ("complete_reviews",)
-        next_command = f"longform-engine production next project.yaml"
+        next_command = "longform-engine production next project.yaml"
 
     write_artifact_reports(
         artifact_dir,
@@ -1456,7 +1461,7 @@ def semantic_pacing_apply(
         command="pacing semantic-apply",
         chapter_number=chapter_number,
         source_paths=[path, validation.report_file],
-        touched_paths=[artifact_dir, gate_path, pacing_path, root / "70_runtime" / "db"],
+        touched_paths=[artifact_dir, gate_path, pacing_path, database_path(config)],
         metadata={
             "gate_artifact_only": True,
             "rebuild_boundaries": ["SQLite sync"],
@@ -1639,11 +1644,17 @@ def check_chapter_card(root: Path, chapter_number: int, text: str) -> list[dict[
     card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
     if not card_path.exists():
         return [{"code": "chapter_card", "severity": "P1", "message": "章节卡缺失。"}]
-    card = load_json(card_path, default={})
+    try:
+        load_verified_chapter_contract(root, chapter_number)
+    except ChapterContractError as exc:
+        return [
+            {
+                "code": "chapter_contract_inconsistent",
+                "severity": "P1",
+                "message": str(exc),
+            }
+        ]
     failures = []
-    for field in ("duty", "conflict", "information", "hook"):
-        if not str(card.get(field) or "").strip():
-            failures.append({"code": "chapter_card", "severity": "P1", "message": f"章节卡缺少 {field}。"})
     if len(text.strip()) < 80:
         failures.append({"code": "chapter_goal", "severity": "P1", "message": "正文过短，无法判断是否履行章节目标。"})
     return failures
@@ -2036,7 +2047,7 @@ def check_style_and_humanizer(config: ConfigDocument, text: str) -> tuple[list[d
         if isinstance(item, dict) and str(item.get("name") or "").strip()
     ] if isinstance(characters, list) else []
     expression_diagnostics = character_expression_diagnostics(text, character_names=character_names)
-    humanizer_issues, humanizer_warnings = detect_humanizer_v2_issues(text)
+    humanizer_issues, humanizer_warnings = detect_humanizer_issues(text)
     failures: list[dict[str, Any]] = []
     warnings: list[str] = list(humanizer_warnings)
 
@@ -2393,7 +2404,7 @@ def write_artifact_reports(
     ] if isinstance(characters, list) else []
     expression_diagnostics = character_expression_diagnostics(text, character_names=character_names)
     humanize["character_expression"] = expression_diagnostics
-    humanizer_issues, humanizer_warnings = detect_humanizer_v2_issues(text)
+    humanizer_issues, humanizer_warnings = detect_humanizer_issues(text)
     humanize["issues"] = humanizer_issues
     humanize["warnings"] = humanizer_warnings
     write_reverse_brake_report(artifact_dir / "reverse_brake_report.md", reverse_brake)
@@ -2599,13 +2610,13 @@ def semantic_pacing_review_status(
     required = mode == "required" or (
         mode == "risk_based"
         and (
-            str(quality.get("assurance_mode") or "balanced") == "strict"
+            str((quality.get("profile") or {}).get("strictness") or "balanced") == "strict"
             or bool(card.get("requires_semantic_pacing_review"))
         )
     )
     if not required:
         return {"required": False, "complete": True, "passed": True, "reason": "not_required", "review_mode": mode}
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     result = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "semantic_pacing_result.json"
     gate_path = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
     draft_hash = sha256_text(safe_read_text(draft)) if draft.is_file() else ""
@@ -2638,7 +2649,7 @@ def semantic_pacing_task_is_current(root: Path, chapter_number: int, task: dict[
 
     if str(task.get("task_type") or "") != "pacing_review":
         return False
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     task_json = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "semantic_pacing_task.json"
     if not draft.is_file() or not task_json.is_file():
         return False
@@ -2661,13 +2672,13 @@ def semantic_review_source_for_task(
     if not isinstance(task, dict):
         return None
     candidates: list[Path] = []
-    names = {f"ch{chapter_number:03d}.md", f"chapter_{chapter_number:03d}.md", f"{chapter_number}.md"}
+    expected_name = chapter_filename(chapter_number)
     for value in manifest_input_paths(task):
         relative = str(value or "").replace("\\", "/")
         if not relative.startswith(("40_manuscript/draft/", "40_manuscript/final/")):
             continue
         path = resolve_under_root(root, relative)
-        if path.name in names and path.is_file():
+        if path.name == expected_name and parse_canonical_chapter_number(path) == chapter_number and path.is_file():
             candidates.append(path)
     return candidates[0] if len(candidates) == 1 else None
 
@@ -2973,12 +2984,11 @@ def trim_text(text: str, limit: int) -> str:
 
 
 def chapter_text_path(root: Path, chapter_number: int, *, source: str) -> Path | None:
-    directory = root / "40_manuscript" / ("final" if source == "final" else "draft")
-    for name in (f"ch{chapter_number:03d}.md", f"chapter_{chapter_number:03d}.md", f"{chapter_number}.md"):
-        path = directory / name
-        if path.exists():
-            return path
-    return None
+    return existing_manuscript_chapter_path(
+        root,
+        chapter_number,
+        lane="final" if source == "final" else "draft",
+    )
 
 
 def gate_artifact_dir(root: Path, chapter_number: int) -> Path:

@@ -225,7 +225,7 @@ def test_low_change_non_risk_humanizer_candidate_does_not_require_semantic_revie
 
 def test_strict_mode_requires_review_even_without_milestone_or_change_risk(tmp_path):
     config, _root, candidate = seed_humanizer_project(tmp_path, milestones=[])
-    config.data["quality"]["assurance_mode"] = "strict"
+    config.data["quality"]["profile"]["strictness"] = "strict"
     config.data["quality"]["semantic_review_boundaries"] = False
 
     check = humanize_check(config, chapter_number=1, file_path=candidate)

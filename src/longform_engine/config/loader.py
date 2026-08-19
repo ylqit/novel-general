@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Any
 import copy
@@ -11,15 +11,16 @@ import re
 import yaml
 
 from longform_engine.lengths import LengthContractError, validate_length_contract
-from longform_engine.resources import resource_path, resource_root
+from longform_engine.resources import resource_path
 from longform_engine.story_profiles import StoryProfileError, validate_story_profile
+from longform_engine.vector_backends import IMPLEMENTED_VECTOR_BACKENDS
 
 
 class ConfigError(ValueError):
     """Raised when a project configuration cannot be loaded or validated."""
 
 
-LEGACY_PATH_PREFIXES = (
+RETIRED_PATH_PREFIXES = (
     "00_bible",
     "01_outline",
     "02_memory",
@@ -29,129 +30,6 @@ LEGACY_PATH_PREFIXES = (
     "06_runtime",
 )
 
-
-BUILTIN_DEFAULTS: dict[str, Any] = {
-    "schema_version": 2,
-    "creation": {
-        "mode": "original",
-    },
-    "fanfiction": {
-        "continuity_mode": "canon_compliant",
-        "sources": [],
-    },
-    "project": {
-        "slug": "untitled_longform",
-        "title": "未命名长篇小说",
-        "root_dir": "novels/untitled_longform",
-        "language": "zh-CN",
-        "timezone": "Asia/Hong_Kong",
-    },
-    "length": {
-        "metric": "content_characters_v1",
-        "target_total_characters": 2_000_000,
-        "completion_tolerance": [0.90, 1.10],
-        "chapter": {
-            "target_characters": 3000,
-            "soft_min": 2400,
-            "soft_max": 3600,
-            "hard_min": 2000,
-            "hard_max": 4200,
-        },
-        "volume": {
-            "target_characters": 250_000,
-        },
-        "planning": {
-            "mode": "rolling",
-            "detailed_horizon": 20,
-            "refill_threshold": 8,
-        },
-    },
-    "story_profile": {
-        "market": {
-            "primary": "qidian_male",
-            "compatibility": ["fanqie_free"],
-        },
-        "setting": {
-            "primary": "xuanhuan",
-            "secondary": [],
-        },
-        "plot_engines": {
-            "primary": "progression",
-            "supporting": [],
-        },
-        "narrative_forms": ["single_lead"],
-        "premise_devices": [],
-        "relationship_modes": ["team"],
-        "tone": ["adventure"],
-        "resolutions": [],
-    },
-    "storage": {
-        "layout_version": 2,
-        "filesystem_primary": True,
-        "runtime_database": "70_runtime/db/longform_engine.sqlite",
-        "directories": {
-            "governance": "00_governance",
-            "bible": "10_bible",
-            "outline": "20_outline",
-            "state": "30_state",
-            "manuscript": "40_manuscript",
-            "workbench": "50_workbench",
-            "rag": "60_rag",
-            "runtime": "70_runtime",
-            "exports": "80_exports",
-        },
-    },
-    "writing": {
-        "mode": "agent_skill",
-        "agent": {
-            "task_dir": "50_workbench/writing_tasks",
-            "draft_dir": "50_workbench/agent_drafts",
-            "require_submit_command": True,
-            "default_agent": "codex",
-            "context": {
-                "mode": "adaptive",
-                "host_profile": "standard",
-                "capacity_override_units": None,
-                "overflow_policy": "split_context",
-            },
-        },
-        "template_dry_run": {
-            "enabled": False,
-        },
-    },
-    "quality": {
-        "assurance_mode": "balanced",
-        "profile": {
-            "phase": "auto",
-            "strictness": "balanced",
-            "overrides": {},
-        },
-        "semantic_review_milestones": [1, 3, 10, 30],
-        "semantic_review_boundaries": True,
-        "reader_payoff": {
-            "review_mode": "risk_based",
-            "structure_window": 20,
-            "language_similarity_threshold": 0.72,
-        },
-        "repair": {
-            "max_content_rounds": 2,
-            "selected_p2_codes": [],
-        },
-        "humanizer": {
-            "changed_character_warning_ratio": 0.35,
-            "changed_character_human_ratio": 0.60,
-            "semantic_review_mode": "risk_based",
-            "semantic_review_change_ratio": 0.15,
-        },
-        "approved_style_baseline": {
-            "chapters": [],
-            "update_requires_human": True,
-        },
-        "creative_guidance": {
-            "mode": "guided",
-        },
-    },
-}
 
 CREATION_MODES = {
     "original",
@@ -187,12 +65,67 @@ QUALITY_PHASES = {
     "stable_serial",
     "volume_climax",
 }
-VECTOR_STORE_BACKENDS = {
-    "local_sqlite",
-    "local_hnsw",
-    "milvus",
-    "pgvector",
-    "elasticsearch",
+
+OPEN_MAPPING_PATHS = {"quality.profile.overrides"}
+REMOVED_CONFIG_FIELDS = {
+    "engine": "Engine identity and filesystem mode are runtime invariants; remove the engine section.",
+    "workflow": "Workflow gates are enforced by the production state machine; remove the workflow section.",
+    "storage": "The canonical storage layout is fixed by storage.layout; remove the storage section.",
+    "memory": "Memory paths and backend are canonical runtime ownership; remove the memory section.",
+    "graph": "Graph storage and SQLite materialization are canonical runtime ownership; remove the graph section.",
+    "revision": "Rollback always uses the transaction and snapshot policy; remove the revision section.",
+    "codex": "Host-neutral workflow settings belong under writing.agent; remove the codex section.",
+    "project.language": "The engine currently supports the zh-CN project contract only.",
+    "project.timezone": "Runtime timestamps are canonical UTC and do not use a project timezone.",
+    "writing.agent.require_submit_command": "Draft submission is mandatory and no longer configurable.",
+    "writing.template_dry_run": "Select template dry-run with writing.mode; remove this no-op section.",
+    "quality.assurance_mode": "Use quality.profile.strictness.",
+    "quality.approved_style_baseline": "Manage approved style samples with the quality baseline CLI.",
+    "quality.creative_guidance": "Guided creative interaction is a schema v2 invariant.",
+    "quality.reader_payoff.structure_window": "The retired structure-pattern analyzer no longer consumes this field.",
+    "quality.reader_payoff.language_similarity_threshold": "The retired structure-pattern analyzer no longer consumes this field.",
+    "quality.repair.max_content_rounds": "The repair budget is fixed at two content rounds.",
+    "rag.enabled": "RAG is part of the production pipeline and is not optional.",
+    "rag.backend": "Use semantic.vector_store.backend for the implemented storage backend.",
+    "rag.small_context_top_k": "Use rag.top_k or an explicit command argument.",
+    "rag.embedding": "Use semantic.profile for the model pair.",
+    "rag.reranker": "Use semantic.profile for the model pair.",
+    "rag.retrieval": "Hybrid retrieval and fusion are runtime invariants.",
+    "rag.write_next_plot_context": "Next-context materialization is a runtime invariant.",
+    "rag.query_cache": "Query-cache lifecycle is managed by the RAG pipeline.",
+    "semantic.fallback_profile": "Fallback behavior is controlled by semantic.allow_fallback.",
+    "semantic.vector_store.api_key_env": "Only local vector backends are implemented.",
+    "semantic.vector_store.collection": "Local vector storage uses one fixed project-owned collection.",
+    "gates.block_on_previous_failure": "Previous gate failure always blocks progression.",
+    "gates.artifact_dir": "Gate artifacts use the canonical 50_workbench/gate_artifacts path.",
+    "gates.required_files": "Required gate artifacts are enforced by the gate schema.",
+    "gates.allowed_actions_after_failure": "Failure actions are determined by the production state machine.",
+    "pacing.event_quota_window_chapters": "Use pacing.soft_event_window_chapters.",
+    "pacing.quota_types": "Event types are configured by pacing.event_types.",
+    "research.enabled": "Research commands are explicitly invoked and do not use an enable switch.",
+    "research.default_ingestion": "Research ingestion is always reviewed-inbox first.",
+    "research.promote_requires_approval": "Research promotion always requires explicit approval.",
+}
+CONFIG_OWNER_PREFIXES = {
+    "schema_version": "config.loader",
+    "creation": "creative.pipeline",
+    "fanfiction": "intelligence.pipeline",
+    "project": "storage.project",
+    "novel": "orchestration.pipeline",
+    "length": "lengths",
+    "story_profile": "story_profiles",
+    "writing": "orchestration.pipeline",
+    "quality": "quality.contracts",
+    "editorial": "editorial.pipeline",
+    "rag": "rag.pipeline",
+    "semantic": "models.pipeline/vectorstore.pipeline",
+    "gates": "gates.pipeline",
+    "pacing": "planning.pipeline/gates.pipeline",
+    "research": "research.pipeline",
+    "quality.semantic_pacing": "gates.pipeline",
+    "quality.humanizer": "creative.pipeline",
+    "quality.reader_payoff": "quality.review",
+    "quality.repair": "repair_coordination",
 }
 
 
@@ -203,12 +136,8 @@ class ConfigDocument:
     data: dict[str, Any]
     path: Path | None
     sources: tuple[str, ...]
-
-
-def repo_root() -> Path:
-    """Return the active resource root for compatibility with older callers."""
-
-    return resource_root()
+    field_sources: dict[str, str] = dataclass_field(default_factory=dict)
+    defaults: dict[str, Any] = dataclass_field(default_factory=dict)
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -223,6 +152,89 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
         else:
             base[key] = copy.deepcopy(value)
     return base
+
+
+def _validate_overlay_keys(
+    overlay: dict[str, Any],
+    reference: dict[str, Any],
+    *,
+    prefix: str = "",
+) -> None:
+    """Reject misspelled and retired fields before they can disappear into a deep merge."""
+
+    for key, value in overlay.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if path in REMOVED_CONFIG_FIELDS:
+            raise ConfigError(f"Removed config field {path}: {REMOVED_CONFIG_FIELDS[path]}")
+        if key not in reference:
+            raise ConfigError(f"Unknown config field: {path}")
+        expected = reference[key]
+        if isinstance(value, dict):
+            if not isinstance(expected, dict):
+                raise ConfigError(f"Config field {path} must not be a mapping")
+            if path not in OPEN_MAPPING_PATHS:
+                _validate_overlay_keys(value, expected, prefix=path)
+
+
+def _flatten_fields(data: dict[str, Any], *, prefix: str = "") -> list[tuple[str, Any]]:
+    fields: list[tuple[str, Any]] = []
+    for key, value in data.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict) and value:
+            fields.extend(_flatten_fields(value, prefix=path))
+        else:
+            fields.append((path, value))
+    return fields
+
+
+def _mark_field_sources(data: dict[str, Any], source: str, result: dict[str, str], *, prefix: str = "") -> None:
+    for key, value in data.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict) and value:
+            _mark_field_sources(value, source, result, prefix=path)
+        else:
+            result[path] = source
+
+
+def config_field_registry(config: ConfigDocument) -> tuple[dict[str, Any], ...]:
+    """Describe every effective public field with its default, source, type, and runtime owner."""
+
+    defaults = dict(_flatten_fields(config.defaults))
+    rows: list[dict[str, Any]] = []
+    for path, value in _flatten_fields(config.data):
+        owner_prefix = max(
+            (prefix for prefix in CONFIG_OWNER_PREFIXES if path == prefix or path.startswith(prefix + ".")),
+            key=len,
+        )
+        rows.append(
+            {
+                "path": path,
+                "type": _config_type(value),
+                "default": defaults.get(path),
+                "value": value,
+                "source": config.field_sources.get(path, config.sources[0] if config.sources else ""),
+                "owner": CONFIG_OWNER_PREFIXES[owner_prefix],
+            }
+        )
+    return tuple(rows)
+
+
+def _config_type(value: Any) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "mapping"
+    if value is None:
+        return "null"
+    return type(value).__name__
 
 
 def read_yaml(path: Path) -> dict[str, Any]:
@@ -252,14 +264,16 @@ def load_project_config(
     template: str | None = None,
     cli_overrides: dict[str, Any] | None = None,
 ) -> ConfigDocument:
-    """Load config with built-in defaults, engine defaults, template/project config, and overrides."""
+    """Load config from the packaged engine defaults, then apply project and CLI overrides."""
 
-    data = copy.deepcopy(BUILTIN_DEFAULTS)
-    sources: list[str] = ["builtin defaults"]
-
-    default_config = resource_path("config", "default.engine.yaml")
-    deep_merge(data, read_yaml(default_config))
-    sources.append(str(default_config))
+    try:
+        default_config = resource_path("config", "default.engine.yaml")
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise ConfigError("Packaged config/default.engine.yaml is unavailable or incomplete.") from exc
+    defaults = read_yaml(default_config)
+    data = copy.deepcopy(defaults)
+    sources: list[str] = [str(default_config)]
+    field_sources = {path: str(default_config) for path, _value in _flatten_fields(defaults)}
 
     resolved_path: Path | None = None
     if template and config_path:
@@ -270,22 +284,33 @@ def load_project_config(
         resolved_path = Path(config_path).expanduser().resolve()
 
     if resolved_path:
-        deep_merge(data, read_yaml(resolved_path))
+        overlay = read_yaml(resolved_path)
+        _validate_overlay_keys(overlay, defaults)
+        deep_merge(data, overlay)
         sources.append(str(resolved_path))
+        _mark_field_sources(overlay, str(resolved_path), field_sources)
 
     if cli_overrides:
+        _validate_overlay_keys(cli_overrides, defaults)
         deep_merge(data, cli_overrides)
         sources.append("cli overrides")
+        _mark_field_sources(cli_overrides, "cli overrides", field_sources)
 
     validate_config(data)
-    return ConfigDocument(data=data, path=resolved_path, sources=tuple(sources))
+    return ConfigDocument(
+        data=data,
+        path=resolved_path,
+        sources=tuple(sources),
+        field_sources=field_sources,
+        defaults=copy.deepcopy(defaults),
+    )
 
 
 def validate_config(data: dict[str, Any]) -> None:
     """Validate the minimal contract needed by the engine bootstrap."""
 
     if data.get("schema_version") != 2:
-        raise ConfigError("schema_version must be 2; v0.4.0 does not load v0.3.x project configs")
+        raise ConfigError("schema_version must be 2; non-current project configs are not loaded")
 
     creation = _require_mapping(data, "creation")
     creation_mode = str(creation.get("mode") or "").strip()
@@ -326,23 +351,7 @@ def validate_config(data: dict[str, Any]) -> None:
     except StoryProfileError as exc:
         raise ConfigError(str(exc)) from exc
 
-    storage = _require_mapping(data, "storage")
-    directories = _require_mapping(storage, "directories", "storage")
-    required_dirs = {
-        "governance",
-        "bible",
-        "outline",
-        "state",
-        "manuscript",
-        "workbench",
-        "rag",
-        "runtime",
-        "exports",
-    }
-    missing = sorted(name for name in required_dirs if not directories.get(name))
-    if missing:
-        raise ConfigError(f"storage.directories missing: {', '.join(missing)}")
-    _reject_legacy_paths(data)
+    _reject_retired_paths(data)
 
     writing = _require_mapping(data, "writing")
     mode = str(writing.get("mode", "")).strip()
@@ -374,10 +383,10 @@ def validate_config(data: dict[str, Any]) -> None:
     semantic = _require_mapping(data, "semantic")
     vector_store = _require_mapping(semantic, "vector_store", "semantic")
     vector_backend = str(vector_store.get("backend") or "").strip()
-    if vector_backend not in VECTOR_STORE_BACKENDS:
+    if vector_backend not in IMPLEMENTED_VECTOR_BACKENDS:
         raise ConfigError(
             "semantic.vector_store.backend must be one of: "
-            + ", ".join(sorted(VECTOR_STORE_BACKENDS))
+            + ", ".join(sorted(IMPLEMENTED_VECTOR_BACKENDS))
         )
     metric = str(vector_store.get("metric") or "").strip()
     if metric not in {"cosine", "l2", "ip"}:
@@ -400,20 +409,22 @@ def validate_config(data: dict[str, Any]) -> None:
     removed_profile_fields = {"market", "compatibility_markets", "genre"} & set(profile)
     if removed_profile_fields or "market_profile" in quality or "genre_profile" in quality:
         raise ConfigError(
-            "v0.4.0 moved market and genre composition to story_profile; remove: "
+            "market and genre composition belong to story_profile; remove: "
             + ", ".join(sorted(removed_profile_fields | ({"quality.market_profile"} if "market_profile" in quality else set()) | ({"quality.genre_profile"} if "genre_profile" in quality else set())))
         )
     phase = str(profile.get("phase") or "auto").strip()
     if phase not in QUALITY_PHASES:
         raise ConfigError(f"quality.profile.phase must be one of: {', '.join(sorted(QUALITY_PHASES))}")
-    strictness = str(profile.get("strictness") or quality.get("assurance_mode") or "").strip()
+    strictness = str(profile.get("strictness") or "").strip()
     if strictness not in {"light", "balanced", "strict"}:
         raise ConfigError("quality.profile.strictness must be one of: light, balanced, strict")
     overrides = profile.get("overrides", {})
     if not isinstance(overrides, dict):
         raise ConfigError("quality.profile.overrides must be a mapping")
     platform_policy = overrides.get("platform_policy", {})
-    if platform_policy is not None and not isinstance(platform_policy, dict):
+    if platform_policy is None:
+        platform_policy = {}
+    elif not isinstance(platform_policy, dict):
         raise ConfigError("quality.profile.overrides.platform_policy must be a mapping")
     primary_deviation = str(platform_policy.get("primary_deviation") or "P2_advisory")
     if primary_deviation not in {"P2_advisory", "P1_blocking"}:
@@ -421,9 +432,6 @@ def validate_config(data: dict[str, Any]) -> None:
             "quality.profile.overrides.platform_policy.primary_deviation must be one of: "
             "P2_advisory, P1_blocking"
         )
-    assurance_mode = str(quality.get("assurance_mode") or "").strip()
-    if assurance_mode not in {"light", "balanced", "strict"}:
-        raise ConfigError("quality.assurance_mode must be one of: light, balanced, strict")
     milestones = quality.get("semantic_review_milestones")
     if (
         not isinstance(milestones, list)
@@ -436,17 +444,7 @@ def validate_config(data: dict[str, Any]) -> None:
     payoff_mode = str(reader_payoff.get("review_mode") or "").strip()
     if payoff_mode not in {"risk_based", "always"}:
         raise ConfigError("quality.reader_payoff.review_mode must be one of: risk_based, always")
-    structure_window = reader_payoff.get("structure_window")
-    if (
-        not isinstance(structure_window, int)
-        or isinstance(structure_window, bool)
-        or not 10 <= structure_window <= 20
-    ):
-        raise ConfigError("quality.reader_payoff.structure_window must be an integer between 10 and 20")
-    _require_ratio(reader_payoff, "language_similarity_threshold", "quality.reader_payoff")
     repair = _require_mapping(quality, "repair", "quality")
-    if repair.get("max_content_rounds") != 2:
-        raise ConfigError("quality.repair.max_content_rounds must be 2")
     selected_p2_codes = repair.get("selected_p2_codes")
     if (
         not isinstance(selected_p2_codes, list)
@@ -469,20 +467,92 @@ def validate_config(data: dict[str, Any]) -> None:
         raise ConfigError(
             "quality.humanizer.semantic_review_change_ratio must be lower than changed_character_human_ratio"
         )
-    approved_baseline = _require_mapping(quality, "approved_style_baseline", "quality")
-    approved_chapters = approved_baseline.get("chapters")
-    if (
-        not isinstance(approved_chapters, list)
-        or any(not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in approved_chapters)
-        or len(set(approved_chapters)) != len(approved_chapters)
+    semantic_pacing = _require_mapping(quality, "semantic_pacing", "quality")
+    pacing_review_mode = str(semantic_pacing.get("review_mode") or "").strip()
+    if pacing_review_mode not in {"off", "risk_based", "required"}:
+        raise ConfigError("quality.semantic_pacing.review_mode must be one of: off, required, risk_based")
+    rag = _require_mapping(data, "rag")
+    candidate_pool_size = _require_positive_int(rag, "candidate_pool_size", "rag")
+    top_k = _require_positive_int(rag, "top_k", "rag")
+    if candidate_pool_size < top_k:
+        raise ConfigError("rag.candidate_pool_size must be greater than or equal to rag.top_k")
+    chunk_max = _require_positive_int(rag, "chunk_max_chars", "rag")
+    chunk_overlap = rag.get("chunk_overlap_chars")
+    if not isinstance(chunk_overlap, int) or isinstance(chunk_overlap, bool) or chunk_overlap < 0:
+        raise ConfigError("rag.chunk_overlap_chars must be a non-negative integer")
+    if chunk_overlap >= chunk_max:
+        raise ConfigError("rag.chunk_overlap_chars must be lower than rag.chunk_max_chars")
+    weights = [
+        _require_ratio(rag, field, "rag")
+        for field in ("semantic_weight", "keyword_weight", "metadata_weight")
+    ]
+    if abs(sum(weights) - 1.0) > 1e-9:
+        raise ConfigError("rag semantic_weight, keyword_weight, and metadata_weight must sum to 1.0")
+
+    pacing = _require_mapping(data, "pacing")
+    if str(pacing.get("default_mode") or "") not in {"balanced", "fast", "measured"}:
+        raise ConfigError("pacing.default_mode must be one of: balanced, fast, measured")
+    for field in (
+        "fast_chapter_cooldown",
+        "max_major_quota_triggers_per_chapter",
+        "soft_event_window_chapters",
+        "max_consecutive_fast_chapters",
+        "fast_chapter_quota_per_volume",
     ):
-        raise ConfigError("quality.approved_style_baseline.chapters must be a unique list of positive integers")
-    if not isinstance(approved_baseline.get("update_requires_human"), bool):
-        raise ConfigError("quality.approved_style_baseline.update_requires_human must be boolean")
-    creative_guidance = _require_mapping(quality, "creative_guidance", "quality")
-    guidance_mode = str(creative_guidance.get("mode") or "").strip()
-    if guidance_mode != "guided":
-        raise ConfigError("quality.creative_guidance.mode must be guided in schema v2")
+        _require_positive_int(pacing, field, "pacing")
+    event_types = pacing.get("event_types")
+    if not isinstance(event_types, list) or not event_types or any(not str(item).strip() for item in event_types):
+        raise ConfigError("pacing.event_types must be a non-empty list")
+    cooldown = _require_mapping(pacing, "event_cooldown", "pacing")
+    if set(cooldown) != set(event_types):
+        raise ConfigError("pacing.event_cooldown must define every pacing.event_types item exactly once")
+    for event_type in event_types:
+        _require_positive_int(cooldown, str(event_type), "pacing.event_cooldown")
+    volume_distribution = pacing.get("volume_distribution")
+    if (
+        not isinstance(volume_distribution, list)
+        or not volume_distribution
+        or any(not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in volume_distribution)
+    ):
+        raise ConfigError("pacing.volume_distribution must be a non-empty list of positive integers")
+
+    editorial = _require_mapping(data, "editorial")
+    if str(editorial.get("review_mode") or "") not in {"off", "risk_based", "always"}:
+        raise ConfigError("editorial.review_mode must be one of: off, risk_based, always")
+    roles = editorial.get("review_roles")
+    if not isinstance(roles, list) or any(not isinstance(item, str) or not item.strip() for item in roles):
+        raise ConfigError("editorial.review_roles must be a list of non-empty strings")
+    _require_positive_int(editorial, "conditional_pass_limit", "editorial")
+
+    gates = _require_mapping(data, "gates")
+    forbidden_reveals = gates.get("forbidden_reveals")
+    if not isinstance(forbidden_reveals, list) or any(
+        not isinstance(item, str) or not item.strip() for item in forbidden_reveals
+    ):
+        raise ConfigError("gates.forbidden_reveals must be a list of non-empty strings")
+    _require_positive_int(gates, "mainline_info_release_warning_hits", "gates")
+    p0_patterns = gates.get("p0_meta_pollution_patterns")
+    if not isinstance(p0_patterns, list) or not p0_patterns or any(
+        not isinstance(item, str) or not item.strip() for item in p0_patterns
+    ):
+        raise ConfigError("gates.p0_meta_pollution_patterns must be a non-empty list of strings")
+
+    research = _require_mapping(data, "research")
+    if not isinstance(research.get("web_search_enabled"), bool):
+        raise ConfigError("research.web_search_enabled must be boolean")
+    if str(research.get("search_provider") or "") not in {
+        "zh.wikipedia",
+        "static_fallback",
+        "duckduckgo_html",
+    }:
+        raise ConfigError(
+            "research.search_provider must be one of: duckduckgo_html, static_fallback, zh.wikipedia"
+        )
+    _require_positive_int(research, "search_limit", "research")
+    _require_positive_int(research, "network_timeout_seconds", "research")
+    for field in ("inbox_dir", "impact_report_dir", "canon_file", "impact_ledger"):
+        if not isinstance(research.get(field), str) or not str(research[field]).strip():
+            raise ConfigError(f"research.{field} must be a non-empty path string")
 
 
 def _validate_fanfiction_source(source: Any, *, index: int, source_ids: set[str]) -> None:
@@ -514,25 +584,25 @@ def _validate_fanfiction_source(source: Any, *, index: int, source_ids: set[str]
         raise ConfigError(f"{prefix}.platform_policy_url must be a string")
 
 
-def _reject_legacy_paths(data: Any, path: str = "config") -> None:
+def _reject_retired_paths(data: Any, path: str = "config") -> None:
     """Reject retired path families inside longform project configs."""
 
     if isinstance(data, dict):
         for key, value in data.items():
-            _reject_legacy_paths(value, f"{path}.{key}")
+            _reject_retired_paths(value, f"{path}.{key}")
         return
     if isinstance(data, list):
         for index, value in enumerate(data):
-            _reject_legacy_paths(value, f"{path}[{index}]")
+            _reject_retired_paths(value, f"{path}[{index}]")
         return
     if not isinstance(data, str):
         return
 
     normalized = data.replace("\\", "/").strip()
-    for prefix in LEGACY_PATH_PREFIXES:
+    for prefix in RETIRED_PATH_PREFIXES:
         if normalized == prefix or normalized.startswith(f"{prefix}/"):
             raise ConfigError(
-                f"{path} uses legacy path '{data}'. "
+                f"{path} uses retired path '{data}'. "
                 "longform-novel-engine projects must use 10_bible/20_outline/30_state/"
                 "40_manuscript/50_workbench/60_rag/70_runtime."
             )

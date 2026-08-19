@@ -19,7 +19,7 @@ Agents must not directly edit:
 - `30_state/tcs/`
 - `70_runtime/db/`
 
-Canonical state changes must go through CLI commands: `draft submit`, `chapter finalize`, `chapter semantic-apply`, `chapter close`, `research promote`, `revision rollback`, or `db rebuild`. Legacy `memory ... apply` and `graph ... apply` remain compatibility commands, not the default new-chapter path.
+Canonical state changes must go through CLI commands: `draft submit`, `chapter finalize`, `chapter semantic-apply`, `chapter close`, `research promote`, `revision rollback`, or `db rebuild`.
 
 ## Creative Decisions And Quality Contract
 
@@ -31,7 +31,7 @@ Canonical state changes must go through CLI commands: `draft submit`, `chapter f
 
 ## `/工程续章` Pre-Write Guide
 
-Use this guide before writing any new chapter draft. `/工程续章` is the primary Chinese engineering entry for continuing a chapter; it maps to `longform-engine continue-write project.yaml --chapter N` and must not be replaced by legacy command names.
+Use this guide before writing any new chapter draft. `/工程续章` is the primary Chinese engineering entry for continuing a chapter; it maps to `longform-engine continue-write project.yaml --chapter N`.
 
 Before prose is written, the Agent must confirm these inputs from `50_workbench/writing_tasks/chNNN.json` and `chNNN.md`:
 
@@ -102,7 +102,7 @@ Fanfiction adds `canon_fidelity_reviewer / 同人还原审查员`, which checks 
 
 Roles are selected by current risk, not by an all-roles-every-chapter rule. Normal chapters use one writing or reader-quality role; AI-flavor recurrence adds anti-ai, continuity risk adds serial-verifier, major payoff or volume boundaries add planning plus reader-quality, fanfiction adds canon-fidelity, and P0/P1 risk adds executive review.
 
-Each selected role receives an isolated manifest and `editorial_context_isolation_v1` metadata file. `editorial_role_review_v2` records `reviewer_instance_id`, Agent product/version, `context_digest_hash`, `independence_mode`, `review_round`, and confidence. P0/P1 items must cite exact current-chapter excerpts. A role must not read peer results before submission. The aggregate phase alone may read normalized results, and it must retain consensus, conflicts, evidence overlap, severity differences, validated minority P0/P1 findings, and human decisions.
+Each selected role receives an isolated manifest and `editorial_context_isolation_v1` metadata file. `editorial_role_review_v2` records `reviewer_instance_id`, host/model identifiers, `context_digest_hash`, `independence_mode`, `review_round`, and confidence. P0/P1 items must cite exact current-chapter excerpts. A role must not read peer results before submission. The aggregate phase alone may read normalized results, and it must retain consensus, conflicts, evidence overlap, severity differences, validated minority P0/P1 findings, and human decisions.
 
 Open findings enter `50_workbench/quality_feedback/registry.jsonl` with stable IDs, recurrence, TTL, and resolution state. At most five active task-relevant items enter a later work order. Use `quality feedback-status`, `quality feedback-resolve`, or `quality feedback-suppress` to inspect or close them. Registry failure is non-blocking because feedback is workbench guidance, not canonical story state.
 

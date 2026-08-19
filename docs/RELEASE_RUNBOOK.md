@@ -1,53 +1,78 @@
 # Public Release Runbook
 
-公开源固定为 `https://github.com/ylqit/novel-general`，默认分支为 `master`。本流程不会由 CLI 自动 commit、push、tag 或创建 Release。
+公开源固定为 `https://github.com/ylqit/novel-general`，默认分支为 `master`。发布工具只负责诊断，不会自动 commit、push、tag 或创建 Release。版本级执行证据统一记录在 `V0_4_3_RELEASE_CHECKLIST.md`。
 
-## 1. Readiness
+## 1. 完成实现
 
-在仓库根目录运行：
+发布前先完成源码、配置、文档、Skill 引用和资源清单的全部修改。资源内容稳定后执行：
 
 ```powershell
-longform-engine release check --repository . --check-remote
-python -m pytest
+python scripts/sync_skill_references.py --write
+python scripts/build_resource_manifest.py --write
+```
+
+这一阶段不运行回归测试。必须保持单进程，不使用 xdist 或并行 Agent worker。
+
+## 2. 一次完整本地验证
+
+所有实现结束后，按清单顺序执行一次完整验证：
+
+```powershell
+python -m ruff check src tests
+python -m mypy src/longform_engine/config/loader.py src/longform_engine/storage/layout.py src/longform_engine/benchmark.py src/longform_engine/blind_review.py src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/storage/recovery.py
+python -m pytest --cov=longform_engine --cov-report=term-missing
+python scripts/sync_skill_references.py --check
+python scripts/validate_skills.py
+python scripts/build_resource_manifest.py --check
+python scripts/check_markdown_links.py
+python scripts/check_agent_data_pipeline_readiness.py
+python scripts/release_surface_guards.py
 python -m build
 python scripts/audit_wheel.py
 python scripts/audit_sdist.py
+python scripts/build_release_checksums.py --write
+python scripts/build_release_checksums.py --check
 ```
 
-`release_readiness_v1.ok` 必须为 `true`。检查内容包括版本、README 安装 tag、MIT、Git commit、干净工作区、`origin`、CI/Release workflow、Skill references、资源 manifest 和 release guards。
+随后在临时隔离环境安装本地 wheel，验证版本、配置解释、doctor 和仓库内 Skill 状态。不得安装或修改用户全局 Skill。把命令、退出码、测试数、覆盖率和构建摘要写回清单。
 
-## 2. 初始仓库接入
+## 3. 发布提交与主分支
 
-当前目录如果没有 commit 或 `origin`，必须先人工审查全部文件，再执行标准 Git 接入。不要在 readiness 工具中自动完成这些动作。
-
-目标 remote：
-
-```text
-https://github.com/ylqit/novel-general.git
-```
-
-推送 `master` 后，等待 GitHub Actions 的 Windows、Ubuntu、macOS 和 Semantic jobs 全部通过，再进入 tag 阶段。
-
-## 3. Tag 与 Release
-
-当前版本 `0.4.0` 对应且只对应 tag `v0.4.0`。创建 tag 前再次运行：
+审查 `git diff` 后提交：
 
 ```powershell
-longform-engine release check --repository . --check-remote
+git add --all
+git commit -m "release: publish v0.4.3"
+git switch master
+git merge --ff-only codex/v043-architecture-convergence
+longform-engine release check --repository . --channel public --json
+git push origin master
 ```
 
-得到明确发布确认后才创建并推送 tag。Release workflow 会重新运行测试、构建 wheel/sdist、审计两个分发包，并校验 `GITHUB_REF_NAME` 与包版本一致，然后附加 `dist/*.whl` 和 `dist/*.tar.gz`。
+等待 `master` 的 GitHub Actions 全部成功。任何失败都必须先在主分支修复并重新通过 CI，不能提前创建 tag。
 
-## 4. 发布后 Smoke
+## 4. 不可变 Tag 与 GitHub Release
 
-在新的终端按 README 执行 Git tag URL 的 pipx 安装，然后验证：
+主分支 CI 成功后执行：
+
+```powershell
+git tag -a v0.4.3 -m "longform-novel-engine v0.4.3"
+longform-engine release check --repository . --channel public --tag v0.4.3 --json
+git push origin v0.4.3
+longform-engine release check --repository . --channel public --check-remote --tag v0.4.3 --json
+```
+
+Release workflow 必须从 tag 重新运行验证、构建 wheel/sdist、执行分发审计，并上传两个包及 `SHA256SUMS`。tag 不得移动或覆盖；发布后缺陷使用新的补丁版本。
+
+## 5. 远程 Tag Smoke 与证据回写
+
+从远程 tag 在新临时环境安装，执行：
 
 ```powershell
 longform-engine --version
-longform-engine skills install --tool all
+longform-engine validate-config --template qidian-longform --explain
 longform-engine skills status --tool all --json
 longform-engine doctor --tool all --json
-longform-engine validate-config --template qidian-longform
 ```
 
-最后在真实 Codex 与 Claude Code 会话中重启 Skill discovery，分别运行 `/工程下一步` 和 `/工程工单`。只有这些步骤完成后，checklist 中的远程安装、宿主 discovery 与 5 章 smoke 才能从 `[~]` 改为 `[x]`。
+Skill 状态和 doctor 使用临时目录环境变量，不写用户全局目录。确认 GitHub Release、wheel、sdist 与校验信息后，将 URL、提交号、tag 对象、资产 SHA-256 和 smoke 结果写回清单，单独提交并推送；最后等待该文档提交的 CI 成功。

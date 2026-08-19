@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 import hashlib
 import json
 import re
@@ -12,7 +12,14 @@ import re
 from longform_engine.character_expression import character_expression_diagnostics
 from longform_engine.config import ConfigDocument
 from longform_engine.db import sync_database
-from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
+from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import (
+    existing_manuscript_chapter_path,
+    list_finalized_chapter_files,
+    manuscript_chapter_path,
+    manuscript_chapter_relative_path,
+    parse_canonical_chapter_number,
+)
 
 
 @dataclass(frozen=True)
@@ -154,38 +161,307 @@ def validate_memory(config: ConfigDocument) -> MemoryValidateResult:
 
 
 def build_style_memory(config: ConfigDocument) -> StyleMemoryResult:
-    """Build canonical Style/Voice Memory from finalized chapters and style bible."""
+    """Fully rebuild canonical Style/Voice Memory from finalized chapters and style bible."""
 
     root = resolve_project_root(config)
-    final_dir = root / "40_manuscript" / "final"
     style_dir = root / "60_rag" / "memory" / "style"
     style_dir.mkdir(parents=True, exist_ok=True)
     final_texts: list[tuple[int, Path, str]] = []
-    for path in sorted([*final_dir.glob("*.md"), *final_dir.glob("*.txt")]):
-        chapter = parse_chapter_number(path)
-        if chapter is None:
-            continue
+    for chapter, path in list_finalized_chapter_files(root):
+        expected = manuscript_chapter_path(root, chapter, lane="final")
+        if path != expected:
+            raise ValueError(
+                f"Style memory rebuild requires canonical finalized filename {expected.name}."
+            )
         final_texts.append((chapter, path, safe_read_text(path)))
     style_bible = root / "10_bible" / "style_bible.md"
     bible_text = safe_read_text(style_bible) if style_bible.exists() else ""
-    combined = "\n\n".join([bible_text, *[text for _chapter, _path, text in final_texts]]).strip()
-    fingerprint = style_fingerprint(combined)
-    payload = {
-        "schema_version": 1,
-        "memory_type": "style",
-        "status": "canonical",
-        "source_path": "40_manuscript/final",
-        "style_bible": relative_path(root, style_bible) if style_bible.exists() else "",
-        "source_chapters": [chapter for chapter, _path, _text in final_texts],
-        "source_hash": sha256_text(combined),
-        "fingerprint": fingerprint,
-        "notes": trim_text(bible_text, 800),
-        "updated_at": utc_now(),
-    }
+    samples = [
+        style_sample(
+            text,
+            source_path=relative_path(root, path),
+            source_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            chapter=chapter,
+        )
+        for chapter, path, text in final_texts
+    ]
+    if style_bible.exists():
+        samples.insert(
+            0,
+            style_sample(
+                bible_text,
+                source_path=relative_path(root, style_bible),
+                source_sha256=hashlib.sha256(style_bible.read_bytes()).hexdigest(),
+                chapter=0,
+            ),
+        )
+    payload = style_memory_payload(root, samples, bible_text=bible_text, mode="full_rebuild")
     path = style_dir / "style_fingerprint.json"
     atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     sync_database(config)
     return StyleMemoryResult(style_file=str(path), source_chapters=len(final_texts), updated=True)
+
+
+def apply_style_memory_delta(
+    config: ConfigDocument,
+    *,
+    chapter_numbers: Iterable[int],
+) -> StyleMemoryResult:
+    """Update Style/Voice Memory by reading only explicitly changed finalized chapters."""
+
+    root = resolve_project_root(config)
+    chapters = sorted({int(number) for number in chapter_numbers if int(number) > 0})
+    if not chapters:
+        raise ValueError("Style memory delta requires at least one chapter number.")
+    style_dir = root / "60_rag" / "memory" / "style"
+    style_dir.mkdir(parents=True, exist_ok=True)
+    path = style_dir / "style_fingerprint.json"
+    was_missing = not path.is_file()
+    existing = read_json(path, default={})
+    if path.is_file() and (
+        not isinstance(existing, dict)
+        or existing.get("aggregation_mode") != "per_source_incremental_v1"
+        or not isinstance(existing.get("style_samples"), list)
+    ):
+        raise ValueError(
+            "Style memory predates incremental provenance; run chapter semantic-rebuild before continuing."
+        )
+    raw_samples = existing.get("style_samples", [])
+    if any(not isinstance(item, dict) for item in raw_samples):
+        raise ValueError("Style memory sample provenance is invalid; run chapter semantic-rebuild.")
+    samples = [dict(item) for item in raw_samples]
+    by_source = {str(item.get("source_path") or ""): item for item in samples}
+    if len(by_source) != len(samples) or "" in by_source:
+        raise ValueError("Style memory sample provenance is ambiguous; run chapter semantic-rebuild.")
+    for item in samples:
+        source_path = str(item.get("source_path") or "")
+        source_sha256 = str(item.get("source_sha256") or "")
+        chapter = item.get("chapter")
+        source_chapter = (
+            parse_canonical_chapter_number(Path(source_path).name)
+            if source_path.startswith("40_manuscript/final/")
+            else None
+        )
+        source_matches_chapter = bool(
+            source_chapter is not None
+            and isinstance(chapter, int)
+            and not isinstance(chapter, bool)
+            and source_chapter == chapter
+        )
+        if (
+            len(source_sha256) != 64
+            or any(char not in "0123456789abcdef" for char in source_sha256.lower())
+            or not isinstance(item.get("fingerprint"), dict)
+            or not (
+                (source_path == "10_bible/style_bible.md" and chapter == 0)
+                or source_matches_chapter
+            )
+        ):
+            raise ValueError("Style memory sample provenance is ambiguous; run chapter semantic-rebuild.")
+    existing_sources = {
+        source: str(item.get("source_sha256") or "")
+        for source, item in by_source.items()
+    }
+    expected_existing_hash = sha256_text(
+        json.dumps(existing_sources, ensure_ascii=False, sort_keys=True)
+    )
+    if not was_missing and str(existing.get("source_hash") or "") != expected_existing_hash:
+        raise ValueError("Style memory source hash is inconsistent; run chapter semantic-rebuild.")
+    style_bible = root / "10_bible" / "style_bible.md"
+    bible_text = safe_read_text(style_bible) if style_bible.is_file() else ""
+    bible_source = relative_path(root, style_bible) if style_bible.is_file() else ""
+    if not was_missing and str(existing.get("style_bible") or "") != bible_source:
+        raise ValueError("Style bible provenance changed; run chapter semantic-rebuild before continuing.")
+    if style_bible.is_file():
+        bible_hash = hashlib.sha256(style_bible.read_bytes()).hexdigest()
+        previous_bible = by_source.get(bible_source)
+        if previous_bible is not None and previous_bible.get("source_sha256") != bible_hash:
+            raise ValueError("Style bible changed; run chapter semantic-rebuild to refresh full style provenance.")
+        if previous_bible is None:
+            by_source[bible_source] = style_sample(
+                bible_text,
+                source_path=bible_source,
+                source_sha256=bible_hash,
+                chapter=0,
+            )
+    updated = False
+    for chapter in chapters:
+        source = manuscript_chapter_path(root, chapter, lane="final")
+        if not source.is_file():
+            raise ValueError(f"Style memory delta source is missing: {relative_path(root, source)}")
+        source_path = relative_path(root, source)
+        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        previous = by_source.get(source_path)
+        if previous is not None:
+            if previous.get("source_sha256") != source_hash:
+                raise ValueError(f"Finalized style source changed after indexing: {source_path}")
+            continue
+        by_source[source_path] = style_sample(
+            safe_read_text(source),
+            source_path=source_path,
+            source_sha256=source_hash,
+            chapter=chapter,
+        )
+        updated = True
+    ordered = sorted(
+        by_source.values(),
+        key=lambda item: (int(item.get("chapter") or 0), str(item.get("source_path") or "")),
+    )
+    payload = style_memory_payload(root, ordered, bible_text=bible_text, mode="incremental_delta")
+    if updated or was_missing:
+        atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return StyleMemoryResult(
+        style_file=str(path),
+        source_chapters=len(payload["source_chapters"]),
+        updated=updated or was_missing,
+    )
+
+
+def style_sample(
+    text: str,
+    *,
+    source_path: str,
+    source_sha256: str,
+    chapter: int,
+) -> dict[str, Any]:
+    compact = text.strip()
+    return {
+        "chapter": chapter,
+        "source_path": source_path,
+        "source_sha256": source_sha256,
+        "content_characters": len(compact),
+        "fingerprint": style_fingerprint(compact),
+    }
+
+
+def style_memory_payload(
+    root: Path,
+    samples: list[dict[str, Any]],
+    *,
+    bible_text: str,
+    mode: str,
+) -> dict[str, Any]:
+    sources = {
+        str(item.get("source_path") or ""): str(item.get("source_sha256") or "")
+        for item in samples
+        if item.get("source_path") and item.get("source_sha256")
+    }
+    chapters = sorted(
+        int(item.get("chapter") or 0)
+        for item in samples
+        if int(item.get("chapter") or 0) > 0
+    )
+    style_bible = root / "10_bible" / "style_bible.md"
+    return {
+        "schema_version": 2,
+        "memory_type": "style",
+        "status": "canonical",
+        "source_path": "40_manuscript/final",
+        "style_bible": relative_path(root, style_bible) if style_bible.exists() else "",
+        "source_chapters": chapters,
+        "source_chapter_hashes": {
+            str(item.get("chapter")): item.get("source_sha256")
+            for item in samples
+            if int(item.get("chapter") or 0) > 0
+        },
+        "source_hash": sha256_text(json.dumps(sources, ensure_ascii=False, sort_keys=True)),
+        "aggregation_mode": "per_source_incremental_v1",
+        "last_update_mode": mode,
+        "style_samples": samples,
+        "fingerprint": aggregate_style_samples(samples),
+        "notes": trim_text(bible_text, 800),
+        "updated_at": utc_now(),
+    }
+
+
+def aggregate_style_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    weighted = [
+        (item.get("fingerprint"), max(1, int(item.get("content_characters") or 0)))
+        for item in samples
+        if isinstance(item.get("fingerprint"), dict)
+    ]
+    if not weighted:
+        return style_fingerprint("")
+    total_characters = sum(weight for _fingerprint, weight in weighted)
+    sentence_count = sum(int(item.get("sentence_count") or 0) for item, _weight in weighted)
+    paragraph_count = sum(int(item.get("paragraph_count") or 0) for item, _weight in weighted)
+
+    def weighted_value(field: str) -> float:
+        return round(
+            sum(float(item.get(field) or 0) * weight for item, weight in weighted)
+            / max(1, total_characters),
+            6,
+        )
+
+    def weighted_average(field: str, count_field: str, total: int) -> float:
+        return round(
+            sum(float(item.get(field) or 0) * int(item.get(count_field) or 0) for item, _weight in weighted)
+            / max(1, total),
+            3,
+        )
+
+    def merged_distribution(field: str) -> dict[str, float]:
+        values = [item.get(field) for item, _weight in weighted if isinstance(item.get(field), dict)]
+        return {
+            "min": min((float(item.get("min") or 0) for item in values), default=0.0),
+            "p50": round(sum(float(item.get("p50") or 0) for item in values) / max(1, len(values)), 3),
+            "p90": round(sum(float(item.get("p90") or 0) for item in values) / max(1, len(values)), 3),
+            "max": max((float(item.get("max") or 0) for item in values), default=0.0),
+        }
+
+    phrase_counts: dict[str, int] = {}
+    for fingerprint, _weight in weighted:
+        for phrase in fingerprint.get("repeated_phrases") or []:
+            if isinstance(phrase, dict) and phrase.get("phrase"):
+                key = str(phrase["phrase"])
+                phrase_counts[key] = phrase_counts.get(key, 0) + int(phrase.get("count") or 0)
+    repeated = sorted(
+        ({"phrase": phrase, "count": count} for phrase, count in phrase_counts.items()),
+        key=lambda item: (-int(item["count"]), str(item["phrase"])),
+    )[:10]
+    perspective = {
+        field: weighted_nested_value(weighted, "perspective_stability", field)
+        for field in ("first_ratio", "second_ratio", "third_ratio")
+    }
+    perspective["dominant"] = max(
+        ((float(perspective[field]), field.removesuffix("_ratio")) for field in perspective),
+        default=(0.0, "third"),
+    )[1]
+    return {
+        "sentence_count": sentence_count,
+        "paragraph_count": paragraph_count,
+        "sentence_length_distribution": merged_distribution("sentence_length_distribution"),
+        "paragraph_length_distribution": merged_distribution("paragraph_length_distribution"),
+        "avg_sentence_chars": weighted_average("avg_sentence_chars", "sentence_count", sentence_count),
+        "avg_paragraph_chars": weighted_average("avg_paragraph_chars", "paragraph_count", paragraph_count),
+        "dialogue_ratio": weighted_value("dialogue_ratio"),
+        "dialogue_char_ratio": weighted_value("dialogue_char_ratio"),
+        "dialogue_mark_density": weighted_value("dialogue_mark_density"),
+        "punctuation_density": weighted_value("punctuation_density"),
+        "repeated_phrases": repeated,
+        "perspective_stability": perspective,
+        "narrative_action_interior_ratio": {
+            field: weighted_nested_value(weighted, "narrative_action_interior_ratio", field)
+            for field in ("narrative", "action", "interior")
+        },
+    }
+
+
+def weighted_nested_value(
+    weighted: list[tuple[dict[str, Any], int]],
+    parent: str,
+    field: str,
+) -> float:
+    total = sum(weight for _item, weight in weighted)
+    return round(
+        sum(
+            float(item.get(parent, {}).get(field) or 0) * weight
+            for item, weight in weighted
+            if isinstance(item.get(parent), dict)
+        )
+        / max(1, total),
+        6,
+    )
 
 
 def compress_memory(
@@ -570,12 +846,6 @@ def deterministic_evidence_gate_findings(
         ),
     )
     return failures, warnings, report_path
-
-
-def semantic_gate_findings(config: ConfigDocument, *, chapter_number: int, text: str) -> tuple[list[dict[str, Any]], list[str], Path]:
-    """Backward-compatible alias for deterministic_evidence_gate_findings."""
-
-    return deterministic_evidence_gate_findings(config, chapter_number=chapter_number, text=text)
 
 
 def style_drift_finding(baseline: dict[str, Any], current: dict[str, Any]) -> dict[str, Any] | None:
@@ -1080,7 +1350,13 @@ def known_facts_until(root: Path, graph: Any, chapter_number: int) -> list[dict[
 def known_facts_from_chapter(root: Path, graph: Any, chapter_number: int, final_text: str) -> list[dict[str, Any]]:
     facts = [item for item in known_facts_until(root, graph, chapter_number) if as_int(item.get("chapter")) == chapter_number]
     if not facts:
-        facts.append({"chapter": chapter_number, "fact": trim_text(strip_heading(final_text), 240), "source_path": f"40_manuscript/final/ch{chapter_number:03d}.md"})
+        facts.append(
+            {
+                "chapter": chapter_number,
+                "fact": trim_text(strip_heading(final_text), 240),
+                "source_path": manuscript_chapter_relative_path(chapter_number, lane="final"),
+            }
+        )
     return facts
 
 
@@ -1429,12 +1705,7 @@ def first_evidence(text: str, needles: tuple[str, ...]) -> str:
 
 
 def find_final_chapter(root: Path, chapter_number: int) -> Path | None:
-    final_dir = root / "40_manuscript" / "final"
-    for name in (f"ch{chapter_number:03d}.md", f"chapter_{chapter_number:03d}.md", f"{chapter_number}.md", f"ch{chapter_number:03d}.txt"):
-        path = final_dir / name
-        if path.exists():
-            return path
-    return None
+    return existing_manuscript_chapter_path(root, chapter_number, lane="final")
 
 
 def resolve_under_root(root: Path, file_path: str | Path) -> Path:

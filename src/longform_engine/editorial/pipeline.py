@@ -12,7 +12,6 @@ import re
 
 from longform_engine.agent_protocols import (
     EVIDENCE_REVIEW_SCHEMA,
-    VALIDATION_REPORT_SCHEMA,
     build_validation_report,
     output_protocol_for_task,
     validate_evidence_review,
@@ -31,6 +30,7 @@ from longform_engine.config import ConfigDocument
 from longform_engine.quality import refresh_feedback_registry
 from longform_engine.roles import load_role_registry
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import existing_manuscript_chapter_path
 from longform_engine.text_metrics import content_character_count
 
 
@@ -1877,7 +1877,8 @@ def editorial_review_required_reasons(
     quality = config.data.get("quality")
     if not isinstance(quality, dict):
         quality = {}
-    if review_mode == "always" or str(quality.get("assurance_mode") or "") == "strict":
+    profile = quality.get("profile") if isinstance(quality.get("profile"), dict) else {}
+    if review_mode == "always" or str(profile.get("strictness") or "") == "strict":
         reasons.append("strict_assurance")
     milestones = {
         int(item)
@@ -1966,7 +1967,7 @@ def editorial_risk_signals(
     if isinstance(card, dict):
         duty_text = " ".join(
             str(card.get(key) or "")
-            for key in ("chapter_duty", "duty", "reader_gain", "reader_payoff", "ending_mode")
+            for key in ("chapter_duty", "reader_gain", "ending_mode")
         ).lower()
         if any(
             token in duty_text
@@ -2190,11 +2191,8 @@ def duplicate_sentence_ratio(text: str) -> float:
 
 def find_chapter(root: Path, chapter_number: int) -> Path | None:
     for lane in ("final", "draft"):
-        directory = root / "40_manuscript" / lane
-        for name in (f"ch{chapter_number:03d}.md", f"chapter_{chapter_number:03d}.md", f"{chapter_number}.md"):
-            path = directory / name
-            if path.exists():
-                return path
+        if path := existing_manuscript_chapter_path(root, chapter_number, lane=lane):
+            return path
     return None
 
 

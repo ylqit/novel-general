@@ -2,8 +2,6 @@
 
 from .pipeline import (
     SUPPORTED_BACKENDS,
-    IMPLEMENTED_BACKENDS,
-    EXPERIMENTAL_BACKENDS,
     VectorHealth,
     VectorHit,
     VectorQuery,
@@ -11,6 +9,7 @@ from .pipeline import (
     VectorRecord,
     VectorSyncResult,
     VectorWriteResult,
+    active_source_hash_count,
     active_source_record_count,
     delete_by_filter,
     healthcheck,
@@ -21,14 +20,14 @@ from .pipeline import (
     record_from_embedding,
     rebuild_from_files,
     replace_records,
+    source_records,
+    sync_source_records,
     sync_records,
     upsert,
 )
 
 __all__ = [
     "SUPPORTED_BACKENDS",
-    "IMPLEMENTED_BACKENDS",
-    "EXPERIMENTAL_BACKENDS",
     "VectorHealth",
     "VectorHit",
     "VectorQuery",
@@ -36,6 +35,7 @@ __all__ = [
     "VectorRecord",
     "VectorSyncResult",
     "VectorWriteResult",
+    "active_source_hash_count",
     "active_source_record_count",
     "delete_by_filter",
     "healthcheck",
@@ -46,6 +46,8 @@ __all__ = [
     "record_from_embedding",
     "rebuild_from_files",
     "replace_records",
+    "source_records",
+    "sync_source_records",
     "sync_records",
     "upsert",
 ]

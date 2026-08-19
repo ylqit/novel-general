@@ -1,11 +1,9 @@
 {
   "schema": "release_channel_v1",
   "development_version": "0.4.3",
-  "public_stable_version": "0.4.2",
-  "status": "release_candidate",
-  "release_blockers": [
-    "v0.4.3_tag_and_github_release_not_created"
-  ],
+  "public_stable_version": "0.4.3",
+  "status": "stable",
+  "release_blockers": [],
   "deferred_quality_evidence": [
     "two_mixed_profile_five_chapter_blind_reviews"
   ]

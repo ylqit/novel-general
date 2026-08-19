@@ -6,7 +6,6 @@ import pytest
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import (
     CANONICAL_DELTA_SCHEMA,
-    DESIGN_DOCUMENT_SCHEMA,
     DESIGN_REQUIRED_HEADINGS,
 )
 from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
@@ -50,7 +49,7 @@ def seed_fanfiction_project(tmp_path: Path):
         cli_overrides={
             "creation": {"mode": "fanfiction"},
             "fanfiction": {"continuity_mode": "canon_divergent", "sources": [source]},
-            "quality": {"creative_guidance": {"mode": "guided"}},
+            "semantic": {"profile": "local-hash", "allow_fallback": True},
             "length": {
                 "target_total_characters": 100_000,
                 "volume": {"target_characters": 50_000},

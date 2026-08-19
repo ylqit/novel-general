@@ -128,8 +128,7 @@ def models_dir(config: ConfigDocument) -> Path:
     """Resolve an explicit absolute cache or the user-level shared model cache."""
 
     semantic = semantic_config(config)
-    rag = config.data.get("rag", {}) if isinstance(config.data.get("rag"), dict) else {}
-    configured = semantic.get("models_dir") or rag.get("models_dir")
+    configured = semantic.get("models_dir")
     if configured:
         path = Path(str(configured)).expanduser()
         if path.is_absolute():
@@ -162,8 +161,7 @@ def model_cache_reference_path(config: ConfigDocument) -> Path:
 
 def cache_kind(config: ConfigDocument) -> str:
     semantic = semantic_config(config)
-    rag = config.data.get("rag", {}) if isinstance(config.data.get("rag"), dict) else {}
-    configured = semantic.get("models_dir") or rag.get("models_dir")
+    configured = semantic.get("models_dir")
     if configured and Path(str(configured)).expanduser().is_absolute():
         return "custom_absolute"
     return "shared"
@@ -205,11 +203,7 @@ def manifest_path(config: ConfigDocument) -> Path:
 
 def selected_profile(config: ConfigDocument, requested: str | None = None) -> ModelProfile:
     semantic_config = config.data.get("semantic", {}) if isinstance(config.data.get("semantic"), dict) else {}
-    rag_embedding = config.data.get("rag", {}).get("embedding") if isinstance(config.data.get("rag"), dict) else {}
-    configured = None
-    if isinstance(rag_embedding, dict):
-        configured = rag_embedding.get("profile")
-    configured = requested or configured or semantic_config.get("profile") or "bge-m3"
+    configured = requested or semantic_config.get("profile") or "bge-m3"
     return PROFILES.get(str(configured), PROFILES["bge-m3"])
 
 

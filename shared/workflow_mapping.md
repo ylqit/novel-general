@@ -19,7 +19,7 @@ open-book
 -> production next
 -> book_ideation one question / two or three options / explicit human selection
 -> book_design_candidate_v2, including character expression contracts, after all creative decisions are applied
--> character_expression_design when a compatible v1 book design needs enrichment
+-> character_expression_design when the current book design requests expression enrichment
 -> outline_design
 -> agent-task brief when an Agent task exists
 -> conditional chapter_direction before chapter card/write task
@@ -108,7 +108,7 @@ creative brief --init/--validate
 -> continue-write task package
 -> /工程续章 pre-write guide
 -> write draft in workbench only
--> humanizer v3 self-check
+-> humanizer v4 self-check
 -> draft submit
 -> pacing-review --semantic-reader / gate-check --semantic when needed
 -> repair plan or finalize

@@ -77,7 +77,6 @@ def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp
     card = json.loads(card_path.read_text(encoding="utf-8"))
     card.update(
         {
-            "duty": "plant the bell debt without solving it",
             "chapter_duty": "plant the bell debt without solving it",
             "forbidden_reveals": ["Dragon Crown"],
             "resolution_markers": ["ultimate patron"],

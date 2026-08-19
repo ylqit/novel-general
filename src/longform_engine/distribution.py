@@ -207,7 +207,7 @@ def inspect_skill(tool: str) -> SkillStatus:
         state = "missing"
         next_command = f"longform-engine skills install --tool {tool}"
     elif metadata is None:
-        state = "legacy"
+        state = "unowned"
         next_command = f"longform-engine skills install --tool {tool} --force"
     elif installed_hash == expected_hash and metadata.get("engine_version") == __version__ and references_ok:
         state = "current"
@@ -240,7 +240,7 @@ def skill_status_payload(tool: str) -> dict[str, Any]:
     }
 
 
-def _replace_skill(tool: str, *, allow_legacy: bool, require_owned: bool) -> SkillStatus:
+def _replace_skill(tool: str, *, allow_unowned: bool, require_owned: bool) -> SkillStatus:
     skill_name, _, _ = TOOL_SPECS[tool]
     root = skill_root(tool)
     root.mkdir(parents=True, exist_ok=True)
@@ -249,9 +249,9 @@ def _replace_skill(tool: str, *, allow_legacy: bool, require_owned: bool) -> Ski
 
     existing_metadata = _owned_metadata(target, tool) if target.exists() else None
     if target.exists() and require_owned and existing_metadata is None:
-        raise ValueError(f"Refusing to update unowned or legacy Skill: {target}")
-    if target.exists() and existing_metadata is None and not allow_legacy:
-        raise ValueError(f"Legacy Skill exists; rerun with --force after reviewing it: {target}")
+        raise ValueError(f"Refusing to update an unowned Skill: {target}")
+    if target.exists() and existing_metadata is None and not allow_unowned:
+        raise ValueError(f"Unowned Skill exists; rerun with --force after reviewing it: {target}")
 
     source = skill_source(tool)
     staging = root / f".{skill_name}.staging-{uuid.uuid4().hex}"
@@ -296,12 +296,12 @@ def install_skills(tool: str, *, force: bool = False) -> dict[str, Any]:
         if current.state == "current":
             results.append(asdict(current))
             continue
-        results.append(asdict(_replace_skill(name, allow_legacy=force, require_owned=False)))
+        results.append(asdict(_replace_skill(name, allow_unowned=force, require_owned=False)))
     return {"schema": STATUS_SCHEMA, "engine_version": __version__, "requested_tool": tool, "results": results}
 
 
 def update_skills(tool: str) -> dict[str, Any]:
-    results = [asdict(_replace_skill(name, allow_legacy=False, require_owned=True)) for name in selected_tools(tool)]
+    results = [asdict(_replace_skill(name, allow_unowned=False, require_owned=True)) for name in selected_tools(tool)]
     return {"schema": STATUS_SCHEMA, "engine_version": __version__, "requested_tool": tool, "results": results}
 
 
@@ -316,7 +316,7 @@ def uninstall_skills(tool: str, *, confirmed: bool) -> dict[str, Any]:
         _safe_target(root, target, skill_name)
         if target.exists():
             if _owned_metadata(target, name) is None:
-                raise ValueError(f"Refusing to uninstall unowned or legacy Skill: {target}")
+                raise ValueError(f"Refusing to uninstall an unowned Skill: {target}")
             shutil.rmtree(target)
         results.append(asdict(inspect_skill(name)))
     return {"schema": STATUS_SCHEMA, "engine_version": __version__, "requested_tool": tool, "results": results}
@@ -402,21 +402,25 @@ def doctor_payload(tool: str, *, project: str | None = None) -> dict[str, Any]:
                 )
             )
             from longform_engine.artifacts import artifact_status
+            from longform_engine.storage import recovery_status
 
             artifact_result = artifact_status(config)
-            transaction_ok = artifact_result.pending_transactions == 0
+            recovery_result = recovery_status(config)
+            transaction_ok = not recovery_result["blocked"]
             transaction_detail = (
                 f"pending={artifact_result.pending_transactions}; "
                 f"reclaimable_snapshots={artifact_result.committed_snapshot_dirs}; "
                 f"reclaimable_bytes={artifact_result.reclaimable_snapshot_bytes}; "
-                f"retained_failure_snapshots={artifact_result.retained_failure_snapshots}"
+                f"retained_failure_snapshots={artifact_result.retained_failure_snapshots}; "
+                f"lock={recovery_result['lock']['state']}; "
+                f"blockers={len(recovery_result['blockers'])}"
             )
             checks.append(
                 _check(
                     "transaction_lifecycle",
                     transaction_ok,
                     transaction_detail,
-                    f"longform-engine artifacts status {project} --json",
+                    str(recovery_result.get("next_command") or f"longform-engine recovery status {project} --json"),
                 )
             )
             from longform_engine.vectorstore import healthcheck as vector_healthcheck

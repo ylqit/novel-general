@@ -1,6 +1,5 @@
 import json
 import sqlite3
-from hashlib import sha256
 from pathlib import Path
 
 from longform_engine.agent_pipeline import validate_production_agent_result
@@ -330,7 +329,7 @@ def seed_project(tmp_path):
         encoding="utf-8",
     )
     config = load_project_config(project.project_config)
-    config.data["rag"]["embedding"]["profile"] = "local-hash"
+    config.data["semantic"]["profile"] = "local-hash"
     config.data["semantic"]["allow_fallback"] = True
     config.data["semantic"]["vector_store"]["backend"] = "local_sqlite"
     return config

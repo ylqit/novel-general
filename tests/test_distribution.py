@@ -84,15 +84,15 @@ def test_skill_lifecycle_is_owned_hashed_and_atomic(monkeypatch, tmp_path):
     assert {item["state"] for item in removed["results"]} == {"missing"}
 
 
-def test_legacy_skill_requires_force_and_uninstall_refuses_unowned(monkeypatch, tmp_path):
+def test_unowned_skill_requires_force_and_uninstall_refuses_unowned(monkeypatch, tmp_path):
     codex_root, _ = configure_skill_roots(monkeypatch, tmp_path)
-    legacy = codex_root / "longform-novel-codex"
-    legacy.mkdir(parents=True)
-    (legacy / "SKILL.md").write_text("legacy", encoding="utf-8")
+    unowned = codex_root / "longform-novel-codex"
+    unowned.mkdir(parents=True)
+    (unowned / "SKILL.md").write_text("unowned", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="Legacy Skill"):
+    with pytest.raises(ValueError, match="Unowned Skill"):
         install_skills("codex")
-    with pytest.raises(ValueError, match="unowned or legacy"):
+    with pytest.raises(ValueError, match="unowned Skill"):
         uninstall_skills("codex", confirmed=True)
 
     migrated = install_skills("codex", force=True)

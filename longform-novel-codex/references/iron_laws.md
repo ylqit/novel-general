@@ -21,7 +21,7 @@ These rules apply to Codex, ClaudeCode, and any other Agent-Skill user of `longf
 17. Fanfiction rights status and commercial intent are user-claimed advisory metadata. They must produce warnings and provenance, but must not block task creation, validation, finalization, or export.
 18. Allowing fanfiction does not allow continuous source-prose reproduction. Canon files store paraphrased facts plus source hash/span; chapters must not copy, split across fields, or reconstruct source passages.
 19. Fanfiction Agents read only manifest-declared source files and canon digests. They must not scan an undeclared source work, another novel project, or a research inbox for extra canon.
-20. Humanizer v3 must preserve facts, characters, chapter duty, and reader payoff. A candidate that is empty, changes numeric facts, drops canonical characters, or exceeds the configured rewrite ratio must fail or request human review.
+20. Humanizer v4 must preserve facts, characters, `chapter_duty`, and `reader_gain`. A candidate that is empty, changes numeric facts, drops canonical characters, or exceeds the configured rewrite ratio must fail or request human review.
 21. A planned `reader_gain` is not an observed payoff. When `production next` requires `reader_payoff_review`, the Agent must cite the current draft and pass `quality payoff-validate` before explicit finalization.
 22. Unfinalized payoff reviews remain in `50_workbench/quality_reviews/`. Only `chapter finalize` may write `reader_reward_entry_v2` and `30_state/quality/structure_history.jsonl`.
 23. Structure observation must not impose a universal cliffhanger, battle, reversal, upgrade, short-sentence, or dialogue template. One repeated dimension is a warning; only combined structure, language, and payoff repetition may block.
@@ -38,3 +38,6 @@ These rules apply to Codex, ClaudeCode, and any other Agent-Skill user of `longf
 34. `chapter semantic-apply` is the only default path that materializes the chapter semantic ledger into graph, character current views, foreshadow state, TCS, RAG, and SQLite. It must validate exact source spans and apply transactionally.
 35. `chapter close` is required before continuing to the next chapter. It preserves final, semantic ledgers, planning ledgers, and current materialized state while allowing older workbench artifacts to move into verified chapter audit archives.
 36. SQLite and vector indexes are rebuildable derivatives. They must never override final text or the evidence-bound semantic ledger.
+37. Chapter cards and rolling plans use only `chapter_duty`, `information_release`, and `reader_gain`; removed aliases must fail validation instead of being silently normalized.
+38. Interrupted storage must begin with `recovery status`. Recovery requires the exact reported SHA and a named approver; Agents must never delete project locks, transaction reports, or snapshots directly.
+39. Per-chapter semantic apply uses only the current chapter and changed memory sources. Full embedding export/rebuild is explicit and must not be disguised as an incremental chapter update.

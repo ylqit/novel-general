@@ -6,7 +6,7 @@ import zipfile
 import pytest
 
 from longform_engine.benchmark import (
-    CHAPTER_ARTIFACT_PATHS,
+    chapter_artifact_paths,
     compare_benchmarks,
     init_benchmark,
     record_benchmark_chapter,
@@ -30,7 +30,7 @@ def test_benchmark_init_validate_and_report_without_manuscript_body(tmp_path):
     initialized = init_benchmark(
         config,
         run_id="codex-smoke-5",
-        agent_product="codex",
+        host_product="codex",
         chapters=5,
     )
     run_payload = json.loads((root / initialized.run_file).read_text(encoding="utf-8"))
@@ -88,7 +88,7 @@ def test_benchmark_rejects_manuscript_body_fields(tmp_path):
     initialized = init_benchmark(
         config,
         run_id="claude-quality-10",
-        agent_product="claude-code",
+        host_product="claude-code",
         chapters=10,
     )
     records_path = root / initialized.records_file
@@ -108,7 +108,7 @@ def test_technical_record_captures_and_revalidates_chapter_artifact_hashes(tmp_p
     initialized = init_benchmark(
         config,
         run_id="codex-artifact-smoke",
-        agent_product="codex",
+        host_product="codex",
         chapters=1,
     )
     artifact_files = (
@@ -158,13 +158,10 @@ def test_technical_record_reads_compacted_chapter_artifacts_without_restore(tmp_
     initialized = init_benchmark(
         config,
         run_id="codex-compacted-smoke",
-        agent_product="codex",
+        host_product="codex",
         chapters=1,
     )
-    paths = {
-        name: root / template.format(chapter=1)
-        for name, template in CHAPTER_ARTIFACT_PATHS.items()
-    }
+    paths = {name: root / relative for name, relative in chapter_artifact_paths(1).items()}
     for name, path in paths.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"artifact:{name}", encoding="utf-8")
@@ -256,7 +253,7 @@ def test_fanfiction_benchmark_requires_all_quality_dimensions_before_recording(t
     initialized = init_benchmark(
         config,
         run_id="fanfiction-smoke",
-        agent_product="codex",
+        host_product="codex",
         chapters=1,
     )
     scores = {
@@ -312,7 +309,7 @@ def test_benchmark_record_and_compare_same_scenario(tmp_path):
         init_benchmark(
             config,
             run_id=run_id,
-            agent_product=product,
+            host_product=product,
             chapters=2,
             scenario_id="shared-setting-v1",
             agent_model=f"{product}-model",
@@ -349,9 +346,9 @@ def test_benchmark_record_and_compare_same_scenario(tmp_path):
     )
     payload = json.loads((root / comparison.comparison_json).read_text(encoding="utf-8"))
 
-    assert payload["schema"] == "quality_benchmark_comparison_v2"
-    assert payload["claim_eligible"] is False
-    assert payload["claim_reasons"]
+    assert payload["schema"] == "quality_benchmark_comparison_v3"
+    assert payload["quality_evidence_complete"] is False
+    assert payload["evidence_gaps"]
     assert payload["scenario_id"] == "shared-setting-v1"
     assert payload["manuscript_bodies_included"] is False
     assert payload["best_by_metric"]["continuity"] == "codex-quality-2"
@@ -363,14 +360,14 @@ def test_benchmark_compare_rejects_incomplete_or_mismatched_runs(tmp_path):
     init_benchmark(
         config,
         run_id="codex-incomplete",
-        agent_product="codex",
+        host_product="codex",
         chapters=5,
         scenario_id="setting-a",
     )
     init_benchmark(
         config,
         run_id="claude-incomplete",
-        agent_product="claude-code",
+        host_product="claude-code",
         chapters=5,
         scenario_id="setting-b",
     )
@@ -396,7 +393,7 @@ def test_benchmark_record_rejects_oversized_annotations_without_writing(tmp_path
     initialized = init_benchmark(
         config,
         run_id="safe-record",
-        agent_product="codex",
+        host_product="codex",
         chapters=1,
     )
     records_path = root / initialized.records_file
@@ -425,23 +422,22 @@ def test_benchmark_record_rejects_oversized_annotations_without_writing(tmp_path
     assert records_path.read_bytes() == before
 
 
-def test_formal_superiority_claim_rejects_self_declared_judges_and_edited_rag_evidence(tmp_path):
+def test_quality_evidence_rejects_self_declared_judges_and_edited_rag_evidence(tmp_path):
     config = seed_project(tmp_path)
     scenario = tmp_path / "formal-scenario.json"
     scenario.write_text('{"schema":"quality_scenario_v1","id":"formal-setting-v1"}', encoding="utf-8")
     for run_id, product, score, ai_taste in (
-        ("longform-formal-10", "codex", 9, 2),
-        ("novel-skill-formal-10", "novel-skill", 8, 3),
+        ("primary-formal-10", "codex", 9, 2),
+        ("secondary-formal-10", "claude-code", 8, 3),
     ):
         init_benchmark(
             config,
             run_id=run_id,
-            agent_product=product,
+            host_product=product,
             chapters=10,
             scenario_id="formal-setting-v1",
             scenario_file=scenario,
             agent_model="same-model-version",
-            host_product="codex",
             host_version="same-host-version",
             workflow_version=f"{product}-workflow-v1",
         )
@@ -467,7 +463,7 @@ def test_formal_superiority_claim_rejects_self_declared_judges_and_edited_rag_ev
             )
     rag = record_rag_benchmark(
         config,
-        run_id="longform-formal-10",
+        run_id="primary-formal-10",
         scale_chapters=500,
         recall_at_k=0.9,
         fact_error_rate=0.01,
@@ -476,20 +472,20 @@ def test_formal_superiority_claim_rejects_self_declared_judges_and_edited_rag_ev
     )
     comparison = compare_benchmarks(
         config,
-        comparison_id="formal-claim",
-        run_ids=["longform-formal-10", "novel-skill-formal-10"],
+        comparison_id="formal-evidence",
+        run_ids=["primary-formal-10", "secondary-formal-10"],
     )
 
     assert rag.meets_thresholds
-    assert not comparison.claim_eligible
-    assert any("manually recorded" in reason for reason in comparison.claim_reasons)
+    assert not comparison.quality_evidence_complete
+    assert any("manually recorded" in reason for reason in comparison.evidence_gaps)
 
     evidence_path = (
         tmp_path
         / "novel"
         / "70_runtime"
         / "benchmarks"
-        / "longform-formal-10"
+        / "primary-formal-10"
         / "rag_scale_evidence.json"
     )
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
@@ -498,9 +494,9 @@ def test_formal_superiority_claim_rejects_self_declared_judges_and_edited_rag_ev
     evidence_path.write_text(json.dumps(evidence, ensure_ascii=False), encoding="utf-8")
     measured = compare_benchmarks(
         config,
-        comparison_id="formal-claim-measured",
-        run_ids=["longform-formal-10", "novel-skill-formal-10"],
+        comparison_id="formal-evidence-measured",
+        run_ids=["primary-formal-10", "secondary-formal-10"],
     )
 
-    assert not measured.claim_eligible
-    assert any("blind-review aggregation" in reason for reason in measured.claim_reasons)
+    assert not measured.quality_evidence_complete
+    assert any("blind-review aggregation" in reason for reason in measured.evidence_gaps)

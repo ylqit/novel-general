@@ -29,6 +29,7 @@ from longform_engine.editorial import editorial_review_required_reasons
 from longform_engine.gates import semantic_pacing_review_status
 from longform_engine.quality import payoff_review_required_reasons, reader_payoff_review_status
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import manuscript_chapter_path
 
 
 REVIEW_BUNDLE_SCHEMA = "repair_review_bundle_v1"
@@ -123,7 +124,7 @@ def review_barrier_status(config: ConfigDocument, *, chapter_number: int) -> dic
     if chapter_number <= 0:
         raise RepairCoordinationError("chapter_number must be positive")
     root = resolve_project_root(config)
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     gate_path = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
     if not draft.is_file() or not gate_path.is_file():
         return _barrier_result(
@@ -384,7 +385,7 @@ def validate_repair_plan(
     if not isinstance(bundle, dict) or bundle.get("schema") != REVIEW_BUNDLE_SCHEMA:
         errors.append("review bundle is missing or invalid")
         bundle = {}
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     candidate_hash = _file_hash(draft) if draft.is_file() else ""
     if str(bundle.get("candidate_sha256") or "") != candidate_hash:
         errors.append("review bundle is stale for the current candidate")
@@ -501,7 +502,6 @@ def create_repair_candidate_task(
     plan_dir = root / "50_workbench" / "repair_plans" / f"ch{chapter_number:03d}"
     plan_file = plan_dir / f"{round_token}.plan.md"
     task_file = plan_dir / f"{round_token}.repair_task.md"
-    report_file = plan_dir / f"{round_token}.validation.json"
     safe_agent = re.sub(r"[^a-z0-9_-]+", "_", str(agent or "codex").strip().lower()) or "codex"
     candidate_dir = root / "50_workbench" / "repair_candidates"
     candidate_dir.mkdir(parents=True, exist_ok=True)
@@ -535,7 +535,7 @@ def create_repair_candidate_task(
         raise RepairCoordinationError("repair plan has already been consumed but its repair child is missing")
     if next_repair_round(config, chapter_number=chapter_number) != round_number:
         raise RepairCoordinationError("repair plan round is stale or repair budget is exhausted")
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     if not draft.is_file() or _file_hash(draft) != str(lineage["candidate_sha256"]):
         raise RepairCoordinationError("validated repair plan is stale for the current candidate")
     _write_immutable_text(
@@ -940,7 +940,7 @@ def repair_plan_status(config: ConfigDocument, *, chapter_number: int) -> dict[s
     )
     report = load_json(report_file, default={})
     provenance = report.get("provenance") if isinstance(report, dict) and isinstance(report.get("provenance"), dict) else {}
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     current_hash = _file_hash(draft) if draft.is_file() else ""
     report_current = bool(
         isinstance(provenance, dict)
@@ -963,15 +963,12 @@ def next_repair_round(config: ConfigDocument, *, chapter_number: int) -> int | N
     return None if status["exhausted"] else int(status["used"]) + 1
 
 
-def max_repair_rounds(config: ConfigDocument) -> int:
-    quality = config.data.get("quality") if isinstance(config.data.get("quality"), dict) else {}
-    repair = quality.get("repair") if isinstance(quality.get("repair"), dict) else {}
-    value = int(repair.get("max_content_rounds") or 2)
-    return min(max(value, 1), 2)
+def max_repair_rounds(_config: ConfigDocument) -> int:
+    return 2
 
 
 def ensure_candidate_snapshot(root: Path, *, chapter_number: int) -> Path:
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     if not draft.is_file():
         raise RepairCoordinationError("current chapter draft is missing")
     digest = _file_hash(draft)

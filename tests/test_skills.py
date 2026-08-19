@@ -95,7 +95,7 @@ def test_readme_is_public_pipx_skill_package_homepage():
         "40_manuscript/final/",
         "60_rag/",
         "70_runtime/db/",
-        "不宣称文学质量优于",
+        "literary_evidence_ready=false",
     ):
         assert term.lower() in lower
     for forbidden in ("<owner>", "README.zh-CN.md", "clone 到临时目录", "curl | bash"):
@@ -103,28 +103,26 @@ def test_readme_is_public_pipx_skill_package_homepage():
     assert readme.count("\n## 安装\n") == 1
 
 
-def test_public_distribution_checklist_and_workflow_docs_are_linked():
+def test_current_release_checklist_and_management_docs_are_linked():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     install = (ROOT / "docs" / "SKILL_INSTALLATION.md").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "PUBLIC_DISTRIBUTION_PRODUCTIZATION_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_4_3_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
 
     for document in (
-        "AGENT_APP_WORKFLOW_PRODUCTIZATION.md",
-        "PUBLIC_DISTRIBUTION_PRODUCTIZATION_CHECKLIST.md",
+        "ARCHITECTURE.md",
+        "STORAGE_MODEL.md",
+        "V0_4_3_RELEASE_CHECKLIST.md",
     ):
         assert document in readme
-    assert "AGENT_APP_WORKFLOW_PRODUCTIZATION.md" in agents
-    assert "AGENT_APP_WORKFLOW_PRODUCTIZATION_CHECKLIST.md" in agents
-    assert "AGENT_APP_WORKFLOW_PRODUCTIZATION.md" in install
+    assert "V0_4_3_RELEASE_CHECKLIST.md" in agents
+    assert "V0_4_3_RELEASE_CHECKLIST.md" in install
     for section in (
-        "Repository And License",
-        "Wheel Resources",
-        "Skill Lifecycle",
-        "AgentTaskManifest v4",
-        "Quality Evidence",
-        "CI And Release",
-        "Definition Of Done",
+        "配置与覆盖来源",
+        "统一章节路径",
+        "内部质量证据",
+        "单进程完整验证",
+        "远程发布证据",
     ):
         assert section in checklist
 

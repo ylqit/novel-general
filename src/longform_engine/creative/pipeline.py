@@ -38,6 +38,7 @@ from longform_engine.quality import (
     compile_effective_quality_contract,
 )
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import manuscript_chapter_path
 from longform_engine.text_metrics import content_character_count
 
 
@@ -750,7 +751,7 @@ def writer_craft_brief(
     return {
         "schema_version": 1,
         "chapter_number": chapter_number,
-        "reader_payoff": card.get("reader_payoff") or "deliver one local payoff without resolving the core longform promise",
+        "reader_gain": card.get("reader_gain") or "deliver one local payoff without resolving the core longform promise",
         "emotion_progression": {
             "start": tcs.get("emotion_state", "current pressure"),
             "turn": "pressure becomes a visible choice or cost",
@@ -969,7 +970,7 @@ def expand_check(
         selected_types,
         minimum_content_characters,
     )
-    humanizer_issues, humanizer_warnings = detect_humanizer_v2_issues(text)
+    humanizer_issues, humanizer_warnings = detect_humanizer_issues(text)
     for item in humanizer_issues:
         if item.get("severity") in {"P0", "P1"}:
             issues.append(
@@ -1086,7 +1087,7 @@ def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = 
         task_file,
         "\n".join(
             [
-                f"# Humanizer v3 Task ch{chapter_number:03d}",
+                f"# Humanizer v4 Task ch{chapter_number:03d}",
                 "",
                 f"- Source: `{relative_path(root, source_path)}`",
                 f"- Candidate output: `{relative_path(root, candidate_file)}`",
@@ -1181,7 +1182,7 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
     if not target.exists():
         raise ValueError(f"Humanizer candidate not found: {target}")
     text = safe_read_text(target)
-    issues, warnings = detect_humanizer_v2_issues(text)
+    issues, warnings = detect_humanizer_issues(text)
     source = humanizer_source_for_candidate(root, chapter_number, target)
     source_text = safe_read_text(source) if source is not None and source.exists() else ""
     change_ratio = humanizer_change_ratio(source_text, text) if source_text else None
@@ -1299,7 +1300,7 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
         md_file,
         "\n".join(
             [
-                f"# Humanizer v3 Check ch{chapter_number:03d}",
+                f"# Humanizer v4 Check ch{chapter_number:03d}",
                 "",
                 f"- File: `{relative_path(root, target)}`",
                 f"- Passed: {passed}",
@@ -1347,7 +1348,8 @@ def humanize_semantic_review_reasons(
 
     quality = config.data.get("quality", {}) if isinstance(config.data.get("quality"), dict) else {}
     humanizer = quality.get("humanizer", {}) if isinstance(quality.get("humanizer"), dict) else {}
-    assurance_mode = str(quality.get("assurance_mode") or "balanced")
+    profile = quality.get("profile") if isinstance(quality.get("profile"), dict) else {}
+    assurance_mode = str(profile.get("strictness") or "balanced")
     review_mode = str(humanizer.get("semantic_review_mode") or "risk_based")
     reasons: list[str] = []
     if assurance_mode == "strict" or review_mode == "always":
@@ -1398,7 +1400,7 @@ def humanizer_volume_boundary(config: ConfigDocument, chapter_number: int) -> bo
     if chapter_number <= 0:
         return False
     root = resolve_project_root(config)
-    plan = read_json(root / "20_outline" / "chapter_plan.json", [])
+    plan = load_json(root / "20_outline" / "chapter_plan.json", default=[])
     if not isinstance(plan, list):
         return chapter_number == 1
     rows = {
@@ -2061,37 +2063,8 @@ def humanizer_issue_lines(issues: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def legacy_detect_humanizer_v2_issues(text: str) -> tuple[list[dict[str, Any]], list[str]]:
-    lower = text.lower()
-    issues: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    meta_patterns = ("todo", "as an ai", "language model", "writing instruction", "outline:", "prompt:")
-    for pattern in meta_patterns:
-        if pattern in lower:
-            issues.append({"code": "humanizer_meta_residue", "severity": "P0", "message": f"meta/prompt residue remains: {pattern}"})
-    ai_markers = ("pivotal", "crucial", "significant", "tapestry", "showcase", "stands as", "serves as", "not only")
-    marker_hits = [marker for marker in ai_markers if marker in lower]
-    if len(marker_hits) >= 3:
-        issues.append({"code": "generic_ai_diction", "severity": "P1", "message": f"generic AI diction remains: {', '.join(marker_hits[:5])}"})
-    paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", text) if part.strip()]
-    if duplicate_ratio(paragraphs) >= 0.25 and len(paragraphs) >= 4:
-        issues.append({"code": "duplicate_paragraphs", "severity": "P1", "message": "paragraph duplication remains high"})
-    sentences = [part.strip() for part in re.split(r"[.!?。！？]+", text) if part.strip()]
-    if duplicate_ratio(sentences) >= 0.2 and len(sentences) >= 8:
-        warnings.append("sentence repetition remains high")
-    lengths = [len(re.sub(r"\s+", "", sentence)) for sentence in sentences]
-    if lengths and max(lengths) - min(lengths) < 8 and len(lengths) >= 8:
-        warnings.append("sentence lengths are too uniform; vary pressure and release")
-    dialogue_marks = text.count('"') + text.count("'") + text.count("“") + text.count("”") + text.count("「") + text.count("」")
-    if dialogue_marks == 0 and len(re.sub(r"\s+", "", text)) > 800:
-        warnings.append("no visible dialogue; verify scene dramatization")
-    if not strong_tail_hook(text):
-        warnings.append("tail hook is weak or abstract")
-    return issues, warnings
-
-
-def detect_humanizer_v2_issues(text: str) -> tuple[list[dict[str, Any]], list[str]]:
-    """Backward-compatible entry point for the Chinese web-novel Humanizer v3 detector."""
+def detect_humanizer_issues(text: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Detect formulaic prose and prompt residue in a chapter candidate."""
 
     lower = text.lower()
     issues: list[dict[str, Any]] = []
@@ -2335,7 +2308,7 @@ def creative_repair_guidance(failure: dict[str, Any], chapter_number: int) -> di
 
 def resolve_humanizer_source(root: Path, chapter_number: int, source: str) -> Path:
     if source == "draft":
-        return root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+        return manuscript_chapter_path(root, chapter_number, lane="draft")
     if source == "repair-candidate":
         candidates = sorted(
             (root / "50_workbench" / "repair_candidates").glob(
@@ -2371,7 +2344,7 @@ def humanizer_source_for_candidate(root: Path, chapter_number: int, candidate: P
                 and path.exists()
             ):
                 return path
-    draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     return draft if draft.exists() else None
 
 
@@ -2435,7 +2408,7 @@ def humanizer_fact_drift(
 
 def resolve_expansion_source(root: Path, chapter_number: int, source: str) -> Path:
     if source == "draft":
-        return root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+        return manuscript_chapter_path(root, chapter_number, lane="draft")
     if source == "repair-candidate":
         candidates = sorted((root / "50_workbench" / "repair_candidates").glob(f"ch{chapter_number:03d}*.md"))
         if candidates:
@@ -2517,7 +2490,7 @@ def detect_expansion_issues(
                 ),
             }
         )
-    source_path = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+    source_path = manuscript_chapter_path(root, chapter_number, lane="draft")
     if source_path.exists() and content_characters <= content_character_count(safe_read_text(source_path)):
         issues.append(
             {

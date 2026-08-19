@@ -7,7 +7,6 @@ from longform_engine.agent_tasks import load_manifest
 from longform_engine.config import ConfigError, load_project_config
 from longform_engine.creative import humanize_task
 import longform_engine.editorial.pipeline as editorial_pipeline
-import longform_engine.config.loader as config_loader
 from longform_engine.orchestration import continue_write, open_book
 from longform_engine.quality import (
     compact_effective_quality_contract,
@@ -18,8 +17,9 @@ from tests.project_fixtures import mark_project_ready
 
 
 def test_default_config_uses_the_unified_quality_profile_shape():
-    quality = config_loader.BUILTIN_DEFAULTS["quality"]
-    story_profile = config_loader.BUILTIN_DEFAULTS["story_profile"]
+    defaults = load_project_config().data
+    quality = defaults["quality"]
+    story_profile = defaults["story_profile"]
 
     assert story_profile["market"]["primary"] == "qidian_male"
     assert story_profile["market"]["compatibility"] == ["fanqie_free"]
@@ -148,6 +148,8 @@ def test_chapter_card_writer_brief_and_humanizer_share_one_bounded_contract(tmp_
     assert card["cost"]
     assert "relationship_move" in card
     assert task["chapter_contract_hash"] == card["chapter_contract_hash"]
+    assert task["writer_craft_brief"]["reader_gain"] == card["reader_gain"]
+    assert "reader_payoff" not in task["writer_craft_brief"]
     assert task["fact_inventory_summary"]["categories"]["methods"] >= 2
     assert "fanqie_free" in task_markdown
     assert len(manifest["io"]["inputs"]) <= 7

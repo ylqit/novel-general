@@ -1,8 +1,84 @@
-"""Canonical v2 longform novel project layout."""
+"""Canonical longform novel project layout."""
 
 from __future__ import annotations
 
+from pathlib import Path
+import re
+
 FINAL_MANUSCRIPT_DIRECTORY = "40_manuscript/final"
+MANUSCRIPT_LANES = {
+    "draft": "40_manuscript/draft",
+    "final": FINAL_MANUSCRIPT_DIRECTORY,
+    "summaries": "40_manuscript/summaries",
+}
+CANONICAL_CHAPTER_PATTERN = re.compile(r"ch(\d{3}|[1-9]\d{3,})\.md")
+
+
+def chapter_filename(chapter_number: int) -> str:
+    """Return the only supported manuscript filename for a positive chapter number."""
+
+    if not isinstance(chapter_number, int) or isinstance(chapter_number, bool) or chapter_number <= 0:
+        raise ValueError("chapter_number must be a positive integer.")
+    return f"ch{chapter_number:03d}.md"
+
+
+def parse_canonical_chapter_number(path: str | Path) -> int | None:
+    """Parse a canonical chapter filename, returning None for non-chapter artifacts."""
+
+    match = CANONICAL_CHAPTER_PATTERN.fullmatch(Path(path).name)
+    if not match:
+        return None
+    chapter_number = int(match.group(1))
+    return chapter_number if chapter_number > 0 else None
+
+
+def manuscript_chapter_path(root: Path, chapter_number: int, *, lane: str) -> Path:
+    """Resolve a canonical draft, final, or summary path."""
+
+    return root / manuscript_chapter_relative_path(chapter_number, lane=lane)
+
+
+def manuscript_chapter_relative_path(chapter_number: int, *, lane: str) -> str:
+    """Return the project-relative canonical path for a manuscript chapter."""
+
+    try:
+        directory = MANUSCRIPT_LANES[lane]
+    except KeyError as exc:
+        raise ValueError(f"lane must be one of: {', '.join(MANUSCRIPT_LANES)}") from exc
+    return f"{directory}/{chapter_filename(chapter_number)}"
+
+
+def existing_manuscript_chapter_path(root: Path, chapter_number: int, *, lane: str) -> Path | None:
+    """Return the canonical manuscript path when it exists, without alias lookup."""
+
+    expected = manuscript_chapter_path(root, chapter_number, lane=lane)
+    for number, path in list_canonical_chapter_files(expected.parent):
+        if number == chapter_number:
+            return path
+    return None
+
+
+def list_canonical_chapter_files(directory: Path) -> tuple[tuple[int, Path], ...]:
+    """List canonical chapter Markdown files and reject manuscript-shaped aliases."""
+
+    result: list[tuple[int, Path]] = []
+    paths = sorted(item for item in directory.iterdir() if item.is_file()) if directory.is_dir() else ()
+    for path in paths:
+        if path.suffix == ".json":
+            continue
+        chapter_number = parse_canonical_chapter_number(path)
+        if chapter_number is None:
+            raise ValueError(
+                f"Non-canonical manuscript filename: {path}. Expected {chapter_filename(1)}-style names."
+            )
+        result.append((chapter_number, path))
+    return tuple(result)
+
+
+def list_finalized_chapter_files(root: Path) -> tuple[tuple[int, Path], ...]:
+    """List one unambiguous final file per chapter under the storage contract."""
+
+    return list_canonical_chapter_files(root / FINAL_MANUSCRIPT_DIRECTORY)
 
 BASE_DIRECTORIES = [
     "00_governance",
@@ -72,6 +148,8 @@ SUBDIRECTORIES = [
     "70_runtime/artifacts/chapters",
     "70_runtime/run_reports",
     "70_runtime/snapshots",
+    "70_runtime/transactions",
+    "70_runtime/tx",
     "70_runtime/tmp",
     "80_exports/bundles",
     "80_exports/platform",

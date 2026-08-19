@@ -162,7 +162,7 @@ def test_payoff_finalize_records_observed_reward_and_structure_atomically(tmp_pa
     assert rewards[0]["observation_status"] == "semantic_reviewed"
     assert rewards[0]["finalized"] is True
     card = read_json(root / "20_outline" / "chapter_cards" / "ch001.json")
-    assert rewards[0]["planned_gain"] == (card.get("reader_gain") or card.get("reader_payoff"))
+    assert rewards[0]["planned_gain"] == card["reader_gain"]
     assert rewards[0]["observed_cost"] == positive_diagnosis(payload, "COST_VISIBLE")
     assert rewards[0]["evidence_source_hash"] == hashlib.sha256((text + "\n").encode("utf-8")).hexdigest()
     assert structures[0]["schema"] == "structure_observation_v1"
@@ -335,7 +335,7 @@ def seed_payoff_project(tmp_path, *, chapter_number=1):
     root = project.root
     open_book(config)
     mark_project_ready(root, config)
-    config.data["quality"]["assurance_mode"] = "balanced"
+    config.data["quality"]["profile"]["strictness"] = "balanced"
     config.data["quality"]["semantic_review_milestones"] = []
     config.data["quality"]["semantic_review_boundaries"] = False
     config.data.setdefault("editorial", {})["review_mode"] = "off"

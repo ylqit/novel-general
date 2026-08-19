@@ -16,11 +16,18 @@ from longform_engine.db.sqlite_index import connect, database_path
 from longform_engine.graph import retrieve_graph
 from longform_engine.models import cosine_similarity, embed_text_with_provider, ensure_models_ready, rerank_pair
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import (
+    existing_manuscript_chapter_path,
+    list_canonical_chapter_files,
+    list_finalized_chapter_files,
+)
 from longform_engine.text_metrics import content_character_count
 from longform_engine.vectorstore import VectorQuery
 from longform_engine.vectorstore import healthcheck as vector_healthcheck
 from longform_engine.vectorstore import query as query_vector_store
 from longform_engine.vectorstore import record_from_embedding
+from longform_engine.vectorstore import source_records as vector_source_records
+from longform_engine.vectorstore import sync_source_records
 from longform_engine.vectorstore import sync_records as sync_vector_store
 
 
@@ -115,7 +122,6 @@ def build_chunks(
     """Build paragraph-aware RAG chunks from all or selected finalized chapters."""
 
     root = resolve_project_root(config)
-    final_dir = root / "40_manuscript" / "final"
     chunks_dir = root / "60_rag" / "chunks"
     chunks_dir.mkdir(parents=True, exist_ok=True)
 
@@ -127,17 +133,24 @@ def build_chunks(
     chapter_count = 0
     chunk_count = 0
     active_final_chapters: set[int] = set()
-    all_final_paths = sorted([*final_dir.glob("*.md"), *final_dir.glob("*.txt")])
-    selected_chapters = {int(value) for value in chapter_numbers} if chapter_numbers is not None else None
-    final_paths = [
-        path
-        for path in all_final_paths
-        if selected_chapters is None or parse_chapter_number(path) in selected_chapters
-    ]
+    if chapter_numbers is None:
+        all_final_sources = list_finalized_chapter_files(root)
+        final_paths = [path for _chapter, path in all_final_sources]
+    else:
+        selected_chapters = sorted({int(value) for value in chapter_numbers if int(value) > 0})
+        all_final_sources = ()
+        final_paths = []
+        for chapter_number in selected_chapters:
+            path = existing_manuscript_chapter_path(root, chapter_number, lane="final")
+            if path is not None:
+                final_paths.append(path)
     for path in final_paths:
-        chapter_number = parse_chapter_number(path) or chapter_count + 1
+        chapter_number = parse_chapter_number(path)
+        if chapter_number is None:
+            raise ValueError(f"Final manuscript filename does not identify a chapter: {path}")
         active_final_chapters.add(chapter_number)
         text = safe_read_text(path)
+        source_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
         title = extract_title(text, path)
         chapter_meta = build_chapter_metadata(root, chapter_number, text, title)
         chunks = []
@@ -147,6 +160,7 @@ def build_chunks(
             chunk_meta.update(
                 {
                     "source": relative_path(root, path),
+                    "source_sha256": source_sha256,
                     "builder": "paragraph_aware_v2",
                     "source_eligibility": "final_manuscript",
                 }
@@ -171,24 +185,23 @@ def build_chunks(
                 "chapter_number": chapter_number,
                 "title": title,
                 "source_path": relative_path(root, path),
+                "source_sha256": source_sha256,
                 "chunks": chunks,
                 "updated_at": utc_now(),
             }
             atomic_write_text(chunks_dir / f"ch{chapter_number:03d}.json", json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
             chapter_count += 1
 
-    if selected_chapters is None:
+    if chapter_numbers is None:
         active_final_chapters = {
-            number
-            for path in all_final_paths
-            if (number := parse_chapter_number(path)) is not None
+            number for number, _path in all_final_sources
         }
         remove_stale_final_chunks(chunks_dir, active_final_chapters)
     if sync_index:
         sync_database(config)
     embedding_count = 0
     if with_embeddings:
-        embedding_count = build_embeddings(config)
+        embedding_count = rebuild_embedding_index(config).records
     return RagBuildStats(chapters=chapter_count, chunks=chunk_count, output_dir=str(chunks_dir), embeddings=embedding_count)
 
 
@@ -630,14 +643,8 @@ def load_chunk_candidates(
     )
 
 
-def build_embeddings(config: ConfigDocument) -> int:
-    """Build deterministic semantic embeddings for canonical RAG/memory rows."""
-
-    return build_embedding_index(config).records
-
-
-def build_embedding_index(config: ConfigDocument) -> EmbeddingBuildStats:
-    """Build embeddings and retain reuse/vector-health evidence for transactional callers."""
+def rebuild_embedding_index(config: ConfigDocument) -> EmbeddingBuildStats:
+    """Rebuild the complete embedding export and synchronize the local vector store."""
 
     root = resolve_project_root(config)
     sync_database(config)
@@ -676,6 +683,7 @@ def build_embedding_index(config: ConfigDocument) -> EmbeddingBuildStats:
                     "owner_id": str(row["id"]),
                     "chapter_number": row["chapter_number"],
                     "source_path": source_path,
+                    "source_sha256": str(metadata.get("source_sha256") or ""),
                     "model": model_name,
                     "content_hash": content_hash,
                     "vector": vector,
@@ -712,6 +720,143 @@ def build_embedding_index(config: ConfigDocument) -> EmbeddingBuildStats:
     sync_database(config)
     vector_records = [record_from_embedding(record) for record in records]
     vector_sync = sync_vector_store(config, [record for record in vector_records if record is not None])
+    health = vector_healthcheck(config)
+    return EmbeddingBuildStats(
+        records=len(records),
+        generated=len(records) - reused,
+        reused=reused,
+        active_records=health.record_count,
+        vector_upserted=vector_sync.upserted,
+        vector_unchanged=vector_sync.unchanged,
+        vector_stale=vector_sync.stale,
+        backend=health.backend,
+        model=model_name,
+        fallback_active=model_status.fallback_active,
+    )
+
+
+def apply_embedding_delta(
+    config: ConfigDocument,
+    *,
+    chapter_numbers: Iterable[int],
+    memory_paths: Iterable[str | Path] = (),
+) -> EmbeddingBuildStats:
+    """Embed and synchronize only explicitly changed chapter and memory sources."""
+
+    root = resolve_project_root(config)
+    chapters = sorted({int(number) for number in chapter_numbers if int(number) > 0})
+    if not chapters:
+        raise ValueError("Incremental embedding apply requires at least one chapter number.")
+    model_status = ensure_models_ready(config, allow_download=True, require_reranker=True)
+    model_name = (
+        model_status.embedding_model
+        if model_status.status == "ready"
+        else model_status.fallback or "local-hash"
+    )
+    chunk_inputs: list[tuple[dict[str, Any], str, str]] = []
+    declared_sources: set[str] = set()
+    for chapter_number in chapters:
+        chunk_file = root / "60_rag" / "chunks" / f"ch{chapter_number:03d}.json"
+        payload = read_json(chunk_file, default={})
+        if not isinstance(payload, dict):
+            raise ValueError(f"Incremental embedding source is invalid: {relative_path(root, chunk_file)}")
+        source_path = str(payload.get("source_path") or "")
+        chunks = payload.get("chunks")
+        if not source_path or not isinstance(chunks, list) or not chunks:
+            raise ValueError(f"Incremental embedding source is incomplete: {relative_path(root, chunk_file)}")
+        final_path = (root / source_path).resolve()
+        try:
+            final_path.relative_to((root / "40_manuscript" / "final").resolve())
+        except ValueError as exc:
+            raise ValueError(f"Incremental embedding source is not canonical: {source_path}") from exc
+        if not final_path.is_file():
+            raise ValueError(f"Incremental embedding source is missing: {source_path}")
+        source_sha256 = hashlib.sha256(final_path.read_bytes()).hexdigest()
+        if str(payload.get("source_sha256") or "") != source_sha256:
+            raise ValueError(f"Incremental chunk source hash is stale: {source_path}")
+        declared_sources.add(source_path)
+        for chunk in chunks:
+            if not isinstance(chunk, dict):
+                raise ValueError(f"Incremental chunk payload is invalid: {relative_path(root, chunk_file)}")
+            metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
+            if not is_allowed_rag_source(config, source_path, metadata):
+                raise ValueError(f"Incremental chunk source is not eligible for semantic indexing: {source_path}")
+            chunk_inputs.append((chunk, source_path, source_sha256))
+
+    memory_inputs: list[tuple[Path, dict[str, Any], str]] = []
+    memory_stale = is_memory_globally_stale(root)
+    for raw_path in memory_paths:
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = root / path
+        path = path.resolve()
+        owner_type = memory_owner_type(root, path)
+        source_path = relative_path(root, path)
+        declared_sources.add(source_path)
+        if not path.is_file() or memory_stale:
+            continue
+        payload = read_json(path, default={})
+        if not isinstance(payload, dict):
+            raise ValueError(f"Incremental memory source is invalid: {source_path}")
+        if owner_type == "style_memory":
+            allowed = is_allowed_style_memory_payload(payload)
+        else:
+            allowed = is_allowed_memory_payload(root, payload)
+        if not allowed:
+            raise ValueError(f"Incremental memory source is not canonical: {source_path}")
+        memory_inputs.append((path, payload, owner_type))
+
+    current_vectors = vector_source_records(config, declared_sources)
+    existing: dict[str, dict[str, Any]] = {}
+    for record_id, record in current_vectors.items():
+        item = dict(record.metadata or {})
+        item["vector"] = list(record.vector)
+        existing[record_id] = item
+
+    records: list[dict[str, Any]] = []
+    for chunk, source_path, source_sha256 in chunk_inputs:
+        metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
+        vector_text = " ".join([str(chunk.get("text") or ""), json.dumps(metadata, ensure_ascii=False)])
+        record_id = f"embedding:{chunk.get('id')}"
+        vector, content_hash = reusable_embedding(config, existing.get(record_id), vector_text, model_name)
+        records.append(
+            {
+                "id": record_id,
+                "owner_type": "chapter_chunk",
+                "owner_id": str(chunk.get("id") or ""),
+                "chapter_number": chunk.get("chapter_number"),
+                "source_path": source_path,
+                "source_sha256": source_sha256,
+                "model": model_name,
+                "content_hash": content_hash,
+                "vector": vector,
+                "updated_at": utc_now(),
+            }
+        )
+    for path, payload, owner_type in memory_inputs:
+        records.append(
+            embedding_record_for_memory(
+                config,
+                root,
+                path,
+                payload,
+                owner_type=owner_type,
+                model=model_name,
+                existing=existing,
+            )
+        )
+
+    reused = sum(
+        1
+        for record in records
+        if _embedding_record_matches(existing.get(str(record.get("id") or "")), record)
+    )
+    vector_records = [record_from_embedding(record) for record in records]
+    vector_sync = sync_source_records(
+        config,
+        [record for record in vector_records if record is not None],
+        source_paths=declared_sources,
+    )
     health = vector_healthcheck(config)
     return EmbeddingBuildStats(
         records=len(records),
@@ -773,11 +918,35 @@ def embedding_record_for_memory(
         "chapter_number": payload.get("chapter"),
         "scene_number": payload.get("scene"),
         "source_path": relative_path(root, path),
+        "source_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "model": model,
         "content_hash": content_hash,
         "vector": vector,
         "updated_at": utc_now(),
     }
+
+
+def memory_owner_type(root: Path, path: Path) -> str:
+    """Resolve one memory path to its canonical semantic owner boundary."""
+
+    memory_root = (root / "60_rag" / "memory").resolve()
+    try:
+        relative = path.resolve().relative_to(memory_root)
+    except ValueError as exc:
+        raise ValueError(f"Incremental memory source escaped 60_rag/memory: {path}") from exc
+    if len(relative.parts) < 2:
+        raise ValueError(f"Incremental memory source has no owner directory: {path}")
+    owners = {
+        "scenes": "scene_memory",
+        "chapters": "chapter_memory",
+        "arcs": "arc_memory",
+        "characters": "character_memory",
+        "style": "style_memory",
+    }
+    owner_type = owners.get(relative.parts[0])
+    if owner_type is None:
+        raise ValueError(f"Incremental memory source has unsupported owner directory: {path}")
+    return owner_type
 
 
 def reusable_embedding(
@@ -1095,10 +1264,7 @@ def format_recent_chapters(config: ConfigDocument, *, chapter_number: int | None
     summary_dir = root / "40_manuscript" / "summaries"
     final_numbers = final_chapter_numbers(root)
     summaries: list[tuple[int, Path, str]] = []
-    for path in sorted(summary_dir.glob("*.md")):
-        number = parse_chapter_number(path)
-        if number is None:
-            continue
+    for number, path in list_canonical_chapter_files(summary_dir):
         if number not in final_numbers:
             continue
         if chapter_number is not None and number >= chapter_number:
@@ -1227,7 +1393,7 @@ def format_unresolved_threads(config: ConfigDocument) -> list[str]:
 def format_forbidden_repeats(config: ConfigDocument, hits: tuple[RagHit, ...]) -> list[str]:
     root = resolve_project_root(config)
     anchors = read_json(root / "20_outline" / "outline_anchors.json", default={})
-    configured = config.data.get("gates", {}).get("forbidden_repeats") or config.data.get("novel", {}).get("forbidden_experience")
+    configured = config.data.get("novel", {}).get("forbidden_experience")
     lines: list[str] = []
     for item in normalize_strings(configured):
         lines.append(f"- Config: {item}")
@@ -1329,12 +1495,8 @@ def semantic_ledger_route_scores(
 
 
 def read_summary_text(root: Path, chapter_number: int) -> str:
-    summary_dir = root / "40_manuscript" / "summaries"
-    for name in (f"ch{chapter_number:03d}.md", f"chapter_{chapter_number:03d}.md", f"{chapter_number}.md"):
-        path = summary_dir / name
-        if path.exists():
-            return strip_markdown_heading(safe_read_text(path)).strip()
-    return ""
+    path = existing_manuscript_chapter_path(root, chapter_number, lane="summaries")
+    return strip_markdown_heading(safe_read_text(path)).strip() if path is not None else ""
 
 
 def extract_graph_entities_for_text(graph: Any, text: str) -> tuple[list[str], list[str]]:
@@ -1578,13 +1740,7 @@ def remove_stale_final_chunks(chunks_dir: Path, active_final_chapters: set[int])
 
 
 def final_chapter_numbers(root: Path) -> set[int]:
-    final_dir = root / "40_manuscript" / "final"
-    numbers = set()
-    for path in sorted([*final_dir.glob("*.md"), *final_dir.glob("*.txt")]):
-        number = parse_chapter_number(path)
-        if number is not None:
-            numbers.add(number)
-    return numbers
+    return {number for number, _path in list_finalized_chapter_files(root)}
 
 
 def is_allowed_rag_source(config: ConfigDocument, source_path: str, metadata: dict[str, Any]) -> bool:

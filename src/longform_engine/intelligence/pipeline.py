@@ -15,7 +15,6 @@ from longform_engine.agent_protocols import (
     DESIGN_REQUIRED_HEADINGS,
     DESIGN_DOCUMENT_SCHEMA,
     EVIDENCE_REVIEW_SCHEMA,
-    VALIDATION_REPORT_SCHEMA,
     AgentProtocolError,
     build_validation_report,
     canonical_delta_domain_payload,
@@ -42,14 +41,15 @@ from longform_engine.character_expression import (
     CHARACTER_REVIEW_SCHEMA,
     character_expression_readiness,
     validate_character_expression_profile,
-    validate_character_expression_review,
     write_character_expression_profile,
 )
+from longform_engine.chapter_contract import REMOVED_ALIAS_FIELDS
 from longform_engine.config import ConfigDocument
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.story_profiles import BUILTIN_MARKET_IDS, active_story_facets, compile_story_profile
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import manuscript_chapter_path
 
 
 INTELLIGENCE_TASK_TYPES = (
@@ -1335,8 +1335,8 @@ def intelligence_default_inputs(
             candidates.append(style_profile)
     if task_type == "character_expression_review":
         for chapter_number in range(int(scope["from_chapter"]), int(scope["to_chapter"]) + 1):
-            final = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
-            draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+            final = manuscript_chapter_path(root, chapter_number, lane="final")
+            draft = manuscript_chapter_path(root, chapter_number, lane="draft")
             source = final if final.is_file() else draft
             if not source.is_file():
                 raise ValueError(
@@ -1587,10 +1587,9 @@ def write_chapter_direction_context(
             for key in (
                 "chapter_number",
                 "title",
-                "duty",
                 "chapter_duty",
                 "conflict",
-                "information",
+                "information_release",
                 "reader_gain",
                 "cost",
                 "relationship_move",
@@ -1843,7 +1842,7 @@ def assess_chapter_direction(config: ConfigDocument, chapter_number: int) -> dic
     reasons: list[str] = ["guided_mode"]
     text = " ".join(
         str(planned.get(key) or "")
-        for key in ("title", "duty", "chapter_duty", "conflict", "information_release", "hook")
+        for key in ("title", "chapter_duty", "conflict", "information_release", "hook")
     ).lower()
     abstract_markers = (
         "待定",
@@ -3547,8 +3546,8 @@ def validate_rolling_chapter_plan(
     errors: list[str],
 ) -> None:
     required = {
-        "chapter_number", "title", "duty", "conflict", "information_release", "hook",
-        "reader_payoff", "volume_id", "arc_id", "featured_character_ids", "characterization_focus",
+        "chapter_number", "title", "chapter_duty", "conflict", "information_release", "hook",
+        "reader_gain", "volume_id", "arc_id", "featured_character_ids", "characterization_focus",
         "scene_wants", "relationship_move", "active_facets", "forbidden_reveals",
     }
     if not isinstance(value, list) or not value:
@@ -3560,6 +3559,11 @@ def validate_rolling_chapter_plan(
         if not isinstance(chapter, dict):
             errors.append(f"chapter_plan[{index}] must be an object.")
             continue
+        removed_aliases = sorted(REMOVED_ALIAS_FIELDS & set(chapter))
+        if removed_aliases:
+            errors.append(
+                f"chapter_plan[{index}] contains removed aliases: {', '.join(removed_aliases)}."
+            )
         missing = required - set(chapter)
         if missing:
             errors.append(f"chapter_plan[{index}] missing fields: {', '.join(sorted(missing))}.")
@@ -3570,7 +3574,7 @@ def validate_rolling_chapter_plan(
             errors.append(f"chapter_plan[{index}].arc_id must reference a declared story arc.")
         if str(chapter.get("volume_id") or "") not in volume_ids:
             errors.append(f"chapter_plan[{index}].volume_id must reference a declared volume.")
-        for field in ("title", "duty", "conflict", "information_release", "hook", "reader_payoff", "relationship_move"):
+        for field in ("title", "chapter_duty", "conflict", "information_release", "hook", "reader_gain", "relationship_move"):
             if not isinstance(chapter.get(field), str) or not chapter[field].strip():
                 errors.append(f"chapter_plan[{index}].{field} must be a non-empty string.")
         for field in ("featured_character_ids", "characterization_focus"):
@@ -4092,12 +4096,9 @@ def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
     resolved.update(selection["user_adjustments"])
     card.update(
         {
-            "duty": resolved["chapter_duty"],
             "chapter_duty": resolved["chapter_duty"],
             "conflict": resolved["conflict"],
-            "information": resolved["information_release"],
             "information_release": resolved["information_release"],
-            "reader_payoff": resolved["reader_gain"],
             "reader_gain": resolved["reader_gain"],
             "cost": resolved["cost"],
             "book_goal": resolved["book_goal"],

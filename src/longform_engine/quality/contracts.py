@@ -72,7 +72,7 @@ def compile_effective_quality_contract(
         raise ValueError(f"Story profile has unresolved human conflicts: {conflict_ids}")
     market = str(compiled_story["market"]["primary"])
     configured_phase = str(profile.get("phase") or "auto")
-    strictness = str(profile.get("strictness") or quality.get("assurance_mode") or "balanced")
+    strictness = str(profile.get("strictness") or "balanced")
     if market not in MARKET_PROFILE_IDS:
         raise ValueError(f"Unknown quality market profile: {market}")
     if strictness not in QUALITY_STRICTNESS:

@@ -22,12 +22,7 @@ from .feedback import (
     transition_feedback,
     truncate_feedback_registry,
 )
-from .history import (
-    analyze_structure_pattern,
-    build_structure_observation,
-    record_quality_history,
-    truncate_quality_history,
-)
+from .history import build_structure_observation, record_quality_history, truncate_quality_history
 from .review import (
     ReaderPayoffTaskResult,
     ReaderPayoffValidateResult,
@@ -49,7 +44,6 @@ __all__ = [
     "ReaderPayoffValidateResult",
     "STORY_PHASE_IDS",
     "StyleBaselineApprovalResult",
-    "analyze_structure_pattern",
     "approve_style_baseline",
     "build_structure_observation",
     "carry_feedback",

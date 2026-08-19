@@ -207,11 +207,6 @@ def compile_isolated_context(
         for item in input_records
         if item.get("requirement") == "required"
     ]
-    optional = [
-        str(item.get("path") or "").replace("\\", "/")
-        for item in input_records
-        if item.get("requirement") == "optional"
-    ]
     compiled_brief = next(
         (
             str(item.get("path") or "").replace("\\", "/")
@@ -493,7 +488,6 @@ def validate_isolated_agent_submission(
             normalization=None,
             errors=(str(exc),),
         )
-    task_type = str(normalized.get("task_type") or "")
     try:
         parsed = parse_agent_output_files(
             root.resolve(),

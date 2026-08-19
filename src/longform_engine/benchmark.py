@@ -17,15 +17,16 @@ from longform_engine import __version__
 from longform_engine.config import ConfigDocument
 from longform_engine.distribution import skill_source, tree_hash
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import manuscript_chapter_relative_path
 
 
-BENCHMARK_SCHEMA = "quality_benchmark_run_v2"
-BENCHMARK_VALIDATION_SCHEMA = "quality_benchmark_validation_v2"
-BENCHMARK_REPORT_SCHEMA = "quality_benchmark_report_v2"
-BENCHMARK_RECORD_SCHEMA = "quality_benchmark_record_result_v2"
-BENCHMARK_COMPARISON_SCHEMA = "quality_benchmark_comparison_v2"
+BENCHMARK_SCHEMA = "quality_benchmark_run_v3"
+BENCHMARK_VALIDATION_SCHEMA = "quality_benchmark_validation_v3"
+BENCHMARK_REPORT_SCHEMA = "quality_benchmark_report_v3"
+BENCHMARK_RECORD_SCHEMA = "quality_benchmark_record_result_v3"
+BENCHMARK_COMPARISON_SCHEMA = "quality_benchmark_comparison_v3"
 RAG_BENCHMARK_SCHEMA = "rag_scale_evidence_v1"
-AGENT_PRODUCTS = ("codex", "claude-code", "novel-skill")
+HOST_PRODUCTS = ("codex", "claude-code")
 SCORE_METRICS = (
     "continuity",
     "character_consistency",
@@ -58,7 +59,7 @@ QUALITY_WEIGHTS = {
     "reader_payoff": 0.10,
     "ai_taste": 0.15,
 }
-RAG_CLAIM_THRESHOLDS = {
+RAG_QUALITY_THRESHOLDS = {
     "scale_chapters": 500,
     "recall_at_k_min": 0.85,
     "fact_error_rate_max": 0.02,
@@ -74,12 +75,16 @@ RAG_REQUIRED_CATEGORIES = (
     "fact_conflict",
 )
 RAG_MIN_QUERY_COUNT = 50
-CHAPTER_ARTIFACT_PATHS = {
-    "work_order": "50_workbench/writing_tasks/ch{chapter:03d}.md",
-    "manifest": "50_workbench/writing_tasks/ch{chapter:03d}.agent_task.json",
-    "reviewed_manuscript": "40_manuscript/draft/ch{chapter:03d}.md",
-    "gate_result": "50_workbench/gate_artifacts/ch{chapter:03d}/gate_result.json",
-}
+CHAPTER_ARTIFACT_NAMES = ("work_order", "manifest", "reviewed_manuscript", "gate_result")
+
+
+def chapter_artifact_paths(chapter_number: int) -> dict[str, str]:
+    return {
+        "work_order": f"50_workbench/writing_tasks/ch{chapter_number:03d}.md",
+        "manifest": f"50_workbench/writing_tasks/ch{chapter_number:03d}.agent_task.json",
+        "reviewed_manuscript": manuscript_chapter_relative_path(chapter_number, lane="draft"),
+        "gate_result": f"50_workbench/gate_artifacts/ch{chapter_number:03d}/gate_result.json",
+    }
 
 
 @dataclass(frozen=True)
@@ -133,8 +138,8 @@ class BenchmarkComparisonResult:
     comparison_markdown: str
     run_ids: tuple[str, ...]
     best_by_metric: dict[str, str]
-    claim_eligible: bool
-    claim_reasons: tuple[str, ...]
+    quality_evidence_complete: bool
+    evidence_gaps: tuple[str, ...]
     next_command: str
 
 
@@ -151,27 +156,21 @@ def init_benchmark(
     config: ConfigDocument,
     *,
     run_id: str,
-    agent_product: str,
+    host_product: str,
     chapters: int,
-    baseline: str = "",
     scenario_id: str = "",
     scenario_file: str | Path | None = None,
     agent_model: str = "",
-    host_product: str = "",
     host_version: str = "",
     workflow_version: str = "",
 ) -> BenchmarkInitResult:
     root = resolve_project_root(config)
     normalized_id = validate_run_id(run_id)
-    if agent_product not in AGENT_PRODUCTS:
-        raise ValueError(f"agent_product must be one of: {', '.join(AGENT_PRODUCTS)}")
+    if host_product not in HOST_PRODUCTS:
+        raise ValueError(f"host_product must be one of: {', '.join(HOST_PRODUCTS)}")
     if chapters < 1 or chapters > 100:
         raise ValueError("chapters must be between 1 and 100.")
-    normalized_host_product = clean_metadata(host_product, field="host_product") or (
-        agent_product if agent_product in {"codex", "claude-code"} else ""
-    )
-    if normalized_host_product and normalized_host_product not in {"codex", "claude-code"}:
-        raise ValueError("host_product must be codex or claude-code.")
+    normalized_host_product = clean_metadata(host_product, field="host_product")
     scenario_sha256 = ""
     scenario_source = ""
     if scenario_file:
@@ -195,18 +194,14 @@ def init_benchmark(
         "run_id": normalized_id,
         "engine_version": __version__,
         "project_slug": str(config.data["project"]["slug"]),
-        "agent_product": agent_product,
         "agent_model": clean_metadata(agent_model, field="agent_model"),
         "host_product": normalized_host_product,
         "host_version": clean_metadata(host_version, field="host_version"),
-        "workflow_version": clean_metadata(workflow_version, field="workflow_version") or (
-            __version__ if agent_product in {"codex", "claude-code"} else ""
-        ),
+        "workflow_version": clean_metadata(workflow_version, field="workflow_version") or __version__,
         "scenario_id": normalized_scenario_id,
         "scenario_sha256": scenario_sha256,
         "scenario_source": scenario_source,
-        "source_state": capture_source_state(config, agent_product=agent_product),
-        "baseline": clean_metadata(baseline, field="baseline"),
+        "source_state": capture_source_state(config, host_product=normalized_host_product),
         "chapter_count": chapters,
         "creation_mode": str(config.data.get("creation", {}).get("mode") or "original"),
         "review_protocol": "blind_engine_identity",
@@ -236,13 +231,13 @@ def init_benchmark(
     )
 
 
-def capture_source_state(config: ConfigDocument, *, agent_product: str) -> dict[str, Any]:
+def capture_source_state(config: ConfigDocument, *, host_product: str) -> dict[str, Any]:
     """Hash reproducibility inputs without storing source diffs or project prose."""
 
     config_hash = sha256(config.path.read_bytes()).hexdigest() if config.path and config.path.is_file() else ""
     skill_hash = ""
-    if agent_product in {"codex", "claude-code"}:
-        skill_hash = tree_hash(skill_source(agent_product))
+    if host_product in HOST_PRODUCTS:
+        skill_hash = tree_hash(skill_source(host_product))
 
     git_root = discover_git_root(config)
     commit = ""
@@ -352,7 +347,7 @@ def record_benchmark_chapter(
         raise ValueError("Fanfiction benchmark records require all six fanfiction scores.")
     artifact_hashes = collect_chapter_artifact_hashes(root, chapter_number)
     if require_artifact_hashes:
-        missing = sorted(set(CHAPTER_ARTIFACT_PATHS) - set(artifact_hashes))
+        missing = sorted(set(CHAPTER_ARTIFACT_NAMES) - set(artifact_hashes))
         if missing:
             raise ValueError(
                 "Benchmark technical record requires finalized chapter artifacts: "
@@ -421,27 +416,27 @@ def validate_benchmark(config: ConfigDocument, *, run_id: str) -> BenchmarkValid
         errors.append(f"run.json must use {BENCHMARK_SCHEMA}.")
     if isinstance(run, dict) and run.get("run_id") != normalized_id:
         errors.append("run.json run_id does not match directory.")
-    if isinstance(run, dict) and run.get("agent_product") not in AGENT_PRODUCTS:
-        errors.append(f"run.json agent_product must be one of: {', '.join(AGENT_PRODUCTS)}.")
+    if isinstance(run, dict) and run.get("host_product") not in HOST_PRODUCTS:
+        errors.append(f"run.json host_product must be one of: {', '.join(HOST_PRODUCTS)}.")
     if isinstance(run, dict) and run.get("stores_manuscript_body") is not False:
         errors.append("run.json stores_manuscript_body must be false.")
     scenario_id = run.get("scenario_id") if isinstance(run, dict) else None
     if scenario_id is None:
-        warnings.append("legacy benchmark has no scenario_id; comparison falls back to project_slug.")
+        errors.append("run.json scenario_id is required.")
     elif not isinstance(scenario_id, str) or not scenario_id.strip() or len(scenario_id) > 200 or "\n" in scenario_id or "\r" in scenario_id:
         errors.append("run.json scenario_id must be a non-empty single line of at most 200 characters.")
     scenario_digest = run.get("scenario_sha256") if isinstance(run, dict) else None
     if scenario_digest and not re.fullmatch(r"[0-9a-f]{64}", str(scenario_digest)):
         errors.append("run.json scenario_sha256 must be a lowercase SHA-256 digest.")
     if isinstance(run, dict) and not scenario_digest:
-        warnings.append("scenario_sha256 is missing; the run cannot support a formal quality claim.")
+        warnings.append("scenario_sha256 is missing; the run cannot support complete quality evidence.")
     host_product = run.get("host_product") if isinstance(run, dict) else None
     if host_product and host_product not in {"codex", "claude-code"}:
         errors.append("run.json host_product must be codex or claude-code.")
     if isinstance(run, dict) and not host_product:
-        warnings.append("host_product is missing; the run cannot support a formal quality claim.")
+        errors.append("host_product is required.")
     if isinstance(run, dict) and not run.get("workflow_version"):
-        warnings.append("workflow_version is missing; the run cannot support a formal quality claim.")
+        warnings.append("workflow_version is missing; the run cannot support complete quality evidence.")
     if isinstance(run, dict) and (not run.get("agent_model") or not run.get("host_version")):
         warnings.append("agent_model or host_version is missing; record both before publishing quality evidence.")
     expected_count = run.get("chapter_count") if isinstance(run, dict) else None
@@ -460,13 +455,13 @@ def validate_benchmark(config: ConfigDocument, *, run_id: str) -> BenchmarkValid
         record_errors = validate_record(record, expected_chapter=index)
         if isinstance(record, dict) and record.get("generated") is True:
             artifact_hashes = record.get("artifact_hashes")
-            if artifact_hashes_required and set(artifact_hashes or {}) != set(CHAPTER_ARTIFACT_PATHS):
+            if artifact_hashes_required and set(artifact_hashes or {}) != set(CHAPTER_ARTIFACT_NAMES):
                 record_errors.append("artifact_hashes must contain all four required chapter artifacts.")
             if isinstance(artifact_hashes, dict):
                 for artifact_name, item in artifact_hashes.items():
-                    if artifact_name not in CHAPTER_ARTIFACT_PATHS or not isinstance(item, dict):
+                    if artifact_name not in CHAPTER_ARTIFACT_NAMES or not isinstance(item, dict):
                         continue
-                    expected_path = CHAPTER_ARTIFACT_PATHS[artifact_name].format(chapter=index)
+                    expected_path = chapter_artifact_paths(index)[artifact_name]
                     if item.get("path") != expected_path:
                         record_errors.append(
                             f"artifact_hashes.{artifact_name} path must be {expected_path}."
@@ -575,8 +570,7 @@ def report_benchmark(config: ConfigDocument, *, run_id: str) -> BenchmarkReportR
     payload = {
         "schema": BENCHMARK_REPORT_SCHEMA,
         "run_id": validation.run_id,
-        "agent_product": run.get("agent_product"),
-        "baseline": run.get("baseline"),
+        "host_product": run.get("host_product"),
         "chapters_planned": run.get("chapter_count"),
         "chapters_recorded": len(generated),
         "complete": validation.complete,
@@ -675,7 +669,7 @@ def compare_benchmarks(
             reverse = metric != "ai_taste"
             best_by_metric[metric] = sorted(scored, key=lambda item: item[0], reverse=reverse)[0][1]
 
-    claim_eligible, claim_reasons, superiority = assess_superiority_claim(
+    quality_evidence_complete, evidence_gaps, evidence_assessments = assess_quality_evidence(
         runs,
         reports,
         records_by_run,
@@ -691,9 +685,9 @@ def compare_benchmarks(
         "run_ids": list(normalized_run_ids),
         "runs": reports,
         "best_by_metric": best_by_metric,
-        "superiority_assessments": superiority,
-        "claim_eligible": claim_eligible,
-        "claim_reasons": claim_reasons,
+        "evidence_assessments": evidence_assessments,
+        "quality_evidence_complete": quality_evidence_complete,
+        "evidence_gaps": evidence_gaps,
         "manuscript_bodies_included": False,
         "generated_at": utc_now(),
     }
@@ -709,12 +703,12 @@ def compare_benchmarks(
         comparison_markdown=relative(root, comparison_markdown),
         run_ids=normalized_run_ids,
         best_by_metric=best_by_metric,
-        claim_eligible=claim_eligible,
-        claim_reasons=tuple(claim_reasons),
+        quality_evidence_complete=quality_evidence_complete,
+        evidence_gaps=tuple(evidence_gaps),
         next_command=(
-            "Quality claim threshold passed; retain blind-review evidence with the release."
-            if claim_eligible
-            else "Do not claim superiority; resolve every comparison claim_reasons item first."
+            "Quality evidence is complete; retain the blind-review package with the release."
+            if quality_evidence_complete
+            else "Resolve every evidence_gaps item before marking literary evidence ready."
         ),
     )
 
@@ -787,7 +781,7 @@ def validate_record(record: Any, *, expected_chapter: int) -> list[str]:
     if not isinstance(artifact_hashes, dict):
         errors.append("artifact_hashes must be an object.")
     else:
-        unknown_artifacts = set(artifact_hashes) - set(CHAPTER_ARTIFACT_PATHS)
+        unknown_artifacts = set(artifact_hashes) - set(CHAPTER_ARTIFACT_NAMES)
         if unknown_artifacts:
             errors.append("artifact_hashes contains unknown artifact names.")
         for artifact_name, item in artifact_hashes.items():
@@ -822,8 +816,7 @@ def validate_record(record: Any, *, expected_chapter: int) -> list[str]:
 
 def collect_chapter_artifact_hashes(root: Path, chapter_number: int) -> dict[str, dict[str, str]]:
     artifacts: dict[str, dict[str, str]] = {}
-    for name, path_template in CHAPTER_ARTIFACT_PATHS.items():
-        expected_path = path_template.format(chapter=chapter_number)
+    for name, expected_path in chapter_artifact_paths(chapter_number).items():
         path = root / expected_path
         digest = (
             sha256(path.read_bytes()).hexdigest()
@@ -852,7 +845,8 @@ def archived_chapter_artifact_digest(root: Path, chapter_number: int, expected_p
                 or int(manifest.get("chapter_number") or 0) != chapter_number
             ):
                 return None
-            entries = manifest.get("entries") if isinstance(manifest.get("entries"), list) else []
+            raw_entries = manifest.get("entries")
+            entries: list[Any] = raw_entries if isinstance(raw_entries, list) else []
             entry = next(
                 (
                     item
@@ -871,16 +865,17 @@ def archived_chapter_artifact_digest(root: Path, chapter_number: int, expected_p
                 return expected_digest if sha256(handle.read(member)).hexdigest() == expected_digest else None
             retained_role = str(entry.get("retained_role") or "")
             retained = manifest.get("retained_evidence")
+            retained_records = retained if isinstance(retained, list) else []
             retained_item = next(
                 (
                     item
-                    for item in retained
+                    for item in retained_records
                     if isinstance(item, dict)
                     and item.get("role") == retained_role
                     and item.get("sha256") == expected_digest
                 ),
                 None,
-            ) if isinstance(retained, list) else None
+            )
             if not isinstance(retained_item, dict):
                 return None
             retained_path = root / str(retained_item.get("path") or "")
@@ -892,18 +887,19 @@ def archived_chapter_artifact_digest(root: Path, chapter_number: int, expected_p
 
 
 def composite_score(record: dict[str, Any]) -> float:
-    scores = record.get("scores") if isinstance(record.get("scores"), dict) else {}
-    return sum(
-        QUALITY_WEIGHTS[metric] * (
+    raw_scores = record.get("scores")
+    scores: dict[str, Any] = raw_scores if isinstance(raw_scores, dict) else {}
+    total = 0.0
+    for metric in SCORE_METRICS:
+        total += QUALITY_WEIGHTS[metric] * (
             11.0 - float(scores.get(metric) or 0)
             if metric == "ai_taste"
             else float(scores.get(metric) or 0)
         )
-        for metric in SCORE_METRICS
-    )
+    return total
 
 
-def assess_superiority_claim(
+def assess_quality_evidence(
     runs: list[dict[str, Any]],
     reports: list[dict[str, Any]],
     records_by_run: dict[str, list[dict[str, Any]]],
@@ -912,146 +908,76 @@ def assess_superiority_claim(
     root: Path,
 ) -> tuple[bool, list[str], list[dict[str, Any]]]:
     report_by_id = {str(item.get("run_id")): item for item in reports}
-    baselines = [run for run in runs if run.get("agent_product") == "novel-skill"]
-    candidates = [run for run in runs if run.get("agent_product") in {"codex", "claude-code"}]
-    global_reasons: list[str] = []
+    global_gaps: list[str] = []
     assessments: list[dict[str, Any]] = []
     if chapter_count < 10:
-        global_reasons.append("Formal superiority evidence requires at least 10 chapters per run.")
-    if not baselines:
-        global_reasons.append("No novel-skill baseline run is present.")
-    if not candidates:
-        global_reasons.append("No longform Codex or Claude Code candidate run is present.")
-    for candidate in candidates:
-        candidate_id = str(candidate.get("run_id"))
-        candidate_report = report_by_id[candidate_id]
-        matching_baselines = [
-            baseline
-            for baseline in baselines
-            if baseline.get("host_product") == candidate.get("host_product")
-        ]
-        if not matching_baselines:
-            global_reasons.append(
-                f"No novel-skill baseline uses host_product={candidate.get('host_product') or 'missing'} "
-                f"for candidate {candidate_id}."
-            )
-        for baseline in matching_baselines:
-            baseline_id = str(baseline.get("run_id"))
-            baseline_report = report_by_id[baseline_id]
-            if any(
-                not isinstance(report.get("scores"), dict)
-                or any(report["scores"].get(metric) is None for metric in SCORE_METRICS)
-                for report in (candidate_report, baseline_report)
-            ):
-                assessments.append(
-                    {
-                        "candidate_run_id": candidate_id,
-                        "baseline_run_id": baseline_id,
-                        "composite_delta": None,
-                        "chapter_wins": 0,
-                        "dimension_deltas": {},
-                        "eligible": False,
-                        "reasons": [
-                            "Formal literary scores are pending blind-review aggregation."
-                        ],
-                    }
-                )
-                continue
-            dimension_deltas = {
-                metric: round(
-                    (
-                        float(baseline_report["scores"][metric]) - float(candidate_report["scores"][metric])
-                        if metric == "ai_taste"
-                        else float(candidate_report["scores"][metric]) - float(baseline_report["scores"][metric])
-                    ),
-                    3,
-                )
-                for metric in SCORE_METRICS
-            }
-            candidate_records = records_by_run[candidate_id]
-            baseline_records = records_by_run[baseline_id]
-            chapter_wins = sum(
-                1
-                for candidate_record, baseline_record in zip(candidate_records, baseline_records)
-                if composite_score(candidate_record) > composite_score(baseline_record)
-            )
-            composite_delta = round(
-                float(candidate_report.get("average_composite_score") or 0)
-                - float(baseline_report.get("average_composite_score") or 0),
-                3,
-            )
-            reasons: list[str] = []
-            if not candidate.get("scenario_sha256") or candidate.get("scenario_sha256") != baseline.get("scenario_sha256"):
-                reasons.append("Candidate and baseline scenario_sha256 values are missing or differ.")
-            if not candidate.get("host_product") or candidate.get("host_product") != baseline.get("host_product"):
-                reasons.append("Candidate and baseline host_product labels are missing or differ.")
-            if candidate.get("agent_model") != baseline.get("agent_model"):
-                reasons.append("Candidate and baseline agent_model labels differ.")
-            if candidate.get("host_version") != baseline.get("host_version"):
-                reasons.append("Candidate and baseline host_version labels differ.")
-            if not candidate.get("workflow_version") or not baseline.get("workflow_version"):
-                reasons.append("Candidate or baseline workflow_version is missing.")
-            if candidate_report.get("acceptance_passed") is not True:
-                reasons.append("Candidate engineering acceptance did not pass.")
-            if baseline_report.get("acceptance_passed") is not True:
-                reasons.append("Baseline engineering acceptance did not pass.")
-            if composite_delta < 0.5:
-                reasons.append("Composite blind score lead is below 0.5/10.")
-            if chapter_wins < 7:
-                reasons.append("Candidate wins fewer than 7 chapter-level comparisons.")
-            if any(delta < -0.3 for delta in dimension_deltas.values()):
-                reasons.append("At least one core literary dimension trails by more than 0.3/10.")
-            if int(candidate_report.get("p0_contradiction_count") or 0) != 0:
-                reasons.append("Candidate has P0 continuity, character, or fact contradictions.")
-            if int(candidate_report.get("canonical_pollution_count") or 0) != 0:
-                reasons.append("Candidate canonical pollution count is not zero.")
-            if int(candidate_report.get("repair_count") or 0) > int(baseline_report.get("repair_count") or 0):
-                reasons.append("Candidate repair count exceeds baseline.")
-            if int(candidate_report.get("need_human_count") or 0) > int(baseline_report.get("need_human_count") or 0):
-                reasons.append("Candidate need-human count exceeds baseline.")
-            for report, label in ((candidate_report, "candidate"), (baseline_report, "baseline")):
-                if len(report.get("judge_ids") or []) < 3:
-                    reasons.append(f"{label} has fewer than three independent evaluator ids.")
-            from longform_engine.blind_review import formal_blind_review_errors
+        global_gaps.append("Complete quality evidence requires at least 10 chapters per run.")
+    if len(runs) != 2:
+        global_gaps.append("Complete blind-review evidence requires exactly two aligned engine runs.")
 
-            reasons.extend(
-                formal_blind_review_errors(
-                    root,
-                    candidate_id=candidate_id,
-                    baseline_id=baseline_id,
-                    candidate_records=candidate_records,
-                    baseline_records=baseline_records,
-                )
+    scenario_hashes = {str(run.get("scenario_sha256") or "") for run in runs}
+    if "" in scenario_hashes or len(scenario_hashes) != 1:
+        global_gaps.append("Run scenario_sha256 values must be present and identical.")
+
+    for run in runs:
+        run_id = str(run.get("run_id") or "")
+        report = report_by_id.get(run_id, {})
+        gaps: list[str] = []
+        if run.get("host_product") not in HOST_PRODUCTS:
+            gaps.append("host_product is missing or unsupported.")
+        for field in ("agent_model", "host_version", "workflow_version"):
+            if not run.get(field):
+                gaps.append(f"{field} is missing.")
+        if report.get("acceptance_passed") is not True:
+            gaps.append("engineering acceptance did not pass.")
+        scores = report.get("scores")
+        if not isinstance(scores, dict) or any(scores.get(metric) is None for metric in SCORE_METRICS):
+            gaps.append("literary scores are pending blind-review aggregation.")
+        if len(report.get("judge_ids") or []) < 3:
+            gaps.append("fewer than three independent evaluator ids are recorded.")
+        rag_evidence = read_json(benchmark_dir(root, run_id) / "rag_scale_evidence.json", {})
+        gaps.extend(
+            f"RAG evidence: {item}"
+            for item in rag_threshold_errors(
+                rag_evidence if isinstance(rag_evidence, dict) else {},
+                require_production_grade=True,
             )
-            rag_evidence = read_json(benchmark_dir(root, candidate_id) / "rag_scale_evidence.json", {})
-            rag_errors = rag_threshold_errors(rag_evidence if isinstance(rag_evidence, dict) else {})
-            reasons.extend(f"RAG evidence: {item}" for item in rag_errors)
-            assessments.append(
-                {
-                    "candidate_run_id": candidate_id,
-                    "baseline_run_id": baseline_id,
-                    "composite_delta": composite_delta,
-                    "chapter_wins": chapter_wins,
-                    "dimension_deltas": dimension_deltas,
-                    "eligible": chapter_count >= 10 and not reasons,
-                    "reasons": reasons,
-                }
-            )
-    eligible = chapter_count >= 10 and bool(assessments) and all(item["eligible"] for item in assessments)
-    all_reasons = list(global_reasons)
-    for item in assessments:
-        all_reasons.extend(
-            f"{item['candidate_run_id']} vs {item['baseline_run_id']}: {reason}"
-            for reason in item["reasons"]
         )
-    return eligible and not global_reasons, all_reasons, assessments
+        assessments.append(
+            {
+                "run_id": run_id,
+                "evidence_complete": chapter_count >= 10 and not gaps,
+                "evidence_gaps": gaps,
+            }
+        )
+
+    if len(runs) == 2:
+        from longform_engine.blind_review import formal_blind_review_errors
+
+        first_id = str(runs[0].get("run_id") or "")
+        second_id = str(runs[1].get("run_id") or "")
+        global_gaps.extend(
+            formal_blind_review_errors(
+                root,
+                candidate_id=first_id,
+                baseline_id=second_id,
+                candidate_records=records_by_run.get(first_id, []),
+                baseline_records=records_by_run.get(second_id, []),
+            )
+        )
+
+    all_gaps = list(global_gaps)
+    for item in assessments:
+        all_gaps.extend(f"{item['run_id']}: {gap}" for gap in item["evidence_gaps"])
+    complete = chapter_count >= 10 and bool(assessments) and not all_gaps
+    return complete, all_gaps, assessments
 
 
-def rag_threshold_errors(payload: dict[str, Any], *, require_claim_grade: bool = True) -> list[str]:
+def rag_threshold_errors(payload: dict[str, Any], *, require_production_grade: bool = True) -> list[str]:
     errors: list[str] = []
     if payload.get("schema") != RAG_BENCHMARK_SCHEMA:
         return ["missing valid rag_scale_evidence_v1."]
-    if require_claim_grade:
+    if require_production_grade:
         if payload.get("measurement_source") != "engine_runner":
             errors.append("metrics were manually recorded instead of produced by an engine runner.")
         if payload.get("evidence_grade") != "production_model":
@@ -1070,7 +996,7 @@ def rag_threshold_errors(payload: dict[str, Any], *, require_claim_grade: bool =
             errors.append("production query dataset hash is missing or invalid.")
         if not is_sha256(payload.get("source_merkle_root")):
             errors.append("final-manuscript source merkle root is missing or invalid.")
-        if int(payload.get("source_chapter_count") or 0) < RAG_CLAIM_THRESHOLDS["scale_chapters"]:
+        if int(payload.get("source_chapter_count") or 0) < RAG_QUALITY_THRESHOLDS["scale_chapters"]:
             errors.append("source chapter count is below 500.")
         if int(payload.get("query_count") or 0) < RAG_MIN_QUERY_COUNT:
             errors.append("production query count is below 50.")
@@ -1084,13 +1010,13 @@ def rag_threshold_errors(payload: dict[str, Any], *, require_claim_grade: bool =
             errors.append("incremental indexing measurement mode is missing.")
         if numeric_value(payload.get("incremental_index_ms"), default=-1) < 0:
             errors.append("incremental indexing latency is missing or invalid.")
-    if numeric_value(payload.get("scale_chapters"), default=0) < RAG_CLAIM_THRESHOLDS["scale_chapters"]:
+    if numeric_value(payload.get("scale_chapters"), default=0) < RAG_QUALITY_THRESHOLDS["scale_chapters"]:
         errors.append("scale is below 500 chapters.")
-    if numeric_value(payload.get("recall_at_k"), default=0) < RAG_CLAIM_THRESHOLDS["recall_at_k_min"]:
+    if numeric_value(payload.get("recall_at_k"), default=0) < RAG_QUALITY_THRESHOLDS["recall_at_k_min"]:
         errors.append("recall_at_k is below 0.85.")
-    if numeric_value(payload.get("fact_error_rate"), default=1) > RAG_CLAIM_THRESHOLDS["fact_error_rate_max"]:
+    if numeric_value(payload.get("fact_error_rate"), default=1) > RAG_QUALITY_THRESHOLDS["fact_error_rate_max"]:
         errors.append("fact_error_rate exceeds 0.02.")
-    if numeric_value(payload.get("p95_query_ms"), default=float("inf")) > RAG_CLAIM_THRESHOLDS["p95_query_ms_max"]:
+    if numeric_value(payload.get("p95_query_ms"), default=float("inf")) > RAG_QUALITY_THRESHOLDS["p95_query_ms_max"]:
         errors.append("P95 query latency exceeds 1000 ms.")
     return errors
 
@@ -1152,7 +1078,7 @@ def record_rag_benchmark(
             "fact_error_rate": fact_error_rate,
             "p95_query_ms": p95_query_ms,
         },
-        require_claim_grade=False,
+        require_production_grade=False,
     )
     payload = {
         "schema": RAG_BENCHMARK_SCHEMA,
@@ -1164,8 +1090,7 @@ def record_rag_benchmark(
         "incremental_index_ms": incremental_index_ms,
         "measurement_source": "manual",
         "evidence_grade": "manual_record",
-        "claim_eligible": False,
-        "thresholds": RAG_CLAIM_THRESHOLDS,
+        "thresholds": RAG_QUALITY_THRESHOLDS,
         "meets_thresholds": not threshold_errors,
         "threshold_errors": threshold_errors,
         "recorded_at": utc_now(),
@@ -1198,7 +1123,7 @@ def render_report(payload: dict[str, Any]) -> str:
     lines = [
         f"# Quality Benchmark: {payload['run_id']}",
         "",
-        f"- Agent product: `{payload.get('agent_product')}`",
+        f"- Host product: `{payload.get('host_product')}`",
         f"- Chapters: `{payload.get('chapters_recorded')}/{payload.get('chapters_planned')}`",
         f"- Complete: `{payload.get('complete')}`",
         f"- Acceptance passed: `{payload.get('acceptance_passed')}`",
@@ -1232,13 +1157,13 @@ def render_comparison(payload: dict[str, Any]) -> str:
         f"- Chapters per run: `{payload.get('chapter_count')}`",
         f"- Provisional: `{payload.get('allow_incomplete')}`",
         "",
-        "| Run | Product | Recorded | Gate failure | Repairs | Need human | Context files | Continuity | Character | Foreshadowing | Pacing | Payoff | AI taste |",
+        "| Run | Host | Recorded | Gate failure | Repairs | Need human | Context files | Continuity | Character | Foreshadowing | Pacing | Payoff | AI taste |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for report in payload.get("runs", []):
         scores = report.get("scores", {})
         lines.append(
-            "| {run_id} | {agent_product} | {chapters_recorded}/{chapters_planned} | {gate_failure_rate} | "
+            "| {run_id} | {host_product} | {chapters_recorded}/{chapters_planned} | {gate_failure_rate} | "
             "{repair_count} | {need_human_count} | {average_context_file_count} | {continuity} | "
             "{character_consistency} | {foreshadowing_control} | {pacing} | {reader_payoff} | {ai_taste} |".format(
                 **report,
@@ -1247,9 +1172,9 @@ def render_comparison(payload: dict[str, Any]) -> str:
         )
     lines.extend(("", "## Best By Metric", ""))
     lines.extend(f"- {metric}: `{run_id}`" for metric, run_id in payload.get("best_by_metric", {}).items())
-    lines.extend(("", "## Public Claim Gate", ""))
-    lines.append(f"- Eligible: `{payload.get('claim_eligible')}`")
-    lines.extend(f"- Blocker: {reason}" for reason in payload.get("claim_reasons", []))
+    lines.extend(("", "## Evidence Readiness", ""))
+    lines.append(f"- Complete: `{payload.get('quality_evidence_complete')}`")
+    lines.extend(f"- Gap: {reason}" for reason in payload.get("evidence_gaps", []))
     lines.extend(("", "This comparison contains metrics and notes only; manuscript bodies are excluded.", ""))
     return "\n".join(lines)
 

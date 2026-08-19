@@ -8,6 +8,7 @@ from .pipeline import (
     TcsResult,
     TcsTransitionResult,
     TcsValidateResult,
+    apply_style_memory_delta,
     build_style_memory,
     build_tcs,
     build_tcs_transition,
@@ -15,7 +16,6 @@ from .pipeline import (
     compress_memory,
     deterministic_evidence_gate_findings,
     mark_memory_stale,
-    semantic_gate_findings,
     validate_tcs,
     validate_memory,
 )
@@ -28,6 +28,7 @@ __all__ = [
     "TcsResult",
     "TcsTransitionResult",
     "TcsValidateResult",
+    "apply_style_memory_delta",
     "build_style_memory",
     "build_tcs",
     "build_tcs_transition",
@@ -35,7 +36,6 @@ __all__ = [
     "compress_memory",
     "deterministic_evidence_gate_findings",
     "mark_memory_stale",
-    "semantic_gate_findings",
     "validate_tcs",
     "validate_memory",
 ]

@@ -22,10 +22,10 @@ from longform_engine.storage import atomic_write_text, resolve_project_root
 
 
 SOURCE_MANIFEST_SCHEMA = "benchmark_source_manifest_v1"
-BLIND_PACK_SCHEMA = "blind_review_pack_v1"
-BLIND_MAPPING_SCHEMA = "blind_review_private_mapping_v1"
-BLIND_SUBMISSION_SCHEMA = "blind_review_submission_v1"
-BLIND_AGGREGATE_SCHEMA = "blind_review_aggregate_v1"
+BLIND_PACK_SCHEMA = "blind_review_pack_v2"
+BLIND_MAPPING_SCHEMA = "blind_review_private_mapping_v2"
+BLIND_SUBMISSION_SCHEMA = "blind_review_submission_v2"
+BLIND_AGGREGATE_SCHEMA = "blind_review_aggregate_v2"
 
 
 @dataclass(frozen=True)
@@ -155,9 +155,8 @@ def create_blind_review_pack(
         raise ValueError("Blind pack runs must use the same chapter_count.")
     if int(runs[0].get("chapter_count") or 0) < 10:
         raise ValueError("Formal blind packs require at least 10 chapters.")
-    products = {str(run.get("agent_product") or "") for run in runs}
-    if "novel-skill" not in products or not products.intersection({"codex", "claude-code"}):
-        raise ValueError("A formal blind pack requires one longform run and one novel-skill baseline.")
+    if any(str(run.get("host_product") or "") not in {"codex", "claude-code"} for run in runs):
+        raise ValueError("A formal blind pack requires supported host_product metadata for both runs.")
     for field in ("host_product", "agent_model", "host_version", "creation_mode"):
         values = {str(run.get(field) or "") for run in runs}
         if len(values) != 1 or "" in values:
@@ -180,11 +179,11 @@ def create_blind_review_pack(
     if public_dir.exists() and any(public_dir.iterdir()):
         raise ValueError(f"Blind review pack already exists: {public_dir}")
 
-    entries = []
+    entries: list[dict[str, Any]] = []
     for blind_id, run_id in blind_map.items():
         target_dir = public_dir / blind_id
         target_dir.mkdir(parents=True, exist_ok=True)
-        public_chapters = []
+        public_chapters: list[dict[str, Any]] = []
         for chapter in manifests[run_id]["chapters"]:
             source = Path(str(chapter["source_path"]))
             body = source.read_text(encoding="utf-8")
@@ -539,9 +538,12 @@ def formal_blind_review_errors(
     if any(record.get("review_status") != "blind_aggregated" for record in all_records):
         errors.append("Formal scores were not produced by blind-review aggregation.")
         return errors
-    blind_payloads = [record.get("blind_review") for record in all_records]
-    if any(not isinstance(payload, dict) for payload in blind_payloads):
+    raw_blind_payloads = [record.get("blind_review") for record in all_records]
+    if any(not isinstance(payload, dict) for payload in raw_blind_payloads):
         return ["Blind-review provenance is missing from chapter records."]
+    blind_payloads: list[dict[str, Any]] = [
+        payload for payload in raw_blind_payloads if isinstance(payload, dict)
+    ]
     pack_hashes = {str(payload.get("pack_hash") or "") for payload in blind_payloads}
     aggregate_files = {str(payload.get("aggregate_file") or "") for payload in blind_payloads}
     aggregate_hashes = {str(payload.get("aggregate_sha256") or "") for payload in blind_payloads}

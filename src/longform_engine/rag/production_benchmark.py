@@ -1,7 +1,8 @@
-"""Claim-grade RAG benchmark over finalized Chinese novel chapters."""
+"""Production-grade RAG benchmark over finalized Chinese novel chapters."""
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -9,14 +10,16 @@ import math
 import platform
 from pathlib import Path
 import re
+import shutil
 from statistics import mean
+import tempfile
 from time import perf_counter
 from typing import Any
 
 from longform_engine.benchmark import (
     BENCHMARK_SCHEMA,
     RAG_BENCHMARK_SCHEMA,
-    RAG_CLAIM_THRESHOLDS,
+    RAG_QUALITY_THRESHOLDS,
     RAG_MIN_QUERY_COUNT,
     RAG_REQUIRED_CATEGORIES,
     benchmark_dir,
@@ -24,10 +27,11 @@ from longform_engine.benchmark import (
     validate_run_id,
 )
 from longform_engine.config import ConfigDocument
+from longform_engine.db import sync_semantic_delta
 from longform_engine.models import verify_models
-from longform_engine.rag.pipeline import build_chunks, build_embeddings, query
+from longform_engine.rag.pipeline import apply_embedding_delta, build_chunks, query
 from longform_engine.storage import atomic_write_text, resolve_project_root
-from longform_engine.storage.layout import FINAL_MANUSCRIPT_DIRECTORY
+from longform_engine.storage.layout import FINAL_MANUSCRIPT_DIRECTORY, list_finalized_chapter_files
 from longform_engine.vectorstore import healthcheck
 
 
@@ -49,7 +53,7 @@ class RagProductionBenchmarkResult:
     schema: str
     run_id: str
     evidence_file: str
-    claim_eligible: bool
+    meets_thresholds: bool
     scale_chapters: int
     query_count: int
     recall_at_k: float
@@ -117,7 +121,7 @@ def run_rag_production_benchmark(
     dataset_file: str | Path,
     top_k: int = 10,
 ) -> RagProductionBenchmarkResult:
-    """Run claim-grade retrieval measurements using real models and final prose."""
+    """Run production-grade retrieval measurements using real models and final prose."""
 
     if not 1 <= top_k <= 100:
         raise ValueError("top_k must be between 1 and 100.")
@@ -131,16 +135,12 @@ def run_rag_production_benchmark(
     model_status = verify_models(config)
     readiness_errors = production_model_errors(model_status)
     final_sources = finalized_sources(root)
-    if len(final_sources) < RAG_CLAIM_THRESHOLDS["scale_chapters"]:
+    if len(final_sources) < RAG_QUALITY_THRESHOLDS["scale_chapters"]:
         readiness_errors.append(
             f"Production RAG evidence requires at least 500 final chapters; found {len(final_sources)}."
         )
     if readiness_errors:
         raise ValueError("Production RAG benchmark preflight failed: " + "; ".join(readiness_errors))
-    vector_status = healthcheck(config)
-    if not vector_status.ok:
-        raise ValueError(f"Production RAG benchmark preflight failed: Vector store health failed: {vector_status.message}")
-
     dataset_path = Path(dataset_file).expanduser().resolve()
     dataset = read_object(dataset_path)
     queries, category_counts = validate_dataset(
@@ -149,60 +149,104 @@ def run_rag_production_benchmark(
         source_hashes={item["source_path"]: item["sha256"] for item in final_sources},
     )
 
-    initial_started = perf_counter()
-    build_stats = build_chunks(config, with_embeddings=True)
-    initial_index_ms = elapsed_ms(initial_started)
-    if build_stats.chapters != len(final_sources) or build_stats.embeddings <= 0:
-        raise ValueError(
-            "Production RAG benchmark index build did not cover every final chapter: "
-            f"final={len(final_sources)}, indexed={build_stats.chapters}, "
-            f"embeddings={build_stats.embeddings}."
-        )
-    vector_status = healthcheck(config)
-    if not vector_status.ok or vector_status.record_count <= 0:
-        raise ValueError(
-            "Production RAG benchmark index build failed: "
-            f"{vector_status.message}; active={vector_status.record_count}."
-        )
+    incremental_source = final_sources[-1]
+    initial_sources = final_sources[:-1]
+    with tempfile.TemporaryDirectory(prefix="rag-production-", dir=run_dir) as temporary:
+        isolated_root = Path(temporary) / "project"
+        isolated_data = copy.deepcopy(config.data)
+        isolated_data["project"]["root_dir"] = str(isolated_root)
+        isolated = ConfigDocument(data=isolated_data, path=None, sources=config.sources)
+        for directory in ("10_bible", "20_outline", "30_state"):
+            source_dir = root / directory
+            if source_dir.is_dir():
+                shutil.copytree(source_dir, isolated_root / directory, dirs_exist_ok=True)
+        summary_dir = root / "40_manuscript" / "summaries"
+        if summary_dir.is_dir():
+            shutil.copytree(summary_dir, isolated_root / "40_manuscript" / "summaries", dirs_exist_ok=True)
+        isolated_final = isolated_root / FINAL_MANUSCRIPT_DIRECTORY
+        isolated_final.mkdir(parents=True, exist_ok=True)
+        for source in initial_sources:
+            original = root / source["source_path"]
+            shutil.copy2(original, isolated_final / original.name)
 
-    latencies: list[float] = []
-    recalled = 0
-    fact_errors = 0
-    category_results = {
-        category: {"queries": 0, "recalled": 0, "fact_errors": 0}
-        for category in REQUIRED_QUERY_CATEGORIES
-    }
-    for item in queries:
-        started = perf_counter()
-        result = query(
-            config,
-            str(item["query"]),
-            top_k=top_k,
-            semantic=True,
-            chapter_number=int(item["chapter_number"]),
-        )
-        latencies.append(elapsed_ms(started))
-        was_recalled = any(
-            hit_matches_reference(hit, reference)
-            for hit in result.hits
-            for reference in item["expected"]
-        )
-        top_hit_forbidden = bool(result.hits) and any(
-            hit_matches_reference(result.hits[0], reference)
-            for reference in item["forbidden"]
-        )
-        if was_recalled:
-            recalled += 1
-        if top_hit_forbidden:
-            fact_errors += 1
-        category_result = category_results[item["category"]]
-        category_result["queries"] += 1
-        category_result["recalled"] += int(was_recalled)
-        category_result["fact_errors"] += int(top_hit_forbidden)
+        initial_started = perf_counter()
+        build_stats = build_chunks(isolated, with_embeddings=True)
+        initial_index_ms = elapsed_ms(initial_started)
+        if build_stats.chapters != len(initial_sources) or build_stats.embeddings <= 0:
+            raise ValueError(
+                "Production RAG benchmark initial build did not cover the pre-increment corpus: "
+                f"initial={len(initial_sources)}, indexed={build_stats.chapters}, "
+                f"embeddings={build_stats.embeddings}."
+            )
 
-    incremental_started = perf_counter()
-    incremental_embedding_count = build_embeddings(config)
-    incremental_index_ms = elapsed_ms(incremental_started)
+        next_source = root / incremental_source["source_path"]
+        shutil.copy2(next_source, isolated_final / next_source.name)
+        incremental_started = perf_counter()
+        incremental_chunks = build_chunks(
+            isolated,
+            chapter_numbers=(int(incremental_source["chapter_number"]),),
+            sync_index=False,
+        )
+        sync_semantic_delta(
+            isolated,
+            chapter_number=int(incremental_source["chapter_number"]),
+            refresh_graph=False,
+        )
+        incremental_embeddings = apply_embedding_delta(
+            isolated,
+            chapter_numbers=(int(incremental_source["chapter_number"]),),
+        )
+        incremental_index_ms = elapsed_ms(incremental_started)
+        vector_status = healthcheck(isolated)
+        if (
+            incremental_chunks.chapters != 1
+            or incremental_embeddings.generated <= 0
+            or not vector_status.ok
+            or vector_status.record_count <= build_stats.embeddings
+        ):
+            raise ValueError(
+                "Production RAG incremental benchmark did not add one real finalized chapter "
+                "to the isolated index."
+            )
+
+        latencies: list[float] = []
+        recalled = 0
+        fact_errors = 0
+        category_results = {
+            category: {"queries": 0, "recalled": 0, "fact_errors": 0}
+            for category in REQUIRED_QUERY_CATEGORIES
+        }
+        for item in queries:
+            started = perf_counter()
+            result = query(
+                isolated,
+                str(item["query"]),
+                top_k=top_k,
+                semantic=True,
+                chapter_number=int(item["chapter_number"]),
+            )
+            latencies.append(elapsed_ms(started))
+            was_recalled = any(
+                hit_matches_reference(hit, reference)
+                for hit in result.hits
+                for reference in item["expected"]
+            )
+            top_hit_forbidden = bool(result.hits) and any(
+                hit_matches_reference(result.hits[0], reference)
+                for reference in item["forbidden"]
+            )
+            if was_recalled:
+                recalled += 1
+            if top_hit_forbidden:
+                fact_errors += 1
+            category_result = category_results[item["category"]]
+            category_result["queries"] += 1
+            category_result["recalled"] += int(was_recalled)
+            category_result["fact_errors"] += int(top_hit_forbidden)
+
+        indexed_chunks = build_stats.chunks + incremental_chunks.chunks
+        indexed_embeddings = vector_status.record_count
+        incremental_embedding_count = incremental_embeddings.generated
     recall_at_k = recalled / len(queries)
     fact_error_rate = fact_errors / len(queries)
     p95_query_ms = percentile(latencies, 0.95)
@@ -235,11 +279,13 @@ def run_rag_production_benchmark(
         "mean_query_ms": round(mean(latencies), 3),
         "initial_index_ms": round(initial_index_ms, 3),
         "incremental_index_ms": round(incremental_index_ms, 3),
-        "incremental_index_mode": "no-change synchronization after full production index",
+        "incremental_index_mode": "isolated_real_next_finalized_chapter",
+        "incremental_source": incremental_source,
         "incremental_embedding_count": incremental_embedding_count,
-        "indexed_chapters": build_stats.chapters,
-        "indexed_chunks": build_stats.chunks,
-        "indexed_embeddings": build_stats.embeddings,
+        "initial_indexed_chapters": build_stats.chapters,
+        "indexed_chapters": len(final_sources),
+        "indexed_chunks": indexed_chunks,
+        "indexed_embeddings": indexed_embeddings,
         "embedding_model": model_status.embedding_model,
         "reranker_model": model_status.reranker_model,
         "model_profile": model_status.profile,
@@ -247,11 +293,11 @@ def run_rag_production_benchmark(
         "vector_backend": backend.get("backend"),
         "backend_config_hash": sha256(canonical_json(backend).encode("utf-8")).hexdigest(),
         "python_version": platform.python_version(),
-        "thresholds": RAG_CLAIM_THRESHOLDS,
+        "thresholds": RAG_QUALITY_THRESHOLDS,
     }
     threshold_errors = rag_threshold_errors(payload)
     payload["meets_thresholds"] = not threshold_errors
-    payload["claim_eligible"] = not threshold_errors
+    payload["meets_thresholds"] = not threshold_errors
     payload["threshold_errors"] = threshold_errors
     evidence_file = run_dir / "rag_scale_evidence.json"
     write_json(evidence_file, payload)
@@ -259,7 +305,7 @@ def run_rag_production_benchmark(
         schema=RAG_BENCHMARK_SCHEMA,
         run_id=normalized_run_id,
         evidence_file=relative(root, evidence_file),
-        claim_eligible=not threshold_errors,
+        meets_thresholds=not threshold_errors,
         scale_chapters=len(final_sources),
         query_count=len(queries),
         recall_at_k=payload["recall_at_k"],
@@ -422,17 +468,8 @@ def hit_matches_reference(hit: Any, reference: dict[str, str]) -> bool:
 
 
 def finalized_sources(root: Path) -> list[dict[str, Any]]:
-    final_dir = root / FINAL_MANUSCRIPT_DIRECTORY
-    paths = sorted([*final_dir.glob("*.md"), *final_dir.glob("*.txt")])
     sources: list[dict[str, Any]] = []
-    seen_chapters: set[int] = set()
-    for path in paths:
-        chapter_number = parse_chapter_number(path.stem)
-        if chapter_number is None:
-            raise ValueError(f"Cannot determine chapter number from final manuscript file: {path}")
-        if chapter_number in seen_chapters:
-            raise ValueError(f"Duplicate final manuscript files for chapter {chapter_number}.")
-        seen_chapters.add(chapter_number)
+    for chapter_number, path in list_finalized_chapter_files(root):
         body = path.read_bytes()
         sources.append(
             {

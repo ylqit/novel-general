@@ -11,6 +11,8 @@ python -m longform_engine.cli beat project.yaml --chapter 1
 python -m longform_engine.cli continue-write project.yaml --chapter 1
 ```
 
+生产控制面使用 `production status` 输出 `production_status_v1`，使用 `production next` 推导唯一下一动作，使用 `agent-task brief` 只读渲染工单。三者不直接调用模型、不写 final，也不绕过 `chapter finalize`。
+
 ## Open Book
 
 `open-book` 强制解析五要素：
@@ -44,12 +46,15 @@ python -m longform_engine.cli continue-write project.yaml --chapter 1
 - chapter number
 - title
 - volume
-- duty
+- chapter duty (`chapter_duty`)
 - conflict
-- information
+- information release (`information_release`)
+- reader gain (`reader_gain`)
 - hook
 - forbidden
 - required context files
+
+`duty`、`information` 和 `reader_payoff` 不再是章节合同兼容字段；输入中出现这些遗留别名会被拒绝，避免职责或收益在不同 Agent 之间静默分裂。
 
 ## Beat Sheet
 

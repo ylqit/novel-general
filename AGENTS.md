@@ -23,20 +23,13 @@ python scripts/check_agent_data_pipeline_readiness.py
 
 工作区可能包含用户或上一会话尚未提交的修改。不要 reset、checkout、覆盖或删除未知改动；先理解 diff，再在其上继续。
 
-## 2. 当前交接状态
+## 2. 当前发布状态
 
-截至本次本地 RC 收口：
-
-- GitHub 公开稳定版与本机已安装 Codex Skill 仍是 `v0.4.2` / `0.4.2/current`。
-- 当前源码版本是未发布的 `0.4.3` Release Candidate。
-- 仓库没有 `v0.4.3` tag 或 GitHub Release；不得提供 `@v0.4.3` 公开安装命令。
-- v0.4.3 收编了 repair 生命周期、Semantic RAG 正确性、有证据审稿、唯一章节合同、上下文去重、通用任务对账和产物归档；这些能力属于同一个 RC。
-- 当前 SAO 运行 `novels/sao-before-red-name-v042-quality-10` 冻结在第 10 章。不得继续 semantic apply、chapter close、第 11 章生产或修改其正文/canonical 状态。
-- 协议与生产链 readiness 以 `scripts/check_agent_data_pipeline_readiness.py` 的当前输出为准。
-- `literary_evidence_ready` 必须保持 `false`，直到原创/同人真实章节和独立盲评完成。
-- 工程结构通过不等于文学质量领先；不得宣称已经全面超越 `novel-skill`。
-
-新会话的默认下一任务是审计本地 v0.4.3 RC 或执行用户明确指定的新工作，不是自行恢复 SAO 生产、安装 Skill、推送或发布。
+- 当前稳定版为 `v0.4.3`。
+- v0.4.3 包含 repair 生命周期、Semantic RAG 增量索引、transaction v3/显式恢复、有证据审稿、唯一章节合同、上下文去重、通用任务对账、产物归档和严格配置契约。
+- 协议与生产链 readiness 以 `scripts/check_agent_data_pipeline_readiness.py` 的输出为准。
+- `literary_evidence_ready` 保持 `false`，直到真实章节与独立盲评证据完整。
+- 不要把任一本地小说运行、全局 Skill 状态或历史阶段文档当作源码事实源。
 
 ## 3. 产品与架构定位
 
@@ -67,7 +60,7 @@ Derived views
 - 文件是事实源；SQLite、向量索引和查询缓存是可重建派生状态。
 - final 是唯一正文证据源。摘要、RAG 命中、图谱和 Agent 推断不能覆盖 final 中的事实。
 - 设计 Markdown 是创作事实权威；`canonical_delta_v1` 是经证据绑定的机器解释。
-- 不兼容旧项目协议，不新增 v0.3.x/v0.4.0 迁移、双读或双写路径。
+- 只接受当前项目协议，不新增已删除字段或路径的迁移、双读或双写路径。
 
 ## 4. 数据层与目录所有权
 
@@ -199,7 +192,7 @@ chapter direction and unique chapter contract
 
 ## 8. Prompt、角色与会话
 
-当前注册表包含 28 个专业角色、12 个渐进式 Playbook 和 44 个正交故事分面。第 28 个角色是 `repair_coordinator`。
+当前注册表包含 28 个专业角色、25 类任务、4 类输出协议、12 个渐进式 Playbook 和 44 个正交故事分面。第 28 个角色是 `repair_coordinator`。
 
 运行时 Prompt 按以下顺序编译：
 
@@ -264,7 +257,7 @@ task event/index 记录：
 
 子任务注册后原子消费父任务。新候选提交后，旧候选及绑定旧 hash 的审稿任务进入 `superseded`。无法由完整 lineage 唯一证明时进入 need-human，不得猜测。
 
-所有 canonical apply 必须位于事务中。任一步失败必须回滚文件和 SQLite 参与者；成功事务不能残留快照。失败 Agent 输出、无效 review、错误 delta、RAG 结果或 repair plan 不得污染 final、Bible、outline、graph、TCS、RAG 或 SQLite。
+所有 canonical apply 必须位于 transaction v3 中。`preparing` 不开放写边界，`prepared` 后才允许 mutation，`applied` 必须先于快照清理落盘。任一步失败必须回滚文件和 SQLite 参与者；成功事务不能残留快照。异常退出后先执行 `recovery status`，再按精确 SHA 和人工审批执行 discard/rollback/cleanup/reclaim；禁止手工删除锁或快照。失败 Agent 输出、无效 review、错误 delta、RAG 结果或 repair plan 不得污染 final、Bible、outline、graph、TCS、RAG 或 SQLite。
 
 ## 11. 章节语义与派生状态
 
@@ -292,7 +285,7 @@ task event/index 记录：
 
 优先从这些入口定位：
 
-- CLI 与公开命令：`src/longform_engine/cli.py`
+- CLI 顶层组合：`src/longform_engine/cli.py`；recovery 命令组：`cli_recovery.py`
 - Agent 协议与任务：`agent_protocols.py`、`agent_tasks.py`、`agent_results.py`
 - 角色和 Prompt：`roles.py`、`config/agent_roles/`
 - 生产状态机：`production.py`、`orchestration/pipeline.py`
@@ -300,7 +293,9 @@ task event/index 记录：
 - 门禁与审稿：`gates/pipeline.py`、`editorial/pipeline.py`
 - repair 编排：`repair_coordination.py`
 - 章节语义：`semantic/pipeline.py`
-- RAG 与向量：`rag/pipeline.py`、`vectorstore/pipeline.py`
+- RAG 与向量：`rag/pipeline.py`、`vectorstore/pipeline.py`、`vector_backends.py`
+- SQLite full/delta 索引：`db/sqlite_index.py`
+- 存储与恢复：`storage/project.py`、`storage/recovery.py`
 - 归档：`artifacts.py`
 
 修改要求：
@@ -312,36 +307,39 @@ task event/index 记录：
 - 不提交正文、API key、完整 Prompt 日志、模型、SQLite、缓存、`dist/` 或 `novels/`。
 - 测试保持单进程，新增测试文件必须少而聚焦。
 
-## 14. 当前事实源与历史文档
+## 14. 当前事实源
 
 优先阅读：
 
 1. `README.md`
-2. `docs/V0_4_3_PROTOCOL_HOTFIX_CHECKLIST.md`
-3. `docs/AGENT_FIRST_DOCUMENT_PROTOCOL_AND_DATA_PIPELINE_CHECKLIST.md`
-4. `docs/CHINESE_WEBNOVEL_QUALITY_OPTIMIZATION_ARCHITECTURE.md`
+2. `docs/ARCHITECTURE.md`
+3. `docs/STORAGE_MODEL.md`
+4. `docs/V0_4_3_RELEASE_CHECKLIST.md`
 5. `docs/GATE_MODEL.md`
 6. `docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`
 7. `docs/CONFIGURATION.md`
 8. `docs/RAG_MODEL.md`
-9. `docs/SKILL_INSTALLATION.md`
-10. `docs/RELEASE_RUNBOOK.md`
-11. `docs/AGENT_APP_WORKFLOW_PRODUCTIZATION.md`
-12. `docs/AGENT_APP_WORKFLOW_PRODUCTIZATION_CHECKLIST.md`
+9. `docs/QUALITY_BENCHMARK_RUNBOOK.md`
+10. `docs/SKILL_INSTALLATION.md`
+11. `docs/RELEASE_RUNBOOK.md`
 
-`AGENT_FIRST_DOCUMENT_PROTOCOL_PHASE*.md`、旧版本 release notes 和旧 checklist 只记录历史阶段，不得覆盖当前 Manifest v4、`evidence_review_v2`、28 角色或 v0.4.3 RC 边界。
+历史发布说明只记录版本变化，不得覆盖当前 Manifest v4、`evidence_review_v2`、28 角色、配置注册表或 `chNNN.md` 存储契约。
 
 ## 15. 验证与发布纪律
 
 代码收口至少运行：
 
 ```powershell
-python -m pytest
+python -m ruff check src tests
+python -m mypy src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/storage/recovery.py
+python -m pytest --cov=longform_engine --cov-report=term-missing
 python scripts/validate_skills.py
 python scripts/sync_skill_references.py --check
 python scripts/build_resource_manifest.py --check
+python scripts/check_markdown_links.py
 python scripts/check_agent_data_pipeline_readiness.py
 python scripts/release_surface_guards.py
+longform-engine release check --repository . --channel public --check-remote --json
 ```
 
 发布候选还需构建并审计 wheel/sdist、执行临时 pipx smoke 和远程版本检查。只有用户明确授权后才能创建 tag、推送或发布。tag 不得移动或覆盖；发现缺陷时使用新补丁版本。

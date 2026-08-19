@@ -16,6 +16,11 @@ from longform_engine.db import sync_database
 from longform_engine.memory import mark_memory_stale
 from longform_engine.quality import truncate_feedback_registry, truncate_quality_history
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import (
+    existing_manuscript_chapter_path,
+    list_canonical_chapter_files,
+    manuscript_chapter_path,
+)
 
 
 class RevisionError(ValueError):
@@ -228,18 +233,15 @@ def rollback(config: ConfigDocument, *, to_chapter: int) -> RevisionRollbackResu
         raise RevisionError("to_chapter must be zero or positive.")
     root = resolve_project_root(config)
     timestamp = timestamp_slug()
-    snapshot_dir = None
-    if config.data.get("revision", {}).get("snapshot_before_rollback", True):
-        snapshot_dir = create_snapshot(root, f"rollback_to_ch{to_chapter:03d}_{timestamp}")
+    snapshot_dir = create_snapshot(root, f"rollback_to_ch{to_chapter:03d}_{timestamp}")
 
     detached_dir = root / "40_manuscript" / "detached" / f"rollback_to_ch{to_chapter:03d}_{timestamp}"
     detached_files: list[str] = []
     affected: set[int] = set()
     for source_group in ("final", "draft", "summaries"):
         source_dir = root / "40_manuscript" / source_group
-        for path in sorted([*source_dir.glob("*.md"), *source_dir.glob("*.txt")]):
-            number = parse_chapter_number(path)
-            if number is None or number <= to_chapter:
+        for number, path in list_canonical_chapter_files(source_dir):
+            if number <= to_chapter:
                 continue
             target = unique_path(detached_dir / source_group / path.name)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -265,7 +267,7 @@ def rollback(config: ConfigDocument, *, to_chapter: int) -> RevisionRollbackResu
     state_file = update_rollback_state(root, to_chapter=to_chapter, stale_chapters=sorted(affected), timestamp=timestamp, detached_dir=detached_dir)
 
     for number in sorted(affected):
-        detached_path = first_detached_file_for_chapter(root, detached_dir, number)
+        detached_path = first_detached_file_for_chapter(detached_dir, number)
         upsert_chapter_meta(
             root,
             {
@@ -374,21 +376,17 @@ def write_rollback_impact_report(config: ConfigDocument) -> RollbackImpactResult
 
 
 def find_chapter_source(root: Path, chapter_number: int) -> Path | None:
-    for directory in (root / "40_manuscript" / "final", root / "40_manuscript" / "draft"):
-        for name in (f"ch{chapter_number:03d}.md", f"ch{chapter_number:03d}.txt", f"chapter_{chapter_number:03d}.md", f"{chapter_number}.md"):
-            path = directory / name
-            if path.exists():
-                return path
-        for path in sorted([*directory.glob("*.md"), *directory.glob("*.txt")]):
-            if parse_chapter_number(path) == chapter_number:
-                return path
+    for lane in ("final", "draft"):
+        if path := existing_manuscript_chapter_path(root, chapter_number, lane=lane):
+            return path
     return None
 
 
-def first_detached_file_for_chapter(root: Path, detached_dir: Path, chapter_number: int) -> Path | None:
-    for path in sorted([*detached_dir.glob("**/*.md"), *detached_dir.glob("**/*.txt")]):
-        if parse_chapter_number(path) == chapter_number:
-            return path
+def first_detached_file_for_chapter(detached_dir: Path, chapter_number: int) -> Path | None:
+    for source_group in ("final", "draft", "summaries"):
+        for number, path in list_canonical_chapter_files(detached_dir / source_group):
+            if number == chapter_number:
+                return path
     return None
 
 
@@ -572,10 +570,15 @@ def existing_paths(root: Path, relatives: tuple[str, ...]) -> list[str]:
 
 
 def summary_candidates(root: Path, chapter_number: int) -> list[Path]:
-    candidates = [root / "40_manuscript" / "summaries" / f"ch{chapter_number:03d}.md"]
+    candidates = [manuscript_chapter_path(root, chapter_number, lane="summaries")]
     detached = root / "40_manuscript" / "detached"
     if detached.exists():
-        candidates.extend(path for path in sorted(detached.glob("**/*.md")) if parse_chapter_number(path) == chapter_number)
+        for rollback_dir in sorted(path for path in detached.iterdir() if path.is_dir()):
+            candidates.extend(
+                path
+                for number, path in list_canonical_chapter_files(rollback_dir / "summaries")
+                if number == chapter_number
+            )
     return candidates
 
 
@@ -674,10 +677,6 @@ def extract_title(text: str, path: Path) -> str:
 def parse_chapter_number(path: Path) -> int | None:
     numeric = re.search(r"(\d{1,5})", path.stem)
     return int(numeric.group(1)) if numeric else None
-    match = re.search(r"(?:ch|chapter[_-]?|第)?0*(\d{1,5})", path.stem, re.IGNORECASE)
-    if not match:
-        return None
-    return int(match.group(1))
 
 
 def as_int(value: Any) -> int:

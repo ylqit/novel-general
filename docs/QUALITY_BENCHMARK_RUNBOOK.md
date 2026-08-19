@@ -1,101 +1,80 @@
-# Quality Benchmark Runbook
+# Quality Evidence Runbook
 
-本文档用于执行 Codex、Claude Code 与 `novel-skill` 的真实 5/10 章对比。CLI 只记录、校验和汇总指标，不调用 LLM，也不保存章节正文。
+本流程只验证 `longform-novel-engine` 自身。不同运行可以使用不同引擎版本、配置、模型或宿主环境，但必须共享同一场景、章节范围和评分协议。CLI 只保存指标、hash 与短评，不保存章节正文。
 
-## 公平性约束
+## 运行记录
 
-- 建立两条对照线：同宿主同模型的 longform 对 novel-skill，以及各产品默认工作流的对照。
-- 每组使用相同开书设定、章节目标、章节数、模型版本、人工确认和返修规则。
-- `--scenario-id` 必须一致；正式 run 必须同时使用 `--scenario-file` 固化同一文件的 SHA-256。
-- 正式盲评不能只在 `benchmark record` 中自报三个评审 ID，必须走 public pack、独立 submission 与 aggregate。
-- 六项指标都使用 1-10 分；只有 `ai-taste` 反向，1 表示 AI 味最低。
-- 如实记录 gate、repair、`need-human`、P0 矛盾、canonical 污染、上下文文件数与字符数。
-- 不向 benchmark JSON 写正文、长摘录、prompt、API key 或个人信息。
-
-## 5 章 Smoke
-
-为两个宿主分别初始化运行：
+使用 `host_product` 标明承载 Agent 会话的宿主：
 
 ```powershell
-longform-engine benchmark init project.yaml --run-id codex-smoke-5 --agent-product codex --chapters 5 --scenario-id setting-v1 --agent-model MODEL --host-version VERSION
-longform-engine benchmark init project.yaml --run-id claude-smoke-5 --agent-product claude-code --chapters 5 --scenario-id setting-v1 --agent-model MODEL --host-version VERSION
+longform-engine benchmark init project.yaml --run-id current-codex-10 --host-product codex --chapters 10 --scenario-id setting-v1 --scenario-file scenario.json --agent-model MODEL --host-version VERSION --workflow-version 0.4.3
+longform-engine benchmark init project.yaml --run-id variant-codex-10 --host-product codex --chapters 10 --scenario-id setting-v1 --scenario-file scenario.json --agent-model MODEL --host-version VERSION --workflow-version variant-a
 ```
 
-每章完成 submit、gate 和必要 repair 后记录一次：
+每章完成 submit、gate 和必要 repair 后记录工程数据。正式盲评前使用 `technical-record`，不得由生产者预填文学分：
 
 ```powershell
-longform-engine benchmark record project.yaml --run-id codex-smoke-5 --chapter 1 --continuity 8 --character-consistency 8 --foreshadowing-control 8 --pacing 7 --reader-payoff 8 --ai-taste 3 --gate-passed --repair-count 0 --need-human-count 0 --context-file-count 6 --context-character-count 18000 --p0-contradiction-count 0 --canonical-pollution-count 0 --judge editor-a --judge editor-b --judge editor-c --notes "盲评摘要"
+longform-engine benchmark technical-record project.yaml --run-id current-codex-10 --chapter 1 --gate-passed --repair-count 0 --need-human-count 0 --context-file-count 6 --context-character-count 18000
+longform-engine benchmark validate project.yaml --run-id current-codex-10 --json
+longform-engine benchmark report project.yaml --run-id current-codex-10
 ```
 
-发生问题时可重复短标签参数，不得粘贴正文：
+## 匿名盲评
+
+两组运行必须具有相同 `scenario_id`、`scenario_sha256` 和章节数。分别附加只读来源目录，再生成匿名包：
 
 ```powershell
-longform-engine benchmark record project.yaml --run-id codex-smoke-5 --chapter 2 --continuity 6 --character-consistency 7 --foreshadowing-control 5 --pacing 6 --reader-payoff 6 --ai-taste 6 --gate-failed --repair-count 1 --need-human-count 1 --context-file-count 7 --context-character-count 19800 --p0-contradiction-count 0 --canonical-pollution-count 0 --judge editor-a --judge editor-b --judge editor-c --foreshadowing-leak "提前说明幕后身份" --ai-taste-issue "段尾总结重复"
+longform-engine benchmark source-attach project.yaml --run-id current-codex-10 --source-dir SOURCE_A
+longform-engine benchmark source-attach project.yaml --run-id variant-codex-10 --source-dir SOURCE_B
+longform-engine benchmark blind-pack project.yaml --comparison-id internal-regression-10 --run-id current-codex-10 --run-id variant-codex-10
+longform-engine benchmark blind-template project.yaml --comparison-id internal-regression-10 --judge-id reviewer-a
+longform-engine benchmark blind-submit project.yaml --comparison-id internal-regression-10 --judge-id reviewer-a --file REVIEW_A
+longform-engine benchmark blind-aggregate project.yaml --comparison-id internal-regression-10
 ```
 
-检查完整性并生成单组报告：
+至少需要三名相互独立的评审实例与会话。公开包不得泄露 run id、宿主、模型或工作流身份；来源文件改变后，既有聚合结果失效。
+
+## RAG 数据逻辑
+
+固定数据集用于验证 50、200、500 和 667 章的索引增长、增量同步、stale 与 rollback：
 
 ```powershell
-longform-engine benchmark validate project.yaml --run-id codex-smoke-5 --json
-longform-engine benchmark report project.yaml --run-id codex-smoke-5
+longform-engine benchmark rag-scale-run project.yaml --scale-chapters 667 --backend local_hnsw
 ```
 
-5 章 smoke 只证明生产链可跑通，不能用于“质量优于”声明。
+工程门槛为 recall@k 不低于 `0.85`、事实错误率不高于 `0.02`、P95 查询不高于 `1000ms`。`synthetic_engineering` 结果只证明索引行为。
 
-## 10 章正式盲评
-
-同宿主同模型至少需要四组运行：Codex + longform、Codex + novel-skill、Claude + longform、Claude + novel-skill。完整命令、固定场景和证据步骤见 [`PHASE6_QUALITY_PROOF_RUNBOOK.md`](PHASE6_QUALITY_PROOF_RUNBOOK.md)。
-
-正式运行先使用 `benchmark technical-record` 记录工程指标，再执行 `source-attach -> blind-pack -> blind-template -> blind-submit -> blind-aggregate`。生产者不得预填正式文学分。完成后分别比较：
-
-```powershell
-longform-engine benchmark compare project.yaml --comparison-id codex-longform-vs-novel-skill-10 --run-id codex-longform-10 --run-id codex-novel-skill-10
-longform-engine benchmark compare project.yaml --comparison-id claude-longform-vs-novel-skill-10 --run-id claude-longform-10 --run-id claude-novel-skill-10
-```
-
-需要观察中间结果时可以加 `--allow-incomplete`，但报告会标为 provisional，不能用于 README 质量声明。
-
-## 500 章 RAG 证据
-
-Phase 5 先在 500 章固定种子数据集上验证索引工程行为：
-
-```powershell
-longform-engine benchmark rag-scale-run project.yaml --scale-chapters 500 --backend local_hnsw
-```
-
-最低工程门槛是 500 章、recall@k 不低于 `0.85`、事实错误率不高于 `0.02`、P95 查询不高于 `1000ms`。50 章和 200 章运行用于发现增长曲线问题。该命令输出 `evidence_grade=synthetic_engineering` 和 `claim_eligible=false`，不能替代真实中文章节、正式 embedding/reranker、冲突事实、别名、时间与伏笔查询组成的 `production_model` 证据。旧 `benchmark rag-record` 只兼容记录手工指标，comparison 会拒绝把它作为公开声明证据。
-
-Phase 6 的 production-model 证据使用：
+真实章节证据使用正式模型 runner：
 
 ```powershell
 longform-engine benchmark rag-production-template project.yaml
-longform-engine benchmark rag-production-run project.yaml --run-id codex-longform-10 --dataset rag-production-dataset.json --top-k 10
+longform-engine benchmark rag-production-run project.yaml --run-id current-codex-10 --dataset rag-production-dataset.json --top-k 10
 ```
 
-runner 会要求至少 500 个不重复 final、50 条带来源文件 hash 与短 span 的真实查询、七类检索风险、可加载的正式 embedding/reranker 和关闭 fallback。
+runner 要求至少 500 个规范 final、50 条带来源 hash 与短 span 的查询、全部七类检索风险、可加载的 embedding/reranker，并且 fallback 关闭。
 
-## 质量声明门槛
+## 证据完整性
 
-comparison 只有同时满足以下条件才会输出 `claim_eligible: true`：
+```powershell
+longform-engine benchmark compare project.yaml --comparison-id internal-regression-10 --run-id current-codex-10 --run-id variant-codex-10
+```
 
-- longform 候选与 `novel-skill` baseline 使用相同宿主、模型、场景和 10 章记录。
-- 综合盲评分领先至少 `0.5/10`，且不少于 7 章胜出。
-- 任一核心文学维度落后不超过 `0.3`。
-- P0 连贯性、人物或事实矛盾为零，canonical 污染为零。
-- repair 和 `need-human` 次数不高于 baseline。
-- 候选与 baseline 都有至少三名独立评审。
-- 候选具有引擎 runner 生成、达到门槛且标记为 `production_model` 的 500 章 RAG 证据。
+报告中的 `quality_evidence_complete` 仅表示下列证据齐全：
 
-## 产物与边界
+- 每组至少 10 章，场景 hash 和章节范围一致。
+- 每章工程验收通过，P0 矛盾与 canonical 污染均为零。
+- 正式分数来自同一匿名盲评包和至少三名独立评审。
+- 每组都有达到门槛的 `production_model` RAG 证据。
+- 来源 hash、宿主、模型和工作流版本仍与运行记录一致。
 
-- 运行记录：`70_runtime/benchmarks/<run_id>/run.json`。
-- 章节指标：`70_runtime/benchmarks/<run_id>/chapter_records.json`。
-- 来源证明：`70_runtime/benchmarks/<run_id>/source_manifest.json`。
-- 盲评公开包与私有映射：`70_runtime/benchmarks/blind_reviews/<comparison_id>/`。
-- 工程 RAG 记录：`70_runtime/benchmarks/rag-scale-phase5-v1/<backend>/chNNN/result.json`。
-- 正式 RAG 声明证据：`70_runtime/benchmarks/<run_id>/rag_scale_evidence.json`，必须来自 Phase 6 production-model runner。
-- 单组报告：`70_runtime/benchmarks/<run_id>/report.json` 与 `report.md`。
-- 对比报告：`70_runtime/benchmarks/comparisons/<comparison_id>.json` 与 `.md`。
-- benchmark 产物默认不提交，不进入 final、RAG、graph、TCS 或 SQLite。
+文学证据未完成时保持 `literary_evidence_ready=false`。工程测试、单次 smoke 或合成 RAG 指标不能代替真实章节盲评。
 
-`best_by_metric` 和综合分只是固定规则汇总，不是自动文学裁决。正式结论仍需保存匿名盲评表、模型与宿主版本、上下文规模、失败记录和人工介入信息，使实验可以复核。
+## 产物
+
+- 运行与章节指标：`70_runtime/benchmarks/<run_id>/`。
+- 匿名包和私有映射：`70_runtime/benchmarks/blind_reviews/<comparison_id>/`。
+- 内部回归报告：`70_runtime/benchmarks/comparisons/<comparison_id>.json` 与 `.md`。
+- 工程 RAG：`70_runtime/benchmarks/rag-scale-v1/`。
+- 正式模型 RAG：`70_runtime/benchmarks/<run_id>/rag_scale_evidence.json`。
+
+这些产物默认不提交，也不得写入 final、Bible、outline、graph、TCS、RAG 正式索引或 SQLite。

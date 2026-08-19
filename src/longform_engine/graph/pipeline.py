@@ -11,7 +11,12 @@ import re
 
 from longform_engine.config import ConfigDocument
 from longform_engine.db import query_table, sync_database
-from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
+from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import (
+    existing_manuscript_chapter_path,
+    list_canonical_chapter_files,
+    list_finalized_chapter_files,
+)
 
 
 CANONICAL_ENTITY_TYPES = (
@@ -940,15 +945,9 @@ def remove_stale_deterministic_statuses(
         for entry in history:
             if not isinstance(entry, dict):
                 continue
-            legacy_deterministic = (
-                not entry.get("source_path")
-                and isinstance(entry.get("confidence"), str)
-                and "evidence" in entry
-                and "evidence_span" not in entry
-            )
             same_deterministic_source = (
                 as_optional_int(entry.get("chapter_number")) == chapter_number
-                and (str(entry.get("source_path") or "") == source_path or legacy_deterministic)
+                and str(entry.get("source_path") or "") == source_path
             )
             if same_deterministic_source:
                 removed += 1
@@ -994,52 +993,16 @@ def detect_foreshadow_markers(text: str) -> list[str]:
 
 
 def find_chapter_file(root: Path, chapter_number: int) -> Path | None:
-    final_dir = root / "40_manuscript" / "final"
-    names = [
-        f"ch{chapter_number:03d}.md",
-        f"ch{chapter_number:03d}.txt",
-        f"chapter_{chapter_number:03d}.md",
-        f"chapter_{chapter_number:03d}.txt",
-        f"{chapter_number}.md",
-        f"{chapter_number}.txt",
-    ]
-    for name in names:
-        path = final_dir / name
-        if path.exists():
-            return path
-    for path in sorted([*final_dir.glob("*.md"), *final_dir.glob("*.txt")]):
-        if parse_chapter_number(path) == chapter_number:
-            return path
-    return None
+    return existing_manuscript_chapter_path(root, chapter_number, lane="final")
 
 
 def find_draft_chapter_file(root: Path, chapter_number: int) -> Path | None:
-    draft_dir = root / "40_manuscript" / "draft"
-    names = [
-        f"ch{chapter_number:03d}.md",
-        f"ch{chapter_number:03d}.txt",
-        f"chapter_{chapter_number:03d}.md",
-        f"chapter_{chapter_number:03d}.txt",
-        f"{chapter_number}.md",
-        f"{chapter_number}.txt",
-    ]
-    for name in names:
-        path = draft_dir / name
-        if path.exists():
-            return path
-    for path in sorted([*draft_dir.glob("*.md"), *draft_dir.glob("*.txt")]):
-        if parse_chapter_number(path) == chapter_number:
-            return path
-    return None
+    return existing_manuscript_chapter_path(root, chapter_number, lane="draft")
 
 
 def read_summary(root: Path, chapter_number: int) -> str | None:
-    summary_dir = root / "40_manuscript" / "summaries"
-    for name in (f"ch{chapter_number:03d}.md", f"chapter_{chapter_number:03d}.md", f"{chapter_number}.md"):
-        path = summary_dir / name
-        if path.exists():
-            return safe_read_text(path).strip()
-    return None
+    path = existing_manuscript_chapter_path(root, chapter_number, lane="summaries")
+    return safe_read_text(path).strip() if path is not None else None
 
 
 def check_duplicate_names(entities: list[Any], warnings: list[str]) -> None:
@@ -1207,23 +1170,11 @@ def add_canon_entity(entities: list[dict[str, Any]], seen: set[str], entity: dic
 
 
 def list_draft_files(root: Path) -> list[Path]:
-    draft_dir = root / "40_manuscript" / "draft"
-    if not draft_dir.exists():
-        return []
-    paths = [*draft_dir.glob("*.md"), *draft_dir.glob("*.txt")]
-    return sorted(paths)
+    return [path for _number, path in list_canonical_chapter_files(root / "40_manuscript" / "draft")]
 
 
 def finalized_chapter_numbers(root: Path) -> set[int]:
-    final_dir = root / "40_manuscript" / "final"
-    if not final_dir.exists():
-        return set()
-    numbers: set[int] = set()
-    for path in [*final_dir.glob("*.md"), *final_dir.glob("*.txt")]:
-        chapter_number = parse_chapter_number(path)
-        if chapter_number is not None:
-            numbers.add(chapter_number)
-    return numbers
+    return {chapter_number for chapter_number, _path in list_finalized_chapter_files(root)}
 
 
 def read_gate_result(root: Path, chapter_number: int) -> dict[str, Any]:
@@ -1387,10 +1338,6 @@ def trim_text(text: str, max_chars: int) -> str:
 def parse_chapter_number(path: Path) -> int | None:
     numeric = re.search(r"(\d{1,5})", path.stem)
     return int(numeric.group(1)) if numeric else None
-    match = re.search(r"(?:ch|chapter[_-]?|第)?0*(\d{1,5})", path.stem, re.IGNORECASE)
-    if not match:
-        return None
-    return int(match.group(1))
 
 
 def as_optional_int(value: Any) -> int | None:

@@ -38,10 +38,10 @@ class LengthForecast:
 def validate_length_contract(length: Any) -> dict[str, Any]:
     if not isinstance(length, dict):
         raise LengthContractError("length must be a mapping")
-    legacy = {"total_chapters", "target_total_words", "volume_count", "chapter_word_count"} & set(length)
-    if legacy:
+    removed_fields = {"total_chapters", "target_total_words", "volume_count", "chapter_word_count"} & set(length)
+    if removed_fields:
         raise LengthContractError(
-            "v0.4.0 does not accept fixed-count length fields: " + ", ".join(sorted(legacy))
+            "Fixed-count length fields are not supported: " + ", ".join(sorted(removed_fields))
         )
     if str(length.get("metric") or "") != TEXT_METRIC_ID:
         raise LengthContractError(f"length.metric must be {TEXT_METRIC_ID}")

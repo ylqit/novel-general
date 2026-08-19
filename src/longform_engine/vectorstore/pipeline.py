@@ -1,9 +1,4 @@
-"""Pluggable vector store layer.
-
-The default backend is local SQLite so projects remain offline-first. Remote
-backend names are reserved as experimental contracts and report unavailable
-until real query/upsert drivers are implemented.
-"""
+"""Local SQLite and HNSW vector-store implementations."""
 
 from __future__ import annotations
 
@@ -19,11 +14,10 @@ import uuid
 from longform_engine.config import ConfigDocument
 from longform_engine.models import cosine_similarity
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.vector_backends import IMPLEMENTED_VECTOR_BACKENDS
 
 
-SUPPORTED_BACKENDS = ("local_sqlite", "local_hnsw", "milvus", "pgvector", "elasticsearch")
-IMPLEMENTED_BACKENDS = ("local_sqlite", "local_hnsw")
-EXPERIMENTAL_BACKENDS = tuple(item for item in SUPPORTED_BACKENDS if item not in IMPLEMENTED_BACKENDS)
+SUPPORTED_BACKENDS = IMPLEMENTED_VECTOR_BACKENDS
 
 
 @dataclass(frozen=True)
@@ -106,7 +100,7 @@ def healthcheck(config: ConfigDocument) -> VectorHealth:
     backend = cfg["backend"]
     if backend not in SUPPORTED_BACKENDS:
         return VectorHealth(backend=backend, ok=False, url=cfg["url"], collection=cfg["collection"], message="unsupported backend")
-    if backend in IMPLEMENTED_BACKENDS:
+    if backend in SUPPORTED_BACKENDS:
         path = local_store_path(config)
         index_path = local_index_path(config) if backend == "local_hnsw" else None
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -185,7 +179,7 @@ def healthcheck(config: ConfigDocument) -> VectorHealth:
         ok=False,
         url=cfg["url"],
         collection=cfg["collection"],
-        message="experimental contract only; query/upsert driver is not implemented",
+        message="unsupported backend",
     )
 
 
@@ -208,12 +202,35 @@ def active_source_record_count(config: ConfigDocument, source_path: str) -> int:
     return int(row["count"] or 0)
 
 
+def active_source_hash_count(config: ConfigDocument, source_path: str, source_sha256: str) -> int:
+    """Count active vectors whose metadata is bound to an exact canonical source hash."""
+
+    path = local_store_path(config)
+    if not path.is_file():
+        return 0
+    with connect(path) as conn:
+        create_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT metadata_json
+            FROM vectors
+            WHERE source_path = ? AND stale = 0 AND status != 'stale'
+            """,
+            (str(source_path),),
+        ).fetchall()
+    return sum(
+        1
+        for row in rows
+        if loads_json(row["metadata_json"], default={}).get("source_sha256") == source_sha256
+    )
+
+
 def upsert(config: ConfigDocument, records: Iterable[VectorRecord]) -> VectorWriteResult:
     cfg = vector_config(config)
     backend = cfg["backend"]
     materialized = list(records)
-    if backend not in IMPLEMENTED_BACKENDS:
-        raise NotImplementedError(f"{backend} is experimental; query/upsert driver is not implemented.")
+    if backend not in SUPPORTED_BACKENDS:
+        raise ValueError(f"Unsupported vector backend: {backend}")
     validate_records(materialized)
     path = local_store_path(config)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -242,8 +259,8 @@ def sync_records(config: ConfigDocument, records: Iterable[VectorRecord]) -> Vec
     """Synchronize canonical vectors by content hash without rebuilding unchanged rows."""
 
     cfg = vector_config(config)
-    if cfg["backend"] not in IMPLEMENTED_BACKENDS:
-        raise NotImplementedError(f"{cfg['backend']} is experimental; query/upsert driver is not implemented.")
+    if cfg["backend"] not in SUPPORTED_BACKENDS:
+        raise ValueError(f"Unsupported vector backend: {cfg['backend']}")
     materialized = list(records)
     validate_records(materialized)
     by_id = {record.id: record for record in materialized}
@@ -282,6 +299,104 @@ def sync_records(config: ConfigDocument, records: Iterable[VectorRecord]) -> Vec
         backend=cfg["backend"],
         records=0,
         store_path=str(path),
+        index_path=str(local_index_path(config)) if cfg["backend"] == "local_hnsw" else "",
+    )
+    return VectorSyncResult(
+        backend=cfg["backend"],
+        received=len(materialized),
+        upserted=result.records,
+        unchanged=unchanged,
+        stale=stale_count,
+        store_path=result.store_path,
+        index_path=result.index_path,
+    )
+
+
+def source_records(config: ConfigDocument, source_paths: Iterable[str]) -> dict[str, VectorRecord]:
+    """Load active records for a bounded set of canonical source paths."""
+
+    sources = sorted({str(item) for item in source_paths if str(item)})
+    if not sources:
+        return {}
+    cfg = vector_config(config)
+    if cfg["backend"] not in SUPPORTED_BACKENDS:
+        raise ValueError(f"Unsupported vector backend: {cfg['backend']}")
+    path = local_store_path(config)
+    if not path.is_file():
+        return {}
+    placeholders = ",".join("?" for _ in sources)
+    with connect(path) as conn:
+        create_schema(conn)
+        rows = conn.execute(
+            f"""
+            SELECT id, owner_type, owner_id, vector_json, source_path, chapter_number,
+                   scene_number, status, stale, metadata_json
+            FROM vectors
+            WHERE source_path IN ({placeholders}) AND stale = 0 AND status != 'stale'
+            """,
+            sources,
+        ).fetchall()
+    return {
+        str(row["id"]): VectorRecord(
+            id=str(row["id"]),
+            owner_type=str(row["owner_type"]),
+            owner_id=str(row["owner_id"]),
+            vector=tuple(parse_vector(row["vector_json"])),
+            source_path=str(row["source_path"]),
+            chapter_number=as_optional_int(row["chapter_number"]),
+            scene_number=as_optional_int(row["scene_number"]),
+            status=str(row["status"]),
+            stale=bool(row["stale"]),
+            metadata=loads_json(row["metadata_json"], default={}),
+        )
+        for row in rows
+    }
+
+
+def sync_source_records(
+    config: ConfigDocument,
+    records: Iterable[VectorRecord],
+    *,
+    source_paths: Iterable[str],
+) -> VectorSyncResult:
+    """Replace only the vector rows owned by explicitly named canonical sources."""
+
+    cfg = vector_config(config)
+    if cfg["backend"] not in SUPPORTED_BACKENDS:
+        raise ValueError(f"Unsupported vector backend: {cfg['backend']}")
+    sources = sorted({str(item) for item in source_paths if str(item)})
+    if not sources:
+        raise ValueError("Incremental vector sync requires at least one source path.")
+    materialized = list(records)
+    validate_records(materialized)
+    if any(record.source_path not in sources for record in materialized):
+        raise ValueError("Incremental vector records must belong to the declared source paths.")
+    by_id = {record.id: record for record in materialized}
+    if len(by_id) != len(materialized):
+        raise ValueError("Incremental vector input contains duplicate record ids.")
+
+    existing = source_records(config, sources)
+    stale_ids = sorted(set(existing) - set(by_id))
+    changed: list[VectorRecord] = []
+    unchanged = 0
+    for record in materialized:
+        old = existing.get(record.id)
+        old_metadata = (old.metadata or {}) if old is not None else {}
+        new_metadata = record.metadata or {}
+        if (
+            old is not None
+            and old_metadata.get("content_hash") == new_metadata.get("content_hash")
+            and old_metadata.get("model") == new_metadata.get("model")
+            and old_metadata.get("source_sha256") == new_metadata.get("source_sha256")
+        ):
+            unchanged += 1
+        else:
+            changed.append(record)
+    stale_count = mark_stale_ids(config, stale_ids)
+    result = upsert(config, changed) if changed else VectorWriteResult(
+        backend=cfg["backend"],
+        records=0,
+        store_path=str(local_store_path(config)),
         index_path=str(local_index_path(config)) if cfg["backend"] == "local_hnsw" else "",
     )
     return VectorSyncResult(
@@ -341,8 +456,8 @@ def query(config: ConfigDocument, request: VectorQuery) -> list[VectorHit]:
 
 def delete_by_filter(config: ConfigDocument, *, from_chapter: int | None = None, owner_type: str | None = None) -> int:
     cfg = vector_config(config)
-    if cfg["backend"] not in IMPLEMENTED_BACKENDS:
-        return 0
+    if cfg["backend"] not in SUPPORTED_BACKENDS:
+        raise ValueError(f"Unsupported vector backend: {cfg['backend']}")
     path = local_store_path(config)
     if not path.exists():
         return 0
@@ -374,8 +489,8 @@ def rebuild_from_files(config: ConfigDocument) -> VectorRebuildResult:
     records = [record_from_embedding(item) for item in iter_jsonl(source)]
     records = [item for item in records if item is not None]
     cfg = vector_config(config)
-    if cfg["backend"] not in IMPLEMENTED_BACKENDS:
-        raise NotImplementedError(f"{cfg['backend']} is experimental; query/upsert driver is not implemented.")
+    if cfg["backend"] not in SUPPORTED_BACKENDS:
+        raise ValueError(f"Unsupported vector backend: {cfg['backend']}")
     result = replace_records(config, records)
     return VectorRebuildResult(
         backend=result.backend,
@@ -391,8 +506,8 @@ def replace_records(config: ConfigDocument, records: Iterable[VectorRecord]) -> 
     materialized = list(records)
     validate_records(materialized)
     cfg = vector_config(config)
-    if cfg["backend"] not in IMPLEMENTED_BACKENDS:
-        raise NotImplementedError(f"{cfg['backend']} is experimental; query/upsert driver is not implemented.")
+    if cfg["backend"] not in SUPPORTED_BACKENDS:
+        raise ValueError(f"Unsupported vector backend: {cfg['backend']}")
     reset_local_store(config)
     return upsert(config, materialized)
 
@@ -425,8 +540,7 @@ def vector_config(config: ConfigDocument) -> dict[str, Any]:
         "backend": str(raw.get("backend") or "local_sqlite"),
         "url": str(raw.get("url") or ""),
         "index_url": str(raw.get("index_url") or ""),
-        "collection": str(raw.get("collection") or "longform_vectors"),
-        "api_key_env": str(raw.get("api_key_env") or "LONGFORM_VECTOR_API_KEY"),
+        "collection": "longform_vectors",
         "metric": str(raw.get("metric") or "cosine"),
         "dim": int(raw.get("dim") or 1024),
         "hnsw_threshold": int(raw.get("hnsw_threshold") or 10_000),
@@ -440,19 +554,27 @@ def vector_config(config: ConfigDocument) -> dict[str, Any]:
 def local_store_path(config: ConfigDocument) -> Path:
     root = resolve_project_root(config)
     configured = vector_config(config)["url"]
-    if configured:
-        path = Path(configured)
-        return path if path.is_absolute() else root / path
-    return root / "70_runtime" / "db" / "vector_store.sqlite"
+    path = Path(configured) if configured else Path("70_runtime/db/vector_store.sqlite")
+    return resolve_local_vector_path(root, path)
 
 
 def local_index_path(config: ConfigDocument) -> Path:
     root = resolve_project_root(config)
     configured = vector_config(config)["index_url"]
     if configured:
-        path = Path(configured)
-        return path if path.is_absolute() else root / path
+        return resolve_local_vector_path(root, Path(configured))
     return local_store_path(config).with_suffix(".hnsw")
+
+
+def resolve_local_vector_path(root: Path, path: Path) -> Path:
+    """Confine mutable local vector files to the owning novel project."""
+
+    resolved = path.expanduser().resolve() if path.is_absolute() else (root / path).resolve()
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"Local vector path escaped the project root: {path}") from exc
+    return resolved
 
 
 @contextmanager
@@ -652,8 +774,8 @@ def mark_stale_ids(config: ConfigDocument, record_ids: Iterable[str]) -> int:
     if not ids:
         return 0
     cfg = vector_config(config)
-    if cfg["backend"] not in IMPLEMENTED_BACKENDS:
-        return 0
+    if cfg["backend"] not in SUPPORTED_BACKENDS:
+        raise ValueError(f"Unsupported vector backend: {cfg['backend']}")
     path = local_store_path(config)
     if not path.exists():
         return 0

@@ -42,7 +42,6 @@ from longform_engine.editorial import (
 from longform_engine.editorial.pipeline import context_digest_hash, role_definition
 from longform_engine.gates import (
     gate_check,
-    semantic_pacing_review_status,
     semantic_pacing_task_is_current,
     semantic_pacing_validate,
     semantic_review_validate,
@@ -71,7 +70,13 @@ from longform_engine.repair_coordination import (
 from longform_engine.roles import load_role_registry, session_directive
 from longform_engine.semantic import semantic_task as chapter_semantic_task
 from longform_engine.semantic import semantic_validate as chapter_semantic_validate
-from longform_engine.storage import resolve_project_root
+from longform_engine.storage import recovery_status, resolve_project_root
+from longform_engine.storage.layout import (
+    existing_manuscript_chapter_path,
+    list_canonical_chapter_files,
+    list_finalized_chapter_files,
+    manuscript_chapter_path,
+)
 
 
 TASK_WAITING_FOR = {
@@ -133,7 +138,6 @@ STATUS_PRIORITY = {
 }
 
 MANUSCRIPT_DIR = "40_manuscript"
-FINAL_LANE = "fin" + "al"
 
 NEED_HUMAN_REASON_LABELS = {
     "unresolved_P0": "Unresolved P0 editorial issue requires human decision.",
@@ -152,6 +156,25 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
 
     require_agent_first_production_pipeline()
     root = resolve_project_root(config)
+    recovery = recovery_status(config)
+    if recovery["blocked"]:
+        lock_state = str(recovery["lock"].get("state") or "absent")
+        return base_action(
+            status="project_busy" if lock_state == "active" else "project_recovery_required",
+            chapter_number=highest_finalized_chapter(root),
+            blocked_by="active_project_lock" if lock_state == "active" else "storage_recovery_required",
+            waiting_for="external_process" if lock_state == "active" else "human_approved_recovery",
+            next_command=str(recovery.get("next_command") or ""),
+            human_summary="; ".join(str(item) for item in recovery.get("blockers") or []),
+            sources=[
+                str(recovery["lock"].get("path") or ""),
+                *[
+                    str(item.get("path") or "")
+                    for item in recovery["transactions"]
+                    if item.get("state") != "terminal"
+                ],
+            ],
+        )
     completion_state, completion = fast_completion_marker(config)
     if completion_state == "approved":
         return base_action(
@@ -814,7 +837,11 @@ def normalize_contract_string(root: Path, value: str) -> str:
 def chapter_board_row(root: Path, chapter_number: int) -> dict[str, Any]:
     tasks = list_manifests(root, chapter_number=chapter_number)
     gate = gate_status(root, chapter_number)
-    final_status = "finalized" if final_chapter_exists(root, chapter_number) else "missing"
+    final_status = (
+        "finalized"
+        if existing_manuscript_chapter_path(root, chapter_number, lane="final") is not None
+        else "missing"
+    )
     draft_status = chapter_draft_status(root, chapter_number, gate, tasks)
     return {
         "chapter_number": chapter_number,
@@ -882,9 +909,9 @@ def manifest_file_from_task(root: Path, task: str | Path) -> str:
 
 def max_known_chapter(root: Path) -> int:
     chapters: set[int] = {1}
+    for lane in ("draft", "final"):
+        chapters.update(number for number, _path in list_canonical_chapter_files(root / MANUSCRIPT_DIR / lane))
     for pattern in (
-        root / MANUSCRIPT_DIR / "draft",
-        root / MANUSCRIPT_DIR / FINAL_LANE,
         root / "50_workbench" / "writing_tasks",
         root / "50_workbench" / "repair_candidates",
         root / "50_workbench" / "graph_updates",
@@ -915,12 +942,12 @@ def max_known_chapter(root: Path) -> int:
 
 
 def chapter_draft_status(root: Path, chapter_number: int, gate: dict[str, Any], tasks: list[dict[str, Any]]) -> str:
-    if final_chapter_exists(root, chapter_number):
+    if existing_manuscript_chapter_path(root, chapter_number, lane="final") is not None:
         return "finalized"
     gate_state = str(gate.get("status") or "none")
     if gate_state in {"passed", "failed", "waived"}:
         return "gate_passed" if gate_state in {"passed", "waived"} else "gate_failed"
-    if draft_chapter_exists(root, chapter_number):
+    if existing_manuscript_chapter_path(root, chapter_number, lane="draft") is not None:
         return "draft_submitted"
     if any(str(task.get("task_type") or "") == "chapter_write" for task in tasks):
         return "agent_task"
@@ -1615,8 +1642,8 @@ def chapter_workflow_action(config: ConfigDocument, root: Path) -> dict[str, Any
 
     chapter_numbers = sorted(
         {
-            chapter_from_name(path.name)
-            for path in (root / MANUSCRIPT_DIR / "draft").glob("ch*.md")
+            number
+            for number, _path in list_canonical_chapter_files(root / MANUSCRIPT_DIR / "draft")
         }
         | {
             chapter_from_name(path.parent.name)
@@ -1629,7 +1656,7 @@ def chapter_workflow_action(config: ConfigDocument, root: Path) -> dict[str, Any
         }
     )
     for chapter_number in chapter_numbers:
-        if chapter_number <= 0 or final_chapter_exists(root, chapter_number):
+        if chapter_number <= 0 or existing_manuscript_chapter_path(root, chapter_number, lane="final") is not None:
             continue
         stage = derive_chapter_stage(config, root, chapter_number)
         stage_name = str(stage.get("stage") or "")
@@ -1781,7 +1808,7 @@ def chapter_workflow_action(config: ConfigDocument, root: Path) -> dict[str, Any
         if stage_name == "repair_pending":
             return first_gate_action(root)
         if stage_name == "writing_pending":
-            draft = root / MANUSCRIPT_DIR / "draft" / f"ch{chapter_number:03d}.md"
+            draft = manuscript_chapter_path(root, chapter_number, lane="draft")
             if draft.exists():
                 command = f"longform-engine gate-check project.yaml --chapter {chapter_number}"
                 return base_action(
@@ -1801,10 +1828,10 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
     """Derive one chapter stage from canonical artifacts and current candidate evidence."""
 
     closure = root / "30_state" / "chapter_closures" / f"ch{chapter_number:03d}.json"
-    final = root / MANUSCRIPT_DIR / FINAL_LANE / f"ch{chapter_number:03d}.md"
+    final = manuscript_chapter_path(root, chapter_number, lane="final")
     ledger = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
     gate_path = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
-    draft = root / MANUSCRIPT_DIR / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     if closure.exists():
         return {"stage": "closed", "sources": [relative_path(root, closure)]}
     if final.exists() and not ledger.exists():
@@ -1951,11 +1978,7 @@ def chapter_stage_task_types(stage: str) -> set[str]:
 def chapter_semantic_lifecycle_action(root: Path) -> dict[str, Any] | None:
     """Require one semantic bundle and explicit close for every finalized chapter."""
 
-    final_dir = root / "40_manuscript" / FINAL_LANE
-    for final_file in sorted(final_dir.glob("ch*.md")):
-        chapter_number = chapter_from_name(final_file.name)
-        if chapter_number <= 0:
-            continue
+    for chapter_number, final_file in list_finalized_chapter_files(root):
         ledger_file = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
         closure_file = root / "30_state" / "chapter_closures" / f"ch{chapter_number:03d}.json"
         if not ledger_file.exists():
@@ -2006,7 +2029,7 @@ def reader_payoff_action(config: ConfigDocument, root: Path) -> dict[str, Any] |
     candidates: list[int] = []
     for path in (root / "50_workbench" / "gate_artifacts").glob("ch*/gate_result.json"):
         chapter_number = chapter_from_name(path.parent.name)
-        if chapter_number <= 0 or final_chapter_exists(root, chapter_number):
+        if chapter_number <= 0 or existing_manuscript_chapter_path(root, chapter_number, lane="final") is not None:
             continue
         payload = read_json(path)
         if isinstance(payload, dict):
@@ -2055,7 +2078,7 @@ def editorial_review_action(config: ConfigDocument, root: Path) -> dict[str, Any
     candidates: list[int] = []
     for path in (root / "50_workbench" / "gate_artifacts").glob("ch*/gate_result.json"):
         chapter_number = chapter_from_name(path.parent.name)
-        if chapter_number <= 0 or final_chapter_exists(root, chapter_number):
+        if chapter_number <= 0 or existing_manuscript_chapter_path(root, chapter_number, lane="final") is not None:
             continue
         payload = read_json(path)
         if isinstance(payload, dict):
@@ -2104,7 +2127,7 @@ def first_gate_action(root: Path) -> dict[str, Any] | None:
     candidates: list[tuple[int, Path, dict[str, Any]]] = []
     for path in (root / "50_workbench" / "gate_artifacts").glob("ch*/gate_result.json"):
         chapter_number = chapter_from_name(path.parent.name)
-        if chapter_number <= 0 or final_chapter_exists(root, chapter_number):
+        if chapter_number <= 0 or existing_manuscript_chapter_path(root, chapter_number, lane="final") is not None:
             continue
         payload = read_json(path)
         if isinstance(payload, dict):
@@ -2205,9 +2228,9 @@ def editorial_aggregate_is_current(
     source_hash = str(aggregate.get("source_sha256") or "")
     if not source_hash:
         return False
-    chapter = root / MANUSCRIPT_DIR / FINAL_LANE / f"ch{chapter_number:03d}.md"
+    chapter = manuscript_chapter_path(root, chapter_number, lane="final")
     if not chapter.is_file():
-        chapter = root / MANUSCRIPT_DIR / "draft" / f"ch{chapter_number:03d}.md"
+        chapter = manuscript_chapter_path(root, chapter_number, lane="draft")
     return chapter.is_file() and sha256(chapter.read_bytes()).hexdigest() == source_hash
 
 
@@ -2233,16 +2256,15 @@ def editorial_task_is_current(root: Path, chapter_number: int, task: dict[str, A
         for item in context.get("provenance_source_files") or context.get("declared_source_files") or []
         if str(item).strip()
     ]
-    draft = root / MANUSCRIPT_DIR / "draft" / f"ch{chapter_number:03d}.md"
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     if draft not in provenance or any(not path.is_file() for path in provenance):
         return False
     return context_digest_hash(root, provenance) == str(context.get("context_digest_hash") or "")
 
 
 def first_draft_without_gate_action(root: Path) -> dict[str, Any] | None:
-    for path in sorted((root / MANUSCRIPT_DIR / "draft").glob("ch*.md")):
-        chapter_number = chapter_from_name(path.name)
-        if chapter_number <= 0 or final_chapter_exists(root, chapter_number):
+    for chapter_number, path in list_canonical_chapter_files(root / MANUSCRIPT_DIR / "draft"):
+        if existing_manuscript_chapter_path(root, chapter_number, lane="final") is not None:
             continue
         gate_path = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
         if gate_path.exists():
@@ -2267,7 +2289,10 @@ def first_writing_task_action(root: Path) -> dict[str, Any] | None:
         chapter_number = chapter_from_name(path.name)
         if chapter_number <= 0:
             continue
-        if final_chapter_exists(root, chapter_number) or draft_chapter_exists(root, chapter_number):
+        if (
+            existing_manuscript_chapter_path(root, chapter_number, lane="final") is not None
+            or existing_manuscript_chapter_path(root, chapter_number, lane="draft") is not None
+        ):
             continue
         payload = read_json(path)
         task_md = path.with_suffix(".md")
@@ -2452,20 +2477,7 @@ def agent_task_summary(chapter_number: int, task_type: str, status: str) -> str:
 
 
 def highest_finalized_chapter(root: Path) -> int:
-    chapters = [chapter_from_name(path.name) for path in (root / MANUSCRIPT_DIR / FINAL_LANE).glob("ch*.md")]
-    return max([item for item in chapters if item > 0], default=0)
-
-
-def final_chapter_exists(root: Path, chapter_number: int) -> bool:
-    return manuscript_chapter_exists(root, FINAL_LANE, chapter_number)
-
-
-def draft_chapter_exists(root: Path, chapter_number: int) -> bool:
-    return manuscript_chapter_exists(root, "draft", chapter_number)
-
-
-def manuscript_chapter_exists(root: Path, lane: str, chapter_number: int) -> bool:
-    return (root / MANUSCRIPT_DIR / lane / f"ch{chapter_number:03d}.md").exists()
+    return max((chapter_number for chapter_number, _path in list_finalized_chapter_files(root)), default=0)
 
 
 def gate_has_waiver(gate: dict[str, Any]) -> bool:

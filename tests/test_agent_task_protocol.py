@@ -27,7 +27,6 @@ from longform_engine.repair_coordination import (
     create_repair_synthesis_task,
     next_repair_round,
     record_repair_submission,
-    review_barrier_status,
     validate_repair_plan,
 )
 from longform_engine.roles import load_role_registry
@@ -219,7 +218,7 @@ def test_failed_gate_completes_required_reviews_before_repair(tmp_path):
 def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_candidates(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    config.data["quality"]["assurance_mode"] = "light"
+    config.data["quality"]["profile"]["strictness"] = "light"
     config.data["quality"]["semantic_review_milestones"] = []
     config.data["quality"]["semantic_review_boundaries"] = False
     config.data.setdefault("editorial", {})["review_mode"] = "off"

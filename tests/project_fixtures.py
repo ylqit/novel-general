@@ -1,5 +1,4 @@
 import json
-from hashlib import sha256
 from pathlib import Path
 
 import yaml
@@ -23,25 +22,25 @@ def mark_project_ready(
 ) -> None:
     """Seed canonical book/outline state for tests that start after human apply."""
 
-    # Legacy chapter-flow fixtures predate mandatory milestone Agent reviews.
+    # Minimal chapter-flow fixtures omit optional milestone Agent reviews.
     # Dedicated semantic/fanfiction tests opt into those reviews explicitly.
     config.data.setdefault("quality", {})["semantic_review_milestones"] = []
     config.data["quality"]["semantic_review_boundaries"] = False
-    config.data["quality"]["assurance_mode"] = "light"
+    config.data["quality"]["profile"]["strictness"] = "light"
     config.data.setdefault("editorial", {})["review_mode"] = "off"
     config.data.setdefault("semantic", {})["allow_fallback"] = True
     config.data["semantic"].setdefault("vector_store", {})["backend"] = "local_sqlite"
-    config.data.setdefault("rag", {}).setdefault("embedding", {})["profile"] = "local-hash"
+    config.data["semantic"]["profile"] = "local-hash"
     project_yaml = (root / "project.yaml").resolve()
     if config.path is not None and config.path.resolve() == project_yaml and project_yaml.is_file():
         payload = yaml.safe_load(project_yaml.read_text(encoding="utf-8"))
         payload.setdefault("quality", {})["semantic_review_milestones"] = []
         payload["quality"]["semantic_review_boundaries"] = False
-        payload["quality"]["assurance_mode"] = "light"
+        payload["quality"]["profile"]["strictness"] = "light"
         payload.setdefault("editorial", {})["review_mode"] = "off"
         payload.setdefault("semantic", {})["allow_fallback"] = True
         payload["semantic"].setdefault("vector_store", {})["backend"] = "local_sqlite"
-        payload.setdefault("rag", {}).setdefault("embedding", {})["profile"] = "local-hash"
+        payload["semantic"]["profile"] = "local-hash"
         project_yaml.write_text(
             yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
             encoding="utf-8",
@@ -222,10 +221,9 @@ def mark_project_ready(
                 "volume_goal": "Resolve the current evidence escalation layer.",
                 "protagonist_goal": characters[0]["goal"],
                 "pov_character_id": row["featured_character_ids"][0],
-                "chapter_duty": row["duty"],
-                "information": row["information_release"],
+                "chapter_duty": row["chapter_duty"],
                 "information_release": row["information_release"],
-                "reader_gain": row["reader_payoff"],
+                "reader_gain": row["reader_gain"],
                 "cost": "The chosen gain narrows the protagonist's next safe option.",
                 "platform_promise": str(quality_body.get("platform_promise") or ""),
                 "effective_quality_contract": compact_effective_quality_contract(
@@ -354,11 +352,11 @@ def build_outline_candidate(config, *, characters: list[dict] | None = None) -> 
         chapter_plan.append(
             {
                 "chapter_number": chapter_number, "title": f"Evidence {chapter_number}",
-                "duty": "Advance the active investigation.",
+                "chapter_duty": "Advance the active investigation.",
                 "conflict": "Ari must choose between speed and verified evidence.",
                 "information_release": "Release one bounded clue.",
                 "hook": "The clue points to a larger contradiction.",
-                "reader_payoff": "A prior detail gains a concrete new meaning.",
+                "reader_gain": "A prior detail gains a concrete new meaning.",
                 "volume_id": f"vol_{volume_number:02d}", "arc_id": f"arc_{arc_number:02d}",
                 "featured_character_ids": [characters[0]["id"], characters[1]["id"]],
                 "characterization_focus": [characters[0]["id"]],
@@ -413,7 +411,7 @@ def build_outline_extension_candidate(config, start: int, end: int) -> dict:
                 **base,
                 "chapter_number": number,
                 "title": f"Rolling Evidence {number}",
-                "duty": f"Advance causal step {number} without rewriting prior plans.",
+                "chapter_duty": f"Advance causal step {number} without rewriting prior plans.",
             }
             for number in range(start, end + 1)
         ],

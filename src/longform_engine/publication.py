@@ -7,11 +7,11 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
-import re
 from typing import Any
 
 from longform_engine.config import ConfigDocument
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import list_finalized_chapter_files
 
 
 @dataclass(frozen=True)
@@ -121,10 +121,7 @@ def export_publication_bundle(
     output: str | Path | None = None,
 ) -> PublicationExportResult:
     root = resolve_project_root(config)
-    chapters = sorted(
-        (root / "40_manuscript" / "final").glob("ch*.md"),
-        key=lambda path: chapter_number(path.name),
-    )
+    chapters = [path for _number, path in list_finalized_chapter_files(root)]
     if not chapters:
         raise ValueError("No finalized chapters are available for publication export.")
     if output:
@@ -227,11 +224,6 @@ def append_publication_event(root: Path, event: str, artifact: Path) -> None:
     }
     prefix = existing if not existing or existing.endswith("\n") else existing + "\n"
     atomic_write_text(path, prefix + json.dumps(record, ensure_ascii=False) + "\n")
-
-
-def chapter_number(name: str) -> int:
-    match = re.search(r"ch(\d+)", name)
-    return int(match.group(1)) if match else 0
 
 
 def relative(root: Path, path: Path) -> str:

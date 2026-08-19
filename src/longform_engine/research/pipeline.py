@@ -18,6 +18,7 @@ from longform_engine.config import ConfigDocument
 from longform_engine.db import query_table, sync_database
 from longform_engine.rag import build_context
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import list_canonical_chapter_files, list_finalized_chapter_files
 from longform_engine.text_metrics import content_character_count
 
 
@@ -627,11 +628,7 @@ def next_context_chapter(root: Path) -> int:
         last_finalized = as_int(state.get("last_finalized_chapter"))
         if last_finalized > 0:
             return last_finalized + 1
-    final_numbers = [
-        number
-        for path in sorted([*(root / "40_manuscript" / "final").glob("*.md"), *(root / "40_manuscript" / "final").glob("*.txt")])
-        if (number := parse_chapter_number(path)) is not None
-    ]
+    final_numbers = [number for number, _path in list_finalized_chapter_files(root)]
     return (max(final_numbers) + 1) if final_numbers else 1
 
 
@@ -696,7 +693,7 @@ def match_bible_entities(root: Path, keywords: tuple[str, ...] | list[str], text
 def match_chapters(root: Path, keywords: tuple[str, ...] | list[str], text: str) -> list[str]:
     matches = []
     for directory in (root / "40_manuscript" / "summaries", root / "40_manuscript" / "final"):
-        for path in sorted([*directory.glob("*.md"), *directory.glob("*.txt")]):
+        for _number, path in list_canonical_chapter_files(directory):
             content = safe_read_text(path)
             if has_text_match(text, keywords, [content, path.stem]):
                 matches.append(path.stem)
@@ -935,10 +932,6 @@ def infer_credibility(sources: list[dict[str, Any]]) -> str:
 def parse_chapter_number(path: Path) -> int | None:
     numeric = re.search(r"(\d{1,5})", path.stem)
     return int(numeric.group(1)) if numeric else None
-    match = re.search(r"(?:ch|chapter[_-]?|第)?0*(\d{1,5})", path.stem, re.IGNORECASE)
-    if not match:
-        return None
-    return int(match.group(1))
 
 
 def normalize_collection(value: Any) -> list[Any]:

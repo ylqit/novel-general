@@ -27,6 +27,7 @@ from longform_engine.blind_review import (
     submit_blind_review,
 )
 from longform_engine.character_expression import approve_voice_samples
+from longform_engine.cli_recovery import register_recovery_commands
 
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_tasks import (
@@ -45,7 +46,7 @@ from longform_engine.agent_protocol_readiness import (
     check_agent_data_pipeline_readiness,
     render_agent_data_pipeline_readiness,
 )
-from longform_engine.config import ConfigDocument, ConfigError, load_project_config
+from longform_engine.config import ConfigDocument, ConfigError, config_field_registry, load_project_config
 from longform_engine.completion import approve_completion, completion_status
 from longform_engine.creative import (
     expand_check,
@@ -181,7 +182,13 @@ from longform_engine.revision import (
     rollback,
     rollback_impact,
 )
-from longform_engine.storage import atomic_write_text, acquire_project_lock, init_project, resolve_project_root, snapshot_project
+from longform_engine.storage import (
+    acquire_project_lock,
+    init_project,
+    recovery_status,
+    resolve_project_root,
+    snapshot_project,
+)
 from longform_engine.semantic import chapter_close, semantic_apply as chapter_semantic_apply
 from longform_engine.semantic import semantic_rebuild as chapter_semantic_rebuild
 from longform_engine.semantic import semantic_task as chapter_semantic_task
@@ -304,6 +311,12 @@ def build_parser() -> argparse.ArgumentParser:
     release_check.add_argument("--allow-detached", action="store_true", help="Allow a detached CI checkout when no release tag is supplied.")
     release_check.add_argument("--skip-contracts", action="store_true", help="Skip resource and Skill contract subprocesses.")
     release_check.add_argument("--json", action="store_true", help="Print machine-readable release_readiness_v1 JSON.")
+    release_check.add_argument(
+        "--channel",
+        choices=("public", "rc"),
+        default="public",
+        help="Validate public-release or unpublished release-candidate surfaces.",
+    )
     release_check.set_defaults(func=cmd_release_check)
 
     benchmark = subparsers.add_parser("benchmark", help="Create and summarize no-LLM quality benchmark records.")
@@ -312,15 +325,13 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_init = benchmark_subparsers.add_parser("init", help="Create a benchmark run template without calling an LLM.")
     benchmark_init.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     benchmark_init.add_argument("--run-id", required=True)
-    benchmark_init.add_argument("--agent-product", required=True, choices=["codex", "claude-code", "novel-skill"])
+    benchmark_init.add_argument("--host-product", required=True, choices=["codex", "claude-code"])
     benchmark_init.add_argument("--chapters", type=positive_int_arg, required=True)
-    benchmark_init.add_argument("--baseline", default="", help="Optional comparable run id or baseline label.")
     benchmark_init.add_argument("--scenario-id", default="", help="Stable setting id shared by comparable runs.")
     benchmark_init.add_argument("--scenario-file", help="Scenario JSON whose SHA-256 anchors comparable runs.")
     benchmark_init.add_argument("--agent-model", default="", help="Model label used by the host Agent product.")
-    benchmark_init.add_argument("--host-product", choices=["codex", "claude-code"], help="Host product used for this run.")
     benchmark_init.add_argument("--host-version", default="", help="Codex or Claude Code host version label.")
-    benchmark_init.add_argument("--workflow-version", default="", help="Engine or baseline workflow version.")
+    benchmark_init.add_argument("--workflow-version", default="", help="Engine workflow version used for this run.")
     benchmark_init.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     benchmark_init.set_defaults(func=cmd_benchmark_init)
 
@@ -580,7 +591,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--repository", default=".", help="Engine repository root."
     )
     agent_task_readiness.add_argument(
-        "--json", action="store_true", help="Print agent_data_pipeline_readiness_v2 JSON."
+        "--json", action="store_true", help="Print agent_data_pipeline_readiness_v3 JSON."
     )
     agent_task_readiness.set_defaults(func=cmd_agent_task_readiness)
 
@@ -923,14 +934,14 @@ def build_parser() -> argparse.ArgumentParser:
     style_extract_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     style_extract_cmd.set_defaults(func=cmd_creative_style_extract)
 
-    humanize_task_cmd = creative_subparsers.add_parser("humanize-task", help="Generate a Humanizer v3 workbench task.")
+    humanize_task_cmd = creative_subparsers.add_parser("humanize-task", help="Generate a Humanizer v4 workbench task.")
     humanize_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     humanize_task_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
     humanize_task_cmd.add_argument("--source", choices=["draft", "repair-candidate"], default="draft", help="Source lane.")
     humanize_task_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     humanize_task_cmd.set_defaults(func=cmd_creative_humanize_task)
 
-    humanize_check_cmd = creative_subparsers.add_parser("humanize-check", help="Check a Humanizer v3 candidate.")
+    humanize_check_cmd = creative_subparsers.add_parser("humanize-check", help="Check a Humanizer v4 candidate.")
     humanize_check_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     humanize_check_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
     humanize_check_cmd.add_argument("--file", required=True, help="Candidate file to check.")
@@ -1312,6 +1323,8 @@ def build_parser() -> argparse.ArgumentParser:
     chapter_close_cmd.add_argument("--approved-by", required=True, help="Reviewer identity approving close.")
     chapter_close_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     chapter_close_cmd.set_defaults(func=cmd_chapter_close)
+
+    register_recovery_commands(subparsers)
 
     artifacts = subparsers.add_parser("artifacts", help="Inspect, compact, verify, and restore chapter audit artifacts.")
     artifacts_subparsers = artifacts.add_subparsers(dest="artifacts_command", required=True)
@@ -1741,22 +1754,6 @@ def scale_overrides_from_args(args: argparse.Namespace) -> dict[str, Any]:
     return {"length": length}
 
 
-def has_scale_arguments(args: argparse.Namespace) -> bool:
-    return any(
-        getattr(args, attr, None) is not None
-        for attr in (
-            "scale_preset",
-            "target_total_characters",
-            "chapter_target_characters",
-            "chapter_soft_min",
-            "chapter_soft_max",
-            "volume_target_characters",
-            "planning_horizon",
-            "refill_threshold",
-        )
-    )
-
-
 def prepared_init_context(args: argparse.Namespace) -> tuple[ConfigDocument, str | None]:
     prepared = getattr(args, "_prepared_init_context", None)
     if prepared:
@@ -1945,9 +1942,12 @@ def cmd_validate_config(args: argparse.Namespace) -> int:
         f"about {forecast.estimated_chapters} chapters / {forecast.support_status}"
     )
     if args.explain:
-        print("Sources:")
-        for source in config.sources:
-            print(f"  - {source}")
+        print("Fields:")
+        for item in config_field_registry(config):
+            print(
+                f"  - {item['path']}: value={json.dumps(item['value'], ensure_ascii=False)}; "
+                f"type={item['type']}; source={item['source']}; owner={item['owner']}"
+            )
     return 0
 
 
@@ -2083,6 +2083,7 @@ def cmd_release_check(args: argparse.Namespace) -> int:
         run_contracts=not args.skip_contracts,
         check_remote=args.check_remote,
         allow_detached=args.allow_detached,
+        channel=args.channel,
     )
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -2096,13 +2097,11 @@ def cmd_benchmark_init(args: argparse.Namespace) -> int:
     result = init_benchmark(
         config,
         run_id=args.run_id,
-        agent_product=args.agent_product,
+        host_product=args.host_product,
         chapters=args.chapters,
-        baseline=args.baseline,
         scenario_id=args.scenario_id,
         scenario_file=args.scenario_file,
         agent_model=args.agent_model,
-        host_product=args.host_product or "",
         host_version=args.host_version,
         workflow_version=args.workflow_version,
     )
@@ -2237,7 +2236,7 @@ def cmd_benchmark_rag_scale_run(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
-        print("OK: RAG scale benchmark completed" if result.meets_phase_thresholds else "ERROR: RAG scale benchmark failed")
+        print("OK: RAG scale benchmark completed" if result.meets_thresholds else "ERROR: RAG scale benchmark failed")
         print(f"Dataset: {result.dataset_id}")
         print(f"Scale: {result.scale_chapters} chapters / {result.vector_count} vectors")
         print(f"Backend: {result.backend}")
@@ -2248,7 +2247,7 @@ def cmd_benchmark_rag_scale_run(args: argparse.Namespace) -> int:
         print(f"Result: {result.result_file}")
         for error in result.threshold_errors:
             print(f"- {error}")
-    return 0 if result.meets_phase_thresholds else 1
+    return 0 if result.meets_thresholds else 1
 
 
 def cmd_benchmark_rag_production_template(args: argparse.Namespace) -> int:
@@ -2275,7 +2274,7 @@ def cmd_benchmark_rag_production_run(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
-        print("OK: production RAG benchmark completed" if result.claim_eligible else "ERROR: production RAG benchmark failed")
+        print("OK: production RAG benchmark completed" if result.meets_thresholds else "ERROR: production RAG benchmark failed")
         print(f"Evidence: {result.evidence_file}")
         print(f"Scale: {result.scale_chapters} chapters / {result.query_count} queries")
         print(f"Recall@{args.top_k}: {result.recall_at_k:.3f}")
@@ -2284,7 +2283,7 @@ def cmd_benchmark_rag_production_run(args: argparse.Namespace) -> int:
         print(f"Incremental index: {result.incremental_index_ms:.3f} ms")
         for error in result.errors:
             print(f"- {error}")
-    return 0 if result.claim_eligible else 1
+    return 0 if result.meets_thresholds else 1
 
 
 def cmd_benchmark_source_attach(args: argparse.Namespace) -> int:
@@ -3235,7 +3234,7 @@ def cmd_creative_humanize_task(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
-        print("OK: Humanizer v3 task written")
+        print("OK: Humanizer v4 task written")
         print(f"Chapter: {result.chapter_number}")
         print(f"Source: {result.source_file}")
         print(f"Task: {result.task_file}")
@@ -3251,7 +3250,7 @@ def cmd_creative_humanize_check(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
-        print("OK: Humanizer v3 check completed")
+        print("OK: Humanizer v4 check completed")
         print(f"Chapter: {result.chapter_number}")
         print(f"Passed: {result.passed}")
         print(f"Report: {result.report_file}")
@@ -4636,9 +4635,32 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if getattr(args, "recovery_bypasses_project_lock", False):
+            return int(args.func(args))
         if getattr(args, "mutates_project", False):
             config, output = _lock_context(args)
+            if output is None and args.command != "recovery":
+                recovery = recovery_status(config)
+                lock_state = str(recovery.get("lock", {}).get("state") or "")
+                transaction_blocked = any(
+                    str(item).startswith("transaction:")
+                    for item in recovery.get("blockers", [])
+                )
+                if lock_state in {"confirmed_dead", "unknown", "invalid"} or (
+                    lock_state == "absent" and transaction_blocked
+                ):
+                    raise WorkflowError(
+                        "storage_recovery_required: "
+                        + str(recovery.get("next_command") or "longform-engine recovery status project.yaml --json")
+                    )
             with acquire_project_lock(config, command=_command_label(args), output=output):
+                if output is None and args.command != "recovery":
+                    recovery = recovery_status(config)
+                    if recovery["blocked"]:
+                        raise WorkflowError(
+                            "storage_recovery_required: "
+                            + str(recovery.get("next_command") or "longform-engine recovery status project.yaml --json")
+                        )
                 return int(args.func(args))
         return int(args.func(args))
     except (ConfigError, GateError, ResearchError, RevisionError, WorkflowError, ValueError) as exc:
@@ -4688,6 +4710,7 @@ def _command_label(args: argparse.Namespace) -> str:
         "auto_command",
         "draft_command",
         "chapter_command",
+        "recovery_command",
         "artifacts_command",
         "research_command",
         "revision_command",

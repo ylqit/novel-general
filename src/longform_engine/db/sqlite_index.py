@@ -15,6 +15,12 @@ import uuid
 
 from longform_engine.config import ConfigDocument
 from longform_engine.storage import resolve_project_root
+from longform_engine.storage.layout import (
+    existing_manuscript_chapter_path,
+    list_finalized_chapter_files,
+    manuscript_chapter_path,
+    manuscript_chapter_relative_path,
+)
 from longform_engine.text_metrics import content_character_count
 
 
@@ -87,13 +93,19 @@ class SyncStats:
 
 
 def database_path(config: ConfigDocument) -> Path:
-    """Resolve the configured runtime SQLite database path."""
+    """Resolve the canonical runtime SQLite database path."""
 
-    root = resolve_project_root(config)
-    configured = Path(str(config.data["storage"].get("runtime_database", "70_runtime/db/longform_engine.sqlite")))
-    if configured.is_absolute():
-        return configured
-    return root / configured
+    return resolve_project_root(config) / "70_runtime" / "db" / "longform_engine.sqlite"
+
+
+def resolve_project_path(root: Path, value: str | Path) -> Path:
+    path = Path(value)
+    resolved = path.resolve() if path.is_absolute() else (root / path).resolve()
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"Derived index source escaped the project root: {value}") from exc
+    return resolved
 
 
 def init_database(config: ConfigDocument) -> Path:
@@ -137,6 +149,74 @@ def sync_database(config: ConfigDocument) -> SyncStats:
             tcs_transitions=memory_stats["tcs_transitions"],
         )
         record_audit(conn, "db.sync", asdict(stats))
+    return stats
+
+
+def sync_semantic_delta(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    memory_paths: Iterable[str | Path] = (),
+    refresh_graph: bool = True,
+    tcs_path: str | Path | None = None,
+) -> SyncStats:
+    """Synchronize only the file owners changed by one chapter semantic apply."""
+
+    if chapter_number <= 0:
+        raise ValueError("Semantic database delta requires a positive chapter number.")
+    root = resolve_project_root(config)
+    db_path = database_path(config)
+    if not db_path.is_file():
+        raise ValueError("Semantic database delta requires an initialized index; run db rebuild first.")
+    resolved_memory = [resolve_project_path(root, path) for path in memory_paths]
+    resolved_tcs = resolve_project_path(root, tcs_path) if tcs_path is not None else None
+    with connect(db_path) as conn:
+        create_schema(conn)
+        if get_schema_version(conn) != SCHEMA_VERSION:
+            raise ValueError("Semantic database delta requires the current schema; run db rebuild first.")
+        require_continuous_prior_chapters(conn, chapter_number)
+        chapter_count = sync_chapter_number(conn, root, chapter_number)
+        chunk_count = sync_chunk_number(conn, root, chapter_number)
+        entity_count = 0
+        mention_count = 0
+        event_count = 0
+        if refresh_graph:
+            conn.execute("DELETE FROM entity_mentions")
+            conn.execute("DELETE FROM entities")
+            conn.execute("DELETE FROM events")
+            entity_count, mention_count, event_count = sync_graph(conn, root)
+        memory_counts = empty_memory_counts()
+        stale_payload = read_json(root / "60_rag" / "memory" / "stale.json", default={})
+        stale_global = bool(stale_payload.get("stale")) if isinstance(stale_payload, dict) else False
+        for path in resolved_memory:
+            memory_type = memory_type_for_path(root, path)
+            synced_type = sync_memory_file(
+                conn,
+                root,
+                path,
+                memory_type=memory_type,
+                stale_global=stale_global,
+            )
+            if synced_type:
+                increment_memory_counts(memory_counts, synced_type)
+        if resolved_tcs is not None:
+            sync_tcs_snapshot_file(conn, root, resolved_tcs, stale=stale_global)
+            memory_counts["tcs_snapshots"] = 1
+        stats = SyncStats(
+            chapters=chapter_count,
+            chapter_chunks=chunk_count,
+            entities=entity_count,
+            entity_mentions=mention_count,
+            events=event_count,
+            memory_units=memory_counts["memory_units"],
+            scene_memories=memory_counts["scene_memories"],
+            chapter_memories=memory_counts["chapter_memories"],
+            arc_memories=memory_counts["arc_memories"],
+            character_memories=memory_counts["character_memories"],
+            style_memories=memory_counts["style_memories"],
+            tcs_snapshots=memory_counts["tcs_snapshots"],
+        )
+        record_audit(conn, "db.semantic_delta", {"chapter_number": chapter_number, **asdict(stats)})
     return stats
 
 
@@ -198,6 +278,39 @@ def query_table(config: ConfigDocument, table: str, *, limit: int = 20) -> list[
     with connect(db_path) as conn:
         rows = conn.execute(f"SELECT * FROM {table} LIMIT ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
+
+
+def chapter_chunk_integrity_counts(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    source_path: str,
+    source_sha256: str,
+) -> tuple[int, int]:
+    """Return total and exact-source chunk counts for one chapter close boundary."""
+
+    db_path = database_path(config)
+    if not db_path.is_file():
+        return 0, 0
+    with connect(db_path) as conn:
+        create_schema(conn)
+        rows = conn.execute(
+            "SELECT source_path, metadata_json FROM chapter_chunks WHERE chapter_number = ?",
+            (chapter_number,),
+        ).fetchall()
+    exact = 0
+    for row in rows:
+        try:
+            metadata = json.loads(str(row["metadata_json"] or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            metadata = {}
+        if (
+            str(row["source_path"] or "") == source_path
+            and isinstance(metadata, dict)
+            and str(metadata.get("source_sha256") or "") == source_sha256
+        ):
+            exact += 1
+    return len(rows), exact
 
 
 def clear_stale_index_markers(config: ConfigDocument) -> None:
@@ -531,18 +644,13 @@ def sync_chapters(conn: sqlite3.Connection, root: Path) -> int:
     """Sync final manuscript files and chapter metadata."""
 
     chapters: dict[int, dict[str, Any]] = {}
-    final_dir = root / "40_manuscript" / "final"
-    summary_dir = root / "40_manuscript" / "summaries"
-    for path in sorted([*final_dir.glob("*.md"), *final_dir.glob("*.txt")]):
-        chapter_number = parse_chapter_number(path)
-        if chapter_number is None:
-            chapter_number = len(chapters) + 1
+    for chapter_number, path in list_finalized_chapter_files(root):
         text = safe_read_text(path)
         chapters[chapter_number] = {
             "chapter_number": chapter_number,
             "title": extract_title(text, path),
             "path": relative_path(root, path),
-            "summary": read_summary(summary_dir, chapter_number),
+            "summary": read_summary(root, chapter_number),
             "volume": None,
             "status": "final",
             "word_count": content_character_count(text),
@@ -593,6 +701,63 @@ def sync_chapters(conn: sqlite3.Connection, root: Path) -> int:
             ),
         )
     return len(chapters)
+
+
+def sync_chapter_number(conn: sqlite3.Connection, root: Path, chapter_number: int) -> int:
+    """Upsert one finalized chapter without enumerating historical manuscript files."""
+
+    path = existing_manuscript_chapter_path(root, chapter_number, lane="final")
+    if path is None:
+        raise ValueError(
+            f"Semantic database delta requires canonical final source ch{chapter_number:03d}.md."
+        )
+    text = safe_read_text(path)
+    meta = next(
+        (
+            item
+            for item in reversed(list(iter_jsonl(root / "40_manuscript" / "chapter_meta.jsonl")))
+            if int(item.get("chapter_number") or item.get("chapter") or 0) == chapter_number
+        ),
+        {},
+    )
+    conn.execute(
+        """
+        INSERT INTO chapters (chapter_number, title, path, summary, volume, status, word_count, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(chapter_number) DO UPDATE SET
+            title=excluded.title,
+            path=excluded.path,
+            summary=excluded.summary,
+            volume=excluded.volume,
+            status=excluded.status,
+            word_count=excluded.word_count,
+            updated_at=excluded.updated_at
+        """,
+        (
+            chapter_number,
+            meta.get("title") or extract_title(text, path),
+            relative_path(root, path),
+            meta.get("summary") or read_summary(root, chapter_number),
+            meta.get("volume"),
+            "final",
+            int(meta.get("content_character_count") or meta.get("word_count") or content_character_count(text)),
+            utc_now(),
+        ),
+    )
+    return 1
+
+
+def require_continuous_prior_chapters(conn: sqlite3.Connection, chapter_number: int) -> None:
+    rows = conn.execute(
+        "SELECT chapter_number FROM chapters WHERE chapter_number < ? AND status = 'final' ORDER BY chapter_number",
+        (chapter_number,),
+    ).fetchall()
+    actual = [int(row["chapter_number"]) for row in rows]
+    expected = list(range(1, chapter_number))
+    if actual != expected:
+        raise ValueError(
+            "Semantic database delta requires a continuous prior final index; run db rebuild first."
+        )
 
 
 def sync_draft_submissions(conn: sqlite3.Connection, root: Path) -> int:
@@ -647,9 +812,71 @@ def sync_draft_submissions(conn: sqlite3.Connection, root: Path) -> int:
 def sync_chunks(conn: sqlite3.Connection, root: Path) -> int:
     """Sync RAG chunk files from 60_rag/chunks."""
 
-    count = 0
     chunks_dir = root / "60_rag" / "chunks"
-    for path in sorted([*chunks_dir.glob("*.json"), *chunks_dir.glob("*.jsonl")]):
+    return sync_chunk_files(
+        conn,
+        root,
+        sorted([*chunks_dir.glob("*.json"), *chunks_dir.glob("*.jsonl")]),
+    )
+
+
+def sync_chunk_number(conn: sqlite3.Connection, root: Path, chapter_number: int) -> int:
+    """Replace the SQLite chunk rows owned by one chapter chunk file."""
+
+    chunks_dir = root / "60_rag" / "chunks"
+    candidates = (
+        chunks_dir / f"ch{chapter_number:03d}.json",
+        chunks_dir / f"ch{chapter_number:03d}.jsonl",
+    )
+    paths = [path for path in candidates if path.is_file()]
+    if len(paths) != 1:
+        raise ValueError(
+            f"Semantic database delta requires exactly one chunk source for chapter {chapter_number}."
+        )
+    expected_source = manuscript_chapter_relative_path(chapter_number, lane="final")
+    final_file = manuscript_chapter_path(root, chapter_number, lane="final")
+    if not final_file.is_file():
+        raise ValueError(
+            f"Semantic database delta requires canonical final source {expected_source}."
+        )
+    expected_sha256 = file_sha256(final_file)
+    records = list(iter_records(paths[0]))
+    if not records:
+        raise ValueError(f"Semantic database delta chunk source is empty for chapter {chapter_number}.")
+    for record in records:
+        chunks = record.get("chunks") if isinstance(record.get("chunks"), list) else [record]
+        if (
+            int(record.get("chapter_number") or 0) != chapter_number
+            or str(record.get("source_path") or "").replace("\\", "/") != expected_source
+            or str(record.get("source_sha256") or "") != expected_sha256
+            or not chunks
+        ):
+            raise ValueError(
+                f"Semantic database delta chunk owner is stale or inconsistent for chapter {chapter_number}."
+            )
+        for chunk in chunks:
+            metadata = chunk.get("metadata") if isinstance(chunk, dict) else None
+            if (
+                not isinstance(chunk, dict)
+                or int(chunk.get("chapter_number") or 0) != chapter_number
+                or not isinstance(metadata, dict)
+                or str(metadata.get("source") or "").replace("\\", "/") != expected_source
+                or str(metadata.get("source_sha256") or "") != expected_sha256
+            ):
+                raise ValueError(
+                    f"Semantic database delta contains a chunk outside chapter {chapter_number} ownership."
+                )
+    conn.execute("DELETE FROM chapter_chunks WHERE chapter_number = ?", (chapter_number,))
+    return sync_chunk_files(conn, root, paths)
+
+
+def sync_chunk_files(
+    conn: sqlite3.Connection,
+    root: Path,
+    paths: Iterable[Path],
+) -> int:
+    count = 0
+    for path in paths:
         records = list(iter_records(path))
         for index, record in enumerate(records):
             record_source = normalize_chunk_source(root, record.get("source_path"), path)
@@ -767,19 +994,8 @@ def normalize_chunk_source(root: Path, value: Any, _chunk_file: Path) -> str | N
 def infer_final_source(root: Path, chapter_number: int | None) -> str | None:
     if not chapter_number:
         return None
-    final_dir = root / "40_manuscript" / "final"
-    for name in (
-        f"ch{chapter_number:03d}.md",
-        f"ch{chapter_number:03d}.txt",
-        f"chapter_{chapter_number:03d}.md",
-        f"chapter_{chapter_number:03d}.txt",
-        f"{chapter_number}.md",
-        f"{chapter_number}.txt",
-    ):
-        path = final_dir / name
-        if path.exists():
-            return relative_path(root, path)
-    return None
+    path = existing_manuscript_chapter_path(root, chapter_number, lane="final")
+    return relative_path(root, path) if path is not None else None
 
 
 def is_allowed_chunk_source(root: Path, source_path: str | None, metadata: dict[str, Any]) -> bool:
@@ -953,10 +1169,8 @@ def sync_rag_queries(conn: sqlite3.Connection, root: Path) -> int:
     return count
 
 
-def sync_memory_mirrors(conn: sqlite3.Connection, root: Path) -> dict[str, int]:
-    """Sync canonical Memory v2 files and TCS snapshots into SQLite mirrors."""
-
-    counts = {
+def empty_memory_counts() -> dict[str, int]:
+    return {
         "memory_units": 0,
         "scene_memories": 0,
         "chapter_memories": 0,
@@ -966,6 +1180,178 @@ def sync_memory_mirrors(conn: sqlite3.Connection, root: Path) -> dict[str, int]:
         "tcs_snapshots": 0,
         "tcs_transitions": 0,
     }
+
+
+def increment_memory_counts(counts: dict[str, int], memory_type: str) -> None:
+    counts["memory_units"] += 1
+    if memory_type == "scene":
+        counts["scene_memories"] += 1
+    elif memory_type == "chapter":
+        counts["chapter_memories"] += 1
+    elif memory_type in {"arc", "volume"}:
+        counts["arc_memories"] += 1
+    elif memory_type == "character":
+        counts["character_memories"] += 1
+    elif memory_type == "style":
+        counts["style_memories"] += 1
+
+
+def memory_type_for_path(root: Path, path: Path) -> str:
+    memory_root = (root / "60_rag" / "memory").resolve()
+    try:
+        relative = path.resolve().relative_to(memory_root)
+    except ValueError as exc:
+        raise ValueError(f"Semantic memory delta escaped 60_rag/memory: {path}") from exc
+    if len(relative.parts) != 2 or path.suffix.lower() != ".json":
+        raise ValueError(f"Semantic memory delta path is not a direct JSON memory owner: {path}")
+    mapping = {
+        "scenes": "scene",
+        "chapters": "chapter",
+        "arcs": "arc",
+        "characters": "character",
+        "style": "style",
+    }
+    memory_type = mapping.get(relative.parts[0])
+    if memory_type is None:
+        raise ValueError(f"Semantic memory delta uses an unsupported owner directory: {path}")
+    return memory_type
+
+
+def sync_memory_file(
+    conn: sqlite3.Connection,
+    root: Path,
+    path: Path,
+    *,
+    memory_type: str,
+    stale_global: bool,
+) -> str:
+    if not path.is_file():
+        raise ValueError(f"Semantic memory delta source is missing: {relative_path(root, path)}")
+    payload = read_json(path, default=None)
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError(f"Semantic memory source is empty or invalid: {relative_path(root, path)}")
+    declared_type = str(payload.get("memory_type") or memory_type)
+    normalized_type = {
+        "character_current_view": "character",
+    }.get(declared_type, declared_type)
+    if normalized_type != memory_type and not (memory_type == "arc" and normalized_type == "volume"):
+        raise ValueError(
+            "Semantic memory type does not match its owner directory: "
+            f"declared={declared_type}, owner={memory_type}, path={relative_path(root, path)}"
+        )
+    chapter = as_optional_int(payload.get("chapter") or payload.get("chapter_number")) or parse_chapter_number(path)
+    from_chapter = as_optional_int(payload.get("from_chapter")) or chapter
+    to_chapter = as_optional_int(payload.get("to_chapter")) or chapter
+    stale = stale_global or str(payload.get("status") or "canonical").lower() == "stale"
+    unit_id = f"{normalized_type}:{path.stem}"
+    source_hash = file_sha256(path)
+    conn.execute(
+        """
+        INSERT INTO memory_units
+            (id, memory_type, chapter_number, from_chapter, to_chapter, source_path, source_hash, status, stale, payload_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            memory_type=excluded.memory_type,
+            chapter_number=excluded.chapter_number,
+            from_chapter=excluded.from_chapter,
+            to_chapter=excluded.to_chapter,
+            source_path=excluded.source_path,
+            source_hash=excluded.source_hash,
+            status=excluded.status,
+            stale=excluded.stale,
+            payload_json=excluded.payload_json,
+            updated_at=excluded.updated_at
+        """,
+        (
+            unit_id,
+            normalized_type,
+            chapter,
+            from_chapter,
+            to_chapter,
+            relative_path(root, path),
+            source_hash,
+            str(payload.get("status") or "canonical"),
+            1 if stale else 0,
+            dumps(payload),
+            payload.get("updated_at") or utc_now(),
+        ),
+    )
+    if normalized_type == "scene":
+        sync_scene_memory(conn, root, path, payload, unit_id, source_hash, stale)
+    elif normalized_type == "chapter":
+        sync_chapter_memory(conn, root, path, payload, unit_id, source_hash, stale)
+    elif normalized_type in {"arc", "volume"}:
+        sync_arc_memory(conn, root, path, payload, unit_id, source_hash, stale)
+    elif normalized_type == "character":
+        sync_character_memory(conn, root, path, payload, unit_id, source_hash, stale)
+    elif normalized_type == "style":
+        sync_style_memory(conn, root, path, payload, unit_id, source_hash, stale)
+    else:
+        raise ValueError(f"Unsupported semantic memory type: {normalized_type}")
+    return normalized_type
+
+
+def sync_tcs_snapshot_file(
+    conn: sqlite3.Connection,
+    root: Path,
+    path: Path,
+    *,
+    stale: bool,
+) -> None:
+    expected_root = (root / "30_state" / "tcs").resolve()
+    try:
+        relative = path.resolve().relative_to(expected_root)
+    except ValueError as exc:
+        raise ValueError(f"Semantic TCS delta escaped 30_state/tcs: {path}") from exc
+    if len(relative.parts) != 1 or path.suffix.lower() != ".json":
+        raise ValueError(f"Semantic TCS delta path is not a direct JSON snapshot: {path}")
+    payload = read_json(path, default=None)
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError(f"Semantic TCS delta is missing or invalid: {relative_path(root, path)}")
+    snapshot_id = f"tcs:{path.stem}"
+    chapter = as_optional_int(payload.get("chapter_number")) or parse_chapter_number(path)
+    conn.execute(
+        """
+        INSERT INTO tcs_snapshots
+            (id, chapter_number, source_path, source_hash, current_characters_json, locations_json, recent_events_json,
+             unresolved_conflicts_json, open_foreshadows_json, active_constraints_json, stale, payload_json, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            chapter_number=excluded.chapter_number,
+            source_path=excluded.source_path,
+            source_hash=excluded.source_hash,
+            current_characters_json=excluded.current_characters_json,
+            locations_json=excluded.locations_json,
+            recent_events_json=excluded.recent_events_json,
+            unresolved_conflicts_json=excluded.unresolved_conflicts_json,
+            open_foreshadows_json=excluded.open_foreshadows_json,
+            active_constraints_json=excluded.active_constraints_json,
+            stale=excluded.stale,
+            payload_json=excluded.payload_json,
+            updated_at=excluded.updated_at
+        """,
+        (
+            snapshot_id,
+            chapter,
+            relative_path(root, path),
+            file_sha256(path),
+            dumps(normalize_list(payload.get("current_characters"))),
+            dumps(normalize_list(payload.get("locations"))),
+            dumps(normalize_list(payload.get("recent_events"))),
+            dumps(normalize_list(payload.get("unresolved_conflicts"))),
+            dumps(normalize_list(payload.get("open_foreshadows"))),
+            dumps(normalize_list(payload.get("active_constraints"))),
+            1 if stale else 0,
+            dumps(payload),
+            payload.get("updated_at") or utc_now(),
+        ),
+    )
+
+
+def sync_memory_mirrors(conn: sqlite3.Connection, root: Path) -> dict[str, int]:
+    """Sync canonical Memory v2 files and TCS snapshots into SQLite mirrors."""
+
+    counts = empty_memory_counts()
     stale_payload = read_json(root / "60_rag" / "memory" / "stale.json", default={})
     stale_global = bool(stale_payload.get("stale")) if isinstance(stale_payload, dict) else False
     for memory_type, directory in (
@@ -976,107 +1362,19 @@ def sync_memory_mirrors(conn: sqlite3.Connection, root: Path) -> dict[str, int]:
         ("style", root / "60_rag" / "memory" / "style"),
     ):
         for path in sorted(directory.glob("*.json")):
-            payload = read_json(path, default={})
-            if not isinstance(payload, dict):
-                continue
-            normalized_type = str(payload.get("memory_type") or memory_type)
-            chapter = as_optional_int(payload.get("chapter") or payload.get("chapter_number")) or parse_chapter_number(path)
-            from_chapter = as_optional_int(payload.get("from_chapter")) or chapter
-            to_chapter = as_optional_int(payload.get("to_chapter")) or chapter
-            stale = stale_global or str(payload.get("status") or "canonical").lower() == "stale"
-            unit_id = f"{normalized_type}:{path.stem}"
-            source_hash = file_sha256(path)
-            conn.execute(
-                """
-                INSERT INTO memory_units
-                    (id, memory_type, chapter_number, from_chapter, to_chapter, source_path, source_hash, status, stale, payload_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(id) DO UPDATE SET
-                    memory_type=excluded.memory_type,
-                    chapter_number=excluded.chapter_number,
-                    from_chapter=excluded.from_chapter,
-                    to_chapter=excluded.to_chapter,
-                    source_path=excluded.source_path,
-                    source_hash=excluded.source_hash,
-                    status=excluded.status,
-                    stale=excluded.stale,
-                    payload_json=excluded.payload_json,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    unit_id,
-                    normalized_type,
-                    chapter,
-                    from_chapter,
-                    to_chapter,
-                    relative_path(root, path),
-                    source_hash,
-                    str(payload.get("status") or "canonical"),
-                    1 if stale else 0,
-                    dumps(payload),
-                    payload.get("updated_at") or utc_now(),
-                ),
+            normalized_type = sync_memory_file(
+                conn,
+                root,
+                path,
+                memory_type=memory_type,
+                stale_global=stale_global,
             )
-            counts["memory_units"] += 1
-            if normalized_type == "scene":
-                sync_scene_memory(conn, root, path, payload, unit_id, source_hash, stale)
-                counts["scene_memories"] += 1
-            elif normalized_type == "chapter":
-                sync_chapter_memory(conn, root, path, payload, unit_id, source_hash, stale)
-                counts["chapter_memories"] += 1
-            elif normalized_type in {"arc", "volume"}:
-                sync_arc_memory(conn, root, path, payload, unit_id, source_hash, stale)
-                counts["arc_memories"] += 1
-            elif normalized_type == "character":
-                sync_character_memory(conn, root, path, payload, unit_id, source_hash, stale)
-                counts["character_memories"] += 1
-            elif normalized_type == "style":
-                sync_style_memory(conn, root, path, payload, unit_id, source_hash, stale)
-                counts["style_memories"] += 1
+            if normalized_type:
+                increment_memory_counts(counts, normalized_type)
 
     tcs_global_stale = stale_global
     for path in sorted((root / "30_state" / "tcs").glob("ch*.json")):
-        payload = read_json(path, default={})
-        if not isinstance(payload, dict):
-            continue
-        snapshot_id = f"tcs:{path.stem}"
-        chapter = as_optional_int(payload.get("chapter_number")) or parse_chapter_number(path)
-        conn.execute(
-            """
-            INSERT INTO tcs_snapshots
-                (id, chapter_number, source_path, source_hash, current_characters_json, locations_json, recent_events_json,
-                 unresolved_conflicts_json, open_foreshadows_json, active_constraints_json, stale, payload_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                chapter_number=excluded.chapter_number,
-                source_path=excluded.source_path,
-                source_hash=excluded.source_hash,
-                current_characters_json=excluded.current_characters_json,
-                locations_json=excluded.locations_json,
-                recent_events_json=excluded.recent_events_json,
-                unresolved_conflicts_json=excluded.unresolved_conflicts_json,
-                open_foreshadows_json=excluded.open_foreshadows_json,
-                active_constraints_json=excluded.active_constraints_json,
-                stale=excluded.stale,
-                payload_json=excluded.payload_json,
-                updated_at=excluded.updated_at
-            """,
-            (
-                snapshot_id,
-                chapter,
-                relative_path(root, path),
-                file_sha256(path),
-                dumps(normalize_list(payload.get("current_characters"))),
-                dumps(normalize_list(payload.get("locations"))),
-                dumps(normalize_list(payload.get("recent_events"))),
-                dumps(normalize_list(payload.get("unresolved_conflicts"))),
-                dumps(normalize_list(payload.get("open_foreshadows"))),
-                dumps(normalize_list(payload.get("active_constraints"))),
-                1 if tcs_global_stale else 0,
-                dumps(payload),
-                payload.get("updated_at") or utc_now(),
-            ),
-        )
+        sync_tcs_snapshot_file(conn, root, path, stale=tcs_global_stale)
         counts["tcs_snapshots"] += 1
     for path in sorted((root / "30_state" / "tcs" / "transitions").glob("ch*.json")):
         payload = read_json(path, default={})
@@ -1624,12 +1922,9 @@ def file_sha256(path: Path) -> str:
         return ""
 
 
-def read_summary(summary_dir: Path, chapter_number: int) -> str | None:
-    for name in (f"ch{chapter_number:03d}.md", f"chapter_{chapter_number:03d}.md", f"{chapter_number}.md"):
-        path = summary_dir / name
-        if path.exists():
-            return safe_read_text(path).strip()
-    return None
+def read_summary(root: Path, chapter_number: int) -> str | None:
+    path = manuscript_chapter_path(root, chapter_number, lane="summaries")
+    return safe_read_text(path).strip() if path.is_file() else None
 
 
 def extract_title(text: str, path: Path) -> str:
@@ -1643,10 +1938,6 @@ def extract_title(text: str, path: Path) -> str:
 def parse_chapter_number(path: Path) -> int | None:
     numeric = re.search(r"(\d{1,5})", path.stem)
     return int(numeric.group(1)) if numeric else None
-    match = re.search(r"(?:ch|chapter[_-]?|第)?0*(\d{1,5})", path.stem, re.IGNORECASE)
-    if not match:
-        return None
-    return int(match.group(1))
 
 
 def as_optional_int(value: Any) -> int | None:

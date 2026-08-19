@@ -9,8 +9,8 @@ Codex / Claude Code:
 - longform-novel-codex/
 - longform-novel-claude/
 
-Each package contains its own synchronized references/ directory. A legacy
-global shared/ directory is never removed by this installer.
+Each package contains its own synchronized references/ directory. Directories
+without this engine's ownership metadata are never removed by this installer.
 
 It does not copy novel projects, manuscripts, runtime databases, model caches,
 environment files, or API keys.

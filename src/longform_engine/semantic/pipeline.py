@@ -11,7 +11,6 @@ import json
 
 from longform_engine.agent_protocols import (
     CANONICAL_DELTA_SCHEMA,
-    VALIDATION_REPORT_SCHEMA,
     AgentProtocolError,
     build_validation_report,
     canonical_delta_domain_payload,
@@ -21,7 +20,6 @@ from longform_engine.agent_protocols import (
 from longform_engine.agent_tasks import (
     build_manifest,
     live_chapter_tasks,
-    list_manifests,
     mark_tasks_for_output,
     manifest_output,
     task_reconciliation_status,
@@ -29,12 +27,24 @@ from longform_engine.agent_tasks import (
     write_manifest,
 )
 from longform_engine.config import ConfigDocument
-from longform_engine.db import database_path, query_table, sync_database
+from longform_engine.db import (
+    chapter_chunk_integrity_counts,
+    database_path,
+    init_database,
+    sync_database,
+    sync_semantic_delta,
+)
 from longform_engine.graph.pipeline import ensure_graph_shape, load_graph, save_graph, upsert_canon_entities
-from longform_engine.memory import build_style_memory
-from longform_engine.rag import build_chunks, build_context, build_embedding_index
+from longform_engine.memory import apply_style_memory_delta, build_style_memory
+from longform_engine.rag import apply_embedding_delta, build_chunks, build_context, rebuild_embedding_index
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import (
+    list_finalized_chapter_files,
+    manuscript_chapter_path,
+    manuscript_chapter_relative_path,
+)
 from longform_engine.vectorstore import (
+    active_source_hash_count,
     active_source_record_count,
     healthcheck as vector_healthcheck,
     hnsw_manifest_path,
@@ -129,7 +139,7 @@ def semantic_task(config: ConfigDocument, *, chapter_number: int) -> SemanticTas
     if chapter_number <= 0:
         raise ValueError("chapter_number must be positive.")
     root = resolve_project_root(config)
-    source = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
+    source = manuscript_chapter_path(root, chapter_number, lane="final")
     if not source.exists():
         raise ValueError(f"Unified semantic extraction requires finalized ch{chapter_number:03d}.")
 
@@ -374,10 +384,9 @@ def compile_semantic_context(
             card,
             (
                 "title",
-                "duty",
                 "chapter_duty",
                 "conflict",
-                "information",
+                "information_release",
                 "reader_gain",
                 "cost",
                 "relationship_move",
@@ -446,7 +455,7 @@ def semantic_validate(
         allowed_statuses=("submitted", "validated"),
     )
     errors.extend(control_errors)
-    expected_source = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
+    expected_source = manuscript_chapter_path(root, chapter_number, lane="final")
     payload = semantic_candidate_domain_payload(
         root,
         path,
@@ -696,7 +705,7 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
         root,
         source_file,
         chapter_number=chapter_number,
-        expected_source=root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md",
+        expected_source=manuscript_chapter_path(root, chapter_number, lane="final"),
         errors=payload_errors,
     )
     if payload_errors:
@@ -708,7 +717,7 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
     foreshadow_file = root / "30_state" / "foreshadowing_state.json"
     timeline_file = root / "30_state" / "timeline.json"
     world_file = root / "30_state" / "world_state.json"
-    summary_file = root / "40_manuscript" / "summaries" / f"ch{chapter_number:03d}.md"
+    summary_file = manuscript_chapter_path(root, chapter_number, lane="summaries")
     tcs_file = root / "30_state" / "tcs" / f"ch{chapter_number + 1:03d}.json"
     character_dir = root / "60_rag" / "memory" / "characters"
     character_files = [
@@ -726,7 +735,7 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
             raise ValueError(
                 f"Cannot replace canonical semantic ledger ch{chapter_number:03d} with a different candidate."
             )
-        final_file = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
+        final_file = manuscript_chapter_path(root, chapter_number, lane="final")
         validation_report = read_json(validation_file, {})
         declared_manifest = semantic_manifest_for_output(root, chapter_number, source_file)
         source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
@@ -765,7 +774,6 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
         root / "60_rag" / "chunks" / f"ch{chapter_number:03d}.json",
         root / "60_rag" / "context" / "next_plot_context.md",
         root / "60_rag" / "query_cache",
-        root / "60_rag" / "metadata" / "embeddings.jsonl",
         root / "60_rag" / "memory" / "style",
         database_path(config),
         vector_store_file,
@@ -819,10 +827,22 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
             tcs["source_semantic_ledger_sha256"] = sha256(ledger_file.read_bytes()).hexdigest()
             atomic_write_text(tcs_file, json.dumps(tcs, ensure_ascii=False, indent=2) + "\n")
 
-        style = build_style_memory(config)
+        style = apply_style_memory_delta(config, chapter_numbers=(chapter_number,))
         rag = build_chunks(config, chapter_numbers=(chapter_number,), sync_index=False)
-        db = sync_database(config)
-        embedding_stats = build_embedding_index(config)
+        changed_memory_paths = [Path(style.style_file), *character_files]
+        if not database_path(config).is_file():
+            init_database(config)
+        db = sync_semantic_delta(
+            config,
+            chapter_number=chapter_number,
+            memory_paths=changed_memory_paths,
+            tcs_path=tcs_file,
+        )
+        embedding_stats = apply_embedding_delta(
+            config,
+            chapter_numbers=(chapter_number,),
+            memory_paths=changed_memory_paths,
+        )
         context = build_context(config, chapter_number=chapter_number + 1, semantic=True)
         strict_semantic = semantic_vectors_required(config)
         if strict_semantic and (
@@ -911,11 +931,8 @@ def semantic_rebuild(
         raise ValueError("approved_by is required.")
     root = resolve_project_root(config)
     final_dir = root / "40_manuscript" / "final"
-    final_chapters = {
-        chapter_from_archive(path)
-        for path in final_dir.glob("ch*.md")
-        if chapter_from_archive(path) > 0
-    }
+    final_sources = dict(list_finalized_chapter_files(root))
+    final_chapters = set(final_sources)
     expected_chapters = set(range(1, through + 1))
     if final_chapters != expected_chapters:
         missing = sorted(expected_chapters - final_chapters)
@@ -931,6 +948,11 @@ def semantic_rebuild(
     source_paths: list[Path] = []
     for chapter_number in range(1, through + 1):
         final_file = final_dir / f"ch{chapter_number:03d}.md"
+        if final_sources.get(chapter_number) != final_file:
+            raise ValueError(
+                f"Cannot rebuild: finalized chapter {chapter_number} must use canonical filename "
+                f"{final_file.name}."
+            )
         ledger_file = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
         ledger = read_json(ledger_file, {})
         source = ledger.get("source") if isinstance(ledger, dict) and isinstance(ledger.get("source"), dict) else {}
@@ -966,8 +988,12 @@ def semantic_rebuild(
         root / "40_manuscript" / "chapter_meta.jsonl",
         root / "60_rag" / "chunks",
         root / "60_rag" / "context",
+        root / "60_rag" / "metadata" / "embeddings.jsonl",
         root / "60_rag" / "memory" / "style",
-        root / "70_runtime" / "db",
+        database_path(config),
+        local_store_path(config),
+        local_index_path(config),
+        hnsw_manifest_path(local_index_path(config)),
     ]
     with apply_transaction(
         root,
@@ -1005,7 +1031,8 @@ def semantic_rebuild(
         style = build_style_memory(config)
         rag = build_chunks(config, sync_index=False)
         db = sync_database(config)
-        context = build_context(config, chapter_number=through + 1)
+        embeddings = rebuild_embedding_index(config)
+        context = build_context(config, chapter_number=through + 1, semantic=True)
         state = read_json(state_file, {})
         if not isinstance(state, dict):
             state = {}
@@ -1026,6 +1053,7 @@ def semantic_rebuild(
             style=asdict(style),
             rag=asdict(rag),
             db=asdict(db),
+            embeddings=asdict(embeddings),
             context=asdict(context),
         )
 
@@ -1067,7 +1095,7 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
     if not approved_by:
         raise ValueError("approved_by is required.")
     root = resolve_project_root(config)
-    final_file = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
+    final_file = manuscript_chapter_path(root, chapter_number, lane="final")
     ledger_file = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
     verify_materialized_chapter(config, root, chapter_number)
     closure_file = root / "30_state" / "chapter_closures" / f"ch{chapter_number:03d}.json"
@@ -1168,7 +1196,7 @@ def verify_materialized_chapter(
     root: Path,
     chapter_number: int,
 ) -> None:
-    final_file = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
+    final_file = manuscript_chapter_path(root, chapter_number, lane="final")
     ledger_file = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
     graph_file = root / "30_state" / "story_graph.json"
     foreshadow_file = root / "30_state" / "foreshadowing_state.json"
@@ -1199,7 +1227,12 @@ def verify_materialized_chapter(
         raise ValueError(f"Cannot close ch{chapter_number:03d}: foreshadow state is not materialized through this chapter.")
     tcs = read_json(tcs_file, {})
     expected_ledger = f"30_state/semantic_ledger/ch{chapter_number:03d}.json"
-    if not isinstance(tcs, dict) or str(tcs.get("source_semantic_ledger") or "") != expected_ledger:
+    ledger_hash = sha256(ledger_file.read_bytes()).hexdigest()
+    if (
+        not isinstance(tcs, dict)
+        or str(tcs.get("source_semantic_ledger") or "") != expected_ledger
+        or str(tcs.get("source_semantic_ledger_sha256") or "") != ledger_hash
+    ):
         raise ValueError(f"Cannot close ch{chapter_number:03d}: next TCS is not bound to the semantic ledger.")
 
     chunk_payload = read_json(chunk_file, {})
@@ -1207,28 +1240,47 @@ def verify_materialized_chapter(
     if (
         not isinstance(chunks, list)
         or not chunks
-        or str(chunk_payload.get("source_path") or "") != f"40_manuscript/final/ch{chapter_number:03d}.md"
+        or str(chunk_payload.get("source_path") or "")
+        != manuscript_chapter_relative_path(chapter_number, lane="final")
+        or str(chunk_payload.get("source_sha256") or "") != final_hash
         or not any(
             isinstance(item, dict)
             and isinstance(item.get("metadata"), dict)
             and item["metadata"].get("semantic_ledger") == expected_ledger
             for item in chunks
         )
+        or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("metadata"), dict)
+            or item["metadata"].get("source_sha256") != final_hash
+            for item in chunks
+        )
     ):
         raise ValueError(f"Cannot close ch{chapter_number:03d}: RAG chunks are not derived from the semantic ledger.")
-    db_chunks = query_table(config, "chapter_chunks", limit=100000)
-    if not any(int(item.get("chapter_number") or 0) == chapter_number for item in db_chunks):
-        raise ValueError(f"Cannot close ch{chapter_number:03d}: SQLite has no derived chapter chunk.")
+    source_path = manuscript_chapter_relative_path(chapter_number, lane="final")
+    db_chunk_count, db_hash_count = chapter_chunk_integrity_counts(
+        config,
+        chapter_number=chapter_number,
+        source_path=source_path,
+        source_sha256=final_hash,
+    )
+    if db_chunk_count != len(chunks) or db_hash_count != len(chunks):
+        raise ValueError(
+            f"Cannot close ch{chapter_number:03d}: SQLite chunks do not exactly match "
+            "the current chunk set and final source hash."
+        )
     if semantic_vectors_required(config):
-        source_path = f"40_manuscript/final/ch{chapter_number:03d}.md"
         health = vector_healthcheck(config)
         if not health.ok or health.record_count <= 0:
             raise ValueError(
                 f"Cannot close ch{chapter_number:03d}: semantic vector store is empty or unhealthy ({health.message})."
             )
-        if active_source_record_count(config, source_path) <= 0:
+        active_records = active_source_record_count(config, source_path)
+        hash_records = active_source_hash_count(config, source_path, final_hash)
+        if active_records != len(chunks) or hash_records != len(chunks):
             raise ValueError(
-                f"Cannot close ch{chapter_number:03d}: no active vector is bound to {source_path}."
+                f"Cannot close ch{chapter_number:03d}: active vectors do not exactly match "
+                f"the current chunk set and final source hash for {source_path}."
             )
         context_file = root / "60_rag" / "context" / "next_plot_context.md"
         context_text = context_file.read_text(encoding="utf-8") if context_file.is_file() else ""
@@ -2269,7 +2321,7 @@ def update_chapter_meta_summary(path: Path, chapter_number: int, payload: dict[s
         records.append(
             {
                 "chapter_number": chapter_number,
-                "path": f"40_manuscript/final/ch{chapter_number:03d}.md",
+                "path": manuscript_chapter_relative_path(chapter_number, lane="final"),
                 "summary": str(digest.get("summary") or ""),
                 "semantic_ledger": f"30_state/semantic_ledger/ch{chapter_number:03d}.json",
                 "status": "final",

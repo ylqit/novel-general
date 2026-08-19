@@ -1,6 +1,6 @@
 # longform-novel-engine 配置说明
 
-源码主线使用 v0.4.0 项目协议。配置由内置默认值、模板或项目 `project.yaml`、命令行显式覆盖三层组成：
+源码主线使用 schema v2 项目协议。配置由唯一默认文件、模板或项目 `project.yaml`、命令行显式覆盖三层组成：
 
 ```text
 config/default.engine.yaml
@@ -8,7 +8,11 @@ config/default.engine.yaml
 -> 命令行显式覆盖
 ```
 
-v0.4.0 是破坏性升级：`schema_version` 必须为 `2`，不会读取 v0.3.x 的固定章节数配置或旧纲要 Schema。
+当前配置契约要求 `schema_version: 2`，不读取已删除的固定章节数配置或非当前纲要 Schema。
+
+`config/default.engine.yaml` 是默认值的唯一事实源；Python 不保留第二份内置默认字典。打包资源缺失或 YAML 非 mapping 时直接失败。
+
+项目文件和 CLI overlay 会在合并前校验字段。未知字段直接失败；已删除字段返回替代建议。使用 `longform-engine validate-config project.yaml --explain` 可以查看每个生效字段的值、类型、来源和运行时所有者。
 
 ## 字数合同
 
@@ -38,6 +42,8 @@ length:
 200 万字符按每章 3000 字预测约 667 章；按软区间预测约 556 至 834 章；按每卷 25 万字预测约 8 卷。这些都是 forecast，不是章节或卷数硬约束。200 万及以下为正式工程支持，超过 200 万允许配置，但 doctor 报告 `experimental`。
 
 200 万字新项目默认使用 `semantic.vector_store.backend: local_hnsw`。`local_sqlite` 仍可用于较小索引和元数据存储，但超过 `hnsw_threshold` 后不作为正式规模的向量查询后端；667 章工程基准应使用 `local_hnsw`。
+
+公开配置只接受已实现 query/upsert 驱动的 `local_sqlite` 与 `local_hnsw`。
 
 引擎不再接受：
 
@@ -136,7 +142,7 @@ writing:
 
 ## 每章人工方向
 
-`quality.creative_guidance.mode` 必须保持 `guided`。每章写作前，`chapter_direction_candidate_v2` 必须提供 2 至 3 个方向以及各自代价，由用户显式选择。方向工作单包含全书/卷/主角目标阶梯、场景链、角色欲望、对白归属、关系变化、主线和伏笔回响。
+每章方向选择是 schema v2 的固定工作流，不再提供表面开关。每章写作前，`chapter_direction_candidate_v2` 必须提供 2 至 3 个方向以及各自代价，由用户显式选择。方向工作单包含全书/卷/主角目标阶梯、场景链、角色欲望、对白归属、关系变化、主线和伏笔回响。
 
 用户选择后，CLI 才能生成章节卡、beat 和 writing task。普通章节也不跳过此步骤。
 
@@ -165,10 +171,14 @@ fanfiction:
 ## 写作、存储与安全边界
 
 - `writing.mode`：正式生产固定为 `agent_skill`；`template_dry_run` 只用于测试。
-- `storage.directories`：定义 governance、Bible、outline、state、manuscript、workbench、RAG、runtime 和 exports。
-- `rag` / `semantic`：控制检索、embedding、reranker 和向量后端；SQLite 与向量库都是可重建派生索引。
-- `quality.assurance_mode`：`light|balanced|strict`，控制风险型语义审稿，不把句长、对白率或悬崖结尾变成统一配额。
-- `quality.approved_style_baseline`：只接受人工批准的 prose-free 风格观察。
+- 存储目录和 SQLite 路径由 `storage.layout` 固定，不接受项目级改名。
+- 本地 vector `url/index_url` 允许项目根内的相对路径或绝对路径；解析后越出项目根会在写入前失败。
+- `rag` 控制分块、召回数量和混合检索权重；`semantic.profile` 是 embedding/reranker 模型组合的唯一配置入口。
+- `quality.profile.strictness` 使用 `light|balanced|strict`，控制风险型语义审稿。
+- `quality.semantic_pacing.review_mode` 使用 `off|risk_based|required`；`pacing.default_mode` 使用 `balanced|fast|measured`。
+- `gates.forbidden_reveals` 和 `gates.mainline_info_release_warning_hits` 分别定义项目级禁揭示词与主线信息释放警告阈值。
+- 人工批准风格样本通过 quality baseline CLI 管理，不在项目 YAML 中维护重复章节列表。
+- repair 正文候选固定最多两轮，研究提升固定要求显式批准，这些安全边界不可配置。
 
 Agent 只能读取 manifest 的 `input_files` 并写 `allowed_output_paths`。Bible、outline、final、semantic ledger、RAG、graph、foreshadow state、TCS 和 SQLite 只能经 CLI validate 后显式 apply/finalize/close。
 
@@ -183,4 +193,4 @@ python -m longform_engine.cli init-project --template qidian-longform --output n
 python -m longform_engine.cli quality story-profile novels/demo/project.yaml --json
 ```
 
-v0.4.0 正式发布前的验收状态见 [`V0_4_0_WORD_BUDGET_AND_COMPOSABLE_PROFILE_CHECKLIST.md`](V0_4_0_WORD_BUDGET_AND_COMPOSABLE_PROFILE_CHECKLIST.md)。
+当前配置与发布验收状态见 [`V0_4_3_RELEASE_CHECKLIST.md`](V0_4_3_RELEASE_CHECKLIST.md)。

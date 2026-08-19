@@ -1,5 +1,4 @@
 import json
-from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -193,10 +192,10 @@ def test_manifest_v4_and_four_protocol_surface_rejects_history(tmp_path):
     assert {output_protocol_for_task(task_type) for task_type in TASK_CONTRACTS} == {
         "prose_markdown_v1", "design_document_v1", "evidence_review_v2", "canonical_delta_v1"
     }
-    legacy = root / "50_workbench" / "agent_tasks" / "legacy.json"
-    legacy.write_text(json.dumps({"schema_version": 3}), encoding="utf-8")
+    retired = root / "50_workbench" / "agent_tasks" / "retired.json"
+    retired.write_text(json.dumps({"schema_version": 3}), encoding="utf-8")
     with pytest.raises(ValueError, match="schema_version must be 4"):
-        load_manifest(root, legacy)
+        load_manifest(root, retired)
 
 
 def test_design_markdown_rejects_front_matter_without_pollution(tmp_path):

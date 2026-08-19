@@ -1,6 +1,8 @@
 import pytest
 
-from longform_engine.config import ConfigError, load_project_config
+from longform_engine.config import ConfigError, config_field_registry, load_project_config
+from longform_engine.db import database_path
+from longform_engine.vectorstore import local_index_path, local_store_path
 
 
 def test_template_config_loads_with_defaults():
@@ -10,32 +12,65 @@ def test_template_config_loads_with_defaults():
     assert config.data["length"]["target_total_characters"] == 2000000
     assert config.data["length"]["planning"]["detailed_horizon"] == 20
     assert "total_chapters" not in config.data["length"]
-    assert config.data["storage"]["directories"]["runtime"] == "70_runtime"
-    assert config.data["rag"]["backend"] == "sqlite_hybrid"
+    assert "storage" not in config.data
     assert config.data["writing"]["mode"] == "agent_skill"
     assert config.data["writing"]["agent"]["task_dir"] == "50_workbench/writing_tasks"
     assert config.data["writing"]["agent"]["draft_dir"] == "50_workbench/agent_drafts"
+    assert config.data["writing"]["agent"]["default_workflow"] == "command_driven"
     assert "api" not in config.data["writing"]
     assert "models" not in config.data
-    assert config.data["quality"]["assurance_mode"] == "balanced"
+    assert config.data["quality"]["profile"]["strictness"] == "balanced"
     assert config.data["quality"]["reader_payoff"]["review_mode"] == "risk_based"
-    assert config.data["quality"]["reader_payoff"]["structure_window"] == 20
-    assert config.data["quality"]["reader_payoff"]["language_similarity_threshold"] == 0.72
     assert config.data["quality"]["humanizer"]["semantic_review_mode"] == "risk_based"
     assert config.data["quality"]["humanizer"]["semantic_review_change_ratio"] == 0.15
     assert config.data["semantic"]["vector_store"]["backend"] == "local_hnsw"
     assert config.data["semantic"]["vector_store"]["hnsw_threshold"] == 10000
     assert config.data["semantic"]["vector_store"]["hnsw_ef_search"] == 80
+    assert config.data["rag"]["chunk_max_chars"] == 900
+    assert config.data["rag"]["chunk_overlap_chars"] == 120
+    assert len(config.sources) == 2
+    assert "builtin defaults" not in config.sources
+
+
+def test_missing_packaged_default_fails_without_python_fallback(monkeypatch):
+    import longform_engine.config.loader as config_loader
+
+    monkeypatch.setattr(
+        config_loader,
+        "resource_path",
+        lambda *_parts: (_ for _ in ()).throw(FileNotFoundError("missing default")),
+    )
+
+    with pytest.raises(ConfigError, match="default.engine.yaml"):
+        load_project_config()
+
+
+def test_database_path_is_canonical_and_vector_paths_cannot_escape_project_root(tmp_path):
+    config = load_project_config(template="qidian-longform")
+    config.data["project"]["root_dir"] = str(tmp_path / "novel")
+    outside = tmp_path / "outside" / "index.sqlite"
+
+    assert database_path(config) == tmp_path / "novel" / "70_runtime" / "db" / "longform_engine.sqlite"
+
+    config.data["semantic"]["vector_store"]["url"] = str(outside)
+    with pytest.raises(ValueError, match="escaped the project root"):
+        local_store_path(config)
+
+    config.data["semantic"]["vector_store"]["url"] = ""
+    config.data["semantic"]["vector_store"]["index_url"] = str(outside.with_suffix(".hnsw"))
+    with pytest.raises(ValueError, match="escaped the project root"):
+        local_index_path(config)
 
 
 @pytest.mark.parametrize(
     "overrides, message",
     [
-        ({"quality": {"assurance_mode": "unsafe"}}, "quality.assurance_mode"),
+        ({"quality": {"profile": {"strictness": "unsafe"}}}, "quality.profile.strictness"),
         ({"quality": {"humanizer": {"semantic_review_mode": "skip"}}}, "semantic_review_mode"),
         ({"quality": {"reader_payoff": {"review_mode": "skip"}}}, "reader_payoff.review_mode"),
-        ({"quality": {"reader_payoff": {"structure_window": 9}}}, "reader_payoff.structure_window"),
+        ({"quality": {"reader_payoff": {"structure_window": 9}}}, "Removed config field"),
         ({"semantic": {"vector_store": {"backend": "fake"}}}, "semantic.vector_store.backend"),
+        ({"semantic": {"vector_store": {"backend": "remote_backend"}}}, "must be one of"),
         ({"semantic": {"vector_store": {"hnsw_threshold": 0}}}, "hnsw_threshold"),
         (
             {
@@ -102,8 +137,7 @@ length:
 
     assert config.data["project"]["title"] == "自定义项目"
     assert config.data["length"]["target_total_characters"] == 360000
-    assert config.data["rag"]["backend"] == "sqlite_hybrid"
-    assert config.data["storage"]["directories"]["runtime"] == "70_runtime"
+    assert config.data["rag"]["top_k"] == 12
     assert config.data["writing"]["mode"] == "agent_skill"
 
 
@@ -129,8 +163,8 @@ writing:
         raise AssertionError("Expected ConfigError")
 
 
-def test_legacy_storage_paths_are_rejected(tmp_path):
-    config_path = tmp_path / "legacy_paths.yaml"
+def test_removed_storage_section_is_rejected_with_actionable_error(tmp_path):
+    config_path = tmp_path / "retired_paths.yaml"
     config_path.write_text(
         """
 project:
@@ -147,7 +181,7 @@ storage:
     try:
         load_project_config(config_path)
     except ConfigError as exc:
-        assert "legacy path" in str(exc)
+        assert "Removed config field storage" in str(exc)
     else:
         raise AssertionError("Expected ConfigError")
 
@@ -177,6 +211,21 @@ length:
     assert config.data["project"]["title"] == "命令行标题"
     assert config.data["rag"]["top_k"] == 5
     assert config.sources[-1] == "cli overrides"
+
+
+def test_unknown_fields_are_rejected_before_merge_and_registry_explains_ownership(tmp_path):
+    config_path = tmp_path / "project.yaml"
+    config_path.write_text("project:\n  slug: custom\n  title: 自定义项目\n  root_dir: novel\n", encoding="utf-8")
+    config = load_project_config(config_path, cli_overrides={"rag": {"top_k": 5}})
+    registry = {item["path"]: item for item in config_field_registry(config)}
+
+    assert registry["rag.top_k"]["value"] == 5
+    assert registry["rag.top_k"]["source"] == "cli overrides"
+    assert registry["rag.top_k"]["owner"] == "rag.pipeline"
+    assert registry["rag.chunk_max_chars"]["default"] == 900
+
+    with pytest.raises(ConfigError, match="Unknown config field: rag.typo_top_k"):
+        load_project_config(config_path, cli_overrides={"rag": {"typo_top_k": 5}})
 
 
 def test_scale_preset_style_overrides_template_length():

@@ -176,13 +176,13 @@ def validate_readme() -> list[str]:
         "10_bible/",
         "20_outline/",
         "research_canon.jsonl",
-        "不宣称文学质量优于",
+        "literary_evidence_ready=false",
         "creation.mode",
         "fanfiction canon-task",
         "fanfiction design-task",
         "publication report",
         "publication export",
-        "Humanizer v3",
+        "Humanizer v4",
         "Humanizer v4",
         "design_document_v1",
         "canonical_delta_v1",
@@ -193,7 +193,7 @@ def validate_readme() -> list[str]:
         "commercial_intent",
         "只生成提示",
         "多个 JSON 字段",
-        "CHINESE_WEBNOVEL_AND_FANFICTION_QUALITY_CHECKLIST.md",
+        "V0_4_3_RELEASE_CHECKLIST.md",
     )
     for term in required:
         if term.lower() not in readme.lower():

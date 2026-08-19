@@ -34,9 +34,9 @@ from longform_engine.story_profiles import load_facet_registries
 
 
 SCHEMA = "agent_data_pipeline_readiness_v3"
-FORBIDDEN_RUNTIME_MARKERS = (
-    "LEGACY_COMPATIBILITY_TASK_TYPES",
-    "legacy_document_json",
+RETIRED_RUNTIME_MARKERS = (
+    "LEGACY" + "_COMPATIBILITY_TASK_TYPES",
+    "legacy" + "_document_json",
     "agent_data_pipeline_authorization_v1",
     "validate_document_index_bundle",
     "AGENT_RESULT_ENVELOPE_SCHEMA",
@@ -369,7 +369,7 @@ def check_agent_data_pipeline_readiness(
         and (root / relative).is_file()
     ]
     source_text = "\n".join(path.read_text(encoding="utf-8", errors="ignore") for path in source_files)
-    legacy_hits = [marker for marker in FORBIDDEN_RUNTIME_MARKERS if marker in source_text]
+    retired_hits = [marker for marker in RETIRED_RUNTIME_MARKERS if marker in source_text]
     process_hits = [marker for marker in FORBIDDEN_PROCESS_MARKERS if marker in source_text]
     fixed_budget_hits = [
         pattern.pattern
@@ -378,10 +378,10 @@ def check_agent_data_pipeline_readiness(
     ]
     add_check(
         checks,
-        "legacy_runtime_removed",
-        not legacy_hits,
-        {"markers": legacy_hits, "source_tree_checked": bool(source_files)},
-        "删除仍可执行的旧协议、旧结果适配器和分裂语义任务。",
+        "retired_runtime_removed",
+        not retired_hits,
+        {"markers": retired_hits, "source_tree_checked": bool(source_files)},
+        "删除仍可执行的已退役协议、结果适配器和分裂语义任务。",
     )
     add_check(
         checks,
@@ -523,7 +523,7 @@ def professional_prompt_evidence(
 
     errors: list[str] = []
     inventory: dict[str, Any] = {"roles": [], "playbooks": [], "facets": [], "item_count": 0}
-    fixture_path = root / "config" / "v041_release_acceptance_fixtures.yaml"
+    fixture_path = root / "config" / "agent_protocol_acceptance_fixtures.yaml"
     try:
         payload = yaml.safe_load(fixture_path.read_text(encoding="utf-8")) or {}
     except (OSError, UnicodeError, yaml.YAMLError) as exc:

@@ -19,7 +19,6 @@ from longform_engine.agent_protocols import (
     DESIGN_DOCUMENT_SCHEMA,
     EVIDENCE_REVIEW_SCHEMA,
     PROSE_MARKDOWN_SCHEMA,
-    VALIDATION_REPORT_SCHEMA,
     AgentProtocolError,
     parse_design_document,
     validate_canonical_delta,
@@ -44,6 +43,7 @@ from longform_engine.agent_tasks import (
 from longform_engine.roles import load_role_registry, reject_duplicate_json_keys
 from longform_engine.resources import resource_path, resource_root
 from longform_engine.storage import atomic_write_text
+from longform_engine.storage.layout import manuscript_chapter_path
 
 
 NORMALIZED_RESULT_SCHEMA = "normalized_agent_result_v1"
@@ -431,7 +431,7 @@ def normalize_and_validate_agent_result(
             root,
             result_path,
             chapter_number=chapter_number,
-            expected_source=root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md",
+            expected_source=manuscript_chapter_path(root, chapter_number, lane="final"),
             errors=semantic_errors,
         )
         errors.extend(semantic_errors)
@@ -883,8 +883,8 @@ def load_planned_facts(root: Path, chapter_number: int) -> dict[str, Any]:
     if not isinstance(payload, dict):
         payload = {}
     aliases = {
-        "chapter_duty": ("chapter_duty", "duty"),
-        "reader_gain": ("reader_gain", "reader_payoff"),
+        "chapter_duty": ("chapter_duty",),
+        "reader_gain": ("reader_gain",),
         "cost": ("cost",),
         "promise_refs": ("promise_refs",),
         "platform_promise": ("platform_promise",),

@@ -9,6 +9,7 @@ import json
 
 
 CONTRACT_SCHEMA = "chapter_contract_v1"
+REMOVED_ALIAS_FIELDS = frozenset({"duty", "information", "reader_payoff"})
 CONTRACT_FIELDS = (
     "chapter_number",
     "title",
@@ -46,6 +47,11 @@ class ChapterContractError(ValueError):
 
 
 def project_chapter_contract(card: dict[str, Any]) -> dict[str, Any]:
+    removed_aliases = sorted(REMOVED_ALIAS_FIELDS & set(card))
+    if removed_aliases:
+        raise ChapterContractError(
+            "chapter_contract_inconsistent:removed_alias_present:" + ",".join(removed_aliases)
+        )
     contract: dict[str, Any] = {"schema": CONTRACT_SCHEMA}
     for field in CONTRACT_FIELDS:
         value = card.get(field)

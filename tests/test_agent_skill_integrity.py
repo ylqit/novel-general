@@ -23,7 +23,7 @@ from tests.project_fixtures import mark_project_ready
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_v041_progressive_prompts_four_protocols_and_no_pollution(tmp_path):
+def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
     registry = load_role_registry(ROOT)
     assert_current_protocol_coverage(registry)
     assert registry.registry_version == 3
@@ -73,7 +73,7 @@ def test_v041_progressive_prompts_four_protocols_and_no_pollution(tmp_path):
     assert readiness["provenance"]["execution_model"] == "single_process_sequential"
 
     fixtures = yaml.safe_load(
-        (ROOT / "config" / "v041_release_acceptance_fixtures.yaml").read_text(encoding="utf-8")
+        (ROOT / "config" / "agent_protocol_acceptance_fixtures.yaml").read_text(encoding="utf-8")
     )
     professional = fixtures["professional_prompt_calibration"]
     assert set(professional["roles"]) == set(registry.roles)
@@ -277,7 +277,7 @@ def test_v041_progressive_prompts_four_protocols_and_no_pollution(tmp_path):
     assert "--document" in cli_text
 
 
-def test_v041_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
+def test_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
     reports = {}
     briefs = {}
     for profile in ("compact", "standard", "large"):
@@ -369,58 +369,30 @@ def test_v041_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
     assert {item["aggregation"] for item in batches} == {"deterministic_source_hash_and_evidence_id"}
 
 
-def test_release_guard_covers_agent_collaboration_hardening_contracts():
+def test_release_guard_tracks_current_v043_contracts():
     guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "AGENT_COLLABORATION_HARDENING_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_4_3_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    production = (ROOT / "src" / "longform_engine" / "production.py").read_text(encoding="utf-8")
 
     for marker in (
         "REQUIRED_RELEASE_CONTRACT_MARKERS",
+        "check_experience_layer_guards",
+        "DIRECT_WRITER_PATTERNS",
         "test_strict_manifest_validation_rejects_unknown_type_and_canonical_output",
-        "content_expand",
         "AGENT_TASK_STATUSES",
         "canonical_write_transaction_rollback",
         "rollback_restores_touched_paths",
     ):
         assert marker in guard
-    for item in (
-        "release guard 增加 strict manifest validation 文档/测试入口",
-        "release guard 增加 `content_expand` manifest 覆盖检查",
-        "release guard 增加 lifecycle states 覆盖检查",
-        "release guard 增加 transaction rollback 覆盖检查",
+    for section in (
+        "配置与覆盖来源",
+        "统一章节路径",
+        "内部质量证据",
+        "单进程完整验证",
+        "发布前本地证据",
+        "远程发布证据",
     ):
-        assert f"- [x] {item}" in checklist
-
-
-def test_release_guard_covers_experience_orchestration_contracts():
-    guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "AGENT_EXPERIENCE_ORCHESTRATION_CHECKLIST.md").read_text(encoding="utf-8")
-    docs = (ROOT / "docs" / "AGENT_EXPERIENCE_ORCHESTRATION.md").read_text(encoding="utf-8")
-    production = (ROOT / "src" / "longform_engine" / "production.py").read_text(encoding="utf-8")
-
-    for marker in (
-        "check_experience_layer_guards",
-        "DIRECT_WRITER_PATTERNS",
-        "production_status_cmd",
-        "production_loop_cmd",
-        "agent_task_brief_cmd",
-        "function_body",
-    ):
-        assert marker in guard
-    for item in (
-        "release guard 增加体验层命令 guard marker。",
-        "release guard 检查 `production loop` 不 import OpenAI/Anthropic。",
-        "release guard 检查 `production loop` 不直接写 final/RAG/graph/SQLite。",
-        "release guard 检查 `agent-task brief` 是只读渲染。",
-        "no-pollution E2E 覆盖 production loop 暂停路径。",
-    ):
-        assert f"- [x] {item}" in checklist
-    for marker in (
-        "production_status_v1",
-        "experience layer release guard",
-        "no LLM in Python CLI",
-        "no automatic chapter finalize",
-    ):
-        assert marker in docs
+        assert section in checklist
     for marker in (
         "def production_loop",
         "def agent_task_brief",
@@ -440,7 +412,7 @@ def test_release_guard_keeps_agent_protocol_isolated_and_current():
         "compile_isolated_agent_package",
         "validate_isolated_agent_submission",
         "Agent protocol module must remain write-free",
-        "check_v041_legacy_runtime_removed",
+        "check_removed_runtime_guards",
     ):
         assert marker in guard
     assert "longform_engine.agent_isolation" not in production
@@ -452,7 +424,7 @@ def test_release_guard_covers_agent_data_pipeline_readiness_gate():
 
     for marker in (
         "check_agent_data_pipeline_readiness_guards",
-        "agent_data_pipeline_readiness_v2",
+        "agent_data_pipeline_readiness_v3",
         "ready_for_data_pipeline",
         "professional_prompt_ready",
         "professional_prompt_calibration",

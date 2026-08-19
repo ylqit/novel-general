@@ -26,8 +26,8 @@ from longform_engine.vectorstore import (
 )
 
 
-RAG_SCALE_BENCHMARK_SCHEMA = "rag_scale_engine_measurement_v1"
-RAG_SCALE_DATASET_ID = "chinese-webnovel-rag-scale-phase5-v1"
+RAG_SCALE_BENCHMARK_SCHEMA = "rag_scale_engine_measurement_v2"
+RAG_SCALE_DATASET_ID = "chinese-webnovel-rag-scale-v1"
 SUPPORTED_SCALES = (50, 200, 500, 667)
 SUPPORTED_LOCAL_BACKENDS = ("local_sqlite", "local_hnsw")
 VECTOR_DIMENSION = 64
@@ -48,7 +48,6 @@ class RagScaleBenchmarkResult:
     dataset_hash: str
     evidence_grade: str
     measurement_source: str
-    claim_eligible: bool
     scale_chapters: int
     backend: str
     vector_count: int
@@ -63,7 +62,7 @@ class RagScaleBenchmarkResult:
     incremental_index_ms: float
     stale_sync_ok: bool
     rollback_restore_ok: bool
-    meets_phase_thresholds: bool
+    meets_thresholds: bool
     threshold_errors: tuple[str, ...]
     model: str
     python_version: str
@@ -97,7 +96,7 @@ def run_rag_scale_benchmark(
         root
         / "70_runtime"
         / "benchmarks"
-        / "rag-scale-phase5-v1"
+        / "rag-scale-v1"
         / selected_backend
         / f"ch{scale_chapters:03d}"
     )
@@ -179,7 +178,7 @@ def run_rag_scale_benchmark(
     recall_at_k = recalled / len(targets)
     fact_error_rate = fact_errors / len(targets)
     p95_query_ms = percentile(latencies, 0.95)
-    threshold_errors = phase_threshold_errors(
+    threshold_errors = scale_threshold_errors(
         scale_chapters=scale_chapters,
         recall_at_k=recall_at_k,
         fact_error_rate=fact_error_rate,
@@ -200,7 +199,6 @@ def run_rag_scale_benchmark(
         dataset_hash=dataset_hash(scenario, records),
         evidence_grade="synthetic_engineering",
         measurement_source="engine_runner",
-        claim_eligible=False,
         scale_chapters=scale_chapters,
         backend=selected_backend,
         vector_count=len(records),
@@ -215,7 +213,7 @@ def run_rag_scale_benchmark(
         incremental_index_ms=round(incremental_index_ms, 3),
         stale_sync_ok=stale_sync_ok,
         rollback_restore_ok=rollback_restore_ok,
-        meets_phase_thresholds=not threshold_errors,
+        meets_thresholds=not threshold_errors,
         threshold_errors=tuple(threshold_errors),
         model="fixed-hash-vector-v1",
         python_version=platform.python_version(),
@@ -304,7 +302,7 @@ def configured_backend(config: ConfigDocument) -> str:
     return str(vector_store.get("backend") or "local_sqlite")
 
 
-def phase_threshold_errors(
+def scale_threshold_errors(
     *,
     scale_chapters: int,
     recall_at_k: float,

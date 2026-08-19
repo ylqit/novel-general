@@ -2,6 +2,8 @@
 
 中文斜杠指令只用于 Codex App、Codex CLI 和 ClaudeCode 的交互层。所有正式执行必须落到 `longform-engine ...` CLI；Agent 只能写入 `50_workbench/agent_drafts/`，不能直接写 final、RAG、story graph、memory、TCS 或 SQLite。
 
+当前运行时合同固定为 28 个角色、25 类任务、4 类 Agent 输出协议和单进程顺序执行。
+
 ## 使用规则
 
 - `project.yaml` 表示当前小说项目配置文件。
@@ -92,7 +94,7 @@
 | `/工程章节语义任务` | `longform-engine chapter semantic-task project.yaml --chapter N` | `--chapter N` | `50_workbench/semantic_tasks/` | 让 Agent 只完整读取一次 final，输出统一章节语义 delta。 |
 | `/工程章节语义校验` | `longform-engine chapter semantic-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation report | 校验 final hash、精确 span、实体 ID、关系旧状态、角色知识来源、伏笔 ID/窗口和完整性声明。 |
 | `/工程章节语义应用` | `longform-engine chapter semantic-apply project.yaml --chapter N --file ...` | `--chapter N`、`--file` | 语义账本、graph、角色当前视图、伏笔状态、TCS、RAG、SQLite | 显式、事务化物化全部章节知识；不同候选不得覆盖已落盘语义账本。 |
-| `/工程语义重建` | `longform-engine chapter semantic-rebuild project.yaml --through N --approved-by human` | `--through N`、`--approved-by` | graph、角色当前视图、伏笔状态、world、timeline、TCS、RAG、SQLite | 只从连续 canonical semantic ledgers 重建派生视图；用于回填完成后的迁移收口，不读取旧派生状态作为事实。 |
+| `/工程语义重建` | `longform-engine chapter semantic-rebuild project.yaml --through N --approved-by human` | `--through N`、`--approved-by` | graph、角色当前视图、伏笔状态、world、timeline、TCS、RAG、SQLite | 只从连续 canonical semantic ledgers 重建派生视图，不读取现有派生状态作为事实。 |
 | `/工程关闭章节` | `longform-engine chapter close project.yaml --chapter N --approved-by human` | `--chapter N`、`--approved-by` | 章节关闭记录、按章审计 ZIP | 验证语义与所有派生视图后关闭章节；保留最近两章活动工作区，才允许进入下一章。 |
 
 ## RAG / Semantic / Memory / Graph
@@ -106,7 +108,7 @@
 | `/工程向量重建` | `longform-engine vector-store rebuild project.yaml` | `project.yaml` | 向量派生索引 | 从 embedding 文件事实重建向量索引。 |
 | `/工程RAG规模验证` | `longform-engine benchmark rag-scale-run project.yaml --scale-chapters 500 --backend local_hnsw` | `--scale-chapters` | `70_runtime/benchmarks/` | 运行固定工程数据集；结果不可替代文学质量证据。 |
 | `/工程构建RAG` | `longform-engine rag build project.yaml` | `project.yaml` | `60_rag/chunks/`、SQLite | 从 final 正文构建 RAG chunk。 |
-| `/工程语义构建RAG` | `longform-engine rag build project.yaml --with-embeddings` | `project.yaml` | `60_rag/`、`70_runtime/models/` | 构建含 embedding 的 RAG 产物，必要时自动下载默认模型。 |
+| `/工程语义构建RAG` | `longform-engine rag build project.yaml --with-embeddings` | `project.yaml` | `60_rag/`、`70_runtime/models/` | 显式全量重建 embedding snapshot 与 vector store；逐章 semantic apply 使用 bounded delta。 |
 | `/工程检索` | `longform-engine rag query project.yaml "query"` | `query` | 只读或 query cache | 查询本地 RAG。 |
 | `/工程语义检索` | `longform-engine rag query project.yaml "query" --semantic` | `query` | 只读或 query cache | 使用语义召回/重排查询 RAG。 |
 | `/工程上下文` | `longform-engine rag context project.yaml --chapter N` | `--chapter N` | `60_rag/context/` | 写入下一章上下文。 |
@@ -123,6 +125,18 @@
 | `/工程图谱检索` | `longform-engine graph retrieve project.yaml --query "query" --chapter N --json` | `--query`、`--chapter N` | 只读 | 执行图谱遍历检索。 |
 
 新生产链只使用 `chapter semantic-*` 一次抽取并统一物化，不再提供 graph、memory 或 character-memory 的独立 Agent 抽取任务。
+
+## 崩溃恢复
+
+恢复必须先诊断、后按诊断返回的精确 SHA 执行；Agent 不得手工删除 lock、transaction report 或 snapshot。
+
+| 中文指令 | CLI 命令 | 必填参数 | 写入边界 | 说明 |
+| --- | --- | --- | --- | --- |
+| `/工程恢复状态` | `longform-engine recovery status project.yaml --json` | `project.yaml` | 只读 | 区分 active/dead/unknown lock 与 preparing/prepared/applied transaction。 |
+| `/工程丢弃预备事务` | `longform-engine recovery discard-preparing project.yaml --report PATH --expected-sha256 SHA --approved-by NAME` | status 返回的路径/SHA、审批者 | transaction snapshot、recovery audit | 只处理尚未开放 canonical 写边界的 preparing 事务。 |
+| `/工程回滚中断事务` | `longform-engine recovery rollback-transaction project.yaml --report PATH --expected-sha256 SHA --approved-by NAME` | status 返回的路径/SHA、审批者 | touched paths、transaction report、recovery audit | 只处理 inventory 完整的 prepared 事务。 |
+| `/工程清理提交快照` | `longform-engine recovery cleanup-committed project.yaml --report PATH --expected-sha256 SHA --approved-by NAME` | status 返回的路径/SHA、审批者 | transaction snapshot、recovery audit | 只清理已 applied 的残留快照，不回滚 canonical。 |
+| `/工程回收死锁` | `longform-engine recovery reclaim-lock project.yaml --expected-sha256 SHA --approved-by NAME` | status 返回的 SHA、审批者 | `70_runtime/locks/`、recovery audit | 只回收同主机确认死亡且 process identity 匹配的 stale lock。 |
 
 ## 产物归档
 
@@ -195,7 +209,7 @@ Editorial review contract:
 
 ## `/工程续章` 写前引导
 
-`/工程续章` 是续写章节的主入口，对应 `longform-engine continue-write project.yaml --chapter N`。它只生成或刷新 Agent 写作任务包，不直接写 final、RAG、story graph、memory、TCS 或 SQLite。不要把旧项目里的旧命令名作为用户主协议；中文工程命令保持为唯一主入口。
+`/工程续章` 是续写章节的主入口，对应 `longform-engine continue-write project.yaml --chapter N`。它只生成或刷新 Agent 写作任务包，不直接写 final、RAG、story graph、memory、TCS 或 SQLite；中文工程命令保持为唯一主入口。
 
 执行 `/工程续章` 前，Agent 必须完成以下预检：
 

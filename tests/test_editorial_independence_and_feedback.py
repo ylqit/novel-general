@@ -27,7 +27,7 @@ from tests.project_fixtures import checked_review_coverage, mark_project_ready
 
 def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_blocker(tmp_path):
     config, root = seed_project(tmp_path)
-    config.data["quality"]["assurance_mode"] = "light"
+    config.data["quality"]["profile"]["strictness"] = "light"
     config.data["quality"]["semantic_review_milestones"] = []
     config.data["quality"]["semantic_review_boundaries"] = False
     config.data["quality"]["reader_payoff"]["review_mode"] = "off"
@@ -186,16 +186,6 @@ def test_editorial_v2_rejects_stale_context_without_canonical_pollution(tmp_path
     draft.write_text("# Chapter 1\n\nAri inspects one bounded clue.\n", encoding="utf-8")
     review = editorial_review(config, chapter_number=1)
     role_id = review.selected_roles[0]
-    context = json.loads(
-        (
-            root
-            / "50_workbench"
-            / "editorial_reviews"
-            / "agent_tasks"
-            / "ch001"
-            / f"{role_id}.context.json"
-        ).read_text(encoding="utf-8")
-    )
     result_file = root / "50_workbench" / "editorial_reviews" / "results" / f"ch001.{role_id}.json"
     result_file.write_text(
         json.dumps(editorial_payload(root, draft, role_id), ensure_ascii=False),
@@ -269,16 +259,6 @@ def test_editorial_aggregate_rejects_results_for_replaced_chapter_candidate(tmp_
     draft.write_text("# Chapter 1\n\nAri inspects the first bounded clue.\n", encoding="utf-8")
     review = editorial_review(config, chapter_number=1)
     for role_id in review.selected_roles:
-        context = json.loads(
-            (
-                root
-                / "50_workbench"
-                / "editorial_reviews"
-                / "agent_tasks"
-                / "ch001"
-                / f"{role_id}.context.json"
-            ).read_text(encoding="utf-8")
-        )
         result_file = (
             root
             / "50_workbench"
@@ -336,16 +316,6 @@ def test_editorial_v2_requires_exact_chapter_evidence_for_blocking_finding(tmp_p
     review = editorial_review(config, chapter_number=1)
     role_id = "planning_chief_editor"
     assert role_id in review.selected_roles
-    context = json.loads(
-        (
-            root
-            / "50_workbench"
-            / "editorial_reviews"
-            / "agent_tasks"
-            / "ch001"
-            / f"{role_id}.context.json"
-        ).read_text(encoding="utf-8")
-    )
     result_file = root / "50_workbench" / "editorial_reviews" / "results" / f"ch001.{role_id}.json"
     result_file.write_text(
         json.dumps(

@@ -40,7 +40,7 @@ def build_structure_observation(
         "schema": "structure_observation_v1",
         "chapter_number": chapter_number,
         "source_hash": sha256_text(text),
-        "chapter_duty": str(card.get("chapter_duty") or card.get("duty") or ""),
+        "chapter_duty": str(card.get("chapter_duty") or ""),
         "opening_mode": str(craft.get("opening_mode") or infer_opening_mode(text)),
         "topology_id": str(craft.get("topology_id") or card.get("topology_id") or "unknown"),
         "ending_mode": str(craft.get("ending_mode") or infer_ending_mode(text)),
@@ -71,70 +71,6 @@ def build_structure_observation(
     }
 
 
-def analyze_structure_pattern(
-    root: Path,
-    observation: dict[str, Any],
-    *,
-    window: int = 20,
-    language_similarity_threshold: float = 0.72,
-) -> dict[str, Any]:
-    """Detect repeated structure+language+payoff combinations without prescribing a template."""
-
-    history = read_jsonl(root / STRUCTURE_HISTORY)[-max(2, window - 1):]
-    sequence = [*history, observation]
-    findings: list[dict[str, Any]] = []
-    repeated_dimensions: list[str] = []
-    for field in ("opening_mode", "topology_id", "ending_mode", "reader_gain_position"):
-        value = str(observation.get(field) or "")
-        streak = trailing_streak(sequence, field, value)
-        if value not in {"", "unknown", "unreviewed", "other"} and streak >= 3:
-            repeated_dimensions.append(field)
-            findings.append(
-                {
-                    "code": f"repeated_{field}",
-                    "severity": "P2",
-                    "message": f"{field} repeats for {streak} consecutive finalized/candidate chapters.",
-                    "chapters": [int(item.get("chapter_number") or 0) for item in sequence[-streak:]],
-                }
-            )
-
-    recent = sequence[-3:]
-    language_scores = [
-        language_similarity(recent[index - 1], recent[index])
-        for index in range(1, len(recent))
-    ]
-    language_repeated = (
-        len(recent) == 3
-        and bool(language_scores)
-        and min(language_scores) >= language_similarity_threshold
-    )
-    structure_repeated = len(repeated_dimensions) >= 2
-    payoff_repeated = "reader_gain_position" in repeated_dimensions
-    if structure_repeated and language_repeated and payoff_repeated:
-        findings.append(
-            {
-                "code": "combined_formula_repetition",
-                "severity": "P1",
-                "message": (
-                    "Structure, language shape, and payoff position repeat together across three chapters; "
-                    "revise causal scene construction instead of swapping surface wording."
-                ),
-                "chapters": [int(item.get("chapter_number") or 0) for item in recent],
-            }
-        )
-    return {
-        "schema": "structure_repetition_analysis_v1",
-        "chapter_number": int(observation.get("chapter_number") or 0),
-        "window_size": window,
-        "language_similarity_threshold": language_similarity_threshold,
-        "history_count": len(history),
-        "repeated_dimensions": repeated_dimensions,
-        "language_similarity": [round(value, 4) for value in language_scores],
-        "findings": findings,
-        "blocking": any(item["severity"] == "P1" for item in findings),
-    }
-
-
 def record_quality_history(
     root: Path,
     *,
@@ -150,12 +86,8 @@ def record_quality_history(
     reward = {
         "schema": "reader_reward_entry_v2",
         "chapter_number": chapter_number,
-        "chapter_duty": str(
-            card.get("chapter_duty")
-            or card.get("duty")
-            or ""
-        ),
-        "planned_gain": str(card.get("reader_gain") or card.get("reader_payoff") or ""),
+        "chapter_duty": str(card.get("chapter_duty") or ""),
+        "planned_gain": str(card.get("reader_gain") or ""),
         "observed_gain": str(observed.get("reader_gain") or ""),
         "duty_fulfilled": bool(observed.get("reader_gain")) if review else None,
         "planned_cost": str(card.get("cost") or ""),

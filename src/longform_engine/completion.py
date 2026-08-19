@@ -12,6 +12,7 @@ from typing import Any
 from longform_engine.config import ConfigDocument
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import list_finalized_chapter_files, manuscript_chapter_path
 from longform_engine.text_metrics import content_character_count
 
 
@@ -36,8 +37,9 @@ class BookCompletionStatus:
 def completion_status(config: ConfigDocument) -> BookCompletionStatus:
     root = resolve_project_root(config)
     forecast = compile_length_forecast(config.data["length"])
-    finals = sorted((root / "40_manuscript" / "final").glob("ch*.md"))
-    latest = max((chapter_number(path) for path in finals), default=0)
+    final_entries = list_finalized_chapter_files(root)
+    finals = [path for _number, path in final_entries]
+    latest = max((number for number, _path in final_entries), default=0)
     total = sum(content_character_count(path.read_text(encoding="utf-8")) for path in finals)
     blockers: list[str] = []
     if not finals:
@@ -74,7 +76,7 @@ def completion_status(config: ConfigDocument) -> BookCompletionStatus:
         and int(approval.get("latest_final_chapter") or -1) == latest
         and latest > 0
         and approval.get("latest_final_sha256")
-        == sha256((root / "40_manuscript" / "final" / f"ch{latest:03d}.md").read_bytes()).hexdigest()
+        == sha256(manuscript_chapter_path(root, latest, lane="final").read_bytes()).hexdigest()
         and approval.get("final_corpus_sha256") == final_corpus_hash(root)
     )
     return BookCompletionStatus(
@@ -125,7 +127,7 @@ def approve_completion(
         "ending_summary": str(ending_summary).strip(),
         "latest_final_chapter": status.latest_final_chapter,
         "latest_final_sha256": sha256(
-            (root / "40_manuscript" / "final" / f"ch{status.latest_final_chapter:03d}.md").read_bytes()
+            manuscript_chapter_path(root, status.latest_final_chapter, lane="final").read_bytes()
         ).hexdigest(),
         "total_content_characters": status.total_content_characters,
         "final_corpus_sha256": final_corpus_hash(root),
@@ -158,7 +160,7 @@ def fast_completion_marker(config: ConfigDocument) -> tuple[str, dict[str, Any]]
     if not isinstance(approval, dict) or approval.get("schema") != "book_completion_approval_v2":
         return "invalid", approval if isinstance(approval, dict) else {}
     latest = int(approval.get("latest_final_chapter") or 0)
-    final_file = root / "40_manuscript" / "final" / f"ch{latest:03d}.md"
+    final_file = manuscript_chapter_path(root, latest, lane="final")
     closure_file = root / "30_state" / "chapter_closures" / f"ch{latest:03d}.json"
     if (
         approval.get("approved") is not True
@@ -197,15 +199,10 @@ def has_blocking_gate(root: Path) -> bool:
 
 def final_corpus_hash(root: Path) -> str:
     digest = sha256()
-    for path in sorted((root / "40_manuscript" / "final").glob("ch*.md")):
+    for _number, path in list_finalized_chapter_files(root):
         digest.update(path.name.encode("utf-8"))
         digest.update(path.read_bytes())
     return digest.hexdigest()
-
-
-def chapter_number(path: Path) -> int:
-    digits = "".join(character for character in path.stem if character.isdigit())
-    return int(digits or 0)
 
 
 def read_json(path: Path, default: Any) -> Any:

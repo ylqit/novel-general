@@ -22,7 +22,7 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     template = load_project_config(template="qidian-longform")
     project = init_project(template, output=tmp_path / "novel")
     config = load_project_config(project.project_config)
-    config.data["rag"]["embedding"]["profile"] = "local-hash"
+    config.data["semantic"]["profile"] = "local-hash"
     config.data["semantic"]["allow_fallback"] = True
     config.data["semantic"]["vector_store"]["backend"] = "local_sqlite"
     root = project.root
@@ -222,6 +222,15 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
 
     gate_dir = root / "50_workbench" / "gate_artifacts" / "ch001"
     write_json(gate_dir / "gate_result.json", {"passed": True, "severity_counts": {"P0": 0, "P1": 0}})
+    chunk_file = root / "60_rag" / "chunks" / "ch001.json"
+    chunk_payload = json.loads(chunk_file.read_text(encoding="utf-8"))
+    tampered_chunk = deepcopy(chunk_payload)
+    tampered_chunk["source_sha256"] = "0" * 64
+    write_json(chunk_file, tampered_chunk)
+    with pytest.raises(ValueError, match="RAG chunks are not derived"):
+        chapter_close(config, chapter_number=1, approved_by="tester")
+    write_json(chunk_file, chunk_payload)
+
     graph_file = Path(applied.graph_file)
     materialized_graph = json.loads(graph_file.read_text(encoding="utf-8"))
     materialized_graph["last_semantic_chapter"] = 0

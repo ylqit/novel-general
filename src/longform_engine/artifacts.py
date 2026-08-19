@@ -26,6 +26,11 @@ from longform_engine.agent_tasks import (
     task_archive_projection,
 )
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import (
+    list_canonical_chapter_files,
+    list_finalized_chapter_files,
+    manuscript_chapter_path,
+)
 
 
 CHAPTER_PATTERN = re.compile(r"(?:^|[._/-])ch0*(\d+)(?:[._/-]|$)", re.IGNORECASE)
@@ -35,31 +40,28 @@ SCAN_ROOTS = (
     "30_state/tcs",
     "40_manuscript/draft",
     "40_manuscript/final",
-    "40_manuscript/submitted",
     "50_workbench",
     "70_runtime/run_reports",
 )
 TRANSACTION_ROOT = "70_runtime/transactions"
 ARCHIVE_SCHEMA = "chapter_artifact_archive_v3"
-LEGACY_ARCHIVE_SCHEMAS = {
-    "chapter_artifact_archive_v1",
-    "chapter_artifact_archive_v2",
-}
 AUDIT_PAYLOAD_SCHEMA = "chapter_artifact_payload_v1"
 AUDIT_MANIFEST_MEMBER = "_audit/manifest.json"
 AUDIT_BLOB_PREFIX = "_audit/blobs/"
 AUDIT_TASKS_MEMBER = "_audit/agent_tasks.json"
 AUDIT_EVENTS_MEMBER = "_audit/agent_events.jsonl"
 PROJECT_SETUP_ARCHIVE_SCHEMA = "project_setup_artifact_archive_v1"
-RETAINED_EVIDENCE = (
-    ("final", "40_manuscript/final/ch{chapter:03d}.md"),
-    ("semantic_ledger", "30_state/semantic_ledger/ch{chapter:03d}.json"),
-    ("closure", "30_state/chapter_closures/ch{chapter:03d}.json"),
-)
+
+
+def retained_evidence_paths(root: Path, chapter_number: int) -> tuple[tuple[str, Path], ...]:
+    return (
+        ("final", manuscript_chapter_path(root, chapter_number, lane="final")),
+        ("semantic_ledger", root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"),
+        ("closure", root / "30_state" / "chapter_closures" / f"ch{chapter_number:03d}.json"),
+    )
 ARCHIVABLE_PREFIXES = (
     "30_state/tcs/",
     "40_manuscript/draft/",
-    "40_manuscript/submitted/",
     "50_workbench/",
     "70_runtime/run_reports/",
 )
@@ -121,7 +123,7 @@ class ArtifactVerifyResult:
     entries: int
     errors: tuple[str, ...]
     pending_close_chapters: tuple[int, ...]
-    migration_required_chapters: tuple[int, ...]
+    incomplete_chapters: tuple[int, ...]
     project_setup_archive: bool
 
 
@@ -278,8 +280,7 @@ def compact_artifacts(
         unique_content.setdefault((chapter_number, file_hash(path)), path.stat().st_size)
     retained_hashes: dict[int, set[str]] = {}
     for chapter_number in {chapter for chapter, _path in candidates}:
-        for _role, template in RETAINED_EVIDENCE:
-            retained = root / template.format(chapter=chapter_number)
+        for _role, retained in retained_evidence_paths(root, chapter_number):
             if retained.is_file():
                 retained_hashes.setdefault(chapter_number, set()).add(file_hash(retained))
     stored_content = {
@@ -505,12 +506,6 @@ def write_project_setup_archive(root: Path, paths: list[Path], projection: dict[
     return archive, manifest_file
 
 
-def ensure_compaction_boundary(root: Path, through: int) -> None:
-    blockers = compaction_blockers(root, through)
-    if blockers:
-        raise ValueError("Cannot compact artifacts: " + "; ".join(blockers))
-
-
 def compaction_blockers(root: Path, through: int) -> list[str]:
     if through == 0:
         return []
@@ -544,10 +539,7 @@ def verify_artifacts(config: ConfigDocument) -> ArtifactVerifyResult:
     for archive in archives:
         manifest_path = archive.with_suffix(".manifest.json")
         manifest = read_json(manifest_path, {})
-        if not isinstance(manifest, dict) or manifest.get("schema") not in {
-            *LEGACY_ARCHIVE_SCHEMAS,
-            ARCHIVE_SCHEMA,
-        }:
+        if not isinstance(manifest, dict) or manifest.get("schema") != ARCHIVE_SCHEMA:
             errors.append(f"Missing or invalid manifest: {relative_path(root, manifest_path)}")
             continue
         chapter_number = chapter_from_archive(archive)
@@ -572,26 +564,26 @@ def verify_artifacts(config: ConfigDocument) -> ArtifactVerifyResult:
         errors.append(f"Archived artifact still exists as a loose duplicate: {relative}")
     errors.extend(verify_task_projection_state(root, archives))
     errors.extend(verify_event_segments(root))
-    final_chapters = chapter_numbers_in(root / "40_manuscript" / "final", "*.md")
+    final_chapters = {chapter_number for chapter_number, _path in list_finalized_chapter_files(root)}
     ledger_chapters = chapter_numbers_in(root / "30_state" / "semantic_ledger", "*.json")
     closure_chapters = set(closed)
     unclosed = sorted(final_chapters - closure_chapters)
     pending_close: list[int] = []
-    migration_required: list[int] = []
+    incomplete: list[int] = []
     if unclosed:
         latest = max(final_chapters)
         expected_prior = set(range(1, latest)) & final_chapters
         if unclosed == [latest] and expected_prior <= closure_chapters and latest in ledger_chapters:
             pending_close = [latest]
         else:
-            migration_required = unclosed
+            incomplete = unclosed
     for chapter_number in sorted(closure_chapters):
         if chapter_number not in final_chapters or chapter_number not in ledger_chapters:
             errors.append(f"Closed chapter is missing final or semantic ledger evidence: ch{chapter_number:03d}")
     if errors:
         status = "invalid"
-    elif migration_required:
-        status = "migration_required"
+    elif incomplete:
+        status = "incomplete"
     elif pending_close:
         status = "pending_close"
     else:
@@ -603,7 +595,7 @@ def verify_artifacts(config: ConfigDocument) -> ArtifactVerifyResult:
         entries=entries,
         errors=tuple(errors),
         pending_close_chapters=tuple(pending_close),
-        migration_required_chapters=tuple(migration_required),
+        incomplete_chapters=tuple(incomplete),
         project_setup_archive=project_setup_archive.is_file(),
     )
 
@@ -760,10 +752,17 @@ def chapter_candidates(root: Path, through: int) -> list[tuple[int, Path]]:
         directory = root / scan_root
         if not directory.exists():
             continue
+        if scan_root in {"40_manuscript/draft", "40_manuscript/final"}:
+            formal_chapters = list_canonical_chapter_files(directory)
+            if scan_root == "40_manuscript/draft":
+                candidates.extend(
+                    (chapter_number, path)
+                    for chapter_number, path in formal_chapters
+                    if chapter_number <= through
+                )
+            continue
         for path in directory.rglob("*"):
             if not path.is_file():
-                continue
-            if scan_root == "40_manuscript/final" and re.fullmatch(r"ch\d+\.md", path.name):
                 continue
             if path.name in {"agent_task_index.json", "events.jsonl"}:
                 continue
@@ -949,12 +948,14 @@ def committed_snapshot_paths(root: Path) -> list[Path]:
         payload = read_json(report, {})
         if not isinstance(payload, dict) or payload.get("status") != "applied":
             continue
+        if payload.get("schema") == "canonical_write_transaction_report_v3":
+            continue
         snapshot_dir = str(payload.get("snapshot_dir") or "")
         if not snapshot_dir:
             continue
         path = (root / snapshot_dir).resolve()
         try:
-            path.relative_to((report_dir / "s").resolve())
+            path.relative_to((root / "70_runtime" / "tx").resolve())
         except ValueError:
             continue
         if path.exists() and path.is_dir() and path not in result:
@@ -977,18 +978,18 @@ def transaction_snapshot_diagnostics(root: Path) -> dict[str, Any]:
             continue
         snapshot = (root / snapshot_value).resolve()
         try:
-            snapshot.relative_to((report_dir / "s").resolve())
+            snapshot.relative_to((root / "70_runtime" / "tx").resolve())
         except ValueError:
             continue
         status = str(payload.get("status") or "")
         cleanup_complete = payload.get("cleanup_complete")
-        if status == "pending":
+        if status in {"pending", "preparing", "prepared"}:
             pending.append(relative_path(root, report))
         elif status == "applied" and cleanup_complete is not True and snapshot.is_dir():
             if snapshot not in seen:
                 seen.add(snapshot)
                 reclaimable.append(snapshot)
-        elif status == "rolled_back" and cleanup_complete is not True and snapshot.is_dir():
+        elif status in {"rolled_back", "recovery_failed"} and cleanup_complete is not True and snapshot.is_dir():
             retained_failures.append(relative_path(root, report))
     return {
         "pending": tuple(sorted(set(pending))),
@@ -1007,6 +1008,8 @@ def verify_single_archive(root: Path, archive: Path, manifest: dict[str, Any]) -
 
 def verify_single_archive_content(root: Path, archive: Path, manifest: dict[str, Any]) -> list[str]:
     errors: list[str] = []
+    if manifest.get("schema") != ARCHIVE_SCHEMA:
+        return [f"archive schema must be {ARCHIVE_SCHEMA}"]
     if file_hash(archive) != str(manifest.get("archive_sha256") or ""):
         errors.append("archive hash mismatch")
         return errors
@@ -1017,50 +1020,45 @@ def verify_single_archive_content(root: Path, archive: Path, manifest: dict[str,
     expected_members: list[str] = []
     with zipfile.ZipFile(archive, "r") as handle:
         names = handle.namelist()
-        if manifest.get("schema") == ARCHIVE_SCHEMA:
-            expected_members.append(AUDIT_MANIFEST_MEMBER)
-            if AUDIT_MANIFEST_MEMBER not in names:
-                errors.append("archive is missing its embedded audit manifest")
+        expected_members.append(AUDIT_MANIFEST_MEMBER)
+        if AUDIT_MANIFEST_MEMBER not in names:
+            errors.append("archive is missing its embedded audit manifest")
+        else:
+            try:
+                embedded = json.loads(handle.read(AUDIT_MANIFEST_MEMBER).decode("utf-8"))
+            except (UnicodeError, json.JSONDecodeError) as exc:
+                errors.append(f"embedded audit manifest is unreadable: {exc}")
             else:
-                try:
-                    embedded = json.loads(handle.read(AUDIT_MANIFEST_MEMBER).decode("utf-8"))
-                except (UnicodeError, json.JSONDecodeError) as exc:
-                    errors.append(f"embedded audit manifest is unreadable: {exc}")
+                external_payload = {key: value for key, value in manifest.items() if key != "archive_sha256"}
+                if embedded != external_payload:
+                    errors.append("embedded audit manifest does not match the external manifest")
+        if manifest.get("payload_schema") != AUDIT_PAYLOAD_SCHEMA:
+            errors.append("payload_schema is invalid")
+        projection = manifest.get("agent_task_projection")
+        if isinstance(projection, dict):
+            for member_key, hash_key, count_key, kind in (
+                ("tasks_member", "tasks_sha256", "task_count", "tasks"),
+                ("events_member", "events_sha256", "event_count", "events"),
+            ):
+                member = str(projection.get(member_key) or "")
+                expected_members.append(member)
+                if member not in names:
+                    errors.append(f"archive is missing its Agent {kind} projection")
+                    continue
+                data = handle.read(member)
+                if sha256(data).hexdigest() != str(projection.get(hash_key) or ""):
+                    errors.append(f"Agent {kind} projection hash mismatch")
+                    continue
+                if kind == "tasks":
+                    try:
+                        values = json.loads(data.decode("utf-8"))
+                    except (UnicodeError, json.JSONDecodeError):
+                        values = None
+                    actual_count = len(values) if isinstance(values, list) else -1
                 else:
-                    external_payload = {
-                        key: value
-                        for key, value in manifest.items()
-                        if key != "archive_sha256"
-                    }
-                    if embedded != external_payload:
-                        errors.append("embedded audit manifest does not match the external manifest")
-            if manifest.get("payload_schema") != AUDIT_PAYLOAD_SCHEMA:
-                errors.append("payload_schema is invalid")
-            projection = manifest.get("agent_task_projection")
-            if isinstance(projection, dict):
-                for member_key, hash_key, count_key, kind in (
-                    ("tasks_member", "tasks_sha256", "task_count", "tasks"),
-                    ("events_member", "events_sha256", "event_count", "events"),
-                ):
-                    member = str(projection.get(member_key) or "")
-                    expected_members.append(member)
-                    if member not in names:
-                        errors.append(f"archive is missing its Agent {kind} projection")
-                        continue
-                    data = handle.read(member)
-                    if sha256(data).hexdigest() != str(projection.get(hash_key) or ""):
-                        errors.append(f"Agent {kind} projection hash mismatch")
-                        continue
-                    if kind == "tasks":
-                        try:
-                            values = json.loads(data.decode("utf-8"))
-                        except (UnicodeError, json.JSONDecodeError):
-                            values = None
-                        actual_count = len(values) if isinstance(values, list) else -1
-                    else:
-                        actual_count = len(data.decode("utf-8").splitlines()) if data else 0
-                    if actual_count != int(projection.get(count_key) or 0):
-                        errors.append(f"Agent {kind} projection count mismatch")
+                    actual_count = len(data.decode("utf-8").splitlines()) if data else 0
+                if actual_count != int(projection.get(count_key) or 0):
+                    errors.append(f"Agent {kind} projection count mismatch")
         for item in expected_entries:
             if not isinstance(item, dict):
                 errors.append("entry descriptor must be an object")
@@ -1112,28 +1110,23 @@ def verify_single_archive_content(root: Path, archive: Path, manifest: dict[str,
             errors.append("manifest contains duplicate entry paths")
         if int(manifest.get("entry_count") or 0) != len(expected_entries):
             errors.append("entry_count does not match entries")
-        if manifest.get("schema") == ARCHIVE_SCHEMA:
-            projection_members = {AUDIT_TASKS_MEMBER, AUDIT_EVENTS_MEMBER}
-            unique_members = set(expected_members) - {AUDIT_MANIFEST_MEMBER, *projection_members}
-            if int(manifest.get("stored_blob_count", -1)) != len(unique_members):
-                errors.append("stored_blob_count does not match content-addressed members")
-            if int(manifest.get("deduplicated_entries", -1)) != len(expected_entries) - len(unique_members):
-                errors.append("deduplicated_entries does not match logical entries")
-            logical_bytes = sum(int(item.get("size") or 0) for item in expected_entries if isinstance(item, dict))
-            if int(manifest.get("uncompressed_bytes", -1)) != logical_bytes:
-                errors.append("uncompressed_bytes does not match logical entries")
-            stored_bytes = sum(
-                len(handle.read(member))
-                for member in unique_members
-                if member in names
-            )
-            if int(manifest.get("stored_uncompressed_bytes", -1)) != stored_bytes:
-                errors.append("stored_uncompressed_bytes does not match stored blobs")
+        projection_members = {AUDIT_TASKS_MEMBER, AUDIT_EVENTS_MEMBER}
+        unique_members = set(expected_members) - {AUDIT_MANIFEST_MEMBER, *projection_members}
+        if int(manifest.get("stored_blob_count", -1)) != len(unique_members):
+            errors.append("stored_blob_count does not match content-addressed members")
+        if int(manifest.get("deduplicated_entries", -1)) != len(expected_entries) - len(unique_members):
+            errors.append("deduplicated_entries does not match logical entries")
+        logical_bytes = sum(int(item.get("size") or 0) for item in expected_entries if isinstance(item, dict))
+        if int(manifest.get("uncompressed_bytes", -1)) != logical_bytes:
+            errors.append("uncompressed_bytes does not match logical entries")
+        stored_bytes = sum(len(handle.read(member)) for member in unique_members if member in names)
+        if int(manifest.get("stored_uncompressed_bytes", -1)) != stored_bytes:
+            errors.append("stored_uncompressed_bytes does not match stored blobs")
 
     retained = manifest.get("retained_evidence", [])
-    if manifest.get("schema") in {"chapter_artifact_archive_v2", ARCHIVE_SCHEMA}:
-        if not isinstance(retained, list) or not retained:
-            errors.append("retained_evidence must bind final, semantic ledger, and closure")
+    if not isinstance(retained, list) or not retained:
+        errors.append("retained_evidence must bind final, semantic ledger, and closure")
+    else:
         roles = {str(item.get("role") or "") for item in retained if isinstance(item, dict)}
         if roles != {"final", "semantic_ledger", "closure"}:
             errors.append("retained_evidence roles are incomplete")
@@ -1187,8 +1180,6 @@ def archive_member_for_entry(item: dict[str, Any], manifest: dict[str, Any]) -> 
     """Resolve one logical artifact to its immutable ZIP member."""
 
     path = str(item.get("path") or "")
-    if manifest.get("schema") != ARCHIVE_SCHEMA:
-        return path
     digest = str(item.get("sha256") or "")
     member = str(item.get("member") or "")
     expected = f"{AUDIT_BLOB_PREFIX}{digest}"
@@ -1198,8 +1189,6 @@ def archive_member_for_entry(item: dict[str, Any], manifest: dict[str, Any]) -> 
 
 
 def retained_source_for_entry(item: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any] | None:
-    if manifest.get("schema") != ARCHIVE_SCHEMA:
-        return None
     role = str(item.get("retained_role") or "")
     if not role:
         return None
@@ -1238,8 +1227,7 @@ def read_archived_entry(
 
 def retained_evidence_entries(root: Path, chapter_number: int) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
-    for role, template in RETAINED_EVIDENCE:
-        path = root / template.format(chapter=chapter_number)
+    for role, path in retained_evidence_paths(root, chapter_number):
         if not path.is_file():
             raise ValueError(
                 f"Cannot archive ch{chapter_number:03d}: missing retained {role} evidence "

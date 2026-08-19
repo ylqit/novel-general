@@ -6,10 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, Sequence
 import json
 import os
+import secrets
 import shutil
+import socket
 import sqlite3
 import tempfile
 
@@ -79,7 +81,9 @@ class ApplyTransaction:
         self.snapshot_dir = self.root / "70_runtime" / "tx" / snapshot_id
         self._snapshots: list[dict[str, Any]] = []
         self._sqlite_backups: list[dict[str, Any]] = []
+        self._before_state: list[dict[str, Any]] = []
         self._filesystem_paths, self._sqlite_paths = partition_transaction_paths(self.root, self.touched_paths)
+        self.created_at = utc_now()
         self._active = False
         self._finished = False
 
@@ -87,7 +91,7 @@ class ApplyTransaction:
         self.begin()
         return self
 
-    def __exit__(self, exc_type: object, exc: object, traceback: object) -> bool:
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> Literal[False]:
         if exc_type is not None:
             self.rollback(exc)
             return False
@@ -99,28 +103,43 @@ class ApplyTransaction:
             return self
         self.report_dir.mkdir(parents=True, exist_ok=True)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(
-            self.report_file,
-            json.dumps(
-                self._payload(
-                    status="pending",
-                    report_type="canonical_write_transaction_report_v2",
-                    extra={
-                        "snapshot_dir": project_relative_path(self.root, self.snapshot_dir),
-                        "snapshots": [],
-                        "sqlite_backups": [],
-                        "cleanup_complete": False,
-                    },
-                ),
-                ensure_ascii=False,
-                indent=2,
+        self._write_report(
+            self._payload(
+                status="preparing",
+                report_type="canonical_write_transaction_report_v3",
+                extra=self._snapshot_payload(cleanup_complete=False),
             )
-            + "\n",
         )
         for path in self._filesystem_paths:
             self._snapshots.append(snapshot_transaction_path(self.root, self.snapshot_dir, path))
+            self._write_report(
+                self._payload(
+                    status="preparing",
+                    report_type="canonical_write_transaction_report_v3",
+                    extra=self._snapshot_payload(cleanup_complete=False),
+                )
+            )
         for path in self._sqlite_paths:
             self._sqlite_backups.append(snapshot_sqlite_database(self.root, self.snapshot_dir, path))
+            self._write_report(
+                self._payload(
+                    status="preparing",
+                    report_type="canonical_write_transaction_report_v3",
+                    extra=self._snapshot_payload(cleanup_complete=False),
+                )
+            )
+        self._before_state = transaction_paths_state(self.root, self.touched_paths)
+        self._write_report(
+            self._payload(
+                status="prepared",
+                report_type="canonical_write_transaction_report_v3",
+                extra={
+                    **self._snapshot_payload(cleanup_complete=False),
+                    "prepared_at": utc_now(),
+                    "before_state": self._before_state,
+                },
+            )
+        )
         self._active = True
         return self
 
@@ -132,21 +151,30 @@ class ApplyTransaction:
     def commit(self) -> TransactionReportResult:
         if self._finished:
             return TransactionReportResult(report_file=self.report_file)
-        cleanup_errors = cleanup_transaction_snapshot(self.snapshot_dir)
-        cleanup_complete = not cleanup_errors
+        committed_at = utc_now()
         payload = self._payload(
             status="applied",
-            report_type="canonical_write_transaction_report_v2",
+            report_type="canonical_write_transaction_report_v3",
             extra={
-                "snapshot_dir": project_relative_path(self.root, self.snapshot_dir),
-                "snapshots": self._snapshots,
-                "sqlite_backups": self._sqlite_backups,
-                "snapshots_retained": not cleanup_complete,
-                "cleanup_complete": cleanup_complete,
-                "cleanup_errors": cleanup_errors,
+                **self._snapshot_payload(cleanup_complete=False),
+                "snapshots_retained": True,
+                "cleanup_errors": [],
+                "committed_at": committed_at,
+                "before_state": self._before_state,
+                "after_state": transaction_paths_state(self.root, self.touched_paths),
             },
         )
-        atomic_write_text(self.report_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        self._write_report(payload)
+        cleanup_errors = cleanup_transaction_snapshot(self.snapshot_dir)
+        payload.update(
+            {
+                "snapshots_retained": bool(cleanup_errors),
+                "cleanup_complete": not cleanup_errors,
+                "cleanup_errors": cleanup_errors,
+                "cleanup_finished_at": utc_now(),
+            }
+        )
+        self._write_report(payload)
         self._finished = True
         return TransactionReportResult(report_file=self.report_file)
 
@@ -177,8 +205,8 @@ class ApplyTransaction:
             "message": str(exc) if exc is not None else "",
         }
         payload = self._payload(
-            status="rolled_back",
-            report_type="canonical_write_transaction_rollback_v2",
+            status="rolled_back" if cleanup_complete else "recovery_failed",
+            report_type="canonical_write_transaction_rollback_v3",
             extra={
                 "snapshot_dir": project_relative_path(self.root, self.snapshot_dir),
                 "snapshots": self._snapshots,
@@ -190,17 +218,20 @@ class ApplyTransaction:
                 "cleanup_errors": cleanup_errors,
                 "snapshots_retained": not cleanup_complete,
                 "error": error_payload,
+                "before_state": self._before_state,
+                "after_state": transaction_paths_state(self.root, self.touched_paths),
+                "rolled_back_at": utc_now(),
             },
         )
-        atomic_write_text(self.report_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+        self._write_report(payload)
         atomic_write_text(self.rollback_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
         self._finished = True
         return TransactionReportResult(report_file=self.rollback_file)
 
     def _payload(self, *, status: str, report_type: str, extra: dict[str, Any]) -> dict[str, Any]:
         payload = {
-            "schema": "canonical_write_transaction_report_v2",
-            "schema_version": 2,
+            "schema": "canonical_write_transaction_report_v3",
+            "schema_version": 3,
             "report_type": report_type,
             "status": status,
             "command": self.command,
@@ -214,10 +245,30 @@ class ApplyTransaction:
                 "sqlite_uses_backup_participant": True,
             },
             "metadata": self.metadata,
-            "created_at": utc_now(),
+            "created_at": self.created_at,
         }
         payload.update(extra)
         return payload
+
+    def _snapshot_payload(self, *, cleanup_complete: bool) -> dict[str, Any]:
+        return {
+            "snapshot_dir": project_relative_path(self.root, self.snapshot_dir),
+            "inventory_targets": {
+                "filesystem": [
+                    project_relative_path(self.root, path) for path in self._filesystem_paths
+                ],
+                "sqlite": [
+                    project_relative_path(self.root, path) for path in self._sqlite_paths
+                ],
+            },
+            "snapshots": self._snapshots,
+            "sqlite_backups": self._sqlite_backups,
+            "snapshots_retained": self.snapshot_dir.exists(),
+            "cleanup_complete": cleanup_complete,
+        }
+
+    def _write_report(self, payload: dict[str, Any]) -> None:
+        atomic_write_text(self.report_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
 class ProjectLock:
@@ -243,7 +294,9 @@ class ProjectLock:
 
     def release(self) -> None:
         if self._acquired and self.path.exists():
-            self.path.unlink()
+            existing = _read_lock_metadata(self.path)
+            if existing.get("owner_token") == self.metadata.get("owner_token"):
+                self.path.unlink()
         self._acquired = False
 
     def __enter__(self) -> "ProjectLock":
@@ -289,22 +342,22 @@ def init_project(
         atomic_write_text(project_config, yaml.safe_dump(project_data, allow_unicode=True, sort_keys=False))
         created_files.append(project_config)
 
-    for relative_path, content in INITIAL_TEXT_FILES.items():
+    for relative_path, text_content in INITIAL_TEXT_FILES.items():
         path = root / relative_path
         if force or not path.exists():
-            atomic_write_text(path, content)
+            atomic_write_text(path, text_content)
             created_files.append(path)
 
-    for relative_path, content in INITIAL_JSON_FILES.items():
+    for relative_path, json_payload in INITIAL_JSON_FILES.items():
         path = root / relative_path
         if force or not path.exists():
-            atomic_write_text(path, json.dumps(content, ensure_ascii=False, indent=2) + "\n")
+            atomic_write_text(path, json.dumps(json_payload, ensure_ascii=False, indent=2) + "\n")
             created_files.append(path)
 
-    for relative_path, content in INITIAL_JSONL_FILES.items():
+    for relative_path, jsonl_content in INITIAL_JSONL_FILES.items():
         path = root / relative_path
         if force or not path.exists():
-            atomic_write_text(path, content)
+            atomic_write_text(path, jsonl_content)
             created_files.append(path)
 
     return ProjectInitResult(
@@ -352,47 +405,6 @@ def apply_transaction(
     )
 
 
-def record_transaction_report(
-    root: Path,
-    *,
-    command: str,
-    chapter_number: int | None = None,
-    source_paths: tuple[str | Path, ...] | list[str | Path] = (),
-    touched_paths: tuple[str | Path, ...] | list[str | Path] = (),
-    status: str = "applied",
-    metadata: dict[str, Any] | None = None,
-) -> TransactionReportResult:
-    """Write a lightweight audit report for an apply/finalize canonical write."""
-
-    report_dir = root / "70_runtime" / "transactions"
-    report_dir.mkdir(parents=True, exist_ok=True)
-    name_parts = [utc_transaction_timestamp(), safe_file_token(command)]
-    if chapter_number is not None:
-        name_parts.append(f"ch{chapter_number:03d}")
-    report_file = unique_report_path(report_dir / ("_".join(name_parts) + ".json"))
-    payload = {
-        "schema": "canonical_write_transaction_report_v2",
-        "schema_version": 2,
-        "report_type": "canonical_write_transaction_report_v2",
-        "status": status,
-        "command": command,
-        "chapter_number": chapter_number,
-        "source_paths": [project_relative_path(root, path) for path in source_paths],
-        "touched_paths": [project_relative_path(root, path) for path in touched_paths],
-        "boundary": {
-            "agent_outputs_directly_applied": False,
-            "canonical_mutation_requires_apply_or_finalize": True,
-        },
-        "metadata": metadata or {},
-        "cleanup_complete": True,
-        "snapshots": [],
-        "sqlite_backups": [],
-        "created_at": utc_now(),
-    }
-    atomic_write_text(report_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-    return TransactionReportResult(report_file=report_file)
-
-
 def acquire_project_lock(
     config: ConfigDocument,
     *,
@@ -403,13 +415,25 @@ def acquire_project_lock(
     """Create a project-scoped lock that is removed when released."""
 
     root = resolve_project_root(config, output)
+    return acquire_named_lock(root, "project.lock", owner=owner, command=command)
+
+
+def acquire_named_lock(root: Path, name: str, *, owner: str, command: str) -> ProjectLock:
+    if Path(name).name != name or not name.endswith(".lock"):
+        raise StorageError(f"Invalid project lock name: {name}")
     metadata = {
+        "schema": "project_lock_v2",
+        "schema_version": 2,
         "owner": owner,
+        "owner_token": secrets.token_hex(16),
         "command": command,
         "created_at": utc_now(),
         "root": str(root),
+        "pid": os.getpid(),
+        "hostname": socket.gethostname(),
+        "process_identity": process_start_identity(os.getpid()),
     }
-    return ProjectLock(root / "70_runtime" / "locks" / "project.lock", metadata)
+    return ProjectLock(root / "70_runtime" / "locks" / name, metadata)
 
 
 def snapshot_project(
@@ -482,7 +506,7 @@ def project_relative_path(root: Path, path: str | Path) -> str:
         return str(path).replace("\\", "/")
 
 
-def dedupe_project_paths(root: Path, paths: tuple[str | Path, ...] | list[str | Path]) -> list[Path]:
+def dedupe_project_paths(root: Path, paths: Sequence[str | Path]) -> list[Path]:
     resolved: list[Path] = []
     seen: set[str] = set()
     for raw in paths:
@@ -569,9 +593,10 @@ def partition_transaction_paths(root: Path, paths: list[Path]) -> tuple[list[Pat
     for path in paths:
         resolved = path.resolve()
         if resolved == runtime_db_dir:
-            sqlite_paths.extend(sorted(runtime_db_dir.glob("*.sqlite")))
+            for pattern in ("*.sqlite", "*.sqlite3", "*.db"):
+                sqlite_paths.extend(sorted(runtime_db_dir.glob(pattern)))
             sqlite_paths.extend((runtime_db_dir / "longform_engine.sqlite", runtime_db_dir / "vector_store.sqlite"))
-        elif resolved.suffix.lower() in {".sqlite", ".sqlite3", ".db"} and runtime_db_dir in resolved.parents:
+        elif resolved.suffix.lower() in {".sqlite", ".sqlite3", ".db"}:
             sqlite_paths.append(resolved)
         else:
             filesystem_paths.append(resolved)
@@ -609,7 +634,7 @@ def restore_sqlite_database(root: Path, snapshot_dir: Path, item: dict[str, Any]
     target = (root / relative).resolve()
     target.relative_to(root.resolve())
     if not item.get("existed"):
-        for suffix in ("", "-wal", "-shm"):
+        for suffix in ("", "-wal", "-shm", "-journal"):
             candidate = Path(str(target) + suffix)
             if candidate.exists():
                 candidate.unlink()
@@ -623,16 +648,29 @@ def restore_sqlite_database(root: Path, snapshot_dir: Path, item: dict[str, Any]
     if not backup.is_file():
         raise StorageError(f"SQLite transaction backup is missing: {backup}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    # Backup into the live database rather than replacing the file. On Windows a
-    # recently committed connection may still hold a handle even though no SQL
-    # transaction is active; SQLite's own backup API remains safe in that case.
+    # Backup into the live database rather than replacing it. In particular, do
+    # not unlink WAL/SHM before opening the destination: Windows may briefly keep
+    # those handles alive after a committed connection closes, while SQLite can
+    # still checkpoint and restore the database safely through its own API.
     source = sqlite3.connect(backup)
     destination = sqlite3.connect(target)
     try:
+        destination.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
         source.backup(destination, pages=256)
+        destination.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        journal_mode = destination.execute("PRAGMA journal_mode = DELETE").fetchone()
+        if journal_mode is None or str(journal_mode[0]).lower() != "delete":
+            raise StorageError(f"Restored SQLite database could not leave WAL mode: {target}")
+        integrity = destination.execute("PRAGMA integrity_check").fetchone()
+        if integrity is None or str(integrity[0]).lower() != "ok":
+            raise StorageError(f"Restored SQLite database failed integrity_check: {target}")
     finally:
         destination.close()
         source.close()
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = Path(str(target) + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
 
 
 def cleanup_transaction_snapshot(snapshot_dir: Path) -> list[str]:
@@ -643,6 +681,96 @@ def cleanup_transaction_snapshot(snapshot_dir: Path) -> list[str]:
     except OSError as exc:
         return [str(exc)]
     return []
+
+
+def transaction_paths_state(root: Path, paths: list[Path]) -> list[dict[str, Any]]:
+    return [transaction_path_state(root, path) for path in paths]
+
+
+def transaction_path_state(root: Path, path: Path) -> dict[str, Any]:
+    relative = project_relative_path(root, path)
+    if not path.exists():
+        return {"path": relative, "kind": "missing", "sha256": "", "bytes": 0}
+    if path.is_file():
+        return {
+            "path": relative,
+            "kind": "file",
+            "sha256": sha256(path.read_bytes()).hexdigest(),
+            "bytes": path.stat().st_size,
+        }
+    records = []
+    total_bytes = 0
+    for child in sorted(item for item in path.rglob("*") if item.is_file()):
+        digest = sha256(child.read_bytes()).hexdigest()
+        size = child.stat().st_size
+        total_bytes += size
+        records.append(f"{child.relative_to(path).as_posix()}:{size}:{digest}")
+    return {
+        "path": relative,
+        "kind": "dir",
+        "sha256": sha256("\n".join(records).encode("utf-8")).hexdigest(),
+        "bytes": total_bytes,
+        "files": len(records),
+    }
+
+
+def process_start_identity(pid: int) -> str:
+    if pid <= 0:
+        return ""
+    if os.name == "nt":
+        return windows_process_start_identity(pid)
+    stat_path = Path("/proc") / str(pid) / "stat"
+    try:
+        raw = stat_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return ""
+    command_end = raw.rfind(")")
+    if command_end < 0:
+        return ""
+    fields_after_command = raw[command_end + 1 :].split()
+    return fields_after_command[19] if len(fields_after_command) > 19 else ""
+
+
+def windows_process_start_identity(pid: int) -> str:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = (
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        )
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        process = kernel32.OpenProcess(0x1000, False, pid)
+        if not process:
+            return ""
+        creation = wintypes.FILETIME()
+        exit_time = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        try:
+            ok = kernel32.GetProcessTimes(
+                process,
+                ctypes.byref(creation),
+                ctypes.byref(exit_time),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            )
+            if not ok:
+                return ""
+            return str((creation.dwHighDateTime << 32) | creation.dwLowDateTime)
+        finally:
+            kernel32.CloseHandle(process)
+    except (AttributeError, OSError, TypeError, ValueError):
+        return ""
 
 
 def remove_path(path: Path) -> None:

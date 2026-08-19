@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import json
 import re
 import sys
 
@@ -12,7 +11,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 SRC = ROOT / "src" / "longform_engine"
 
-LEGACY_PATHS = (
+RETIRED_PATHS = (
     "00_bible",
     "01_outline",
     "02_memory",
@@ -22,7 +21,7 @@ LEGACY_PATHS = (
     "06_runtime",
 )
 
-ALLOW_LEGACY = {
+ALLOW_RETIRED_PATH_REFERENCES = {
     "src/longform_engine/config/loader.py",
 }
 
@@ -112,24 +111,54 @@ DIRECT_WRITER_PATTERNS = (
     r"\bsqlite3\.",
 )
 
+REPOSITORY_TEXT_SUFFIXES = {".json", ".md", ".py", ".toml", ".txt", ".yaml", ".yml"}
+REPOSITORY_SCAN_DIRECTORIES = (
+    ".github",
+    "config",
+    "docs",
+    "longform-novel-claude",
+    "longform-novel-codex",
+    "scripts",
+    "shared",
+    "src",
+    "templates",
+    "tests",
+)
+REPOSITORY_SCAN_FILES = ("AGENTS.md", "README.md", "pyproject.toml", "resource-manifest.json")
+SINGLE_PROJECT_FORBIDDEN_TERMS = tuple(
+    "".join(parts)
+    for parts in (
+        ("novel", "-", "skill"),
+        ("novel", "_", "skill"),
+        ("novel", " ", "skill"),
+        ("agent", "_", "product"),
+        ("agent", "-", "product"),
+        ("super", "ior", "_to_", "novel", "_", "skill"),
+        ("claim", "_", "eligible"),
+        ("super", "ior", "ity"),
+        ("优", "于"),
+        ("超", "越"),
+    )
+)
+
 REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
-        "docs/AGENT_COLLABORATION_HARDENING_CHECKLIST.md",
+        "docs/V0_4_3_RELEASE_CHECKLIST.md",
         (
-            "strict manifest validation",
-            "release guard 增加 strict manifest validation 文档/测试入口",
-            "release guard 增加 `content_expand` manifest 覆盖检查",
-            "release guard 增加 lifecycle states 覆盖检查",
-            "release guard 增加 transaction rollback 覆盖检查",
+            "配置与覆盖来源",
+            "统一章节路径",
+            "内部质量证据",
+            "单进程完整验证",
+            "literary_evidence_ready=false",
         ),
     ),
     (
-        "docs/AGENT_COLLABORATION_HARDENING.md",
+        "docs/ARCHITECTURE.md",
         (
-            "AgentTaskManifest v1/v2",
-            "content_expand",
-            "`revision rollback`: affected tasks -> `rolled_back`",
-            "rollback_restores_touched_paths",
+            "唯一章节合同",
+            "canonical_write_transaction_report_v3",
+            "apply_embedding_delta",
+            "配置注册表",
         ),
     ),
     (
@@ -191,28 +220,28 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "docs/AGENT_EXPERIENCE_ORCHESTRATION.md",
+        "docs/PIPELINE_MODEL.md",
         (
             "production_status_v1",
-            "experience layer release guard",
-            "no LLM in Python CLI",
-            "no automatic chapter finalize",
+            "production next",
+            "agent-task brief",
+            "chapter finalize",
         ),
     ),
     (
-        "docs/AGENT_EXPERIENCE_ORCHESTRATION_CHECKLIST.md",
+        "docs/V0_4_3_RELEASE_CHECKLIST.md",
         (
-            "- [x] release guard 增加体验层命令 guard marker。",
-            "- [x] release guard 检查 `production loop` 不 import OpenAI/Anthropic。",
-            "- [x] release guard 检查 `production loop` 不直接写 final/RAG/graph/SQLite。",
-            "- [x] release guard 检查 `agent-task brief` 是只读渲染。",
-            "- [x] no-pollution E2E 覆盖 production loop 暂停路径。",
+            "发布前本地证据",
+            "远程发布证据",
+            "GitHub Release",
+            "wheel",
+            "sdist",
         ),
     ),
     (
         "tests/test_agent_skill_integrity.py",
         (
-            "test_release_guard_covers_experience_orchestration_contracts",
+            "test_release_guard_tracks_current_v043_contracts",
             "check_experience_layer_guards",
             "DIRECT_WRITER_PATTERNS",
         ),
@@ -220,8 +249,8 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "tests/test_agent_skill_integrity.py",
         (
-            "test_v041_progressive_prompts_four_protocols_and_no_pollution",
-            "agent_data_pipeline_readiness_v2",
+            "test_progressive_prompts_cover_four_protocols_without_pollution",
+            "agent_data_pipeline_readiness_v3",
             "single_process_sequential",
         ),
     ),
@@ -249,18 +278,113 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "src/longform_engine/artifacts.py",
         (
-            "ensure_compaction_boundary",
             "failed verification before compaction",
             "contains an older version of loose artifact",
         ),
     ),
     (
-        "docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION_CHECKLIST.md",
+        "docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md",
         (
             "chapter_semantic_bundle_v1",
-            "invalid bundle",
             "SQLite",
-            "Definition Of Done",
+            "SQLite、RAG 和向量索引",
+        ),
+    ),
+    (
+        "docs/ARCHITECTURE.md",
+        (
+            "唯一章节合同",
+            "canonical_write_transaction_report_v3",
+            "apply_embedding_delta",
+            "release check --channel rc",
+        ),
+    ),
+    (
+        "docs/STORAGE_MODEL.md",
+        (
+            "Transaction v3",
+            "recovery discard-preparing",
+            "recovery rollback-transaction",
+            "source_sha256",
+        ),
+    ),
+    (
+        "src/longform_engine/storage/recovery.py",
+        (
+            'TRANSACTION_SCHEMA = "canonical_write_transaction_report_v3"',
+            '"recoverable_discard"',
+            '"recoverable_rollback"',
+            '"recoverable_cleanup"',
+            "expected_sha256",
+            "transaction_inventory_targets_do_not_cover_touched_paths",
+        ),
+    ),
+    (
+        "src/longform_engine/storage/project.py",
+        (
+            '"schema": "project_lock_v2"',
+            "PRAGMA integrity_check",
+            'for suffix in ("-wal", "-shm", "-journal")',
+        ),
+    ),
+    (
+        "src/longform_engine/storage/layout.py",
+        (
+            "def list_finalized_chapter_files",
+            "Non-canonical manuscript filename",
+            "CANONICAL_CHAPTER_PATTERN.fullmatch",
+        ),
+    ),
+    (
+        "src/longform_engine/rag/pipeline.py",
+        (
+            "def apply_embedding_delta",
+            "def rebuild_embedding_index",
+            "sync_source_records",
+            '"source_sha256"',
+        ),
+    ),
+    (
+        "src/longform_engine/memory/pipeline.py",
+        (
+            "def apply_style_memory_delta",
+            '"aggregation_mode": "per_source_incremental_v1"',
+            "run chapter semantic-rebuild before continuing",
+        ),
+    ),
+    (
+        "src/longform_engine/db/sqlite_index.py",
+        (
+            "def sync_semantic_delta",
+            "require_continuous_prior_chapters",
+            "def sync_chunk_number",
+            "Semantic database delta contains a chunk outside chapter",
+        ),
+    ),
+    (
+        "tests/test_storage.py",
+        (
+            "test_recovery_discards_preparing_snapshot_without_touching_canonical_state",
+            "test_recovery_rolls_back_prepared_transaction_with_exact_report_hash",
+            "test_recovery_only_cleans_snapshots_after_durable_applied_marker",
+            "test_recovery_reclaims_only_confirmed_dead_lock_with_exact_hash",
+            "test_recovery_rejects_inventory_that_does_not_cover_every_touched_path",
+        ),
+    ),
+    (
+        "tests/test_cli.py",
+        (
+            "test_cli_blocks_ordinary_mutation_until_prepared_transaction_is_recovered",
+            "test_cli_routes_confirmed_dead_lock_to_explicit_recovery",
+            "storage_recovery_required",
+        ),
+    ),
+    (
+        "scripts/check_markdown_links.py",
+        (
+            "Markdown local links passed",
+            "has_exact_case",
+            "local link escapes repository",
         ),
     ),
 )
@@ -279,6 +403,21 @@ def main() -> int:
     )
     if "api_provider" in public_runtime:
         failures.append("api_provider must not remain a public runtime mode or late-failure branch.")
+    loader_text = (SRC / "config" / "loader.py").read_text(encoding="utf-8", errors="ignore")
+    if "BUILTIN_DEFAULTS" in loader_text:
+        failures.append("config/default.engine.yaml must remain the sole default source; BUILTIN_DEFAULTS returned.")
+    removed_forwarders = {
+        "src/longform_engine/config/loader.py": "def repo_root(",
+        "src/longform_engine/rag/pipeline.py": "def build_embedding_index(",
+        "src/longform_engine/storage/project.py": "def record_transaction_report(",
+    }
+    for relative, marker in removed_forwarders.items():
+        if marker in (ROOT / relative).read_text(encoding="utf-8", errors="ignore"):
+            failures.append(f"removed thin or unsafe compatibility entry point returned: {relative}:{marker}")
+    chapter_contract_text = (SRC / "chapter_contract.py").read_text(encoding="utf-8", errors="ignore")
+    for alias in ('"duty"', '"information"', '"reader_payoff"'):
+        if alias not in chapter_contract_text:
+            failures.append(f"chapter contract removed-alias rejection marker is missing: {alias}")
     for path in iter_text_files(SRC):
         rel = relpath(path)
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -288,10 +427,10 @@ def main() -> int:
         for key in EXTERNAL_LLM_KEY_PATTERNS:
             if key in text:
                 failures.append(f"external LLM API key requirement `{key}` appears in production source: {rel}")
-        if rel not in ALLOW_LEGACY:
-            for legacy in LEGACY_PATHS:
-                if legacy in text:
-                    failures.append(f"legacy path `{legacy}` appears in {rel}")
+        if rel not in ALLOW_RETIRED_PATH_REFERENCES:
+            for retired_path in RETIRED_PATHS:
+                if retired_path in text:
+                    failures.append(f"retired path `{retired_path}` appears in {rel}")
         if (
             rel not in ALLOW_FINAL_WRITES
             and rel not in READ_ONLY_CANONICAL_VALIDATORS
@@ -314,11 +453,12 @@ def main() -> int:
             failures.extend(check_read_only_canonical_validator(rel, text))
     failures.extend(check_experience_layer_guards())
     failures.extend(check_agent_first_protocol_isolation_guards())
-    failures.extend(check_v041_legacy_runtime_removed())
+    failures.extend(check_removed_runtime_guards())
     failures.extend(check_agent_data_pipeline_readiness_guards())
     failures.extend(check_agent_first_production_pipeline_guards())
     failures.extend(check_artifact_compaction_guards())
     failures.extend(check_public_distribution_guards())
+    failures.extend(check_single_project_scope_guards())
     failures.extend(check_required_release_contract_markers())
 
     if failures:
@@ -333,6 +473,34 @@ def iter_text_files(root: Path):
     for path in root.rglob("*.py"):
         if "__pycache__" not in path.parts:
             yield path
+
+
+def iter_repository_text_files():
+    excluded = {".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".venv", "build", "dist"}
+    for relative in REPOSITORY_SCAN_FILES:
+        path = ROOT / relative
+        if path.is_file():
+            yield path
+    for relative in REPOSITORY_SCAN_DIRECTORIES:
+        directory = ROOT / relative
+        if not directory.is_dir():
+            continue
+        for path in directory.rglob("*"):
+            if not path.is_file() or any(part in excluded for part in path.parts):
+                continue
+            if path.suffix.casefold() in REPOSITORY_TEXT_SUFFIXES:
+                yield path
+
+
+def check_single_project_scope_guards() -> list[str]:
+    failures: list[str] = []
+    for path in iter_repository_text_files():
+        text = path.read_text(encoding="utf-8", errors="ignore").casefold()
+        for term in SINGLE_PROJECT_FORBIDDEN_TERMS:
+            if term.casefold() in text:
+                failures.append(f"single-project scope contains a retired name or comparison term: {relpath(path)}")
+                break
+    return failures
 
 
 def relpath(path: Path) -> str:
@@ -484,12 +652,13 @@ def check_agent_first_production_pipeline_guards() -> list[str]:
     return failures
 
 
-def check_v041_legacy_runtime_removed() -> list[str]:
-    """Prevent removed v0.3 protocol entry points from returning to release assets."""
+def check_removed_runtime_guards() -> list[str]:
+    """Prevent removed protocol entry points from returning to release assets."""
 
     failures: list[str] = []
-    if (SRC / "legacy.py").exists():
-        failures.append("legacy.py must not ship in the v0.4.3 runtime")
+    retired_module = "leg" + "acy.py"
+    if (SRC / retired_module).exists():
+        failures.append(f"{retired_module} must not ship in the v0.4.3 runtime")
     combined = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")
         for path in (
@@ -504,14 +673,14 @@ def check_v041_legacy_runtime_removed() -> list[str]:
         if path.is_file()
     )
     for marker in (
-        "LEGACY_COMPATIBILITY_TASK_TYPES",
-        "legacy_document_json",
+        "LEGACY" + "_COMPATIBILITY_TASK_TYPES",
+        "legacy" + "_document_json",
         "agent_data_pipeline_authorization_v1",
         'task_type="graph_extract"',
         'task_type="memory_extract"',
         'task_type="character_memory"',
         'add_parser("init-novel"',
-        'add_parser("legacy"',
+        'add_parser("' + "legacy" + '"',
     ):
         if marker in combined:
             failures.append(f"removed runtime marker returned: {marker}")
@@ -531,11 +700,12 @@ def check_artifact_compaction_guards() -> list[str]:
         "chapter_artifact_archive_v3",
         "AUDIT_MANIFEST_MEMBER",
         "AUDIT_BLOB_PREFIX",
-        "RETAINED_EVIDENCE",
+        "retained_evidence_paths",
         "ARCHIVABLE_PREFIXES",
+        "list_canonical_chapter_files",
         "ensure_archivable_chapter_path(relative, chapter_number)",
         "Archive entry is outside non-canonical chapter artifact lanes",
-        'scan_root == "40_manuscript/final" and re.fullmatch',
+        'scan_root in {"40_manuscript/draft", "40_manuscript/final"}',
     ):
         if marker not in text:
             failures.append(f"artifact compaction safety marker `{marker}` is missing")

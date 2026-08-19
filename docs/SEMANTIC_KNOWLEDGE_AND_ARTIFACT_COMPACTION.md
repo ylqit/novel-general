@@ -48,7 +48,7 @@ draft submit
 -> next chapter
 ```
 
-`finalize` 不再截取正文前 240 字作为摘要，也不提前建立图谱、RAG 或 SQLite。语义账本或 closure 已存在后，final 成为不可覆盖的证据；修订必须走显式迁移流程。`semantic-apply` 在一个事务中更新全部物化视图；任一步失败时回滚所有 touched paths。相同候选可重跑以修复漂移的物化视图，并去重角色证据和伏笔动作；不同候选不能覆盖已存在的章节语义账本。
+`finalize` 不截取正文前 240 字作为摘要，也不提前建立图谱、RAG 或 SQLite。语义账本或 closure 已存在后，final 成为不可覆盖的证据；修订必须走显式 revision 事务。`semantic-apply` 在一个事务中更新全部物化视图；任一步失败时回滚所有 touched paths。相同候选可重跑以修复漂移的物化视图，并去重角色证据和伏笔动作；不同候选不能覆盖已存在的章节语义账本。
 
 `chapter close` 要求 final、语义账本、图谱、伏笔状态、下一章 TCS、RAG chunk、通过的 gate、无 P0/P1、无 need-human 和无活动 Agent task。相同证据重复 close 返回现有结果；证据 hash 漂移时拒绝关闭。
 
@@ -69,7 +69,7 @@ draft submit
 
 每个 ZIP 配套 manifest，记录每个条目的相对路径、SHA-256 和大小。旧章逐任务 `*.agent_task.json` 随工作单归档，全局 `agent_task_index.json` 保持 loose 状态索引。归档文件不可静默改写；删除 loose file 前必须校验 ZIP、manifest、条目 hash 和待删除文件内容，恢复时拒绝覆盖内容不同的 loose file。`--dry-run` 可预览任意范围，真实 compact 只允许已有 closure 且位于最近两章活动缓冲之前的章节。
 
-`v0.3.2` 的 dry-run 明确报告 `eligible`、`blockers`、候选文件与唯一内容字节数、可回收快照字节数、`compact_through` 和两章活动缓冲。存在 blocker 时真实 compact 必须拒绝写入，不能把不可执行计划显示为成功。
+dry-run 明确报告 `eligible`、`blockers`、候选文件与唯一内容字节数、可回收快照字节数、`compact_through` 和两章活动缓冲。存在 blocker 时真实 compact 必须拒绝写入，不能把不可执行计划显示为成功。
 
 ```text
 longform-engine artifacts status project.yaml
@@ -81,27 +81,17 @@ longform-engine artifacts restore project.yaml --chapter 1
 
 final、章节语义账本、计划伏笔账本、图谱和当前状态视图不进入 ZIP。成功事务在 commit 后立即删除回滚快照；失败事务保留诊断证据。
 
-`artifacts verify` 使用四态结果：`ok` 表示归档和 retained evidence 完整；`pending_close` 只允许最新活动章已有 final 但尚未关闭；`migration_required` 表示旧章节已有 final 但缺语义账本或 closure；`invalid` 表示 hash、ZIP 成员、路径或 canonical 证据损坏。任务索引投影、轮转事件段和章节审计包引用也属于 verify 范围。
+`artifacts verify` 使用四态结果：`ok` 表示归档和 retained evidence 完整；`pending_close` 只允许最新活动章已有 final 且语义账本已完成但尚未关闭；`incomplete` 表示一个或多个 final 缺少语义账本或 closure；`invalid` 表示 hash、ZIP 成员、路径或 canonical 证据损坏。任务索引投影、轮转事件段和章节审计包引用也属于 verify 范围。
 
-## 7. 旧项目兼容与十五章迁移
+## 7. 项目协议边界
 
-旧 graph semantic、memory semantic、character memory 和旧摘要继续可读，相关 CLI 继续存在。新 `production next` 不再为同一 final 分别创建这些任务。
+本版本只接受当前项目协议，不读取旧路径、旧章节别名或旧语义任务链，也不提供自动迁移和兼容适配器。需要复用既有资料时，应新建项目并由人工审核后导入 Bible、outline 和来源材料；旧派生状态不得直接进入 canonical 层。
 
-一般旧项目迁移必须逐章执行，不能从旧派生状态猜测新事实：
+`artifacts verify` 发现 `incomplete` 时只报告缺失章节，不推断、补写或迁移语义事实。每个缺失章节必须从当前 final 重新创建 `chapter semantic-task`，通过 validate、explicit apply 和 close 后才能继续生产。
 
-1. 保存 final、图谱、角色记忆、伏笔账本和 TCS 的迁移前 hash 清单。
-2. 运行 `legacy status`，再通过 `legacy backfill --through N` 依次创建最早缺失章的语义任务。
-3. Agent 每次只读该章 final、章节卡、计划伏笔和前一章状态，输出统一语义包。
-4. 逐章 validate/apply；冲突进入人工处理。历史无计划伏笔只能使用 `unplanned:<stable-id>`。
-5. 运行 `legacy compact project.yaml --through N --approved-by human --dry-run`，一次性检查连续证据、重建结果、活动任务和污染边界。
-6. dry-run 可执行后再运行真实 `legacy compact`；CLI 自动生成带 migration 元数据的 closure，并保留最近两章为活动工作区。
-7. 校验 `production next` 安全指向下一章。
+## 8. 数据库边界
 
-回填任务需要真实 Agent 阅读十五章 final，本次代码实现不会伪造这些语义 JSON，也不会自动删除现有运行产物。
-
-## 8. 外部数据库边界
-
-单机写作继续使用文件、SQLite 和本地向量后端。MySQL、Milvus、Neo4j 不会提高语义抽取本身的准确率，反而增加部署、事务一致性和事实源冲突成本。只有出现多人并发、远程共享、千万级 chunk 或独立图查询服务需求时，才评估外部数据库；即使引入，它们仍只能是可重建服务层。
+引擎使用项目文件、SQLite 和本地向量后端。SQLite、RAG 和向量索引始终是可重建服务层，不能覆盖 final 或语义账本。
 
 ## 9. 安全边界
 
@@ -109,4 +99,4 @@ final、章节语义账本、计划伏笔账本、图谱和当前状态视图不
 - Agent 不直接写 final、semantic ledger、graph、character views、foreshadow state、TCS、RAG 或 SQLite。
 - `semantic-apply` 与 `chapter close` 必须显式执行。
 - 不自动 finalize，不使用摘要代替证据，不恢复脚本内 LLM/provider。
-- invalid Agent JSON、迁移冲突和归档校验失败不得污染 canonical state。
+- invalid Agent JSON、不完整章节和归档校验失败不得污染 canonical state。

@@ -26,13 +26,13 @@ def test_artifact_compaction_is_hash_verified_and_reversible(tmp_path):
     task_manifest.write_text("{}\n", encoding="utf-8")
     duplicate_text = "# Chapter 1\n\nThe archived candidate is not a canonical fact source.\n"
     draft = root / "40_manuscript" / "draft" / "ch001.md"
-    submitted = root / "40_manuscript" / "submitted" / "ch001.md"
+    duplicate_candidate = root / "50_workbench" / "repair_candidates" / "ch001.copy.md"
     draft.parent.mkdir(parents=True, exist_ok=True)
-    submitted.parent.mkdir(parents=True, exist_ok=True)
+    duplicate_candidate.parent.mkdir(parents=True, exist_ok=True)
     draft.write_text(duplicate_text, encoding="utf-8")
-    submitted.write_text(duplicate_text, encoding="utf-8")
+    duplicate_candidate.write_text(duplicate_text, encoding="utf-8")
 
-    snapshot = root / "70_runtime" / "transactions" / "s" / "committed"
+    snapshot = root / "70_runtime" / "tx" / "retired-committed"
     snapshot.mkdir(parents=True, exist_ok=True)
     (snapshot / "copy.bin").write_bytes(b"snapshot")
     report = root / "70_runtime" / "transactions" / "20260101_test.json"
@@ -41,7 +41,7 @@ def test_artifact_compaction_is_hash_verified_and_reversible(tmp_path):
             {
                 "status": "applied",
                 "chapter_number": 1,
-                "snapshot_dir": "70_runtime/transactions/s/committed",
+                "snapshot_dir": "70_runtime/tx/retired-committed",
             }
         ),
         encoding="utf-8",
@@ -97,7 +97,7 @@ def test_artifact_compaction_is_hash_verified_and_reversible(tmp_path):
     assert chapter_two.exists()
     assert not task_manifest.exists()
     assert not draft.exists()
-    assert not submitted.exists()
+    assert not duplicate_candidate.exists()
     assert not report.exists()
     assert not snapshot.exists()
     assert verify_artifacts(config).ok is True
@@ -107,7 +107,7 @@ def test_artifact_compaction_is_hash_verified_and_reversible(tmp_path):
     assert {item["role"] for item in manifest["retained_evidence"]} == {"final", "semantic_ledger", "closure"}
     entry_by_path = {item["path"]: item for item in manifest["entries"]}
     assert entry_by_path["40_manuscript/draft/ch001.md"]["retained_role"] == "final"
-    assert entry_by_path["40_manuscript/submitted/ch001.md"]["retained_role"] == "final"
+    assert entry_by_path["50_workbench/repair_candidates/ch001.copy.md"]["retained_role"] == "final"
     assert "member" not in entry_by_path["40_manuscript/draft/ch001.md"]
     assert manifest["deduplicated_entries"] == 2
     with zipfile.ZipFile(root / "70_runtime" / "artifacts" / "chapters" / "ch001.zip") as handle:
@@ -117,7 +117,7 @@ def test_artifact_compaction_is_hash_verified_and_reversible(tmp_path):
     restored = restore_artifacts(config, chapter_number=1)
     assert set(restored.restored_files) == {
         "40_manuscript/draft/ch001.md",
-        "40_manuscript/submitted/ch001.md",
+        "50_workbench/repair_candidates/ch001.copy.md",
         "50_workbench/gate_artifacts/ch001/ch001.agent_task.json",
         "50_workbench/gate_artifacts/ch001/gate_result.json",
         "70_runtime/transactions/20260101_test.json",
@@ -188,7 +188,7 @@ def test_artifact_restore_rejects_canonical_archive_member(tmp_path):
         restore_artifacts(config, chapter_number=1)
 
 
-def test_artifact_v2_archive_remains_verifiable_and_restorable(tmp_path):
+def test_retired_archive_schema_is_rejected(tmp_path):
     template = load_project_config(template="qidian-longform")
     project = init_project(template, output=tmp_path / "novel")
     config = load_project_config(project.project_config)
@@ -197,7 +197,7 @@ def test_artifact_v2_archive_remains_verifiable_and_restorable(tmp_path):
         write_retained_evidence(root, chapter_number)
 
     relative = "40_manuscript/draft/ch001.md"
-    data = b"legacy v2 draft\n"
+    data = b"retired archive draft\n"
     archive_dir = root / "70_runtime" / "artifacts" / "chapters"
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive = archive_dir / "ch001.zip"
@@ -232,10 +232,11 @@ def test_artifact_v2_archive_remains_verifiable_and_restorable(tmp_path):
     }
     archive.with_suffix(".manifest.json").write_text(json.dumps(manifest) + "\n", encoding="utf-8")
 
-    assert verify_artifacts(config).ok is True
-    restored = restore_artifacts(config, chapter_number=1)
-    assert restored.restored_files == (relative,)
-    assert (root / relative).read_bytes() == data
+    result = verify_artifacts(config)
+    assert result.ok is False
+    assert any("Missing or invalid manifest" in error for error in result.errors)
+    with pytest.raises(ValueError, match="archive schema must be chapter_artifact_archive_v3"):
+        restore_artifacts(config, chapter_number=1)
 
 
 def write_retained_evidence(root, chapter_number: int) -> None:

@@ -12,7 +12,7 @@ python -m longform_engine.cli rag context project.yaml --chapter 12 --query "旧
 
 ## Build
 
-`rag build` 从 `40_manuscript/final/*.md` 和 `*.txt` 构建 paragraph-aware chunks：
+`rag build` 只从通过章节路径契约校验的 `40_manuscript/final/chNNN.md` 构建 paragraph-aware chunks：
 
 - 优先保留段落边界。
 - 长段落按中文标点和长度拆分。
@@ -31,6 +31,7 @@ chunk 字段包括：
 - `word_count`
 - `token_estimate`
 - `metadata.source`
+- `metadata.source_sha256`
 
 ## Query
 
@@ -55,6 +56,16 @@ Plain `rag build` still builds canonical paragraph chunks and does not download 
 - If models are missing and `semantic.allow_network_download=true`, the command may auto-install the default BGE profile into `70_runtime/models/`.
 - If real embedding is unavailable and `semantic.allow_fallback=false`, `rag query/context --semantic` fails instead of returning local-hash results.
 - Deterministic `local-hash` remains available for tests/development only when `semantic.allow_fallback=true`.
+
+## Full Rebuild 与逐章 Delta
+
+`rag build --with-embeddings` 是显式 full rebuild：扫描全部 canonical chunks/memory，重写 `60_rag/metadata/embeddings.jsonl`，再同步整个本地向量库。该 JSONL 是重建/导出快照，不是逐章在线写入日志。
+
+`chapter semantic-apply` 使用 source-bounded delta：只读取当前 final/章节 chunk、变化的 Character Memory、TCS 和 Style Memory per-source 小样本；`sync_semantic_delta` 更新这些 SQLite owner，vector 再按 canonical `source_path` upsert 变化记录并淘汰该来源的旧 ID。它不会遍历历史正文或重写全量 JSONL。Style bible 或旧格式 Style Memory provenance 改变时要求显式 `chapter semantic-rebuild`，不在逐章路径偷偷回扫历史正文。
+
+chapter close 会同时验证 final SHA、chunk 的 `source_sha256`、chunk 数量、active vector 数量以及 vector metadata 的 `source_sha256`。只有记录数而没有当前来源 hash 不能通过关闭门禁。
+
+向量配置只接受已实现 query/upsert 的 `local_sqlite` 和 `local_hnsw`。
 
 ## Character Graph-RAG
 

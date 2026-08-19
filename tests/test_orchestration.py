@@ -62,12 +62,17 @@ def test_plan_chapter_and_beat_sheet(tmp_path):
     beat_payload = json.loads((tmp_path / "novel" / "50_workbench" / "beats" / "ch012.json").read_text(encoding="utf-8"))
 
     assert card.chapter_number == 12
-    assert card_payload["duty"]
+    assert card_payload["chapter_duty"]
     assert card_payload["conflict"]
-    assert card_payload["information"]
+    assert card_payload["information_release"]
+    assert not {"duty", "information", "reader_payoff"} & set(card_payload)
     assert card_payload["hook"]
     assert beat.chapter_number == 12
     assert len(beat_payload["beats"]) == 5
+    assert all(item["chapter_duty"] == card_payload["chapter_duty"] for item in beat_payload["beats"])
+    assert all(item["reader_gain"] == card_payload["reader_gain"] for item in beat_payload["beats"])
+    assert all(item["information_release"] for item in beat_payload["beats"])
+    assert all(not {"duty", "information", "reader_payoff"} & set(item) for item in beat_payload["beats"])
 
 
 def test_plan_chapter_event_matrix_requires_soft_event_after_fast_gap(tmp_path):

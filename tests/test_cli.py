@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -8,7 +9,7 @@ import yaml
 
 from longform_engine.cli import build_parser
 from longform_engine.config import load_project_config
-from longform_engine.storage import acquire_project_lock
+from longform_engine.storage import acquire_project_lock, apply_transaction
 from tests.project_fixtures import mark_project_ready
 
 
@@ -114,6 +115,9 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("chapter", "finalize", "project.yaml", "--chapter", "1", "--approved-by", "human"),
         ("chapter", "semantic-task", "project.yaml", "--chapter", "1"),
         ("chapter", "semantic-validate", "project.yaml", "--chapter", "1", "--file", "50_workbench/semantic_tasks/ch001.semantic.json"),
+        ("recovery", "discard-preparing", "project.yaml", "--report", "70_runtime/transactions/tx.json", "--expected-sha256", "0" * 64, "--approved-by", "human"),
+        ("recovery", "rollback-transaction", "project.yaml", "--report", "70_runtime/transactions/tx.json", "--expected-sha256", "0" * 64, "--approved-by", "human"),
+        ("recovery", "cleanup-committed", "project.yaml", "--report", "70_runtime/transactions/tx.json", "--expected-sha256", "0" * 64, "--approved-by", "human"),
         ("chapter", "semantic-apply", "project.yaml", "--chapter", "1", "--file", "50_workbench/semantic_tasks/ch001.semantic.json"),
         ("gate-check", "project.yaml", "--chapter", "1"),
         ("gate-waiver", "project.yaml", "--chapter", "1", "--reason", "人工确认"),
@@ -173,7 +177,7 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("character", "audit-validate", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_review.ch001-ch015.candidate.json"),
         ("character", "audit-apply", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_review.ch001-ch015.candidate.json"),
         ("character", "samples-approve", "project.yaml", "--file", "50_workbench/character_reviews/voice_samples.json", "--approved-by", "human"),
-        ("benchmark", "init", "project.yaml", "--run-id", "smoke-5", "--agent-product", "codex", "--chapters", "5"),
+        ("benchmark", "init", "project.yaml", "--run-id", "smoke-5", "--host-product", "codex", "--chapters", "5"),
         ("benchmark", "record", "project.yaml", "--run-id", "smoke-5", "--chapter", "1", "--continuity", "4", "--character-consistency", "4", "--foreshadowing-control", "4", "--pacing", "4", "--reader-payoff", "4", "--ai-taste", "2", "--gate-passed", "--context-file-count", "6", "--context-character-count", "18000"),
         ("benchmark", "technical-record", "project.yaml", "--run-id", "formal-10", "--chapter", "1", "--gate-passed", "--context-file-count", "6", "--context-character-count", "18000"),
         ("benchmark", "rag-scale-run", "project.yaml", "--scale-chapters", "50", "--backend", "local_sqlite"),
@@ -199,6 +203,7 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("production", "next", "project.yaml"),
         ("production", "next", "project.yaml", "--editorial"),
         ("repair", "status", "project.yaml", "--chapter", "1"),
+        ("recovery", "status", "project.yaml"),
         ("quality", "contract", "project.yaml", "--chapter", "1"),
         ("quality", "story-profile", "project.yaml"),
         ("production", "board", "project.yaml"),
@@ -217,6 +222,18 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         assert getattr(parser.parse_args(command), "mutates_project", False), command
     for command in read_only_cases:
         assert not getattr(parser.parse_args(command), "mutates_project", False), command
+    reclaim = parser.parse_args(
+        (
+            "recovery",
+            "reclaim-lock",
+            "project.yaml",
+            "--expected-sha256",
+            "0" * 64,
+            "--approved-by",
+            "human",
+        )
+    )
+    assert reclaim.recovery_bypasses_project_lock is True
 
 
 def test_cli_init_project(tmp_path):
@@ -546,6 +563,61 @@ def test_cli_project_lock_blocks_mutating_command_but_not_read_only(tmp_path):
     assert "Project lock already exists" in blocked_auto.stderr
     assert read_only.returncode == 0
     assert '"exists": true' in read_only.stdout
+
+
+def test_cli_blocks_ordinary_mutation_until_prepared_transaction_is_recovered(tmp_path):
+    init = run_cli("init-project", "--template", "qidian-longform", "--output", str(tmp_path / "novel"))
+    assert init.returncode == 0
+    root = tmp_path / "novel"
+    project_yaml = root / "project.yaml"
+    transaction = apply_transaction(
+        root,
+        command="interrupted cli fixture",
+        touched_paths=[root / "30_state" / "story_graph.json"],
+    )
+    transaction.begin()
+
+    blocked = run_cli("db", "sync", str(project_yaml))
+    status = run_cli("recovery", "status", str(project_yaml), "--json")
+    transaction.rollback(RuntimeError("fixture cleanup"))
+
+    assert blocked.returncode == 1
+    assert "storage_recovery_required" in blocked.stderr
+    assert status.returncode == 2
+    assert '"state": "recoverable_rollback"' in status.stdout
+
+
+def test_cli_routes_confirmed_dead_lock_to_explicit_recovery(tmp_path):
+    init = run_cli("init-project", "--template", "qidian-longform", "--output", str(tmp_path / "novel"))
+    assert init.returncode == 0
+    root = tmp_path / "novel"
+    project_yaml = root / "project.yaml"
+    lock_path = root / "70_runtime" / "locks" / "project.lock"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "schema": "project_lock_v2",
+                "schema_version": 2,
+                "owner": "interrupted-cli-test",
+                "owner_token": "dead-owner-token",
+                "command": "fixture",
+                "created_at": "2026-08-19T00:00:00+00:00",
+                "root": str(root.resolve()),
+                "pid": 999_999_999,
+                "hostname": socket.gethostname(),
+                "process_identity": "dead-process",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    blocked = run_cli("db", "sync", str(project_yaml))
+
+    assert blocked.returncode == 1
+    assert "storage_recovery_required" in blocked.stderr
+    assert "recovery reclaim-lock" in blocked.stderr
 
 
 def test_cli_failed_gate_reports_review_barrier_before_repair(tmp_path):

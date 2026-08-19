@@ -19,13 +19,16 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           cache: pip
-      - run: python -m pip install --upgrade pip build pytest hnswlib numpy
-      - run: python -m pip install -e .
+      - run: python -m pip install --upgrade pip hnswlib numpy
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m ruff check src tests
+      - run: python -m mypy src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/storage/recovery.py
       - run: python scripts/sync_skill_references.py --check
       - run: python scripts/build_resource_manifest.py --check
       - run: python scripts/validate_skills.py
+      - run: python scripts/check_markdown_links.py
       - run: python scripts/release_surface_guards.py
-      - run: python -m pytest
+      - run: python -m pytest --cov=longform_engine --cov-report=term-missing
       - run: python scripts/check_agent_data_pipeline_readiness.py --json
       - run: python -m build --wheel --sdist
       - run: python scripts/audit_wheel.py
@@ -33,7 +36,7 @@ jobs:
       - run: python -c "import pathlib,subprocess,sys; wheels=list(pathlib.Path('dist').glob('*.whl')); assert len(wheels)==1; subprocess.check_call([sys.executable,'-m','pip','install','--force-reinstall','--no-deps',str(wheels[0])])"
       - run: longform-engine --version
       - run: longform-engine validate-config --template qidian-longform
-      - run: longform-engine release check --repository . --skip-contracts --allow-detached --json
+      - run: longform-engine release check --repository . --channel rc --skip-contracts --allow-detached --json
 
   semantic-smoke:
     runs-on: ubuntu-latest
