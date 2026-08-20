@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from hashlib import sha256
 import copy
 import json
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -24,6 +25,7 @@ STORY_PHASE_IDS = ("opening", "early_serial", "stable_serial", "volume_climax", 
 QUALITY_STRICTNESS = ("light", "balanced", "strict")
 APPROVED_BASELINE_PATH = "10_bible/style_profiles/approved_style_baseline.json"
 PLATFORM_DEVIATION_POLICIES = ("P2_advisory", "P1_blocking")
+MARKET_EVIDENCE_SCHEMA = "market_evidence_registry_v1"
 COMPACT_CONTRACT_FIELDS = (
     "platform_promise",
     "phase_focus",
@@ -479,6 +481,35 @@ def validate_profile_extensions(payload: dict[str, Any], path: Path) -> None:
         or any(not isinstance(item, str) or not item.strip() for item in source_refs)
     ):
         raise ValueError(f"Invalid quality profile resource: {path} (source_refs must be non-empty strings)")
+    evidence_registry = load_market_evidence_registry()
+    evidence_bindings = payload.get("evidence_bindings")
+    if payload.get("kind") == "market" and payload.get("id") in {"qidian_male", "fanqie_free"}:
+        required_binding_keys = {
+            *(f"contract.{key}" for key in payload.get("contract", {})),
+            *(f"phase_overrides.{key}" for key in payload.get("phase_overrides", {})),
+        }
+        if not isinstance(evidence_bindings, dict) or set(evidence_bindings) != required_binding_keys:
+            raise ValueError(
+                f"Invalid quality profile resource: {path} (every platform contract/phase field requires evidence_bindings)"
+            )
+        for field, refs in evidence_bindings.items():
+            validate_market_evidence_refs(
+                refs,
+                market_id=str(payload["id"]),
+                registry=evidence_registry,
+                label=f"{path}:{field}",
+            )
+        bound_ids = {
+            str(evidence_id)
+            for refs in evidence_bindings.values()
+            for evidence_id in refs
+        }
+        bound_urls = {str(evidence_registry[evidence_id]["source_url"]) for evidence_id in bound_ids}
+        if set(source_refs or []) != bound_urls:
+            raise ValueError(
+                f"Invalid quality profile resource: {path} "
+                "(source_refs must exactly match bound market evidence URLs)"
+            )
     phase_overrides = payload.get("phase_overrides")
     if phase_overrides is not None:
         if not isinstance(phase_overrides, dict):
@@ -490,18 +521,32 @@ def validate_profile_extensions(payload: dict[str, Any], path: Path) -> None:
     if guidance is not None:
         if not isinstance(guidance, list):
             raise ValueError(f"Invalid quality profile resource: {path} (compatibility_guidance must be a list)")
-        required = {"field", "code", "message"}
+        required = {"field", "code", "message", "evidence_refs", "execution_level"}
         for index, item in enumerate(guidance):
             if not isinstance(item, dict) or not required.issubset(item):
                 raise ValueError(
                     f"Invalid quality profile resource: {path} "
                     f"(compatibility_guidance[{index}] missing required fields)"
                 )
-            if any(not isinstance(item[field], str) or not item[field].strip() for field in required):
+            if any(
+                not isinstance(item[field], str) or not item[field].strip()
+                for field in required - {"evidence_refs"}
+            ):
                 raise ValueError(
                     f"Invalid quality profile resource: {path} "
                     f"(compatibility_guidance[{index}] fields must be strings)"
                 )
+            if item.get("execution_level") != "P2_advisory":
+                raise ValueError(
+                    f"Invalid quality profile resource: {path} "
+                    f"(compatibility_guidance[{index}] execution_level must be P2_advisory)"
+                )
+            validate_market_evidence_refs(
+                item.get("evidence_refs"),
+                market_id=str(payload["id"]),
+                registry=evidence_registry,
+                label=f"{path}:compatibility_guidance[{index}]",
+            )
             phases = item.get("phases")
             if phases is not None and (
                 not isinstance(phases, list)
@@ -520,10 +565,61 @@ def profile_source_record(payload: dict[str, Any], path: str, digest: str) -> di
         "path": path,
         "sha256": digest,
     }
-    for field in ("updated_at", "evidence_level", "source_refs", "heuristic_notes"):
+    for field in ("updated_at", "evidence_level", "source_refs", "evidence_bindings", "heuristic_notes"):
         if field in payload:
             record[field] = copy.deepcopy(payload[field])
     return record
+
+
+def load_market_evidence_registry() -> dict[str, dict[str, Any]]:
+    path = resource_path("config", "quality_profiles", "market_evidence_registry.yaml")
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict) or payload.get("schema") != MARKET_EVIDENCE_SCHEMA:
+        raise ValueError(f"Invalid market evidence registry: {path}")
+    items = payload.get("items")
+    required = {
+        "evidence_id", "market_id", "source_url", "source_date",
+        "evidence_grade", "execution_level", "claim_boundary",
+    }
+    if not isinstance(items, list):
+        raise ValueError(f"Invalid market evidence registry: {path} (items must be a list)")
+    registry: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(items):
+        if (
+            not isinstance(item, dict)
+            or set(item) != required
+            or any(not isinstance(item[field], str) or not item[field].strip() for field in required)
+        ):
+            raise ValueError(f"Invalid market evidence registry: {path} (items[{index}])")
+        evidence_id = str(item["evidence_id"])
+        if evidence_id in registry:
+            raise ValueError(f"Invalid market evidence registry: {path} (duplicate {evidence_id})")
+        parsed_url = urlsplit(str(item["source_url"]))
+        if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+            raise ValueError(f"Invalid market evidence registry: {path} (source_url)")
+        try:
+            date.fromisoformat(str(item["source_date"]))
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid market evidence registry: {path} (source_date must be YYYY-MM-DD)"
+            ) from exc
+        if item["execution_level"] not in {"P2_advisory", "contract_required"}:
+            raise ValueError(f"Invalid market evidence registry: {path} (execution_level)")
+        registry[evidence_id] = item
+    return registry
+
+
+def validate_market_evidence_refs(
+    refs: Any,
+    *,
+    market_id: str,
+    registry: dict[str, dict[str, Any]],
+    label: str,
+) -> None:
+    if not isinstance(refs, list) or not refs:
+        raise ValueError(f"{label} requires non-empty market evidence refs")
+    if any(str(ref) not in registry or registry[str(ref)]["market_id"] != market_id for ref in refs):
+        raise ValueError(f"{label} contains unresolved or cross-market evidence refs")
 
 
 def merge_contract_layer(
@@ -649,6 +745,8 @@ def build_compatibility_observations(
                     "severity": "P2",
                     "blocking": False,
                     "message": str(guidance["message"]),
+                    "market_evidence_refs": list(guidance["evidence_refs"]),
+                    "execution_level": str(guidance["execution_level"]),
                     "primary_value": copy.deepcopy(primary_value),
                     "comparison_value": copy.deepcopy(comparison_value),
                     "source": target_source[1],

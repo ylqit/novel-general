@@ -32,10 +32,10 @@ from longform_engine.orchestration import (
     continue_write,
     finalize_chapter,
     open_book,
-    plan_chapter,
     submit_agent_draft,
 )
 from longform_engine.production import production_next
+from longform_engine.rag import build_context
 from longform_engine.repair_coordination import (
     RepairCoordinationError,
     create_repair_candidate_task,
@@ -44,7 +44,7 @@ from longform_engine.repair_coordination import (
     validate_repair_plan,
 )
 from longform_engine.semantic import chapter_close, semantic_apply
-from tests.project_fixtures import mark_project_ready, prepare_unified_semantic_bundle
+from tests.project_fixtures import approve_story_candidate, mark_project_ready, prepare_unified_semantic_bundle
 from tests.test_agent_task_protocol import (
     passing_text,
     repair_plan_markdown,
@@ -107,7 +107,8 @@ def test_v042_dangling_parent_reconciles_then_chapter_closes(tmp_path):
         overwrite=True,
     )
     assert submitted.passed is True
-    finalize_chapter(config, chapter_number=1, approved_by="test-owner")
+    approve_story_candidate(root, config)
+    finalize_chapter(config, chapter_number=1, approved_by="human")
     output = prepare_unified_semantic_bundle(root, config, 1)
     semantic_apply(config, chapter_number=1, file_path=output)
     closed = chapter_close(config, chapter_number=1, approved_by="test-owner")
@@ -160,7 +161,7 @@ def test_semantic_rag_materialization_and_vector_failure_rollback(tmp_path, monk
     context = root / "60_rag" / "context" / "next_plot_context.md"
     assert "- Semantic mode: enabled" in context.read_text(encoding="utf-8")
     chapter_close(config, chapter_number=1, approved_by="test-owner")
-    continue_write(config, chapter_number=2)
+    build_context(config, chapter_number=2, semantic=True)
     next_context = context.read_text(encoding="utf-8")
     assert "- Semantic mode: enabled" in next_context
     assert "## Retrieval Hits\n\nNo retrieval hits yet." not in next_context
@@ -207,7 +208,8 @@ def test_review_pass_requires_positive_coverage_evidence():
 def test_core_contract_ref_rejects_depth_limited_content(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(config, chapter_number=1)
+    open_book(config)
+    mark_project_ready(root, config)
     source = root / "10_bible" / "core_rule.md"
     source.write_text("# Core rule\n\n[depth-limited]\n", encoding="utf-8")
     card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
@@ -223,7 +225,8 @@ def test_core_contract_ref_rejects_depth_limited_content(tmp_path):
 def test_chapter_contract_rejects_removed_alias_instead_of_normalizing_it(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(config, chapter_number=1)
+    open_book(config)
+    mark_project_ready(root, config)
     card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
     card = json.loads(card_path.read_text(encoding="utf-8"))
     card["duty"] = card["chapter_duty"]
@@ -347,6 +350,7 @@ def prepare_repair_round(tmp_path):
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\n治疗规则与救援动作冲突。\n", encoding="utf-8")
     write_blocking_gate(root, draft, chapter_number=1)
+    approve_story_candidate(root, config, chapter_number=1)
     synthesis = create_repair_synthesis_task(config, chapter_number=1)
     bundle = read_json(root / synthesis["review_bundle"])
     finding_id = bundle["blocking_finding_ids"][0]
@@ -366,7 +370,8 @@ def prepare_finalized_semantic_project(tmp_path):
     candidate = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     candidate.write_text(passing_text("SEMANTIC_VECTOR"), encoding="utf-8")
     assert submit_agent_draft(config, chapter_number=1, file_path=candidate, agent="codex").passed is True
-    finalize_chapter(config, chapter_number=1, approved_by="test-owner")
+    approve_story_candidate(root, config)
+    finalize_chapter(config, chapter_number=1, approved_by="human")
     return config, root, prepare_unified_semantic_bundle(root, config, 1)
 
 

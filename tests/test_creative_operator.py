@@ -9,7 +9,7 @@ from longform_engine.creative import expand_check, expand_task, humanize_check, 
 from longform_engine.gates import gate_check, pacing_review
 from longform_engine.orchestration import WorkflowError, continue_write, open_book as engine_open_book, plan_chapter
 from longform_engine.storage import init_project
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import mark_project_ready, refresh_arc_simulation_fixture
 
 
 def open_book(config):
@@ -33,8 +33,9 @@ def test_open_book_creates_creative_brief_and_continue_write_injects_craft_input
     assert brief["target_audience"]
     assert task["fact_inventory_summary"]["categories"]["chapter_contract"] == 1
     assert task["fact_inventory_summary"]["categories"]["methods"] >= 2
-    assert "唯一章节合同" in task_md
-    assert "当前写作方法" in task_md
+    assert "本章正在发生" in task_md
+    assert "## 逐场行动" in task_md
+    assert "章节合同" not in task_md
     assert "## Creative Brief" not in task_md
 
 
@@ -85,6 +86,7 @@ def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp
     )
     stamp_chapter_contract(card)
     card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    refresh_arc_simulation_fixture(root)
 
     continue_write(project_config, chapter_number=1)
 
@@ -96,7 +98,7 @@ def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp
     assert "Dragon Crown" in task_md
     assert "ultimate patron" in task_md
     assert "who controls the bell" in task_md
-    assert task_md.count("唯一章节合同") == 1
+    assert task_md.count("本章正在发生") == 1
 
 
 def test_continue_write_blocks_missing_applied_creative_brief(tmp_path):
@@ -190,7 +192,7 @@ def test_chinese_humanizer_detects_uniform_sentence_length(tmp_path):
     assert any(item["code"] == "humanizer_uniform_sentence_length" and item["category"] == "等长句" for item in check.issues)
 
 
-def test_humanizer_v3_rejects_empty_text_and_counts_repeated_same_pattern(tmp_path):
+def test_humanizer_v4_rejects_empty_text_and_counts_repeated_same_pattern(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
     candidate = root / "50_workbench" / "repair_candidates" / "ch001.humanized_candidate.md"
@@ -296,9 +298,10 @@ def test_style_extract_writes_sample_profile_and_continue_write_uses_it(tmp_path
     assert current["profile"]["fingerprint"]["dialogue_ratio"] > 0
     assert current["profile"]["common_phrases"]
     task_md = (root / "50_workbench" / "writing_tasks" / "ch001.md").read_text(encoding="utf-8")
+    inventory_text = (root / task["internal_fact_inventory"]["path"]).read_text(encoding="utf-8")
     assert task["fact_inventory_summary"]["categories"]["methods"] >= 2
-    assert "current_style_profile.json" in task_md
-    assert "sample_extract" in task_md
+    assert "sample_extract" in inventory_text
+    assert "current_style_profile.json" not in task_md
 
 
 def test_gate_detects_obvious_style_drift_from_active_sample_profile(tmp_path):

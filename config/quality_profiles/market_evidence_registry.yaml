@@ -1,0 +1,30 @@
+schema: market_evidence_registry_v1
+items:
+  - evidence_id: qidian_public_platform_2026_08
+    market_id: qidian_male
+    source_url: "https://www.qidian.com/"
+    source_date: "2026-08-20"
+    evidence_grade: public_platform_observation
+    execution_level: P2_advisory
+    claim_boundary: "Supports an editorial market profile only; does not reveal or imply recommendation algorithms."
+  - evidence_id: qidian_public_serial_sample_2026_08
+    market_id: qidian_male
+    source_url: "https://book.qidian.com/honor/1048862481"
+    source_date: "2026-08-20"
+    evidence_grade: public_serial_observation
+    execution_level: P2_advisory
+    claim_boundary: "Supports observable serial-story comparison, not a universal pacing rule."
+  - evidence_id: fanqie_writer_guidance_opening_2026_08
+    market_id: fanqie_free
+    source_url: "https://fanqienovel.com/writer/zone/article/7551631577109774398"
+    source_date: "2025-09-19"
+    evidence_grade: official_writer_guidance
+    execution_level: P2_advisory
+    claim_boundary: "Supports opening clarity advice; does not imply traffic or retention algorithms."
+  - evidence_id: fanqie_writer_guidance_serial_2026_08
+    market_id: fanqie_free
+    source_url: "https://fanqienovel.com/writer/zone/article/7571294020903632958"
+    source_date: "2025-11-11"
+    evidence_grade: official_writer_guidance
+    execution_level: P2_advisory
+    claim_boundary: "Supports concrete serial-writing advice, not fixed quotas or mandatory cliffhangers."

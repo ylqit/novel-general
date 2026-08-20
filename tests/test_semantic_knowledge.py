@@ -13,9 +13,11 @@ from longform_engine.agent_tasks import load_manifest
 from longform_engine.config import load_project_config
 from longform_engine.graph import validate_graph
 from longform_engine.memory import build_tcs, validate_tcs
+from longform_engine.orchestration import open_book
 from longform_engine.rag import query
 from longform_engine.semantic import chapter_close, semantic_apply, semantic_rebuild, semantic_task, semantic_validate
 from longform_engine.storage import init_project
+from tests.project_fixtures import mark_project_ready, refresh_arc_simulation_fixture
 
 
 def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
@@ -34,6 +36,8 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
             {"id": "char_future", "name": "尚未登场者"},
         ],
     )
+    open_book(config)
+    mark_project_ready(root, config, preserve_existing_characters=True)
     write_json(
         root / "10_bible" / "relationships.json",
         [
@@ -64,6 +68,7 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
             }
         ],
     )
+    refresh_arc_simulation_fixture(root)
     final = root / "40_manuscript" / "final" / "ch001.md"
     text = "# 第一章\n\n沈阙把旧木牌交给何简，何简点头。\n"
     final.write_text(text, encoding="utf-8")

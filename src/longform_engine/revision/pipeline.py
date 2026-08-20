@@ -14,7 +14,9 @@ from longform_engine.agent_tasks import agent_task_events_file, agent_task_index
 from longform_engine.config import ConfigDocument
 from longform_engine.db import database_path, sync_database
 from longform_engine.memory import mark_memory_stale
-from longform_engine.quality import truncate_feedback_registry, truncate_quality_history
+from longform_engine.quality import truncate_editorial_pattern_registry, truncate_quality_history
+from longform_engine.arc_simulation import SIMULATION_DIR, mark_overlapping_arc_simulations_stale
+from longform_engine.reader_promises import LEDGER_PATH, truncate_reader_promise_ledger
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import (
     existing_manuscript_chapter_path,
@@ -268,7 +270,11 @@ def rollback(config: ConfigDocument, *, to_chapter: int) -> RevisionRollbackResu
         mark_chapter_plan_stale(root, to_chapter)
         rebuilt_quality_indexes = (
             *truncate_quality_history(root, to_chapter=to_chapter),
-            *truncate_feedback_registry(root, to_chapter=to_chapter),
+            *truncate_editorial_pattern_registry(root, to_chapter=to_chapter),
+            truncate_reader_promise_ledger(root, to_chapter=to_chapter),
+            *mark_overlapping_arc_simulations_stale(
+                root, from_chapter=to_chapter + 1, to_chapter=10**9
+            ),
         )
         stale_report = write_stale_markers(
             root,
@@ -370,7 +376,9 @@ def _build_rollback_plan(config: ConfigDocument, *, to_chapter: int) -> _Rollbac
         root / "20_outline" / "chapter_plan.json",
         root / "30_state" / "reward_ledger.jsonl",
         root / "30_state" / "quality" / "structure_history.jsonl",
-        root / "50_workbench" / "quality_feedback" / "registry.jsonl",
+        root / "50_workbench" / "editorial_patterns" / "registry.jsonl",
+        root / LEDGER_PATH,
+        *sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")),
         root / "30_state" / "stale_indexes.json",
         root / "60_rag" / "stale.json",
         root / "30_state" / "story_graph_stale.json",

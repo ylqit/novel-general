@@ -19,6 +19,7 @@ from longform_engine.agent_tasks import (
     SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS,
     TASK_CONTRACTS,
 )
+from longform_engine.blind_review import literary_evidence_status
 from longform_engine.distribution import tree_hash
 from longform_engine.resources import resource_root
 from longform_engine.prompting import estimate_text_units, load_context_profile_registry
@@ -33,7 +34,7 @@ from longform_engine.roles import (
 from longform_engine.story_profiles import load_facet_registries
 
 
-SCHEMA = "agent_data_pipeline_readiness_v4"
+SCHEMA = "agent_data_pipeline_readiness_v5"
 RETIRED_RUNTIME_MARKERS = (
     "LEGACY" + "_COMPATIBILITY_TASK_TYPES",
     "legacy" + "_document_json",
@@ -43,6 +44,13 @@ RETIRED_RUNTIME_MARKERS = (
     "humanizer_semantic_output_template",
     "semantic_review_output_template",
     "semantic_pacing_output_template",
+    "quality_" + "feedback",
+    "controlled_" + "feedback",
+    "chapter_contract_" + "v2",
+    "chapter_direction_candidate_" + "v3",
+    "chapter_writing_task_" + "v3",
+    "chapter_story_brief_" + "v1",
+    "human_story_review_" + "v1",
     "graph_extract",
     "memory_extract",
     'task_type="character_memory"',
@@ -64,10 +72,16 @@ PROTOCOL_SURFACE_FILES = (
     "src/longform_engine/agent_protocol_readiness.py",
     "src/longform_engine/agent_results.py",
     "src/longform_engine/agent_tasks.py",
+    "src/longform_engine/arc_simulation.py",
+    "src/longform_engine/blind_review.py",
+    "src/longform_engine/chapter_contract.py",
     "src/longform_engine/graph/pipeline.py",
+    "src/longform_engine/human_story_review.py",
     "src/longform_engine/memory/pipeline.py",
     "src/longform_engine/prompting.py",
     "src/longform_engine/production.py",
+    "src/longform_engine/quality/editorial_patterns.py",
+    "src/longform_engine/reader_promises.py",
     "src/longform_engine/roles.py",
     "src/longform_engine/semantic/pipeline.py",
 )
@@ -303,8 +317,8 @@ def check_agent_data_pipeline_readiness(
     )
 
     protocol_errors: list[str] = []
-    if len(TASK_CONTRACTS) != 25:
-        protocol_errors.append(f"expected 25 task contracts, got {len(TASK_CONTRACTS)}")
+    if len(TASK_CONTRACTS) != 26:
+        protocol_errors.append(f"expected 26 task contracts, got {len(TASK_CONTRACTS)}")
     mapped_protocols: set[str] = set()
     for task_type, contract in TASK_CONTRACTS.items():
         schemas = tuple(contract.get("schemas") or ())
@@ -401,7 +415,7 @@ def check_agent_data_pipeline_readiness(
     failures = [item for item in checks if item["status"] == "fail"]
     protocol_ready = not failures
     production_contract_ready = protocol_ready
-    literary_evidence_ready = False
+    literary_evidence_ready, literary_evidence_blockers = literary_evidence_status(root)
     professional_prompt_ready = not any(
         item["id"] == "professional_prompt_calibration" and item["status"] == "fail"
         for item in checks
@@ -431,11 +445,7 @@ def check_agent_data_pipeline_readiness(
             "failures": len(failures),
         },
         "blocking_reasons": [item["id"] for item in failures],
-        "literary_evidence_blockers": [
-            "original_five_chapter_human_review_missing",
-            "fanfiction_five_chapter_human_review_missing",
-            "independent_blind_review_missing",
-        ],
+        "literary_evidence_blockers": literary_evidence_blockers,
         "next_command": (
             failures[0]["next_command"]
             if failures

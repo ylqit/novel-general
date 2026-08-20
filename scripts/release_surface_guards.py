@@ -143,7 +143,7 @@ SINGLE_PROJECT_FORBIDDEN_TERMS = tuple(
 
 REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
-        "docs/V0_4_4_RELEASE_CHECKLIST.md",
+        "docs/V0_5_0_RELEASE_CHECKLIST.md",
         (
             "配置与覆盖来源",
             "统一章节路径",
@@ -159,6 +159,128 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
             "canonical_write_transaction_report_v3",
             "apply_embedding_delta",
             "配置注册表",
+        ),
+    ),
+    (
+        "src/longform_engine/chapter_contract.py",
+        (
+            'CONTRACT_SCHEMA = "chapter_contract_v3"',
+            '"chapter_turn"',
+            '"reveal_boundary"',
+            '"reader_gain"',
+            '"primary_story_engine"',
+            '"scene_carriers"',
+            '"protected_story_outcomes"',
+            '"reader_promise_actions"',
+            '"arc_simulation_ref"',
+        ),
+    ),
+    (
+        "src/longform_engine/orchestration/pipeline.py",
+        (
+            '"schema": "chapter_writing_task_v4"',
+            '"schema": "chapter_story_brief_v2"',
+            '"schema": "chapter_fact_inventory_v1"',
+            "render_chapter_story_brief_markdown",
+            "require_human_story_accept",
+        ),
+    ),
+    (
+        "src/longform_engine/intelligence/pipeline.py",
+        (
+            '"schema": "chapter_direction_candidate_v4"',
+            '"story_engine_contract_v1"',
+            '"reader_promise_actions"',
+            '"arc_simulation_ref"',
+            '"outline_revision_required"',
+            "chapter_carrier_repetition_status",
+        ),
+    ),
+    (
+        "src/longform_engine/editorial/pipeline.py",
+        (
+            'selected: set[str] = {"scene_prose_editor", *configured}',
+            'reasons: list[str] = ["mandatory_scene_prose_review"]',
+            '"SERIAL_CARRIER_REPETITION"',
+            '"THEME_DISPLACES_EVENT"',
+            '"REPORT_SUBSTITUTES_EVENT"',
+            '"PASSIVE_PROTAGONIST"',
+        ),
+    ),
+    (
+        "src/longform_engine/human_story_review.py",
+        (
+            'SCHEMA = "human_story_review_v2"',
+            'DECISIONS = {"accept", "repair", "redirect"}',
+            "candidate_sha256",
+            "chapter_contract_sha256",
+            "reader_promise_ledger_sha256",
+            "arc_causal_simulation_sha256",
+            "apply_transaction",
+            "approved_by=human",
+        ),
+    ),
+    (
+        "src/longform_engine/reader_promises.py",
+        (
+            'LEDGER_SCHEMA = "reader_promise_ledger_v1"',
+            'PROMISE_ACTIONS = {"setup", "escalate", "partial_payoff", "payoff", "defer"}',
+            "apply_reader_promise_actions",
+        ),
+    ),
+    (
+        "src/longform_engine/arc_simulation.py",
+        (
+            'SIMULATION_SCHEMA = "arc_causal_simulation_v1"',
+            "current_basis_hashes",
+            "load_active_arc_simulation",
+            "load_covering_arc_simulation",
+        ),
+    ),
+    (
+        "config/quality_profiles/market_evidence_registry.yaml",
+        (
+            "schema: market_evidence_registry_v1",
+            "source_date:",
+            "evidence_grade:",
+            "execution_level: P2_advisory",
+        ),
+    ),
+    (
+        "src/longform_engine/quality/contracts.py",
+        (
+            'MARKET_EVIDENCE_SCHEMA = "market_evidence_registry_v1"',
+            "load_market_evidence_registry",
+            "validate_market_evidence_refs",
+            'item.get("execution_level") != "P2_advisory"',
+        ),
+    ),
+    (
+        "src/longform_engine/quality/editorial_patterns.py",
+        (
+            'PATTERN_SCHEMA = "editorial_pattern_item_v1"',
+            "role_id",
+            "finding_code",
+            "rebuild_editorial_pattern_registry",
+        ),
+    ),
+    (
+        "src/longform_engine/blind_review.py",
+        (
+            'BLIND_PACK_SCHEMA = "blind_review_pack_v3"',
+            'LITERARY_MANIFEST_SCHEMA = "literary_evidence_manifest_v1"',
+            '"qidian_opening_3"',
+            '"fanqie_opening_3"',
+            '"serial_arc_15"',
+        ),
+    ),
+    (
+        "tests/test_story_architecture_v050.py",
+        (
+            "test_author_markdown_is_story_brief_and_fact_inventory_stays_internal",
+            "test_five_chapter_carrier_diagnostics_warn_and_require_human_reason",
+            "test_human_accept_is_hash_bound_and_unlocks_review_barrier",
+            "test_human_redirect_failure_restores_card_decision_and_sqlite",
         ),
     ),
     (
@@ -229,7 +351,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "docs/V0_4_4_RELEASE_CHECKLIST.md",
+        "docs/V0_5_0_RELEASE_CHECKLIST.md",
         (
             "发布前本地证据",
             "远程发布证据",
@@ -241,7 +363,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "tests/test_agent_skill_integrity.py",
         (
-            "test_release_guard_tracks_current_v044_contracts",
+            "test_release_guard_tracks_current_v050_contracts",
             "check_experience_layer_guards",
             "DIRECT_WRITER_PATTERNS",
         ),
@@ -250,7 +372,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         "tests/test_agent_skill_integrity.py",
         (
             "test_progressive_prompts_cover_four_protocols_without_pollution",
-            "agent_data_pipeline_readiness_v4",
+            "agent_data_pipeline_readiness_v5",
             "single_process_sequential",
         ),
     ),
@@ -632,7 +754,7 @@ def check_agent_first_production_pipeline_guards() -> list[str]:
         "require_agent_data_pipeline_readiness",
         "compile_production_agent_package",
         "validate_production_agent_result",
-        "controlled_feedback",
+        "review_advisories",
         "agent-task result-validate",
     ):
         if marker not in integration:
@@ -658,7 +780,7 @@ def check_removed_runtime_guards() -> list[str]:
     failures: list[str] = []
     retired_module = "leg" + "acy.py"
     if (SRC / retired_module).exists():
-        failures.append(f"{retired_module} must not ship in the v0.4.4 runtime")
+        failures.append(f"{retired_module} must not ship in the v0.5.0 runtime")
     combined = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")
         for path in (
@@ -669,6 +791,9 @@ def check_removed_runtime_guards() -> list[str]:
             SRC / "cli.py",
             SRC / "graph" / "pipeline.py",
             SRC / "memory" / "pipeline.py",
+            SRC / "agent_pipeline.py",
+            SRC / "orchestration" / "pipeline.py",
+            SRC / "quality" / "__init__.py",
         )
         if path.is_file()
     )
@@ -681,6 +806,10 @@ def check_removed_runtime_guards() -> list[str]:
         'task_type="character_memory"',
         'add_parser("init-novel"',
         'add_parser("' + "legacy" + '"',
+        "quality_" + "feedback",
+        "controlled_" + "feedback",
+        "chapter_story_brief_" + "v1",
+        "human_story_review_" + "v1",
     ):
         if marker in combined:
             failures.append(f"removed runtime marker returned: {marker}")
@@ -733,7 +862,7 @@ def check_agent_data_pipeline_readiness_guards() -> list[str]:
     script_text = script_path.read_text(encoding="utf-8", errors="ignore")
     ci_text = ci_path.read_text(encoding="utf-8", errors="ignore")
     for marker in (
-        "agent_data_pipeline_readiness_v4",
+        "agent_data_pipeline_readiness_v5",
         "production_contract_ready",
         "ready_for_data_pipeline",
         "professional_prompt_ready",

@@ -26,6 +26,7 @@ from longform_engine.agent_protocols import (
 )
 from longform_engine.agent_tasks import (
     build_manifest,
+    is_canonical_output,
     list_manifests,
     manifest_chapter_number,
     manifest_commands,
@@ -33,8 +34,21 @@ from longform_engine.agent_tasks import (
     manifest_output,
     mark_tasks_for_output,
     mark_tasks_for_chapter_type,
+    update_task_status,
     validate_current_task_result,
     write_manifest,
+)
+from longform_engine.arc_simulation import (
+    SIMULATION_DIR,
+    ArcSimulationError,
+    arc_simulation_path,
+    current_basis_hashes,
+    load_active_arc_simulation,
+    load_covering_arc_simulation,
+    mark_overlapping_arc_simulations_stale,
+    permitted_arc_simulation_ranges,
+    validate_arc_causal_simulation,
+    write_arc_causal_simulation,
 )
 from longform_engine.character_expression import (
     CHARACTER_EXPRESSION_SCHEMA,
@@ -45,8 +59,20 @@ from longform_engine.character_expression import (
 )
 from longform_engine.chapter_contract import REMOVED_ALIAS_FIELDS
 from longform_engine.config import ConfigDocument
+from longform_engine.db import sync_database
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
+from longform_engine.quality import truncate_editorial_pattern_registry
+from longform_engine.reader_promises import (
+    LEDGER_PATH,
+    apply_planning_deferrals,
+    load_reader_promise_ledger,
+    merge_planned_reader_promises,
+    promise_deadline_status,
+    validate_promise_actions,
+    validate_planning_deferrals,
+    write_reader_promise_ledger,
+)
 from longform_engine.story_profiles import BUILTIN_MARKET_IDS, active_story_facets, compile_story_profile
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import manuscript_chapter_path
@@ -60,6 +86,7 @@ INTELLIGENCE_TASK_TYPES = (
     "character_expression_design",
     "character_expression_review",
     "outline_design",
+    "arc_simulation",
     "outline_extension",
     "chapter_direction",
     "outline_revision",
@@ -178,6 +205,7 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
             "20_outline/chapter_plan.json",
             "20_outline/planning_window.json",
             "20_outline/foreshadowing_ledger.json",
+            "30_state/reader_promise_ledger.json",
             "30_state/novel_state.json",
         ),
         "defaults": (
@@ -188,6 +216,23 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
             "10_bible/relationships.json",
         ),
     },
+    "arc_simulation": {
+        "schema": "arc_causal_simulation_v1",
+        "scope": "range",
+        "human": True,
+        "targets": (),
+        "defaults": (
+            "project.yaml",
+            "10_bible/creative_brief.json",
+            "10_bible/characters.json",
+            "10_bible/relationships.json",
+            "20_outline/book_outline.md",
+            "20_outline/story_arcs.json",
+            "20_outline/chapter_plan.json",
+            "30_state/reader_promise_ledger.json",
+            "30_state/character_state.json",
+        ),
+    },
     "outline_extension": {
         "schema": "outline_extension_candidate_v1",
         "scope": "range",
@@ -196,6 +241,7 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
             "20_outline/chapter_plan.json",
             "20_outline/planning_window.json",
             "20_outline/foreshadowing_ledger.json",
+            "30_state/reader_promise_ledger.json",
             "30_state/novel_state.json",
         ),
         "defaults": (
@@ -209,7 +255,7 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
         ),
     },
     "chapter_direction": {
-        "schema": "chapter_direction_candidate_v2",
+        "schema": "chapter_direction_candidate_v4",
         "scope": "chapter",
         "human": True,
         "targets": (),
@@ -226,6 +272,7 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
             "20_outline/chapter_plan.json",
             "20_outline/planning_window.json",
             "20_outline/foreshadowing_ledger.json",
+            "30_state/reader_promise_ledger.json",
             "30_state/novel_state.json",
         ),
         "defaults": (
@@ -336,6 +383,17 @@ def create_intelligence_task(
         to_chapter=to_chapter,
     )
     if task_type == "chapter_direction":
+        direction_status = assess_chapter_direction(config, int(scope["chapter_number"]))
+        if direction_status.get("status") == "outline_revision_required":
+            raise ValueError(
+                "chapter direction is blocked by an unresolved outline redirect; create an "
+                "outline_revision task before selecting a new direction."
+            )
+        if direction_status.get("status") == "arc_simulation_required":
+            raise ValueError(
+                "chapter direction requires a current human-approved arc_causal_simulation_v1 "
+                "covering this chapter."
+            )
         from longform_engine.orchestration.pipeline import plan_chapter
 
         plan_chapter(config, chapter_number=int(scope["chapter_number"]))
@@ -718,7 +776,7 @@ def create_design_compile_task(
             "longform-engine intelligence compile-task project.yaml "
             f"--task-type {task_type} --document {document_rel}{scope_args}"
         ),
-        canonical_targets=design_apply_targets(root, task_type, scope),
+        canonical_targets=intelligence_canonical_targets(root, task_type, scope),
         requires_human_apply=True,
         context_policy={
             "required_files": [instruction, document],
@@ -746,6 +804,7 @@ def validate_design_compile_delta(
     task_type: str,
     document_path: str | Path,
     delta_path: str | Path,
+    record_result: bool = True,
 ) -> IntelligenceValidationResult:
     if task_type not in DESIGN_INTELLIGENCE_TASK_TYPES:
         raise ValueError(f"{task_type} is not a design_document_v1 task.")
@@ -763,7 +822,7 @@ def validate_design_compile_delta(
             chapter_number=manifest_chapter_number(manifest),
             task_type="design_semantic_compile",
             output_path=delta,
-            allowed_statuses=("submitted", "validated"),
+            allowed_statuses=("submitted", "validated") if record_result else ("validated",),
         )
         errors.extend(control_errors)
     payload: dict[str, Any] = {}
@@ -833,16 +892,17 @@ def validate_design_compile_delta(
         },
         next_command=next_command,
     )
-    atomic_write_text(report, json.dumps(report_payload, ensure_ascii=False, indent=2) + "\n")
-    mark_tasks_for_output(
-        root,
-        chapter_number=manifest_chapter_number(manifest or {}),
-        output_path=delta,
-        to_status="validated" if ok else "invalid",
-        command="intelligence compile-validate",
-        result=report,
-        from_statuses=("submitted", "validated", "invalid"),
-    )
+    if record_result:
+        atomic_write_text(report, json.dumps(report_payload, ensure_ascii=False, indent=2) + "\n")
+        mark_tasks_for_output(
+            root,
+            chapter_number=manifest_chapter_number(manifest or {}),
+            output_path=delta,
+            to_status="validated" if ok else "invalid",
+            command="intelligence compile-validate",
+            result=report,
+            from_statuses=("submitted", "validated", "invalid"),
+        )
     return IntelligenceValidationResult(
         task_type=task_type,
         ok=ok,
@@ -871,6 +931,7 @@ def apply_compiled_design(
         task_type=task_type,
         document_path=document,
         delta_path=delta,
+        record_result=False,
     )
     if not validation.ok:
         raise ValueError("Compiled design delta is invalid: " + "; ".join(validation.errors))
@@ -888,6 +949,8 @@ def apply_compiled_design(
     canonical_document = design_document_target(root, task_type, scope)
     canonical_delta = design_delta_target(root, task_type, scope)
     touched = design_apply_targets(root, task_type, scope, payload=domain_payload)
+    touched.append(root / "50_workbench" / "agent_tasks")
+    touched = list(dict.fromkeys(touched))
     with apply_transaction(
         root,
         command=f"intelligence apply compiled {task_type}",
@@ -914,16 +977,16 @@ def apply_compiled_design(
             },
         )
         write_targets(config, root, task_type, domain_payload, scope=scope)
-    mark_tasks_for_chapter_type(
-        root,
-        chapter_number=int(scope.get("chapter_number") or 0),
-        task_types=("design_semantic_compile", task_type),
-        to_status="applied",
-        command="intelligence apply compiled",
-        artifact=delta,
-        result=transaction.report_file,
-        from_statuses=("validated", "approved"),
-    )
+        mark_tasks_for_chapter_type(
+            root,
+            chapter_number=int(scope.get("chapter_number") or 0),
+            task_types=("design_semantic_compile", task_type),
+            to_status="applied",
+            command="intelligence apply compiled",
+            artifact=delta,
+            result=transaction.report_file,
+            from_statuses=("validated", "approved"),
+        )
     return IntelligenceApplyResult(
         task_type=task_type,
         status="applied",
@@ -1016,6 +1079,14 @@ def design_cli_fields(
             "chapter_card_sha256": sha256(card.read_bytes()).hexdigest() if card.is_file() else "",
             "trigger_reasons": assess_chapter_direction(config, chapter_number)["reasons"],
         }
+    if task_type == "arc_simulation":
+        return {
+            "from_chapter": int(scope.get("from_chapter") or 0),
+            "to_chapter": int(scope.get("to_chapter") or 0),
+            "basis_hashes": current_basis_hashes(root),
+            "approved_by": "human",
+            "status": "approved",
+        }
     if task_type == "outline_revision":
         return {
             "from_chapter": int(scope.get("from_chapter") or 0),
@@ -1102,7 +1173,7 @@ def design_document_target(root: Path, task_type: str, scope: dict[str, Any]) ->
     token = scope_token(scope)
     if task_type == "chapter_direction":
         return root / "20_outline" / "chapter_directions" / f"{token}.md"
-    if task_type in {"outline_design", "outline_extension", "outline_revision"}:
+    if task_type in {"outline_design", "arc_simulation", "outline_extension", "outline_revision"}:
         return root / "20_outline" / "design_documents" / f"{task_type}.{token}.md"
     return root / "10_bible" / "design_documents" / f"{task_type}.{token}.md"
 
@@ -1120,6 +1191,19 @@ def design_apply_targets(
 ) -> list[Path]:
     if payload is None:
         targets = [root / item for item in TASK_SPECS[task_type]["targets"]]
+        if task_type in {"book_design", "fanfiction_design", "outline_design"}:
+            targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
+        if task_type == "arc_simulation":
+            targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
+            targets.append(
+                arc_simulation_path(
+                    root,
+                    int(scope.get("from_chapter") or 0),
+                    int(scope.get("to_chapter") or 0),
+                )
+            )
+        if task_type == "outline_extension":
+            targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
         if task_type == "chapter_direction":
             chapter = int(scope.get("chapter_number") or 0)
             targets.extend(
@@ -1130,6 +1214,16 @@ def design_apply_targets(
                 )
             )
         if task_type == "outline_revision":
+            targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
+            targets.extend(
+                outline_revision_side_effect_targets(
+                    root,
+                    range(
+                        int(scope.get("from_chapter") or 0),
+                        int(scope.get("to_chapter") or 0) + 1,
+                    ),
+                )
+            )
             targets.append(
                 root
                 / "20_outline"
@@ -1357,6 +1451,10 @@ def intelligence_default_inputs(
                 root / "10_bible" / "creative_brief.json",
             ]
         )
+    if task_type == "arc_simulation":
+        candidates.extend(
+            sorted((root / "60_rag" / "memory" / "characters").glob("*.json"))
+        )
     return [path for path in candidates if path.is_file()]
 
 
@@ -1511,6 +1609,8 @@ def write_chapter_direction_context(
     volumes_path = root / "20_outline" / "volumes.json"
     characters_path = root / "10_bible" / "characters.json"
     expression_path = root / "10_bible" / "character_expression.json"
+    structure_path = root / "30_state" / "quality" / "structure_history.jsonl"
+    promise_path = root / LEDGER_PATH
     card = read_json(card_path, {})
     plan = read_json(plan_path, [])
     ledger = read_json(ledger_path, [])
@@ -1519,6 +1619,10 @@ def write_chapter_direction_context(
     volumes = read_json(volumes_path, [])
     characters = read_json(characters_path, [])
     expression = read_json(expression_path, {})
+    promises = load_reader_promise_ledger(root)
+    simulation, simulation_path, simulation_hash = load_active_arc_simulation(
+        root, chapter_number=chapter_number
+    )
     card = card if isinstance(card, dict) else {}
     plan_rows = plan if isinstance(plan, list) else []
     ledger_rows = ledger if isinstance(ledger, list) else []
@@ -1576,6 +1680,7 @@ def write_chapter_direction_context(
         for path in (
             card_path, plan_path, ledger_path, brief_path, arcs_path, volumes_path,
             characters_path, expression_path, root / "project.yaml",
+            structure_path, promise_path, simulation_path,
         )
         if path.is_file()
     ]
@@ -1589,12 +1694,23 @@ def write_chapter_direction_context(
                 "title",
                 "chapter_duty",
                 "conflict",
-                "information_release",
+                "chapter_turn",
+                "primary_story_engine",
+                "scene_carriers",
+                "state_change_kind",
+                "dramatic_method",
                 "reader_gain",
                 "cost",
                 "relationship_move",
                 "forbidden_reveals",
                 "protected_reveals",
+                "protected_story_outcomes",
+                "protected_canon_outcomes",
+                "prohibited_drift",
+                "immediate_desire",
+                "opposition_force",
+                "key_failure",
+                "irreversible_choice",
                 "pov_character_id",
                 "featured_character_ids",
             )
@@ -1629,11 +1745,37 @@ def write_chapter_direction_context(
             for character_id in featured_ids
         ],
         "active_foreshadowing": active_threads,
+        "reader_promises": [
+            item
+            for item in promises["items"]
+            if item["status"] not in {"paid", "retired"}
+            and int(item["payoff_window"]["earliest"]) <= chapter_number
+            <= int(item["payoff_window"]["latest"]) + 1
+        ],
+        "arc_causal_simulation": {
+            **simulation,
+            "path": relative(root, simulation_path),
+            "sha256": simulation_hash,
+        },
         "book_contract": {
             key: brief.get(key)
-            for key in ("design_decisions", "reader_contract", "core_taboo", "story_profile")
+            for key in (
+                "design_decisions", "reader_contract", "core_taboo", "story_profile",
+                "story_engine_contract",
+            )
             if isinstance(brief, dict) and brief.get(key) not in (None, "", [], {})
         },
+        "recent_structure": [
+            {
+                key: item.get(key)
+                for key in (
+                    "chapter_number", "primary_story_engine", "primary_scene_carrier",
+                    "state_change_kind", "dramatic_method", "exposition_carrier",
+                )
+            }
+            for item in read_jsonl_records(structure_path)[-5:]
+            if isinstance(item, dict)
+        ],
         "project_contract": {
             "length": config.data.get("length", {}),
             "primary_market": str(config.data["story_profile"]["market"]["primary"]),
@@ -1649,10 +1791,11 @@ def write_chapter_direction_context(
         },
     }
     rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    if len(rendered) > 12_000:
-        raise ValueError(
-            f"Compiled chapter direction context exceeds 12000 characters for ch{chapter_number:03d}."
-        )
+    budget = resolve_context_budget_contract(root)
+    payload["selection"]["estimated_units"] = estimate_text_units(rendered, budget.estimator)
+    payload["selection"]["budget_profile"] = budget.profile
+    payload["selection"]["capacity_units"] = budget.capacity_units
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     path = root / "50_workbench" / "intelligence_tasks" / f"chapter_direction.ch{chapter_number:03d}.context.json"
     atomic_write_text(path, rendered)
     return path
@@ -1667,6 +1810,11 @@ def write_outline_extension_context(
 
     start = int(scope["from_chapter"])
     end = int(scope["to_chapter"])
+    simulation, simulation_path, _simulation_hash = load_covering_arc_simulation(
+        root,
+        from_chapter=start,
+        to_chapter=end,
+    )
     plan_path = root / "20_outline" / "chapter_plan.json"
     arcs_path = root / "20_outline" / "story_arcs.json"
     volumes_path = root / "20_outline" / "volumes.json"
@@ -1687,7 +1835,19 @@ def write_outline_extension_context(
         for item in ledger
         if isinstance(item, dict) and str(item.get("status") or "") not in {"resolved", "expired"}
     ][:12] if isinstance(ledger, list) else []
-    source_paths = [path for path in (plan_path, arcs_path, volumes_path, ledger_path, brief_path, root / "project.yaml") if path.is_file()]
+    source_paths = [
+        path
+        for path in (
+            plan_path,
+            arcs_path,
+            volumes_path,
+            ledger_path,
+            brief_path,
+            simulation_path,
+            root / "project.yaml",
+        )
+        if path.is_file()
+    ]
     compiled_story = compile_story_profile(
         config.data["story_profile"], market_ids=set(BUILTIN_MARKET_IDS)
     )
@@ -1726,7 +1886,7 @@ def write_outline_extension_context(
         },
         "book_contract": {
             key: brief.get(key)
-            for key in ("design_decisions", "reader_contract", "core_taboo")
+            for key in ("design_decisions", "reader_contract", "core_taboo", "story_engine_contract")
             if isinstance(brief, dict) and brief.get(key) not in (None, "", [], {})
         },
         "story_arc_map": [
@@ -1746,6 +1906,11 @@ def write_outline_extension_context(
         ] if isinstance(volumes, list) else [],
         "recent_chapter_plan": recent_plan,
         "active_foreshadowing": active_threads,
+        "arc_causal_simulation": {
+            key: value
+            for key, value in simulation.items()
+            if key not in {"basis_hashes", "approved_by", "status"}
+        },
         "provenance": [
             {"path": relative(root, path), "sha256": sha256(path.read_bytes()).hexdigest()}
             for path in source_paths
@@ -1778,7 +1943,11 @@ def intelligence_canonical_targets(
     scope: dict[str, Any],
 ) -> tuple[str, ...]:
     if task_type in DESIGN_INTELLIGENCE_TASK_TYPES:
-        return tuple(relative(root, path) for path in design_apply_targets(root, task_type, scope))
+        targets = (
+            relative(root, path)
+            for path in design_apply_targets(root, task_type, scope)
+        )
+        return tuple(path for path in targets if is_canonical_output(path))
     if task_type == "chapter_direction":
         chapter_number = int(scope["chapter_number"])
         return (
@@ -1824,12 +1993,41 @@ def assess_chapter_direction(config: ConfigDocument, chapter_number: int) -> dic
     """Return deterministic reasons for requiring a human chapter-direction choice."""
 
     root = resolve_project_root(config)
+    deadlines = promise_deadline_status(root, chapter_number=chapter_number)
     card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
     card = read_json(card_path, {})
+    selected = card.get("direction_selection") if isinstance(card, dict) else None
+    if isinstance(selected, dict) and selected.get("status") == "outline_revision_required":
+        return {
+            "required": True,
+            "reasons": ["outline_revision_required"],
+            "warnings": deadlines["warnings"],
+            "status": "outline_revision_required",
+        }
+    try:
+        load_active_arc_simulation(root, chapter_number=chapter_number)
+    except ArcSimulationError as exc:
+        return {
+            "required": True,
+            "reasons": [str(exc)],
+            "warnings": deadlines["warnings"],
+            "status": "arc_simulation_required",
+        }
     if isinstance(card, dict):
-        selected = card.get("direction_selection")
         if isinstance(selected, dict) and selected.get("status") == "applied":
-            return {"required": False, "reasons": [], "status": "applied"}
+            return {
+                "required": False,
+                "reasons": [],
+                "warnings": [*deadlines["warnings"], *deadlines["blockers"]],
+                "status": "applied",
+            }
+    if deadlines["blockers"]:
+        return {
+            "required": True,
+            "reasons": deadlines["blockers"],
+            "warnings": deadlines["warnings"],
+            "status": "outline_revision_required",
+        }
     plan = read_json(root / "20_outline" / "chapter_plan.json", [])
     planned = next(
         (
@@ -1839,10 +2037,10 @@ def assess_chapter_direction(config: ConfigDocument, chapter_number: int) -> dic
         ),
         {},
     ) if isinstance(plan, list) else {}
-    reasons: list[str] = ["mandatory_chapter_direction"]
+    reasons: list[str] = ["mandatory_chapter_direction", *deadlines["warnings"]]
     text = " ".join(
         str(planned.get(key) or "")
-        for key in ("title", "chapter_duty", "conflict", "information_release", "hook")
+        for key in ("title", "chapter_duty", "conflict", "chapter_turn", "hook")
     ).lower()
     abstract_markers = (
         "待定",
@@ -1871,6 +2069,7 @@ def assess_chapter_direction(config: ConfigDocument, chapter_number: int) -> dic
     return {
         "required": bool(deduped),
         "reasons": deduped,
+        "warnings": deadlines["warnings"],
         "status": "required" if deduped else "not_required",
     }
 
@@ -2229,6 +2428,9 @@ def validate_payload(
             validate_evidence_review(value)
         ),
         "outline_design": lambda value, target: validate_outline_design(config, value, target),
+        "arc_simulation": lambda value, target: validate_arc_simulation_payload(
+            root, value, manifest, target
+        ),
         "outline_extension": lambda value, target: validate_outline_extension(
             config, root, value, manifest, target
         ),
@@ -2250,6 +2452,33 @@ def require_keys(payload: dict[str, Any], required: set[str], allowed: set[str],
         errors.append("missing fields: " + ", ".join(missing))
     if extra:
         errors.append("unknown fields: " + ", ".join(extra))
+
+
+def validate_arc_simulation_payload(
+    root: Path,
+    payload: dict[str, Any],
+    manifest: dict[str, Any] | None,
+    errors: list[str],
+) -> None:
+    scope = (manifest or {}).get("scope") if isinstance((manifest or {}).get("scope"), dict) else {}
+    task_range = (
+        int(scope.get("from_chapter") or 0),
+        int(scope.get("to_chapter") or 0),
+    )
+    permitted_ranges = permitted_arc_simulation_ranges(root)
+    if not permitted_ranges:
+        errors.append("arc simulation requires a materialized rolling planning_window.")
+    elif task_range not in permitted_ranges:
+        errors.append(
+            "arc simulation task range must match the current rolling window or its immediately adjacent next window."
+        )
+    errors.extend(
+        validate_arc_causal_simulation(
+            payload,
+            expected_range=task_range,
+            expected_basis=current_basis_hashes(root),
+        )
+    )
 
 
 def require_nonempty_string(payload: dict[str, Any], key: str, errors: list[str]) -> None:
@@ -2358,6 +2587,24 @@ def validate_chapter_direction(
         "volume_goal",
         "protagonist_goal",
         "chapter_duty",
+        "immediate_desire",
+        "opposition_force",
+        "dramatic_question",
+        "key_failure",
+        "irreversible_choice",
+        "chapter_turn",
+        "reveal_boundary",
+        "must_dramatize",
+        "may_summarize",
+        "primary_story_engine",
+        "scene_carriers",
+        "reader_promise_actions",
+        "arc_simulation_ref",
+        "protected_story_outcomes",
+        "prohibited_drift",
+        "state_change_kind",
+        "dramatic_method",
+        "exposition_carrier",
         "scene_chain",
         "featured_character_ids",
         "cast_desires",
@@ -2365,7 +2612,6 @@ def validate_chapter_direction(
         "embodiment_plan",
         "interiority_function",
         "conflict",
-        "information_release",
         "reader_gain",
         "cost",
         "mainline_move",
@@ -2379,6 +2625,16 @@ def validate_chapter_direction(
         "ending_mode",
         "main_risks",
     }
+    fanfiction_mode = str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
+    fanfiction_fields = {
+        "protected_canon_outcomes",
+        "changed_scene_means",
+        "canon_character_agency",
+        "new_long_term_facts",
+        "outline_revision_required",
+    }
+    if fanfiction_mode:
+        required_direction |= fanfiction_fields
     if not isinstance(direction, dict) or set(direction) != required_direction:
         errors.append(
             "selected_direction must contain exactly: "
@@ -2392,21 +2648,79 @@ def validate_chapter_direction(
     for field in (
         "title", "book_goal", "volume_goal", "protagonist_goal", "chapter_duty",
         "dialogue_ownership", "embodiment_plan", "interiority_function", "conflict",
-        "information_release", "reader_gain", "cost", "mainline_move",
+        "immediate_desire", "opposition_force", "dramatic_question", "key_failure",
+        "irreversible_choice", "chapter_turn", "reveal_boundary", "reader_gain", "cost",
+        "primary_story_engine", "state_change_kind", "dramatic_method", "exposition_carrier",
+        "mainline_move",
         "character_arc_move", "foreshadow_move", "relationship_move", "ending_mode",
     ):
         if not isinstance(direction.get(field), str) or not direction[field].strip():
             errors.append(f"selected_direction.{field} must be non-empty text.")
     for field in (
         "featured_character_ids", "canon_refs", "world_rule_refs", "foreshadow_refs",
-        "forbidden_reveals", "main_risks",
+        "forbidden_reveals", "main_risks", "must_dramatize", "may_summarize",
+        "scene_carriers", "protected_story_outcomes", "prohibited_drift",
     ):
         values = direction.get(field)
         if not isinstance(values, list) or any(not isinstance(item, str) or not item.strip() for item in values):
             errors.append(f"selected_direction.{field} must be a string list.")
+    for field in (
+        "featured_character_ids", "must_dramatize", "scene_carriers",
+        "protected_story_outcomes", "prohibited_drift",
+    ):
+        if not direction.get(field):
+            errors.append(f"selected_direction.{field} must be non-empty.")
+    ledger = load_reader_promise_ledger(root)
+    errors.extend(
+        f"selected_direction.{item}"
+        for item in validate_promise_actions(direction.get("reader_promise_actions"), ledger)
+    )
+    try:
+        simulation, simulation_path, simulation_hash = load_active_arc_simulation(
+            root, chapter_number=chapter_number
+        )
+    except ArcSimulationError as exc:
+        errors.append(str(exc))
+    else:
+        expected_simulation_ref = {
+            "path": relative(root, simulation_path),
+            "sha256": simulation_hash,
+            "from_chapter": simulation["from_chapter"],
+            "to_chapter": simulation["to_chapter"],
+        }
+        if direction.get("arc_simulation_ref") != expected_simulation_ref:
+            errors.append(
+                "selected_direction.arc_simulation_ref must reference the current approved causal simulation."
+            )
+    current_card = read_json(card_path, {})
+    protected_scalar_fields = (
+        "chapter_duty", "chapter_turn", "reader_gain", "relationship_move", "state_change_kind",
+    )
+    protected_list_fields = ("featured_character_ids", "protected_story_outcomes")
+    authority_changes = [
+        field
+        for field in protected_scalar_fields
+        if isinstance(current_card, dict)
+        and current_card.get(field) not in (None, "")
+        and direction.get(field) != current_card.get(field)
+    ]
+    authority_changes.extend(
+        field
+        for field in protected_list_fields
+        if isinstance(current_card, dict)
+        and isinstance(current_card.get(field), list)
+        and current_card.get(field)
+        and direction.get(field) != current_card.get(field)
+    )
+    if authority_changes:
+        errors.append(
+            "selected direction changes protected chapter outcomes outside chapter-direction authority "
+            f"({', '.join(authority_changes)}); create an outline_revision task."
+        )
     scenes = direction.get("scene_chain")
     scene_fields = {
-        "scene_id", "location", "participants", "desire_collision", "choice", "cost", "turn",
+        "scene_id", "location", "participants", "carrier", "desire_collision", "action",
+        "reaction", "choice", "cost", "turn", "exit_state",
     }
     if not isinstance(scenes, list) or not 2 <= len(scenes) <= 5:
         errors.append("selected_direction.scene_chain must contain two to five scenes.")
@@ -2431,9 +2745,51 @@ def validate_chapter_direction(
         for key, value in cast_desires.items()
     ):
         errors.append("selected_direction.cast_desires must map stable character IDs to visible desires.")
+    if fanfiction_mode:
+        for field in ("changed_scene_means", "canon_character_agency"):
+            if not isinstance(direction.get(field), str) or not direction[field].strip():
+                errors.append(f"selected_direction.{field} must be non-empty text.")
+        for field in ("protected_canon_outcomes", "new_long_term_facts"):
+            values = direction.get(field)
+            if not isinstance(values, list) or any(not isinstance(item, str) or not item.strip() for item in values):
+                errors.append(f"selected_direction.{field} must be a string list.")
+        if not isinstance(direction.get("outline_revision_required"), bool):
+            errors.append("selected_direction.outline_revision_required must be boolean.")
+        protected_canon_outcomes = direction.get("protected_canon_outcomes")
+        card_protected_canon = (
+            current_card.get("protected_canon_outcomes")
+            if isinstance(current_card, dict)
+            else None
+        )
+        if not isinstance(card_protected_canon, list) or not card_protected_canon:
+            errors.append(
+                "chapter card lacks protected_canon_outcomes; create an outline_revision task before selecting a fanfiction direction."
+            )
+        elif protected_canon_outcomes != card_protected_canon:
+            errors.append(
+                "selected fanfiction direction changes protected canon outcomes; create an outline_revision task."
+            )
+        changed_outcomes = (
+            bool(direction.get("new_long_term_facts"))
+            or not bool(protected_canon_outcomes)
+            or (
+                isinstance(card_protected_canon, list)
+                and bool(card_protected_canon)
+                and protected_canon_outcomes != card_protected_canon
+            )
+        )
+        if changed_outcomes and direction.get("outline_revision_required") is not True:
+            errors.append(
+                "fanfiction direction changing protected outcomes or long-term facts must require outline revision."
+            )
+        if direction.get("outline_revision_required") is True:
+            errors.append(
+                "selected fanfiction direction is outside chapter-direction authority; create an outline_revision task."
+            )
     selection = payload.get("selection")
-    if not isinstance(selection, dict) or set(selection) != {"direction_id", "user_adjustments"}:
-        errors.append("selection must contain direction_id and user_adjustments only.")
+    selection_fields = {"direction_id", "user_adjustments", "repetition_reason"}
+    if not isinstance(selection, dict) or set(selection) != selection_fields:
+        errors.append("selection must contain direction_id, user_adjustments, and repetition_reason only.")
         return
     if selection.get("direction_id") != direction_id:
         errors.append("selection.direction_id must reference selected_direction.id.")
@@ -2443,12 +2799,76 @@ def validate_chapter_direction(
         errors.append("selection.user_adjustments contains unsupported fields.")
     elif any(value in (None, "", [], {}) for value in adjustments.values()):
         errors.append("selection.user_adjustments values must be non-empty.")
+    repetition = chapter_carrier_repetition_status(root, direction, chapter_number=chapter_number)
+    if not isinstance(selection.get("repetition_reason"), str):
+        errors.append("selection.repetition_reason must be text.")
+    repetition_reason = str(selection.get("repetition_reason") or "").strip()
+    if repetition["requires_reason"] and not repetition_reason:
+        errors.append(
+            "selection.repetition_reason is required because the primary carrier and dramatic method repeat in four of five chapters."
+        )
     if not isinstance(payload.get("canonical_refs"), list):
         errors.append("canonical_refs must be a list.")
     elif sorted(payload["canonical_refs"]) != sorted(direction.get("canon_refs") or []):
         errors.append("canonical_refs must match selected_direction.canon_refs.")
     if not isinstance(payload.get("introduced_elements"), list):
         errors.append("introduced_elements must be a list.")
+
+
+def chapter_carrier_repetition_status(
+    root: Path,
+    direction: dict[str, Any],
+    *,
+    chapter_number: int | None = None,
+) -> dict[str, Any]:
+    """Describe five-chapter carrier repetition without turning genre repetition into a quota."""
+
+    path = root / "30_state" / "quality" / "structure_history.jsonl"
+    history = [
+        item
+        for item in read_jsonl_records(path)
+        if chapter_number is None or int(item.get("chapter_number") or 0) < chapter_number
+    ]
+    recent = sorted(history, key=lambda item: int(item.get("chapter_number") or 0))[-4:]
+    carriers = [
+        str(item.get("primary_scene_carrier") or item.get("dominant_scene_type") or "")
+        for item in recent
+    ]
+    methods = [str(item.get("dramatic_method") or "") for item in recent]
+    states = [str(item.get("state_change_kind") or "") for item in recent]
+    selected_carriers = direction.get("scene_carriers")
+    primary = str(selected_carriers[0] if isinstance(selected_carriers, list) and selected_carriers else "")
+    method = str(direction.get("dramatic_method") or "")
+    state = str(direction.get("state_change_kind") or "")
+    five_carriers = [*carriers, primary]
+    carrier_count = sum(item == primary for item in five_carriers if primary)
+    method_count = sum(item == method for item in [*methods, method] if method)
+    state_count = sum(item == state for item in [*states, state] if state)
+    return {
+        "schema": "carrier_repetition_diagnostic_v1",
+        "window": len(five_carriers),
+        "primary_scene_carrier": primary,
+        "carrier_count": carrier_count,
+        "warning": carrier_count >= 3,
+        "requires_reason": carrier_count >= 4 and (method_count >= 4 or state_count >= 4),
+        "recent_carriers": carriers,
+    }
+
+
+def read_jsonl_records(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    if not path.is_file():
+        return records
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(item, dict):
+            records.append(item)
+    return records
 
 
 def validate_book_design(payload: dict[str, Any], errors: list[str]) -> None:
@@ -2466,6 +2886,45 @@ def validate_book_design(payload: dict[str, Any], errors: list[str]) -> None:
                 errors.append(f"creative_brief.{field} must be a non-empty string.")
         if not isinstance(brief.get("story_profile"), dict) or not brief.get("story_profile"):
             errors.append("creative_brief.story_profile must be a non-empty object.")
+        story_engine = brief.get("story_engine_contract")
+        story_engine_fields = {
+            "schema",
+            "reader_fantasy",
+            "repeatable_action_loop",
+            "progression_loop",
+            "relationship_loop",
+            "mystery_or_question_loop",
+            "expected_payoffs",
+            "carrier_palette",
+            "theme_carrier_limits",
+        }
+        if not isinstance(story_engine, dict) or set(story_engine) != story_engine_fields:
+            errors.append(
+                "creative_brief.story_engine_contract must contain the story_engine_contract_v1 fields only."
+            )
+        else:
+            if story_engine.get("schema") != "story_engine_contract_v1":
+                errors.append("creative_brief.story_engine_contract.schema must be story_engine_contract_v1.")
+            for field in (
+                "reader_fantasy", "repeatable_action_loop", "progression_loop",
+                "relationship_loop", "mystery_or_question_loop", "theme_carrier_limits",
+            ):
+                if not isinstance(story_engine.get(field), str) or not story_engine[field].strip():
+                    errors.append(f"creative_brief.story_engine_contract.{field} must be non-empty text.")
+            payoffs = story_engine.get("expected_payoffs")
+            payoff_fields = {"opening_three", "early_serial", "volume_end"}
+            if not isinstance(payoffs, dict) or set(payoffs) != payoff_fields or any(
+                not isinstance(payoffs.get(field), str) or not payoffs[field].strip()
+                for field in payoff_fields
+            ):
+                errors.append(
+                    "creative_brief.story_engine_contract.expected_payoffs must define opening_three, early_serial, and volume_end."
+                )
+            palette = story_engine.get("carrier_palette")
+            if not isinstance(palette, list) or len(palette) < 3 or any(
+                not isinstance(item, str) or not item.strip() for item in palette
+            ):
+                errors.append("creative_brief.story_engine_contract.carrier_palette must contain at least three carriers.")
         decisions = brief.get("design_decisions")
         decision_fields = {
             "core_hook",
@@ -2630,6 +3089,7 @@ def validate_canonical_rolling_outline(
         volume_ids,
         selected_facets,
         errors,
+        fanfiction_mode=str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction",
     )
     if active_window is not None and last_planned > 0:
         horizon = int(config.data["length"]["planning"]["detailed_horizon"])
@@ -2663,6 +3123,14 @@ def validate_outline_extension(
     scope = scope if isinstance(scope, dict) else {}
     start = int(scope.get("from_chapter") or 0)
     end = int(scope.get("to_chapter") or 0)
+    try:
+        load_covering_arc_simulation(
+            root,
+            from_chapter=start,
+            to_chapter=end,
+        )
+    except ArcSimulationError as exc:
+        errors.append(f"outline_extension requires a current covering causal simulation: {exc}")
     current_plan = read_json(root / "20_outline" / "chapter_plan.json", [])
     if not isinstance(current_plan, list) or not current_plan:
         errors.append("outline_extension requires an existing rolling chapter plan.")
@@ -2701,6 +3169,13 @@ def validate_outline_revision(config: ConfigDocument, root: Path, payload: dict[
     start, end = payload.get("from_chapter"), payload.get("to_chapter")
     if not isinstance(start, int) or start <= 0 or not isinstance(end, int) or end < start:
         errors.append("from_chapter/to_chapter must be a valid positive range.")
+    elif any(
+        manuscript_chapter_path(root, chapter_number, lane="final").is_file()
+        for chapter_number in range(start, end + 1)
+    ):
+        errors.append(
+            "outline_revision cannot rewrite finalized chapters; run revision rollback to a safe boundary first."
+        )
     require_nonempty_string(payload, "change_summary", errors)
     impact = payload.get("impact")
     if not isinstance(impact, dict) or not isinstance(impact.get("stale_chapters"), list) or not isinstance(impact.get("stale_artifacts"), list):
@@ -2713,12 +3188,20 @@ def validate_outline_revision(config: ConfigDocument, root: Path, payload: dict[
         "planning_window",
         "chapter_plan",
         "foreshadowing_ledger",
+        "reader_promise_deferrals",
     }
     if not isinstance(replacements, dict) or not replacements:
         errors.append("replacements must be a non-empty object.")
     elif set(replacements) - allowed:
         errors.append("replacements contains unknown targets.")
     elif isinstance(replacements, dict):
+        if "reader_promise_deferrals" in replacements:
+            errors.extend(
+                validate_planning_deferrals(
+                    replacements["reader_promise_deferrals"],
+                    load_reader_promise_ledger(root),
+                )
+            )
         replacement_window = replacements.get(
             "planning_window", read_json(root / "20_outline" / "planning_window.json", {})
         )
@@ -3381,6 +3864,7 @@ def validate_outline_structures(
         volume_ids,
         selected_facets,
         errors,
+        fanfiction_mode=str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction",
     )
     validate_arc_foreshadowing(
         payload.get("foreshadowing_ledger"),
@@ -3544,12 +4028,17 @@ def validate_rolling_chapter_plan(
     volume_ids: set[str],
     selected_facets: set[str],
     errors: list[str],
+    *,
+    fanfiction_mode: bool,
 ) -> None:
     required = {
-        "chapter_number", "title", "chapter_duty", "conflict", "information_release", "hook",
+        "chapter_number", "title", "chapter_duty", "conflict", "chapter_turn", "hook",
         "reader_gain", "volume_id", "arc_id", "featured_character_ids", "characterization_focus",
         "scene_wants", "relationship_move", "active_facets", "forbidden_reveals",
+        "primary_story_engine", "primary_scene_carrier", "state_change_kind", "dramatic_method",
     }
+    if fanfiction_mode:
+        required.add("protected_canon_outcomes")
     if not isinstance(value, list) or not value:
         errors.append("chapter_plan must contain the current detailed rolling window.")
         return
@@ -3574,7 +4063,11 @@ def validate_rolling_chapter_plan(
             errors.append(f"chapter_plan[{index}].arc_id must reference a declared story arc.")
         if str(chapter.get("volume_id") or "") not in volume_ids:
             errors.append(f"chapter_plan[{index}].volume_id must reference a declared volume.")
-        for field in ("title", "chapter_duty", "conflict", "information_release", "hook", "reader_gain", "relationship_move"):
+        for field in (
+            "title", "chapter_duty", "conflict", "chapter_turn", "hook", "reader_gain",
+            "relationship_move", "primary_story_engine", "primary_scene_carrier",
+            "state_change_kind", "dramatic_method",
+        ):
             if not isinstance(chapter.get(field), str) or not chapter[field].strip():
                 errors.append(f"chapter_plan[{index}].{field} must be a non-empty string.")
         for field in ("featured_character_ids", "characterization_focus"):
@@ -3590,6 +4083,14 @@ def validate_rolling_chapter_plan(
             errors.append(f"chapter_plan[{index}].active_facets references an unselected facet.")
         if not isinstance(chapter.get("forbidden_reveals"), list):
             errors.append(f"chapter_plan[{index}].forbidden_reveals must be a list.")
+        if fanfiction_mode:
+            protected = chapter.get("protected_canon_outcomes")
+            if not isinstance(protected, list) or not protected or any(
+                not isinstance(item, str) or not item.strip() for item in protected
+            ):
+                errors.append(
+                    f"chapter_plan[{index}].protected_canon_outcomes must be a non-empty string list."
+                )
     if window and numbers != expected_numbers:
         errors.append("chapter_plan chapter numbers must exactly match planning_window.")
 
@@ -3724,6 +4225,13 @@ def apply_targets(
 ) -> list[Path]:
     spec = TASK_SPECS[task_type]
     targets = [root / item for item in spec["targets"]]
+    if task_type == "arc_simulation":
+        start = int(payload["from_chapter"])
+        end = int(payload["to_chapter"])
+        targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
+        targets.append(arc_simulation_path(root, start, end))
+    if task_type == "outline_extension":
+        targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
     if task_type == "chapter_direction":
         chapter_number = int(payload["chapter_number"])
         targets.extend(
@@ -3734,6 +4242,7 @@ def apply_targets(
             ]
         )
     if task_type == "book_design":
+        targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
         for optional in ("factions", "locations"):
             if optional in payload:
                 targets.append(root / "10_bible" / f"{optional}.json")
@@ -3745,13 +4254,118 @@ def apply_targets(
             / character_review_report_name(scope or {})
         )
     if task_type == "fanfiction_design":
+        targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
         book_design = payload.get("book_design") if isinstance(payload.get("book_design"), dict) else {}
         for optional in ("factions", "locations"):
             if optional in book_design:
                 targets.append(root / "10_bible" / f"{optional}.json")
     if task_type == "outline_revision":
         targets.append(root / "20_outline" / "revise_reports" / revision_report_name(payload))
-    return targets
+        for chapter_number in range(int(payload["from_chapter"]), int(payload["to_chapter"]) + 1):
+            targets.extend(
+                [
+                    root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
+                    root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.md",
+                ]
+            )
+        targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
+        targets.extend(
+            outline_revision_side_effect_targets(
+                root,
+                payload["impact"]["stale_chapters"],
+            )
+        )
+    if task_type == "outline_design":
+        targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
+    return list(dict.fromkeys(targets))
+
+
+def outline_revision_side_effect_targets(
+    root: Path,
+    chapter_numbers: Iterable[int],
+) -> list[Path]:
+    """Declare every derived/editorial owner mutated by an outline revision."""
+
+    chapters = sorted(
+        {
+            int(chapter_number)
+            for chapter_number in chapter_numbers
+            if isinstance(chapter_number, int)
+            and not isinstance(chapter_number, bool)
+            and chapter_number > 0
+        }
+    )
+    return [
+        root / "50_workbench" / "editorial_patterns" / "registry.jsonl",
+        root / "50_workbench" / "agent_tasks",
+        root / "70_runtime" / "db",
+        *(
+            root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.json"
+            for chapter_number in chapters
+        ),
+    ]
+
+
+def invalidate_outline_revision_tasks(
+    root: Path,
+    *,
+    chapter_numbers: Iterable[int],
+    artifact: Path,
+) -> None:
+    """Supersede task projections whose chapter contract was replaced by a revision."""
+
+    affected = {
+        int(chapter_number)
+        for chapter_number in chapter_numbers
+        if isinstance(chapter_number, int)
+        and not isinstance(chapter_number, bool)
+        and chapter_number > 0
+    }
+    for task in list_manifests(root):
+        if manifest_chapter_number(task) not in affected:
+            continue
+        task_type = str(task.get("task_type") or "")
+        status = str(task.get("status") or "awaiting_agent")
+        if task_type in {"outline_revision", "design_semantic_compile"} or status in {
+            "rolled_back",
+            "superseded",
+        }:
+            continue
+        update_task_status(
+            root,
+            str(task.get("task_id") or ""),
+            to_status="superseded",
+            command="intelligence apply compiled outline_revision",
+            artifact=artifact,
+            result="chapter planning contract changed",
+        )
+
+
+def mark_outline_revision_writing_tasks_stale(
+    root: Path,
+    *,
+    chapter_numbers: Iterable[int],
+) -> None:
+    """Invalidate compiled author briefs after their planning contract changes."""
+
+    chapters = sorted(
+        {
+            int(chapter_number)
+            for chapter_number in chapter_numbers
+            if isinstance(chapter_number, int)
+            and not isinstance(chapter_number, bool)
+            and chapter_number > 0
+        }
+    )
+    for chapter_number in chapters:
+        path = root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.json"
+        payload = read_json(path, {})
+        if not isinstance(payload, dict):
+            continue
+        payload["status"] = "stale"
+        payload["stale_reason"] = "outline_revision"
+        payload["stale_at"] = datetime.now(timezone.utc).isoformat()
+        write_json(path, payload)
 
 
 def write_targets(
@@ -3766,9 +4380,11 @@ def write_targets(
         write_book_ideation_decision(root, payload)
         return
     if task_type == "book_design":
+        basis_before = current_basis_hashes(root)
         write_book_design_targets(root, payload)
         mark_project_intelligence_applied(root, "book_design", payload)
         mark_project_intelligence_applied(root, "character_expression_design", payload)
+        stale_causal_simulations_if_basis_changed(root, basis_before)
         return
     if task_type == "character_expression_design":
         write_character_expression_profile(root, payload)
@@ -3794,26 +4410,50 @@ def write_targets(
         append_creation_event(root, "fanfiction_canon_applied", canonical)
         return
     if task_type == "fanfiction_design":
+        basis_before = current_basis_hashes(root)
         write_json(root / "10_bible" / "fanfiction" / "fanfiction_bible.json", payload)
         write_book_design_targets(root, payload["book_design"])
         mark_project_intelligence_applied(root, "fanfiction_design", payload)
         mark_project_intelligence_applied(root, "book_design", payload["book_design"])
         mark_project_intelligence_applied(root, "character_expression_design", payload["book_design"])
         append_creation_event(root, "fanfiction_design_applied", payload)
+        stale_causal_simulations_if_basis_changed(root, basis_before)
         return
     if task_type == "outline_design":
+        basis_before = current_basis_hashes(root)
         atomic_write_text(root / "20_outline" / "book_outline.md", payload["book_outline_markdown"].rstrip() + "\n")
         write_json(root / "20_outline" / "story_arcs.json", payload["story_arcs"])
         write_json(root / "20_outline" / "volumes.json", payload["volumes"])
         write_json(root / "20_outline" / "chapter_plan.json", payload["chapter_plan"])
         write_json(root / "20_outline" / "planning_window.json", payload["planning_window"])
-        write_json(
-            root / "20_outline" / "foreshadowing_ledger.json",
-            materialize_foreshadowing_ledger(config, payload["foreshadowing_ledger"], payload["story_arcs"]),
+        materialized_threads = materialize_foreshadowing_ledger(
+            config, payload["foreshadowing_ledger"], payload["story_arcs"]
+        )
+        write_json(root / "20_outline" / "foreshadowing_ledger.json", materialized_threads)
+        creative_brief = read_json(root / "10_bible" / "creative_brief.json", {})
+        story_engine = creative_brief.get("story_engine_contract") if isinstance(creative_brief, dict) else {}
+        write_reader_promise_ledger(
+            root,
+            merge_planned_reader_promises(
+                root,
+                story_engine_contract=story_engine if isinstance(story_engine, dict) else {},
+                foreshadowing_ledger=materialized_threads,
+                estimated_chapters=compile_length_forecast(config.data["length"]).estimated_chapters,
+            ),
         )
         mark_project_intelligence_applied(root, "outline_design", payload)
+        stale_causal_simulations_if_basis_changed(root, basis_before)
+        return
+    if task_type == "arc_simulation":
+        mark_overlapping_arc_simulations_stale(
+            root,
+            from_chapter=int(payload["from_chapter"]),
+            to_chapter=int(payload["to_chapter"]),
+        )
+        write_arc_causal_simulation(root, payload)
         return
     if task_type == "outline_extension":
+        basis_before = current_basis_hashes(root)
         existing_plan = read_json(root / "20_outline" / "chapter_plan.json", [])
         existing_ledger = read_json(root / "20_outline" / "foreshadowing_ledger.json", [])
         arcs = read_json(root / "20_outline" / "story_arcs.json", [])
@@ -3824,12 +4464,28 @@ def write_targets(
         }
         for item in materialize_foreshadowing_ledger(config, payload["foreshadowing_updates"], arcs):
             merged_threads[str(item["id"])] = item
-        write_json(root / "20_outline" / "foreshadowing_ledger.json", list(merged_threads.values()))
+        merged_thread_rows = list(merged_threads.values())
+        write_json(root / "20_outline" / "foreshadowing_ledger.json", merged_thread_rows)
+        creative_brief = read_json(root / "10_bible" / "creative_brief.json", {})
+        story_engine = creative_brief.get("story_engine_contract") if isinstance(creative_brief, dict) else {}
+        write_reader_promise_ledger(
+            root,
+            merge_planned_reader_promises(
+                root,
+                story_engine_contract=story_engine if isinstance(story_engine, dict) else {},
+                foreshadowing_ledger=merged_thread_rows,
+                estimated_chapters=compile_length_forecast(config.data["length"]).estimated_chapters,
+            ),
+        )
+        stale_causal_simulations_if_basis_changed(root, basis_before)
         return
     if task_type == "chapter_direction":
         write_chapter_direction(root, payload)
         return
     if task_type == "outline_revision":
+        from longform_engine.orchestration.pipeline import plan_chapter
+
+        basis_before = current_basis_hashes(root)
         replacements = payload["replacements"]
         if "book_outline_markdown" in replacements:
             atomic_write_text(root / "20_outline" / "book_outline.md", str(replacements["book_outline_markdown"]).rstrip() + "\n")
@@ -3847,6 +4503,42 @@ def write_targets(
                 root / "20_outline" / "foreshadowing_ledger.json",
                 materialize_foreshadowing_ledger(config, replacements["foreshadowing_ledger"], arcs),
             )
+        materialized_threads = read_json(root / "20_outline" / "foreshadowing_ledger.json", [])
+        creative_brief = read_json(root / "10_bible" / "creative_brief.json", {})
+        story_engine = creative_brief.get("story_engine_contract") if isinstance(creative_brief, dict) else {}
+        merged_promises = merge_planned_reader_promises(
+            root,
+            story_engine_contract=story_engine if isinstance(story_engine, dict) else {},
+            foreshadowing_ledger=materialized_threads if isinstance(materialized_threads, list) else [],
+            estimated_chapters=compile_length_forecast(config.data["length"]).estimated_chapters,
+        )
+        if "reader_promise_deferrals" in replacements:
+            apply_planning_deferrals(
+                merged_promises,
+                values=replacements["reader_promise_deferrals"],
+                chapter_number=int(payload["from_chapter"]),
+                approved_by="human",
+            )
+        write_reader_promise_ledger(root, merged_promises)
+        basis_changed = current_basis_hashes(root) != basis_before
+        mark_overlapping_arc_simulations_stale(
+            root,
+            from_chapter=1 if basis_changed else int(payload["from_chapter"]),
+            to_chapter=10**9 if basis_changed else int(payload["to_chapter"]),
+        )
+        truncate_editorial_pattern_registry(
+            root,
+            to_chapter=max(0, int(payload["from_chapter"]) - 1),
+        )
+        invalidate_outline_revision_tasks(
+            root,
+            chapter_numbers=payload["impact"]["stale_chapters"],
+            artifact=root / "20_outline" / "revise_reports" / revision_report_name(payload),
+        )
+        mark_outline_revision_writing_tasks_stale(
+            root,
+            chapter_numbers=payload["impact"]["stale_chapters"],
+        )
         state_path = root / "30_state" / "novel_state.json"
         state = read_json(state_path, {})
         stale = list(state.get("stale") or []) if isinstance(state, dict) else []
@@ -3857,6 +4549,11 @@ def write_targets(
         state["stale_chapters"] = payload["impact"]["stale_chapters"]
         write_json(state_path, state)
         write_json(root / "20_outline" / "revise_reports" / revision_report_name(payload), payload)
+        for chapter_number in range(int(payload["from_chapter"]), int(payload["to_chapter"]) + 1):
+            card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+            if card_path.is_file():
+                plan_chapter(config, chapter_number=chapter_number, overwrite=True)
+        sync_database(config)
         return
     if task_type == "research_synthesis":
         path = root / "10_bible" / "research_canon.jsonl"
@@ -3882,6 +4579,21 @@ def write_targets(
         return
     if task_type == "adaptation_analysis":
         write_json(root / "10_bible" / "style_profiles" / "adaptation_profile.json", payload)
+
+
+def stale_causal_simulations_if_basis_changed(
+    root: Path,
+    basis_before: dict[str, str],
+) -> tuple[str, ...]:
+    """Materialize planning-basis invalidation instead of leaving approved-looking stale files."""
+
+    if current_basis_hashes(root) == basis_before:
+        return ()
+    return mark_overlapping_arc_simulations_stale(
+        root,
+        from_chapter=1,
+        to_chapter=10**9,
+    )
 
 
 def materialize_foreshadowing_ledger(
@@ -4097,10 +4809,26 @@ def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
     card.update(
         {
             "chapter_duty": resolved["chapter_duty"],
+            "immediate_desire": resolved["immediate_desire"],
+            "opposition_force": resolved["opposition_force"],
+            "dramatic_question": resolved["dramatic_question"],
             "conflict": resolved["conflict"],
-            "information_release": resolved["information_release"],
+            "key_failure": resolved["key_failure"],
+            "irreversible_choice": resolved["irreversible_choice"],
+            "irreversible_action": resolved["irreversible_choice"],
+            "chapter_turn": resolved["chapter_turn"],
+            "reveal_boundary": resolved["reveal_boundary"],
             "reader_gain": resolved["reader_gain"],
             "cost": resolved["cost"],
+            "must_dramatize": resolved["must_dramatize"],
+            "may_summarize": resolved["may_summarize"],
+            "primary_story_engine": resolved["primary_story_engine"],
+            "scene_carriers": resolved["scene_carriers"],
+            "protected_story_outcomes": resolved["protected_story_outcomes"],
+            "prohibited_drift": resolved["prohibited_drift"],
+            "state_change_kind": resolved["state_change_kind"],
+            "dramatic_method": resolved["dramatic_method"],
+            "exposition_carrier": resolved["exposition_carrier"],
             "book_goal": resolved["book_goal"],
             "volume_goal": resolved["volume_goal"],
             "protagonist_goal": resolved["protagonist_goal"],
@@ -4117,6 +4845,8 @@ def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
             "foreshadow_impact": resolved["foreshadow_move"],
             "relationship_impact": resolved["relationship_move"],
             "relationship_move": resolved["relationship_move"],
+            "reader_promise_actions": resolved["reader_promise_actions"],
+            "arc_simulation_ref": resolved["arc_simulation_ref"],
             "canon_refs": resolved["canon_refs"],
             "world_rule_refs": resolved["world_rule_refs"],
             "foreshadow_refs": resolved["foreshadow_refs"],
@@ -4130,10 +4860,18 @@ def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
                 "candidate_hash": sha256(
                     json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
                 ).hexdigest(),
+                "repetition_reason": str(selection.get("repetition_reason") or ""),
                 "applied_at": datetime.now(timezone.utc).isoformat(),
             },
         }
     )
+    for field in (
+        "protected_canon_outcomes", "changed_scene_means", "canon_character_agency",
+        "new_long_term_facts", "outline_revision_required",
+    ):
+        if field in resolved:
+            card[field] = resolved[field]
+    card.pop("chapter_contract_status", None)
     stamp_chapter_contract(card)
     write_chapter_card_artifacts(root, card)
     upsert_chapter_plan(root, card)
@@ -4163,7 +4901,8 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
         ),
         "book_design": (
             "明确读者承诺、核心卖点、世界规则、主角欲望与缺陷、长期冲突、升级方式和结局边界。"
-            "每个重要人物都要有稳定 ID、目标、缺陷、关系与可观察的人物弧。"
+            "必须建立 story_engine_contract_v1：读者幻想、可重复行动循环、成长循环、关系循环、长线问题、"
+            "分阶段兑现、载体调色板和主题载体限制。每个重要人物都要有稳定 ID、目标、缺陷、关系与可观察的人物弧。"
         ),
         "character_expression_design": (
             "把人物设定转成可观察合同：感知偏向、决策习惯、语言层级、对话策略、情绪泄漏、"
@@ -4175,7 +4914,12 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
         ),
         "outline_design": (
             "按正文字符预算全书故事弧和卷，只细化滚动窗口。每章说明故事弧、卷、章节职责、登场人物、"
-            "场景欲望、关系变化和最多三个活跃分面；伏笔使用 arc_id 与进度窗口，不虚构固定终章数。"
+            "主故事引擎、主要场景载体、状态变化、戏剧方法、人物欲望、关系变化和最多三个活跃分面；"
+            "相同主题必须改变事件压力、承担者或载体。伏笔使用 arc_id 与进度窗口，不虚构固定终章数。"
+        ),
+        "arc_simulation": (
+            "对声明窗口进行角色因果模拟：逐个写明主角目标、对手议程、主要人物私欲与拒绝点、知识边界、"
+            "场外行动、资源/关系变化、碰撞点和逐章因果义务。模拟是规划约束，不是正文顺序模板或世界事实。"
         ),
         "outline_extension": (
             "只扩展声明的滚动章节范围，承接既有故事弧、人物、关系和承诺因果，不重复早期章节。"
@@ -4186,8 +4930,10 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "CLI 会根据真实依赖重新计算。"
         ),
         "chapter_direction": (
-            "给出二至三个因果路径不同的方向，分别说明全书/卷/主角目标、本章职责、场景链、具名人物欲望、"
-            "对白归属、具身反应、有效心理、冲突、信息、收益、代价、主线/人物弧/伏笔/关系变化与风险。"
+            "给出二至三个因果路径不同的方向，明确当下欲望、真实阻力、最早失败、不可逆选择、可见代价、"
+            "chapter_turn，以及逐场行动、反应和离场状态；声明必须演出、可压缩过程、故事引擎、载体与状态变化。"
+            "最近五章载体达到重复门槛时记录人工理由。同人必须保护原作结果、人物能动性与情绪归属；"
+            "改变长期事实或保护结果必须要求 outline_revision。"
         ),
         "research_synthesis": (
             "每条 claim 都必须绑定声明来源的 hash 与 UTF-8 字符 span，证据必须与原文切片完全一致。"

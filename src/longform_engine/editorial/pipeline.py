@@ -27,7 +27,11 @@ from longform_engine.agent_tasks import (
 from longform_engine.character_expression import character_expression_diagnostics
 from longform_engine.chapter_contract import ChapterContractError, load_verified_chapter_contract
 from longform_engine.config import ConfigDocument
-from longform_engine.quality import refresh_feedback_registry
+from longform_engine.quality import (
+    editorial_pattern_observations,
+    editorial_patterns_for_task,
+    refresh_editorial_pattern_registry,
+)
 from longform_engine.roles import load_role_registry
 from longform_engine.storage import atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import existing_manuscript_chapter_path
@@ -68,6 +72,22 @@ DEFAULT_EDITORIAL_TEAM: tuple[dict[str, str], ...] = (
 )
 
 ROLE_ALIASES: dict[str, str] = {}
+
+SCENE_SEMANTIC_FINDING_CODES = frozenset(
+    {
+        "SCENE_SUMMARIZED",
+        "SPEAKER_AMBIGUOUS",
+        "INTERIORITY_REPEATS",
+        "REPORT_SUBSTITUTES_EVENT",
+        "DIALOGUE_CONVEYOR",
+        "PASSIVE_PROTAGONIST",
+        "CARRIER_LABEL_LAUNDERING",
+        "SCENE_WITHOUT_CHANGED_CONDITION",
+        "RESTART_LOOP",
+        "AGENCY_EROSION",
+        "PAYOFF_DEFERRAL",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -510,9 +530,23 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
     verdicts: list[str] = []
     for result in accepted:
         verdicts.append(str(result.get("verdict") or "pass"))
+        result_source = root / str(result.get("source_result_file") or "")
+        result_source_sha256 = (
+            hashlib.sha256(result_source.read_bytes()).hexdigest()
+            if result_source.is_file()
+            else ""
+        )
         for item in result.get("items") or []:
             if isinstance(item, dict):
-                items.append(item)
+                items.append(
+                    {
+                        **item,
+                        "role_id": str(item.get("role_id") or result.get("role_id") or ""),
+                        "source_result_file": str(result.get("source_result_file") or ""),
+                        "source_result_sha256": result_source_sha256,
+                        "candidate_sha256": str(result.get("source_sha256") or ""),
+                    }
+                )
     counts = severity_counts([item for item in items if item.get("status") != "resolved"])
     unresolved = unresolved_items(items)
     disagreement = build_editorial_disagreement_matrix(accepted)
@@ -548,32 +582,39 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
     )
     aggregate_file = review_root(root) / f"ch{chapter_number:03d}.aggregate.json"
     markdown_file = review_root(root) / f"ch{chapter_number:03d}.aggregate.md"
-    feedback_registry: dict[str, Any] = {
+    pattern_registry: dict[str, Any] = {
         "status": "deferred",
-        "hard_boundary": "workbench guidance only; never a canonical fact source",
+        "hard_boundary": "derived editorial diagnostics only; never a canonical or author fact source",
     }
     aggregate_complete = not (
         missing_roles or duplicate_role_results or invalid_results or stale_results
     )
     if aggregate_complete:
         try:
-            records = refresh_feedback_registry(
+            records = refresh_editorial_pattern_registry(
                 root,
                 chapter_number=chapter_number,
-                observations=editorial_feedback_observations(
+                observations=editorial_pattern_observations(
                     unresolved,
                     source_path=relative_path(root, aggregate_file),
-                    chapter_number=chapter_number,
+                    source_sha256=hashlib.sha256(
+                        json.dumps(unresolved, ensure_ascii=False, sort_keys=True).encode("utf-8")
+                    ).hexdigest(),
+                    candidate_sha256=(
+                        hashlib.sha256(chapter_path.read_bytes()).hexdigest()
+                        if (chapter_path := find_chapter(root, chapter_number)) is not None
+                        else ""
+                    ),
                 ),
             )
-            feedback_registry = {
+            pattern_registry = {
                 "status": "updated",
-                "path": "50_workbench/quality_feedback/registry.jsonl",
+                "path": "50_workbench/editorial_patterns/registry.jsonl",
                 "records": len(records),
-                "hard_boundary": "workbench guidance only; never a canonical fact source",
+                "hard_boundary": "derived editorial diagnostics only; never a canonical or author fact source",
             }
         except (OSError, ValueError) as exc:
-            feedback_registry = {
+            pattern_registry = {
                 "status": "warning",
                 "warning": str(exc),
                 "hard_boundary": "registry failure does not block aggregate or chapter finalization",
@@ -602,7 +643,7 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
         "human_decisions": disagreement["human_decisions"],
         "need_human": need_human,
         "need_human_reasons": reasons,
-        "feedback_registry": feedback_registry,
+        "editorial_pattern_registry": pattern_registry,
         "next_command": next_command,
         "updated_at": utc_now(),
     }
@@ -669,7 +710,7 @@ def deterministic_editorial_items(
         items.append(
             review_item(
                 "logic_continuity_risk",
-                "P1",
+                "P2",
                 "logic or continuity marker remains unresolved",
                 role_id="planning_chief_editor",
             )
@@ -864,34 +905,6 @@ def evidence_ngrams(value: Any) -> set[str]:
     if len(compact) < 2:
         return {compact} if compact else set()
     return {compact[index:index + 2] for index in range(len(compact) - 1)}
-
-
-def editorial_feedback_observations(
-    unresolved: list[dict[str, Any]],
-    *,
-    source_path: str,
-    chapter_number: int,
-) -> list[dict[str, Any]]:
-    observations: list[dict[str, Any]] = []
-    for item in unresolved:
-        if not isinstance(item, dict):
-            continue
-        evidence = normalize_string_list(item.get("evidence"))
-        evidence_hash = hashlib.sha256(
-            json.dumps(evidence or [str(item.get("message") or "")], ensure_ascii=False).encode("utf-8")
-        ).hexdigest()
-        observations.append(
-            {
-                "issue_code": str(item.get("code") or "editorial_finding"),
-                "severity": str(item.get("severity") or "P2"),
-                "kind": "editorial_aggregate",
-                "source_path": source_path,
-                "owner_task": f"editorial_review:ch{chapter_number:03d}",
-                "summary": str(item.get("message") or item.get("code") or ""),
-                "evidence_hash": evidence_hash,
-            }
-        )
-    return observations
 
 
 def review_item(code: str, severity: str, message: str, *, role_id: str) -> dict[str, Any]:
@@ -1314,7 +1327,7 @@ def cross_chapter_findings(root: Path, chapter_start: int, chapter_end: int) -> 
         findings.append(
             {
                 "code": "batch_blocking_revisions",
-                "severity": "P1",
+                "severity": "P2",
                 "message": "one or more chapters in the batch need revision before continuation",
             }
         )
@@ -1341,10 +1354,70 @@ def cross_chapter_findings(root: Path, chapter_start: int, chapter_end: int) -> 
         findings.append(
             {
                 "code": "batch_logic_risk",
-                "severity": "P1",
+                "severity": "P2",
                 "message": f"{logic_count} logic or continuity risks require serial verifier review",
             }
         )
+    structure_path = root / "30_state" / "quality" / "structure_history.jsonl"
+    observations: list[dict[str, Any]] = []
+    if structure_path.is_file():
+        for line in structure_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict) and chapter_start <= int(item.get("chapter_number") or 0) <= chapter_end:
+                observations.append(item)
+    observations.sort(key=lambda item: int(item.get("chapter_number") or 0))
+    for window_end in range(5, len(observations) + 1):
+        window = observations[window_end - 5:window_end]
+        carriers = [str(item.get("primary_scene_carrier") or "") for item in window]
+        counts = {carrier: carriers.count(carrier) for carrier in set(carriers) if carrier}
+        if not counts:
+            continue
+        carrier, count = max(counts.items(), key=lambda item: item[1])
+        if count >= 3:
+            findings.append(
+                {
+                    "code": "CARRIER_REPETITION_3_OF_5",
+                    "severity": "P2",
+                    "message": f"primary scene carrier '{carrier}' appears {count}/5 times; vary pressure, owner, or dramatic method",
+                }
+            )
+        repeated = [item for item in window if str(item.get("primary_scene_carrier") or "") == carrier]
+        methods = {str(item.get("dramatic_method") or "") for item in repeated}
+        states = {str(item.get("state_change_kind") or "") for item in repeated}
+        if count >= 4 and (len(methods) <= 1 or len(states) <= 1):
+            findings.append(
+                {
+                    "code": "CARRIER_REPETITION_REASON_REQUIRED",
+                    "severity": "P2",
+                    "message": f"'{carrier}' repeats with the same state change or dramatic method; the next direction needs a human reason",
+                }
+            )
+        exposition = [str(item.get("exposition_carrier") or "").lower() for item in window]
+        serial_tokens = ("meeting", "notice", "document", "verification", "会议", "公告", "文档", "核验")
+        if count >= 3 and sum(any(token in value for token in serial_tokens) for value in exposition) >= 3:
+            findings.append(
+                {
+                    "code": "SERIAL_CARRIER_REPETITION",
+                    "severity": "P2",
+                    "message": "location changes do not alter the repeated discussion/notice/verification function",
+                }
+            )
+        if sum(
+            str(item.get("primary_story_engine") or "").lower() in {"theme", "主题", "discussion"}
+            for item in window
+        ) >= 2:
+            findings.append(
+                {
+                    "code": "THEME_DISPLACES_EVENT",
+                    "severity": "P2",
+                    "message": "abstract theme replaces event pressure and characters function mainly as theme speakers",
+                }
+            )
     if not findings:
         findings.append({"code": "batch_review_clean", "severity": "PASS", "message": "no deterministic cross-chapter issues"})
     return findings
@@ -1442,6 +1515,11 @@ def validate_editorial_result_payload(
     if selected_roles and role_id not in selected_roles:
         errors.append(f"role_id {role_id} was not selected for this editorial review round.")
     contract = load_role_registry().resolve("editorial_review", declared_role_id=role_id)
+    if (
+        role_id == "scene_prose_editor"
+        and frozenset(contract.finding_codes) != SCENE_SEMANTIC_FINDING_CODES
+    ):
+        errors.append("scene_prose_editor finding contract does not match the editorial semantic boundary.")
     errors.extend(
         validate_evidence_review(
             payload,
@@ -1815,10 +1893,7 @@ def editorial_team(
     """Select only roles justified by current chapter risk."""
 
     configured = configured_editorial_roles(config)
-    if configured:
-        return [role_definition(role) for role in configured]
-
-    selected: set[str] = set()
+    selected: set[str] = {"scene_prose_editor", *configured}
     payoff_file = (
         root
         / "50_workbench"
@@ -1826,11 +1901,10 @@ def editorial_team(
         / f"ch{chapter_number:03d}.reader_payoff.validation.json"
     )
     fanfiction_mode = str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
-    selected.add(
-        "reader_experience_editor"
-        if payoff_file.exists() or fanfiction_mode
-        else "scene_prose_editor"
-    )
+    if payoff_file.exists() or fanfiction_mode or chapter_number <= 3:
+        selected.add("reader_experience_editor")
+    if fanfiction_mode:
+        selected.add("canon_fidelity_reviewer")
     selected.update(
         str(item.get("role_id") or "")
         for item in deterministic_items
@@ -1843,7 +1917,7 @@ def editorial_team(
         selected.add("character_editor")
     if "continuity_or_relationship_risk" in signals:
         selected.add("planning_chief_editor")
-    if signals & {"volume_boundary", "major_payoff_or_reveal"}:
+    if signals & {"volume_boundary", "major_payoff_or_reveal", "carrier_repetition_risk"}:
         selected.update({"planning_chief_editor", "reader_experience_editor"})
     if "fanfiction_canon_risk" in signals:
         selected.add("canon_fidelity_reviewer")
@@ -1870,10 +1944,7 @@ def editorial_review_required_reasons(
     if not isinstance(editorial_config, dict):
         editorial_config = {}
     review_mode = str(editorial_config.get("review_mode") or "risk_based")
-    if review_mode == "off":
-        return []
-
-    reasons: list[str] = []
+    reasons: list[str] = ["mandatory_scene_prose_review"]
     quality = config.data.get("quality")
     if not isinstance(quality, dict):
         quality = {}
@@ -1927,7 +1998,10 @@ def expected_editorial_roles(
             if isinstance(role, dict) and str(role.get("id") or "").strip()
         ]
     configured = configured_editorial_roles(config)
-    return [role_definition(role)["id"] for role in configured]
+    return [
+        role_definition(role)["id"]
+        for role in dedupe(["scene_prose_editor", *configured])
+    ]
 
 
 def editorial_risk_signals(
@@ -1992,39 +2066,46 @@ def editorial_risk_signals(
             for key in ("first_character_appearance", "pov_switch", "relationship_turn")
         ):
             signals.append("character_expression_risk")
+        carriers = card.get("scene_carriers") if isinstance(card.get("scene_carriers"), list) else []
+        primary_carrier = str(carriers[0] if carriers else "")
+        structure_path = root / "30_state" / "quality" / "structure_history.jsonl"
+        if primary_carrier and structure_path.is_file():
+            previous = []
+            for line in structure_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(item, dict) and int(item.get("chapter_number") or 0) < chapter_number:
+                    previous.append(item)
+            recent = previous[-4:]
+            if sum(str(item.get("primary_scene_carrier") or "") == primary_carrier for item in recent) >= 2:
+                signals.append("carrier_repetition_risk")
 
     if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
         signals.append("fanfiction_canon_risk")
 
-    registry = root / "50_workbench" / "quality_feedback" / "registry.jsonl"
-    if registry.exists():
-        try:
-            feedback_items = [
-                json.loads(line)
-                for line in registry.read_text(encoding="utf-8").splitlines()
-                if line.strip()
-            ]
-        except (OSError, json.JSONDecodeError):
-            feedback_items = []
-        active = [
-            item
-            for item in feedback_items
-            if isinstance(item, dict) and item.get("status") in {"open", "carried"}
-        ]
+    try:
+        active = editorial_patterns_for_task(root, task_type="editorial_review")
+    except (OSError, ValueError):
+        active = ()
+    if active:
         if any(
-            token in str(item.get("issue_code") or "")
+            token in str(item.get("finding_code") or "").lower()
             for item in active
             for token in ("ai_", "dialogue", "repetition", "formula")
         ):
             signals.append("ai_flavor_recurrence")
         if any(
-            token in str(item.get("issue_code") or "")
+            token in str(item.get("finding_code") or "").lower()
             for item in active
             for token in ("dialogue", "voice", "character", "swapability", "embodiment")
         ):
             signals.append("character_expression_risk")
         if any(
-            token in str(item.get("issue_code") or "")
+            token in str(item.get("finding_code") or "").lower()
             for item in active
             for token in ("continuity", "relationship", "timeline", "logic")
         ):

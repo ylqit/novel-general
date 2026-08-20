@@ -136,15 +136,19 @@ writing:
 
 `compact`、`standard`、`large` 的资源档位分别为 24K、48K、96K engine-controlled units。它们是保守、模型无关的估算，不是 Codex 或 Claude 的真实 tokenizer 数值。默认至少保留 25% 给正文输出、宿主指令和交接；控制 Prompt 的软/硬目标为容量的 12%/20%，输入证据为 45%/55%。
 
-超限时按“去重 -> 移除 calibration/reference -> 移除未触发模块 -> 删除已解决反馈 -> 低优先级证据按需读取 -> 范围任务顺序拆分”处理。章节正文始终只有一个作者输出；核心事实仍放不下时返回 `prompt_budget_exceeded` 和 `need-human`，不会静默截断。
+超限时按“去重 -> 移除 calibration/reference -> 移除未触发模块 -> 编辑任务移除已解决/抑制模式 -> 低优先级证据按需读取 -> 范围任务顺序拆分”处理。作者任务从一开始就不接收编辑模式。章节正文始终只有一个作者输出；核心事实仍放不下时返回 `prompt_budget_exceeded` 和 `need-human`，不会静默截断。
 
 会话策略由角色注册表控制：开书与卷级规划可继续项目协调会话；每章作者新开会话，repair 可继续该章作者会话；Humanizer、独立审稿和 final 后语义档案均新开隔离会话。CLI 只在 `production next` 与 `agent-task brief` 中声明动作、范围和第一条命令。
 
 ## 每章人工方向
 
-每章方向选择是 schema v2 的固定工作流，不再提供表面开关。每章写作前，`chapter_direction_candidate_v2` 必须提供 2 至 3 个方向以及各自代价，由用户显式选择。方向工作单包含全书/卷/主角目标阶梯、场景链、角色欲望、对白归属、关系变化、主线和伏笔回响。
+每章方向选择是 schema v4 的固定工作流，不提供跳过开关。每章写作前，`chapter_direction_candidate_v4` 必须引用覆盖当前章节、basis hash 有效且经人工批准的因果模拟，并为相关读者承诺声明 setup/escalate/partial_payoff/payoff/defer 动作，再由用户显式选择。方向合同同时包含目标阶梯、当下欲望、对抗力量、最早失败、不可逆选择、`chapter_turn`、逐场行动/反应/离场状态、故事引擎、场景载体、状态变化和最近五章重复理由。
 
 用户选择后，CLI 才能生成章节卡、beat 和 writing task。普通章节也不跳过此步骤。
+
+## 平台证据注册表
+
+`config/quality_profiles/market_evidence_registry.yaml` 使用 `market_evidence_registry_v1`，是起点、番茄画像建议的唯一证据索引。当前市场合同及 phase override 必须绑定非空 evidence ref；每条记录包含来源、核验日期、证据等级和执行级别。跨平台共同叙事核心可以成为合同约束；单平台节奏建议默认仅为 P2 advisory，不得据此推断推荐算法、留存或真实读者行为。
 
 ## 创作模式与同人
 
@@ -176,7 +180,8 @@ fanfiction:
 - `rag` 控制分块、召回数量和混合检索权重；`semantic.profile` 是 embedding/reranker 模型组合的唯一配置入口。
 - `quality.profile.strictness` 使用 `light|balanced|strict`，控制风险型语义审稿。
 - `quality.semantic_pacing.review_mode` 使用 `off|risk_based|required`；`pacing.default_mode` 使用 `balanced|fast|measured`。
-- `gates.forbidden_reveals` 和 `gates.mainline_info_release_warning_hits` 分别定义项目级禁揭示词与主线信息释放警告阈值。
+- `gates.forbidden_reveals` 和 `gates.mainline_reveal_warning_hits` 分别定义项目级禁揭示词与主线揭示密度警告阈值。
+- `editorial.review_mode=off` 只关闭附加风险策略，不会跳过每章必需的 `scene_prose_editor`；开篇三章、重大兑现、同人事件与载体重复仍会追加对应审稿角色。
 - 人工批准风格样本通过 quality baseline CLI 管理，不在项目 YAML 中维护重复章节列表。
 - repair 正文候选固定最多两轮，研究提升固定要求显式批准，这些安全边界不可配置。
 
@@ -193,4 +198,4 @@ python -m longform_engine.cli init-project --template qidian-longform --output n
 python -m longform_engine.cli quality story-profile novels/demo/project.yaml --json
 ```
 
-当前配置与发布验收状态见 [`V0_4_4_RELEASE_CHECKLIST.md`](V0_4_4_RELEASE_CHECKLIST.md)。
+当前 v0.5.0 配置与发布验收状态见 [`V0_5_0_RELEASE_CHECKLIST.md`](V0_5_0_RELEASE_CHECKLIST.md)；公开稳定版为 v0.5.0。

@@ -20,7 +20,8 @@ from longform_engine.config import load_project_config
 from longform_engine.creative import expand_task, humanize_task
 from longform_engine.editorial import editorial_aggregate, editorial_review, editorial_submit_review
 from longform_engine.gates import GateError, gate_check, semantic_pacing_apply, semantic_pacing_task, semantic_pacing_validate
-from longform_engine.orchestration import WorkflowError, continue_write, finalize_chapter, open_book, plan_chapter, submit_agent_draft
+from longform_engine.human_story_review import apply_human_story_review, create_human_story_review_task
+from longform_engine.orchestration import WorkflowError, continue_write, finalize_chapter, open_book, submit_agent_draft
 from longform_engine.production import production_next
 from longform_engine.repair_coordination import (
     create_repair_candidate_task,
@@ -32,7 +33,12 @@ from longform_engine.repair_coordination import (
 from longform_engine.roles import load_role_registry
 from longform_engine.semantic import semantic_task
 from longform_engine.storage import init_project, resolve_project_root
-from tests.project_fixtures import checked_review_coverage, mark_project_ready
+from tests.project_fixtures import (
+    approve_story_candidate,
+    checked_review_coverage,
+    complete_editorial_reviews,
+    mark_project_ready,
+)
 
 
 def test_no_key_agent_task_chapter_loop_and_manifest_index(tmp_path, monkeypatch):
@@ -47,6 +53,7 @@ def test_no_key_agent_task_chapter_loop_and_manifest_index(tmp_path, monkeypatch
     draft_path = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     draft_path.write_text(passing_text("SAFE_AGENT_TASK"), encoding="utf-8")
     submitted = submit_agent_draft(config, chapter_number=1, file_path=draft_path, agent="codex")
+    approve_story_candidate(root, config)
     finalized = finalize_chapter(config, chapter_number=1, approved_by="human")
 
     manifest = root / "50_workbench" / "writing_tasks" / "ch001.agent_task.json"
@@ -107,6 +114,7 @@ def test_finalize_applies_submitted_candidate_and_supersedes_unused_repair(tmp_p
         root / "50_workbench" / "repair_candidates" / "ch001.codex.repair_task.agent_task.json",
     )
 
+    approve_story_candidate(root, config)
     finalize_chapter(config, chapter_number=1, approved_by="human")
 
     manifests = {item["task_id"]: item for item in list_manifests(root, chapter_number=1)}
@@ -218,6 +226,8 @@ def test_failed_gate_completes_required_reviews_before_repair(tmp_path):
 def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_candidates(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
+    open_book(config)
+    mark_project_ready(root, config)
     config.data["quality"]["profile"]["strictness"] = "light"
     config.data["quality"]["semantic_review_milestones"] = []
     config.data["quality"]["semantic_review_boundaries"] = False
@@ -226,12 +236,15 @@ def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_cand
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\n药水必须接触瓶口并耗时饮用，随后药瓶破碎却直接恢复生命。\n", encoding="utf-8")
     write_blocking_gate(root, draft, chapter_number=1)
+    complete_editorial_reviews(root, config)
+    apply_human_repair_review(config, root, draft)
 
     first = create_repair_synthesis_task(config, chapter_number=1)
     first_bundle = json.loads((root / first["review_bundle"]).read_text(encoding="utf-8"))
-    first_id = first_bundle["blocking_finding_ids"][0]
+    first_ids = first_bundle["blocking_finding_ids"]
+    first_id = first_ids[0]
     first_plan = root / first["plan_file"]
-    first_plan.write_text(repair_plan_markdown(first_bundle, first_id, conflict=True), encoding="utf-8")
+    first_plan.write_text(repair_plan_markdown(first_bundle, first_ids, conflict=True), encoding="utf-8")
     invalid = validate_repair_plan(config, chapter_number=1, file_path=first_plan)
 
     assert invalid["ok"] is False
@@ -240,7 +253,7 @@ def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_cand
     assert production_next(config)["status"] == "need_human"
     assert next_repair_round(config, chapter_number=1) == 1
 
-    first_plan_text = repair_plan_markdown(first_bundle, first_id)
+    first_plan_text = repair_plan_markdown(first_bundle, first_ids)
     first_plan.write_text(first_plan_text.replace(f"{first_id} P1", f"{first_id} P2"), encoding="utf-8")
     downgraded = validate_repair_plan(config, chapter_number=1, file_path=first_plan)
     assert downgraded["ok"] is False
@@ -248,7 +261,8 @@ def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_cand
     assert next_repair_round(config, chapter_number=1) == 1
 
     first_plan.write_text(first_plan_text, encoding="utf-8")
-    assert validate_repair_plan(config, chapter_number=1, file_path=first_plan)["ok"] is True
+    valid_plan = validate_repair_plan(config, chapter_number=1, file_path=first_plan)
+    assert valid_plan["ok"] is True, valid_plan["errors"]
     assert validate_repair_plan(config, chapter_number=1, file_path=first_plan)["ok"] is True
     first_plan.write_text(first_plan_text + "\n不可变计划不允许追加。\n", encoding="utf-8")
     with pytest.raises(ValueError, match="immutable repair plan"):
@@ -266,11 +280,13 @@ def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_cand
 
     draft.write_text(first_candidate.read_text(encoding="utf-8") + "仍有一处确认的规则冲突。\n", encoding="utf-8")
     write_blocking_gate(root, draft, chapter_number=1)
+    complete_editorial_reviews(root, config)
+    apply_human_repair_review(config, root, draft)
     second = create_repair_synthesis_task(config, chapter_number=1)
     second_bundle = json.loads((root / second["review_bundle"]).read_text(encoding="utf-8"))
-    second_id = second_bundle["blocking_finding_ids"][0]
+    second_ids = second_bundle["blocking_finding_ids"]
     second_plan = root / second["plan_file"]
-    second_plan.write_text(repair_plan_markdown(second_bundle, second_id), encoding="utf-8")
+    second_plan.write_text(repair_plan_markdown(second_bundle, second_ids), encoding="utf-8")
     assert validate_repair_plan(config, chapter_number=1, file_path=second_plan)["ok"] is True
     second_candidate_task = create_repair_candidate_task(config, chapter_number=1, agent="codex")
     second_candidate = root / second_candidate_task["candidate_draft"]
@@ -296,7 +312,8 @@ def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_cand
 def test_editorial_submit_review_aggregates_need_human_without_canon_pollution(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(config, chapter_number=1)
+    open_book(config)
+    mark_project_ready(root, config)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(
         "# Chapter 1\n\nAri enters the gate, but logic break remains unresolved.\n",
         encoding="utf-8",
@@ -342,7 +359,8 @@ def test_editorial_submit_review_aggregates_need_human_without_canon_pollution(t
 def test_editorial_aggregate_reports_missing_duplicate_invalid_repeated_and_lifecycle(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(config, chapter_number=1)
+    open_book(config)
+    mark_project_ready(root, config)
     config.data.setdefault("editorial", {})["review_roles"] = [
         "scene_prose_editor",
         "planning_chief_editor",
@@ -412,10 +430,18 @@ def test_editorial_aggregate_reports_missing_duplicate_invalid_repeated_and_life
     assert "missing_editorial_roles" in aggregate.need_human_reasons
     assert "duplicate_role_results" in aggregate.need_human_reasons
     assert "invalid_role_results" in aggregate.need_human_reasons
-    assert aggregate.missing_roles == ("anti_ai_editor",)
+    assert set(aggregate.missing_roles) == {
+        "anti_ai_editor",
+        "character_editor",
+        "reader_experience_editor",
+    }
     assert aggregate.duplicate_role_results[0]["role_id"] == "planning_chief_editor"
     assert aggregate.invalid_results[0]["role_id"] == "anti_ai_editor"
-    assert payload["missing_roles"] == ["anti_ai_editor"]
+    assert set(payload["missing_roles"]) == {
+        "anti_ai_editor",
+        "character_editor",
+        "reader_experience_editor",
+    }
     assert payload["duplicate_role_results"]
     assert payload["invalid_results"]
     assert "Team Completeness" in markdown
@@ -423,7 +449,7 @@ def test_editorial_aggregate_reports_missing_duplicate_invalid_repeated_and_life
     assert "Invalid Role Results" in markdown
     assert summary["by_status"]["applied"] == 2
     assert summary["by_status"]["invalid"] == 1
-    assert summary["by_status"].get("awaiting_agent", 0) == 0
+    assert summary["by_status"].get("awaiting_agent", 0) == 2
 
 
 def test_editorial_unresolved_p1_blocks_chapter_finalize(tmp_path):
@@ -469,7 +495,8 @@ def test_editorial_unresolved_p1_blocks_chapter_finalize(tmp_path):
 def test_semantic_pacing_apply_updates_gate_only_and_blocks_on_p1(tmp_path, monkeypatch):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(config, chapter_number=1)
+    open_book(config)
+    mark_project_ready(root, config)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_text("PACING_AGENT"), encoding="utf-8")
     gate_check(config, chapter_number=1)
     task = semantic_pacing_task(config, chapter_number=1)
@@ -522,7 +549,8 @@ def test_semantic_pacing_apply_updates_gate_only_and_blocks_on_p1(tmp_path, monk
 def test_semantic_pacing_invalid_validate_updates_lifecycle_without_gate_pollution(tmp_path, monkeypatch):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(config, chapter_number=1)
+    open_book(config)
+    mark_project_ready(root, config)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_text("PACING_INVALID"), encoding="utf-8")
     gate_check(config, chapter_number=1)
     task = semantic_pacing_task(config, chapter_number=1)
@@ -595,7 +623,9 @@ def test_required_semantic_pacing_blocks_finalize_until_current_v2_result_is_app
     semantic_pacing_apply(config, chapter_number=1, file_path=result_file)
 
     action = production_next(config)
-    assert action["status"] == "awaiting_finalize"
+    assert action["status"] == "ready_for_editorial_review"
+    approve_story_candidate(root, config)
+    assert production_next(config)["status"] == "awaiting_finalize"
     finalized = finalize_chapter(config, chapter_number=1, approved_by="human")
     assert Path(finalized.final_file).is_file()
 
@@ -603,7 +633,8 @@ def test_required_semantic_pacing_blocks_finalize_until_current_v2_result_is_app
 def test_semantic_pacing_domain_validation_requires_current_control_plane_binding(tmp_path, monkeypatch):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(config, chapter_number=1)
+    open_book(config)
+    mark_project_ready(root, config)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text(passing_text("PACING_CONTROL_PLANE"), encoding="utf-8")
     gate_check(config, chapter_number=1)
@@ -754,7 +785,38 @@ def write_blocking_gate(root: Path, draft: Path, *, chapter_number: int) -> None
     )
 
 
-def repair_plan_markdown(bundle: dict, finding_id: str, *, conflict: bool = False) -> str:
+def apply_human_repair_review(config, root: Path, draft: Path) -> None:
+    review_task = create_human_story_review_task(config, chapter_number=1)
+    review_path = root / review_task.template_file
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["checks"] = {
+        key: {"passed": False, "reason": "The declared action chain remains contradictory."}
+        for key in review["checks"]
+    }
+    review["decision"] = "repair"
+    review["span_actions"] = [
+        {
+            "start": 14,
+            "end": 28,
+            "text": draft.read_text(encoding="utf-8")[14:28],
+            "action": "expand_scene",
+            "note": "Show the full contact, drinking, and delayed-effect action chain.",
+        }
+    ]
+    review_path.write_text(
+        json.dumps(review, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    apply_human_story_review(
+        config,
+        chapter_number=1,
+        file_path=review_path,
+        approved_by="human",
+    )
+
+
+def repair_plan_markdown(bundle: dict, finding_ids: str | list[str], *, conflict: bool = False) -> str:
+    admitted = [finding_ids] if isinstance(finding_ids, str) else finding_ids
     round_token = f"r{int(bundle['repair_round']):02d}"
     mutable = "主角放弃追击并优先救人" if conflict else "药水接触、饮用和生效动作链"
     return "\n".join(
@@ -765,10 +827,10 @@ def repair_plan_markdown(bundle: dict, finding_id: str, *, conflict: bool = Fals
             f"候选 {bundle['candidate_sha256']}，轮次 {round_token}。",
             "",
             "## 完整 blocking finding 清单",
-            f"- {finding_id} P1：治疗规则前置声明与救援动作冲突。",
+            *[f"- {finding_id} P1：治疗规则前置声明与救援动作冲突。" for finding_id in admitted],
             "",
             "## 共同根因分组",
-            f"- 机制根因：{finding_id} 指向未统一的治疗生效规则。",
+            *[f"- 机制根因：{finding_id} 指向未统一的治疗生效规则。" for finding_id in admitted],
             "",
             "## 修复依赖与执行顺序",
             "先统一接触规则，再重写动作，最后核对生存结果。",

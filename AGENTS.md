@@ -9,7 +9,7 @@
 ```powershell
 git status --short
 git log -1 --oneline
-git tag --list "v0.4.*"
+git tag --list "v0.5.*"
 longform-engine --version
 longform-engine skills status --tool codex --json
 python scripts/check_agent_data_pipeline_readiness.py
@@ -25,8 +25,7 @@ python scripts/check_agent_data_pipeline_readiness.py
 
 ## 2. 当前发布状态
 
-- 当前稳定版为 `v0.4.4`。
-- v0.4.4 将 research promote 与 revision rollback 纳入 transaction v3，统一每章方向合同，并收敛 readiness 与语义物化说明。
+- 当前稳定版为不兼容旧项目的 `v0.5.0`；旧项目不迁移。它在 v0.4.4 的 transaction v3 和语义物化边界上增加故事引擎合同、作者 Story Brief、载体诊断、每章场景必审和人工故事简审。
 - 协议与生产合同 readiness 以 `scripts/check_agent_data_pipeline_readiness.py` 的输出为准。
 - `literary_evidence_ready` 保持 `false`，直到真实章节与独立盲评证据完整。
 - 不要把任一本地小说运行、全局 Skill 状态或历史阶段文档当作源码事实源。
@@ -163,10 +162,12 @@ design task
 章节闭环采用：
 
 ```text
-chapter direction and unique chapter contract
+story engine and rolling carrier plan
+-> reader promise ledger / arc causal simulation / chapter direction and chapter_contract_v3
 -> chapter_write
 -> draft submit and deterministic gate
 -> independent review barrier
+-> mandatory human story review accept / repair / redirect
 -> conditional repair plan and replacement candidate
 -> explicit chapter finalize
 -> chapter semantic task
@@ -179,16 +180,17 @@ chapter direction and unique chapter contract
 
 ## 7. 唯一章节合同与上下文编译
 
-`20_outline/chapter_cards/chNNN.json` 是唯一章节合同。它必须包含当前章节需要的：
+`20_outline/chapter_cards/chNNN.json` 是唯一 `chapter_contract_v3` 章节合同。它必须包含当前章节需要的承诺动作和当前有效因果模拟引用，并同时包含：
 
 - 全书目标、卷目标和主角近期目标。
-- `chapter_duty`、选定场景链、读者收益、代价和关系变化。
+- 当下欲望、对抗力量、戏剧问题、最早失败、不可逆选择和可见代价。
+- `chapter_turn`、`reveal_boundary`、`reader_gain`、必须演出/允许压缩过程、故事引擎、场景载体和状态变化。
 - 登场人物稳定 ID。
-- canon、世界规则、伏笔和禁止揭示引用。
+- 受保护结果、禁止偏移、canon、世界规则、伏笔和禁止揭示引用。
 
-写作、Humanizer、收益、节奏、人物、场景和同人审稿必须绑定同一 `chapter_contract_hash`。发现职责、人物名单或约束来源分裂时返回 `chapter_contract_inconsistent`。
+内部事实仍编译为 `chapter_fact_inventory_v1`，承诺账本、因果模拟和编辑模式分别留在规划/编辑控制面；作者只读取 `chapter_story_brief_v2` Markdown。fact ID、来源 hash、promise ID、模式代码、RAG、Graph、TCS 与 SQLite 词汇不得进入作者工作单。Humanizer、收益、节奏、人物、场景、同人和人工故事审稿必须绑定同一 `chapter_contract_hash` 与候选 hash。发现职责、人物名单或约束来源分裂时返回 `chapter_contract_inconsistent`。
 
-上下文先在内存编译为 `chapter_fact_inventory_v1`：同一事实只出现一次，并保存来源 hash、优先级和选择理由。核心 canon/world-rule 引用必须完整解析；`[depth-limited]`、缺失来源或必要证据无法装入预算时返回 `context_evidence_incomplete` 或 `prompt_budget_exceeded`，不得在证据不完整时生成可 pass 的审稿任务。
+事实清单中同一事实只出现一次，并保存来源 hash、优先级和选择理由。核心 canon/world-rule 引用必须完整解析；`[depth-limited]`、缺失来源或必要证据无法装入预算时返回 `context_evidence_incomplete` 或 `prompt_budget_exceeded`，不得在证据不完整时生成可 pass 的审稿任务。
 
 ## 8. Prompt、角色与会话
 
@@ -314,7 +316,7 @@ task event/index 记录：
 1. `README.md`
 2. `docs/ARCHITECTURE.md`
 3. `docs/STORAGE_MODEL.md`
-4. `docs/V0_4_4_RELEASE_CHECKLIST.md`
+4. `docs/V0_5_0_RELEASE_CHECKLIST.md`
 5. `docs/GATE_MODEL.md`
 6. `docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`
 7. `docs/CONFIGURATION.md`

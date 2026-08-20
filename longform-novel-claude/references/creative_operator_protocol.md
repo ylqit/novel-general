@@ -33,16 +33,16 @@ Canonical state changes must go through CLI commands: `draft submit`, `chapter f
 
 Use this guide before writing any new chapter draft. `/工程续章` is the primary Chinese engineering entry for continuing a chapter; it maps to `longform-engine continue-write project.yaml --chapter N`.
 
-Before prose is written, the Agent must confirm these inputs from `50_workbench/writing_tasks/chNNN.json` and `chNNN.md`:
+Before prose is written, the author Agent reads only `50_workbench/writing_tasks/chNNN.md`, the rendered `chapter_story_brief_v2`. The paired JSON, fact inventory, reader-promise ledger, causal simulation, editorial-pattern registry and retrieval/control-plane packets are CLI/editor inputs, not author inputs.
 
-- User preference: target audience, writing style, taboo experience, automation level, and any latest user instruction from Creative Brief or the current task.
-- Automatic fallback: if a preference is missing, use the task package defaults instead of asking for a model/API key; record uncertainty in the draft notes only if the task asks for it.
-- Pacing precheck: read `event_recommendation`, `constraint_packet.event_matrix`, recent pacing history, soft-event requirement, fast quota, and any `pacing_review` or gate history warnings.
-- Tail-hook declaration: state the intended chapter-end hook in the draft plan and preserve it in the final scene.
-- Forbidden reveal confirmation: read `reverse_brake`, `forbidden_reveals`, `this_chapter_must_not_solve`, and `must_keep_suspense`; do not close these items unless `closure_allowed=true` and `allowed_reveal_level=full`.
-- Failure repair path: if a check reports a content problem, do not jump directly to rewriting. Follow `production next` until semantic, payoff, pacing and selected editorial reviews all bind to the same candidate hash. The CLI then freezes the complete finding set before `repair synthesis-task`; Humanizer, waiver, branch and rollback remain separate explicit paths.
+- Story pressure: confirm what is happening, what the protagonist wants, who or what refuses, the earliest failure, irreversible choice and visible cost.
+- Scene execution: follow each declared action, reaction, choice, cost and exit state; fully dramatize the required turns and compress only the allowed connective process.
+- Story boundaries: preserve protected outcomes, obey prohibited drift, deliver the declared reader gain, emotional aftereffect and relationship change.
+- Carrier variation: use the recent-five-chapter carrier warning to change pressure, character ownership or dramatic method when needed; an approved repetition reason is authority, not a quota exemption invented by the author.
+- Ending condition: land on the declared changed state and chapter pressure without forcing a universal cliffhanger.
+- Failure repair path: follow `production next` until semantic, payoff, pacing and editorial reviews all bind to the same candidate hash. `scene_prose_editor` is mandatory. After independent reviews, run the human story review: `accept` permits finalize, `repair` joins the immutable review bundle, and `redirect` returns to direction or outline revision.
 
-Required five-step closed loop:
+Required production closed loop:
 
 1. Generate or read the `continue-write` task package.
 2. Agent writes only to `50_workbench/agent_drafts/chNNN.codex.md` or `chNNN.claude.md`.
@@ -54,9 +54,9 @@ Required five-step closed loop:
 ## Write One Chapter
 
 1. Run or read the latest `continue-write` task package.
-2. Read `50_workbench/writing_tasks/chNNN.md` and the paired JSON.
-3. Apply the `/工程续章` Pre-Write Guide, including user preference, automatic fallback, pacing precheck, tail-hook declaration, forbidden reveal confirmation, and failure repair path.
-4. Confirm the task includes the Character Performance Packet, Creative Brief, Writer Craft Brief, RAG, Graph, TCS, Character Memory, Style Memory, Event Matrix, Reverse Brake, gate history, and Humanizer v4 rules.
+2. Read only `50_workbench/writing_tasks/chNNN.md`; do not open the paired JSON, fact inventory, RAG, Graph, TCS, ledger or database artifacts as author context.
+3. Apply the `/工程续章` Pre-Write Guide to the Story Brief's desire, opposition, failure, choice, cost, scene actions, protected outcomes and carrier warning.
+4. If the Story Brief lacks a required story pressure or protected boundary, stop and return to CLI validation instead of reconstructing control-plane context yourself.
 5. Write the draft only to `50_workbench/agent_drafts/chNNN.codex.md` or `chNNN.claude.md`.
 6. Before submit, run the Humanizer v4 two-pass self-check mentally:
    - Pass 1 removes meta residue, AI templates, generic significance language, summary lecture, and same-shape paragraphs.
@@ -65,7 +65,7 @@ Required five-step closed loop:
    - Preserve numeric facts, named characters, chapter duty, reader gain, cost, promise payoff, and declared canon/divergence constraints.
    - Do not force every platform into short sentences, dense dialogue, fast pacing, or a cliffhanger; follow the task's market profile.
 7. Submit with `longform-engine draft submit project.yaml --chapter N --file 50_workbench/agent_drafts/chNNN.codex.md --agent codex`.
-8. If the gate passes, finalize only with `longform-engine chapter finalize project.yaml --chapter N --approved-by human`.
+8. After all independent reviews, complete `chapter human-review-task`, `human-review-validate`, and `human-review-apply`. Finalize only after a current `accept` decision.
 9. Follow `production next` into `chapter semantic-task`; read the final once, write only the declared semantic JSON, then run validate and wait for explicit apply.
 10. Close the chapter only with `longform-engine chapter close project.yaml --chapter N --approved-by human` after all materialized views verify.
 11. If the gate or semantic validation fails, stop the next-chapter flow and repair the current chapter or semantic candidate.
@@ -100,11 +100,11 @@ Use `editorial review` or `editorial batch-review` for formal review artifacts. 
 
 Fanfiction adds `canon_fidelity_reviewer / 同人还原审查员`, which checks voice, relationship stage, ability and world rules, declared divergence causality, canon-character agency, original contribution, collective irrationality, and character-skin-only writing. AU or canon divergence is not an error when the declared change and its consequences support it.
 
-Roles are selected by current risk, not by an all-roles-every-chapter rule. Normal chapters use one writing or reader-quality role; AI-flavor recurrence adds anti-ai, continuity risk adds serial-verifier, major payoff or volume boundaries add planning plus reader-quality, fanfiction adds canon-fidelity, and P0/P1 risk adds executive review.
+`scene_prose_editor` is selected for every chapter. Other roles remain risk-selected: AI-flavor recurrence adds anti-ai, continuity risk adds planning, opening chapters/major payoff/volume boundaries/carrier repetition add reader experience or planning, and fanfiction adds canon fidelity.
 
 Each selected role receives an isolated manifest and `editorial_context_isolation_v1` metadata file. `editorial_role_review_v2` records `reviewer_instance_id`, host/model identifiers, `context_digest_hash`, `independence_mode`, `review_round`, and confidence. P0/P1 items must cite exact current-chapter excerpts. A role must not read peer results before submission. The aggregate phase alone may read normalized results, and it must retain consensus, conflicts, evidence overlap, severity differences, validated minority P0/P1 findings, and human decisions.
 
-Open findings enter `50_workbench/quality_feedback/registry.jsonl` with stable IDs, recurrence, TTL, and resolution state. At most five active task-relevant items enter a later work order. Use `quality feedback-status`, `quality feedback-resolve`, or `quality feedback-suppress` to inspect or close them. Registry failure is non-blocking because feedback is workbench guidance, not canonical story state.
+P0/P1 findings stay in the immutable review bundle and must be repaired on the current candidate. Structured `role_id + finding_code` recurrences may update `50_workbench/editorial_patterns/registry.jsonl`; this derived registry is available only to repair coordination, editor risk selection and editor prompts. It never enters author tasks, facts, RAG or Graph and never replaces the current-candidate gate. Use `editorial pattern-status`, `editorial pattern-resolve`, `editorial pattern-suppress`, or explicit `editorial pattern-rebuild`; P1 requires evidence to close, while P2 may expire after three complete chapters.
 
 `editorial need-human` is triggered by unresolved P0/P1 issues or repeated conditional passes. It writes a human-review request artifact; it does not approve, finalize, index, or repair the chapter.
 

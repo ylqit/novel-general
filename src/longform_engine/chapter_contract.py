@@ -6,10 +6,22 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterable
 import json
+import re
+
+from longform_engine.arc_simulation import ArcSimulationError, load_active_arc_simulation
+from longform_engine.reader_promises import (
+    ACTION_FIELDS,
+    PROMISE_ACTIONS,
+    ReaderPromiseError,
+    load_reader_promise_ledger,
+    validate_promise_actions,
+)
 
 
-CONTRACT_SCHEMA = "chapter_contract_v1"
-REMOVED_ALIAS_FIELDS = frozenset({"duty", "information", "reader_payoff"})
+CONTRACT_SCHEMA = "chapter_contract_v3"
+REMOVED_ALIAS_FIELDS = frozenset(
+    {"duty", "information", "information_release", "reader_payoff"}
+)
 CONTRACT_FIELDS = (
     "chapter_number",
     "title",
@@ -18,26 +30,66 @@ CONTRACT_FIELDS = (
     "protagonist_goal",
     "chapter_duty",
     "platform_promise",
+    "immediate_desire",
+    "opposition_force",
+    "dramatic_question",
     "conflict",
-    "information_release",
+    "key_failure",
+    "irreversible_choice",
+    "chapter_turn",
+    "reveal_boundary",
     "scene_chain",
+    "must_dramatize",
+    "may_summarize",
+    "primary_story_engine",
+    "scene_carriers",
+    "protected_story_outcomes",
+    "prohibited_drift",
     "featured_character_ids",
     "reader_gain",
     "cost",
+    "state_change_kind",
+    "dramatic_method",
+    "exposition_carrier",
     "relationship_move",
     "canon_refs",
     "world_rule_refs",
     "foreshadow_refs",
     "forbidden_reveals",
+    "reader_promise_actions",
+    "arc_simulation_ref",
 )
 LIST_FIELDS = frozenset(
     {
         "scene_chain",
+        "must_dramatize",
+        "may_summarize",
+        "scene_carriers",
+        "protected_story_outcomes",
+        "prohibited_drift",
         "featured_character_ids",
         "canon_refs",
         "world_rule_refs",
         "foreshadow_refs",
         "forbidden_reveals",
+        "reader_promise_actions",
+    }
+)
+NON_EMPTY_LIST_FIELDS = frozenset(
+    {
+        "scene_chain",
+        "must_dramatize",
+        "scene_carriers",
+        "protected_story_outcomes",
+        "prohibited_drift",
+        "featured_character_ids",
+        "reader_promise_actions",
+    }
+)
+SCENE_FIELDS = frozenset(
+    {
+        "scene_id", "location", "participants", "carrier", "desire_collision",
+        "action", "reaction", "choice", "cost", "turn", "exit_state",
     }
 )
 
@@ -58,6 +110,17 @@ def project_chapter_contract(card: dict[str, Any]) -> dict[str, Any]:
         if field in LIST_FIELDS:
             if not isinstance(value, list):
                 raise ChapterContractError(f"chapter_contract_inconsistent:{field}_must_be_list")
+            if field in NON_EMPTY_LIST_FIELDS and not value:
+                raise ChapterContractError(f"chapter_contract_inconsistent:{field}_missing")
+            if field == "scene_chain":
+                validate_scene_chain(value)
+            elif field == "reader_promise_actions":
+                validate_promise_action_shape(value)
+            elif any(not isinstance(item, str) or not item.strip() for item in value):
+                raise ChapterContractError(f"chapter_contract_inconsistent:{field}_must_be_string_list")
+            contract[field] = value
+        elif field == "arc_simulation_ref":
+            validate_arc_simulation_ref(value, int(card.get("chapter_number") or 0))
             contract[field] = value
         else:
             if field == "chapter_number":
@@ -69,6 +132,65 @@ def project_chapter_contract(card: dict[str, Any]) -> dict[str, Any]:
             else:
                 contract[field] = value.strip()
     return contract
+
+
+def validate_scene_chain(scenes: list[Any]) -> None:
+    for index, scene in enumerate(scenes):
+        if not isinstance(scene, dict) or set(scene) != SCENE_FIELDS:
+            raise ChapterContractError(
+                f"chapter_contract_inconsistent:scene_chain_{index}_fields"
+            )
+        participants = scene.get("participants")
+        if not isinstance(participants, list) or not participants or any(
+            not isinstance(item, str) or not item.strip() for item in participants
+        ):
+            raise ChapterContractError(
+                f"chapter_contract_inconsistent:scene_chain_{index}_participants"
+            )
+        for field in SCENE_FIELDS - {"participants"}:
+            if not isinstance(scene.get(field), str) or not scene[field].strip():
+                raise ChapterContractError(
+                    f"chapter_contract_inconsistent:scene_chain_{index}_{field}"
+                )
+
+
+def validate_promise_action_shape(actions: list[Any]) -> None:
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict) or set(action) != ACTION_FIELDS:
+            raise ChapterContractError(
+                f"chapter_contract_inconsistent:reader_promise_actions_{index}_fields"
+            )
+        if action.get("action") not in PROMISE_ACTIONS:
+            raise ChapterContractError(
+                f"chapter_contract_inconsistent:reader_promise_actions_{index}_action"
+            )
+        for field in ("promise_id", "intended_reader_gain", "evidence_requirement"):
+            if not isinstance(action.get(field), str) or not action[field].strip():
+                raise ChapterContractError(
+                    f"chapter_contract_inconsistent:reader_promise_actions_{index}_{field}"
+                )
+        if action.get("action") == "defer":
+            if not isinstance(action.get("defer_reason"), str) or not action["defer_reason"].strip():
+                raise ChapterContractError(
+                    f"chapter_contract_inconsistent:reader_promise_actions_{index}_defer_reason"
+                )
+        elif action.get("defer_reason") not in {"", None}:
+            raise ChapterContractError(
+                f"chapter_contract_inconsistent:reader_promise_actions_{index}_unexpected_defer_reason"
+            )
+
+
+def validate_arc_simulation_ref(value: Any, chapter_number: int) -> None:
+    fields = {"path", "sha256", "from_chapter", "to_chapter"}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ChapterContractError("chapter_contract_inconsistent:arc_simulation_ref_fields")
+    if not isinstance(value.get("path"), str) or not value["path"].strip():
+        raise ChapterContractError("chapter_contract_inconsistent:arc_simulation_ref_path")
+    if not isinstance(value.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"]):
+        raise ChapterContractError("chapter_contract_inconsistent:arc_simulation_ref_sha256")
+    start, end = value.get("from_chapter"), value.get("to_chapter")
+    if not isinstance(start, int) or not isinstance(end, int) or not start <= chapter_number <= end:
+        raise ChapterContractError("chapter_contract_inconsistent:arc_simulation_ref_range")
 
 
 def chapter_contract_hash(contract: dict[str, Any]) -> str:
@@ -95,7 +217,37 @@ def load_verified_chapter_contract(root: Path, chapter_number: int) -> tuple[dic
     digest = chapter_contract_hash(contract)
     if card.get("chapter_contract_hash") != digest:
         raise ChapterContractError("chapter_contract_inconsistent:hash")
+    validate_contract_planning_dependencies(root, contract, chapter_number)
     return contract, digest
+
+
+def validate_contract_planning_dependencies(
+    root: Path,
+    contract: dict[str, Any],
+    chapter_number: int,
+) -> None:
+    try:
+        ledger = load_reader_promise_ledger(root)
+    except ReaderPromiseError as exc:
+        raise ChapterContractError(f"chapter_contract_inconsistent:{exc}") from exc
+    promise_errors = validate_promise_actions(contract.get("reader_promise_actions"), ledger)
+    if promise_errors:
+        raise ChapterContractError(
+            "chapter_contract_inconsistent:" + ";".join(promise_errors)
+        )
+    try:
+        simulation, path, digest = load_active_arc_simulation(root, chapter_number=chapter_number)
+    except ArcSimulationError as exc:
+        raise ChapterContractError(f"chapter_contract_inconsistent:{exc}") from exc
+    reference = contract.get("arc_simulation_ref") or {}
+    expected_path = path.relative_to(root).as_posix()
+    if (
+        reference.get("path") != expected_path
+        or reference.get("sha256") != digest
+        or reference.get("from_chapter") != simulation.get("from_chapter")
+        or reference.get("to_chapter") != simulation.get("to_chapter")
+    ):
+        raise ChapterContractError("chapter_contract_inconsistent:arc_simulation_ref_stale")
 
 
 def resolve_chapter_contract_refs(root: Path, contract: dict[str, Any]) -> list[dict[str, Any]]:

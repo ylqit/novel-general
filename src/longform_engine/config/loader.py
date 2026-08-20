@@ -100,6 +100,9 @@ REMOVED_CONFIG_FIELDS = {
     "gates.artifact_dir": "Gate artifacts use the canonical 50_workbench/gate_artifacts path.",
     "gates.required_files": "Required gate artifacts are enforced by the gate schema.",
     "gates.allowed_actions_after_failure": "Failure actions are determined by the production state machine.",
+    "gates.mainline_info_release_warning_hits": (
+        "v0.5 uses gates.mainline_reveal_warning_hits and does not migrate v0.4 project configuration."
+    ),
     "pacing.event_quota_window_chapters": "Use pacing.soft_event_window_chapters.",
     "pacing.quota_types": "Event types are configured by pacing.event_types.",
     "research.enabled": "Research commands are explicitly invoked and do not use an enable switch.",
@@ -530,7 +533,7 @@ def validate_config(data: dict[str, Any]) -> None:
         not isinstance(item, str) or not item.strip() for item in forbidden_reveals
     ):
         raise ConfigError("gates.forbidden_reveals must be a list of non-empty strings")
-    _require_positive_int(gates, "mainline_info_release_warning_hits", "gates")
+    _require_positive_int(gates, "mainline_reveal_warning_hits", "gates")
     p0_patterns = gates.get("p0_meta_pollution_patterns")
     if not isinstance(p0_patterns, list) or not p0_patterns or any(
         not isinstance(item, str) or not item.strip() for item in p0_patterns

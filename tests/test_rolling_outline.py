@@ -2,6 +2,8 @@ import json
 from hashlib import sha256
 from pathlib import Path
 
+import pytest
+
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import (
     CANONICAL_DELTA_SCHEMA,
@@ -9,6 +11,7 @@ from longform_engine.agent_protocols import (
     DESIGN_REQUIRED_HEADINGS,
 )
 from longform_engine.agent_tasks import load_manifest, validate_manifest_strict
+from longform_engine.arc_simulation import load_active_arc_simulation
 from longform_engine.config import load_project_config
 from longform_engine.intelligence import (
     apply_compiled_design,
@@ -24,9 +27,11 @@ from longform_engine.orchestration import open_book
 from longform_engine.production import production_next
 from longform_engine.storage import init_project
 from tests.project_fixtures import (
+    build_arc_simulation_candidate,
     build_outline_candidate,
     build_outline_extension_candidate,
     mark_project_ready,
+    write_arc_simulation_fixture,
     write_json,
 )
 
@@ -85,6 +90,9 @@ def apply_design_candidate(config, root: Path, task_type: str, candidate: Path, 
     changes = {key: value for key, value in payload.items() if key != "schema"}
     for cli_field in {
         "book_ideation": ("round", "dimension"),
+        "arc_simulation": (
+            "from_chapter", "to_chapter", "basis_hashes", "approved_by", "status",
+        ),
         "chapter_direction": ("chapter_number", "chapter_card_sha256", "trigger_reasons"),
         "outline_revision": ("from_chapter", "to_chapter"),
     }.get(task_type, ()):
@@ -135,31 +143,40 @@ def apply_design_candidate(config, root: Path, task_type: str, candidate: Path, 
 
 def direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> dict:
     card = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    card_payload = json.loads(card.read_text(encoding="utf-8"))
     scene_chain = [
         {
             "scene_id": "scene_arrival",
             "location": "archive gate",
             "participants": ["lead_ari", "ally_mira"],
+            "carrier": "pursuit",
             "desire_collision": "Ari wants verification while Mira wants immediate pursuit.",
+            "action": "Ari jams the closing gate while Mira runs for the witness.",
+            "reaction": "The seal alarm closes the lower stair and the witness changes route.",
             "choice": "Ari spends the last safe minute checking the damaged seal.",
             "cost": "The visible suspect gains distance.",
             "turn": "The seal proves the suspect used an internal route.",
+            "exit_state": "The suspect escapes inside the archive.",
         },
         {
             "scene_id": "scene_commitment",
             "location": "witness stair",
             "participants": ["lead_ari", "ally_mira"],
+            "carrier": "relationship conflict",
             "desire_collision": "Mira demands action while Ari must share an inference he wanted to control.",
+            "action": "Mira blocks Ari's solo route and demands the clue as the price of pursuit.",
+            "reaction": "Ari sees the witness vanish and loses the option to keep sole control.",
             "choice": "Ari gives Mira the route and accepts her condition.",
             "cost": "He loses sole control of the evidence.",
             "turn": "Their uneasy alliance becomes operational rather than verbal.",
+            "exit_state": "Mira owns the route copy and the next tactical choice.",
         },
     ]
     common = {
         "book_goal": "Expose who controls collective memory.",
         "volume_goal": "Prove the border archive is being altered from inside.",
         "protagonist_goal": "Preserve evidence without treating Mira as a tool.",
-        "featured_character_ids": ["lead_ari", "ally_mira"],
+        "featured_character_ids": card_payload["featured_character_ids"],
         "scene_chain": scene_chain,
         "cast_desires": {
             "lead_ari": "Verify the physical trace before pursuit.",
@@ -168,14 +185,29 @@ def direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> 
         "dialogue_ownership": "Ari narrows claims; Mira forces decisions and names costs.",
         "embodiment_plan": "Use Ari's careful handling and Mira's changing distance under pressure.",
         "interiority_function": "Expose Ari's temptation to control information immediately before his choice to share it.",
+        "immediate_desire": "Catch the witness before the court closes the archive gate.",
+        "opposition_force": "The seal alarm and Mira's competing plan deny Ari a safe solo pursuit.",
+        "dramatic_question": "Can Ari catch the witness without surrendering sole control of the clue?",
         "conflict": "Verification consumes the only safe pursuit window.",
-        "information_release": "The damaged seal identifies an internal route without naming the editor.",
-        "local_payoff": "A prior seal detail becomes actionable evidence.",
+        "key_failure": "The direct pursuit fails when the damaged seal triggers the gate alarm.",
+        "irreversible_choice": "Ari gives Mira the only route copy and accepts her condition.",
+        "chapter_turn": card_payload["chapter_turn"],
+        "reveal_boundary": "Reveal internal access without naming the archive editor.",
+        "must_dramatize": ["the pursuit failing", "Ari sharing the route", "Mira owning the next choice"],
+        "may_summarize": ["routine movement between archive levels"],
+        "primary_story_engine": "pursuit_and_leverage",
+        "scene_carriers": ["pursuit", "relationship conflict"],
+        "protected_story_outcomes": card_payload["protected_story_outcomes"],
+        "prohibited_drift": ["Do not turn the pursuit into document verification."],
+        "state_change_kind": card_payload["state_change_kind"],
+        "dramatic_method": "failed_pursuit_then_shared_choice",
+        "exposition_carrier": "embedded_in_action",
+        "local_payoff": card_payload["reader_gain"],
         "character_cost": "Ari surrenders sole control and loses pursuit time.",
         "mainline_move": "The investigation moves from outside sabotage to an internal access chain.",
         "character_arc_move": "Ari makes one bounded trust decision instead of manipulating Mira.",
         "foreshadow_move": "The false treaty thread echoes through the matching seal cut.",
-        "relationship_move": "The uneasy alliance gains a shared operational obligation.",
+        "relationship_move": card_payload["relationship_move"],
         "ending_mode": "changed_problem",
         "main_risks": ["Too much procedural explanation could flatten the choice."],
         "canon_refs": [],
@@ -186,18 +218,34 @@ def direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> 
     selected = {
         "id": "verify_seal",
         "title": "Verify the seal",
-        "chapter_duty": "Trade pursuit speed for reliable evidence.",
+        "chapter_duty": card_payload["chapter_duty"],
         **common,
     }
     selected["reader_gain"] = selected.pop("local_payoff")
     selected["cost"] = selected.pop("character_cost")
+    simulation, simulation_path, simulation_hash = load_active_arc_simulation(
+        root, chapter_number=chapter_number
+    )
+    selected["reader_promise_actions"] = [{
+        "promise_id": "story_engine:opening_three" if chapter_number <= 3 else "story_engine:early_serial",
+        "action": "setup" if chapter_number in {1, 4} else "escalate",
+        "intended_reader_gain": selected["reader_gain"],
+        "evidence_requirement": "Show a concrete changed condition in the final prose.",
+        "defer_reason": "",
+    }]
+    selected["arc_simulation_ref"] = {
+        "path": simulation_path.relative_to(root).as_posix(),
+        "sha256": simulation_hash,
+        "from_chapter": simulation["from_chapter"],
+        "to_chapter": simulation["to_chapter"],
+    }
     return {
-        "schema": "chapter_direction_candidate_v2",
+        "schema": "chapter_direction_candidate_v4",
         "chapter_number": chapter_number,
         "chapter_card_sha256": sha256(card.read_bytes()).hexdigest(),
         "trigger_reasons": reasons,
         "selected_direction": selected,
-        "selection": {"direction_id": "verify_seal", "user_adjustments": {}},
+        "selection": {"direction_id": "verify_seal", "user_adjustments": {}, "repetition_reason": ""},
         "canonical_refs": selected["canon_refs"],
         "introduced_elements": [],
     }
@@ -234,6 +282,37 @@ def test_outline_extension_uses_bounded_context_and_appends_atomically(tmp_path)
     )
     apply_design_candidate(config, root, "outline_design", outline_file, outline_payload)
 
+    with pytest.raises(ValueError, match="causal_simulation"):
+        create_intelligence_task(
+            config,
+            task_type="outline_extension",
+            from_chapter=21,
+            to_chapter=40,
+        )
+    simulation_task = create_intelligence_task(
+        config,
+        task_type="arc_simulation",
+        from_chapter=21,
+        to_chapter=40,
+    )
+    simulation_payload = build_arc_simulation_candidate(
+        root,
+        from_chapter=21,
+        to_chapter=40,
+    )
+    simulation_document = write_design_candidate(
+        root,
+        simulation_task,
+        "arc_simulation",
+        simulation_payload,
+    )
+    apply_design_candidate(
+        config,
+        root,
+        "arc_simulation",
+        simulation_document,
+        simulation_payload,
+    )
     task = create_intelligence_task(config, task_type="outline_extension", from_chapter=21, to_chapter=40)
     manifest = load_manifest(root, task.task_id)
     strict = validate_manifest_strict(root, manifest)
@@ -244,6 +323,8 @@ def test_outline_extension_uses_bounded_context_and_appends_atomically(tmp_path)
     assert context_payload["selection"]["full_history_exposed"] is False
     assert context_payload["selection"]["budget_profile"] == "standard"
     assert context_payload["selection"]["estimated_units"] > 0
+    assert len(context_payload["arc_causal_simulation"]["causal_obligations"]) == 20
+    assert "basis_hashes" not in context_payload["arc_causal_simulation"]
 
     extension_payload = build_outline_extension_candidate(config, 21, 40)
     candidate = write_design_candidate(
@@ -269,7 +350,13 @@ def test_production_next_refills_at_threshold_before_writing(tmp_path):
     window = json.loads(window_path.read_text(encoding="utf-8"))
     window["end_chapter"] = 8
     write_json(window_path, window)
+    write_arc_simulation_fixture(root, from_chapter=1, to_chapter=8)
 
+    action = production_next(config)
+    assert action["task_type"] == "arc_simulation"
+    assert action["planning_window"] == {"from_chapter": 9, "to_chapter": 28}
+
+    write_arc_simulation_fixture(root, from_chapter=9, to_chapter=28)
     action = production_next(config)
     assert action["task_type"] == "outline_extension"
     assert action["planning_window"] == {"from_chapter": 9, "to_chapter": 28, "remaining": 8}
@@ -330,6 +417,7 @@ def test_two_million_character_project_keeps_outline_extension_context_bounded(t
             "refill_threshold": 8,
         },
     )
+    write_arc_simulation_fixture(root, from_chapter=668, to_chapter=687)
 
     extension = create_intelligence_task(
         config,

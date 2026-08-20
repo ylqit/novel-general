@@ -35,6 +35,22 @@ Include:
 
 Do not suggest continuing to the next chapter while `passed=false`.
 
+## Human Story Review
+
+Include:
+
+- chapter and current candidate hash,
+- chapter contract hash,
+- reader promise ledger hash,
+- arc causal simulation hash,
+- decision: `accept`, `repair`, or `redirect`,
+- immutable decision file,
+- marked span count and actions for repair,
+- transaction report for redirect,
+- the exact next command.
+
+Do not report a chapter as finalizable without a current hash-bound `accept` decision.
+
 ## Research
 
 For inbox items, include JSON and Markdown paths plus status `inbox`.

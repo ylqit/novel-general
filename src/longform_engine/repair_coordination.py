@@ -27,6 +27,7 @@ from longform_engine.agent_tasks import (
 from longform_engine.config import ConfigDocument
 from longform_engine.editorial import editorial_review_required_reasons
 from longform_engine.gates import semantic_pacing_review_status
+from longform_engine.human_story_review import human_story_review_status
 from longform_engine.quality import payoff_review_required_reasons, reader_payoff_review_status
 from longform_engine.storage import atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import manuscript_chapter_path
@@ -36,13 +37,29 @@ REVIEW_BUNDLE_SCHEMA = "repair_review_bundle_v1"
 REPAIR_ATTEMPTS_SCHEMA = "repair_attempts_v1"
 REPAIR_PLAN_VALIDATION_SCHEMA = "validation_report_v1"
 BLOCKING_SEVERITIES = frozenset({"P0", "P1"})
-REVIEW_ORDER = ("semantic", "payoff", "pacing", "editorial")
+REVIEW_ORDER = ("semantic", "payoff", "pacing", "editorial", "human_story")
 FINDING_ID_PATTERN = re.compile(r"RF-[0-9a-f]{12}")
 REPAIR_CARD_FIELDS = (
     "chapter_number",
     "title",
     "chapter_duty",
+    "immediate_desire",
+    "opposition_force",
+    "dramatic_question",
     "conflict",
+    "key_failure",
+    "irreversible_choice",
+    "chapter_turn",
+    "reveal_boundary",
+    "must_dramatize",
+    "may_summarize",
+    "primary_story_engine",
+    "scene_carriers",
+    "protected_story_outcomes",
+    "prohibited_drift",
+    "state_change_kind",
+    "dramatic_method",
+    "exposition_carrier",
     "hook",
     "reader_gain",
     "cost",
@@ -161,6 +178,42 @@ def review_barrier_status(config: ConfigDocument, *, chapter_number: int) -> dic
         if stage.get("required") and not stage.get("complete")
     ]
     findings = _collect_findings(config, root, chapter_number, candidate_hash, gate, stages)
+    human_story = human_story_review_status(config, chapter_number=chapter_number)
+    stages["human_story"] = {
+        "required": True,
+        "complete": human_story.get("status") in {"accept", "repair", "redirect"},
+        "need_human": False,
+        "status": human_story.get("status"),
+        "reason": human_story.get("reason") or "mandatory pre-finalization human story review",
+        "source": human_story.get("decision_file") or "",
+    }
+    if human_story.get("status") == "repair":
+        for index, item in enumerate(human_story.get("span_actions") or []):
+            if not isinstance(item, dict) or item.get("action") == "preserve":
+                continue
+            findings.append(
+                _admit_finding(
+                    "human_story",
+                    {
+                        "code": f"HUMAN_STORY_{str(item.get('action') or 'REPAIR').upper()}",
+                        "severity": "P1",
+                        "diagnosis": str(item.get("note") or "human story repair requested"),
+                        "evidence_ids": [
+                            f"40_manuscript/draft/ch{chapter_number:03d}.md@{int(item.get('start') or 0)}:{int(item.get('end') or 0)}"
+                        ],
+                        "repair_target": str(item.get("action") or "repair"),
+                        "preserve": [
+                            str(marked.get("note") or "")
+                            for marked in human_story.get("span_actions") or []
+                            if isinstance(marked, dict) and marked.get("action") == "preserve"
+                        ],
+                        "reviewer_role": "human_story_reviewer",
+                    },
+                    candidate_hash,
+                    fallback_evidence=f"human_story#/span_actions/{index}",
+                    selected_p2=set(),
+                )
+            )
     human_reasons = [
         f"{name}: {stage['reason']}"
         for name, stage in stages.items()
@@ -171,7 +224,11 @@ def review_barrier_status(config: ConfigDocument, *, chapter_number: int) -> dic
         status = "reviews_pending"
     elif human_reasons:
         status = "need_human"
-    elif blocking:
+    elif human_story.get("status") == "redirect":
+        status = "redirect_required"
+    elif human_story.get("status") not in {"accept", "repair"}:
+        status = "awaiting_human_story_review"
+    elif blocking or human_story.get("status") == "repair":
         status = "review_bundle_ready"
     else:
         status = "ready_to_finalize"

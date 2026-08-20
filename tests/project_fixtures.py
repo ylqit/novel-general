@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 from pathlib import Path
 
 import yaml
@@ -7,10 +8,170 @@ from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import CANONICAL_DELTA_SCHEMA
 from longform_engine.agent_tasks import load_manifest
 from longform_engine.chapter_contract import stamp_chapter_contract
+from longform_engine.arc_simulation import (
+    current_basis_hashes,
+    mark_overlapping_arc_simulations_stale,
+    write_arc_causal_simulation,
+)
 from longform_engine.semantic import chapter_close, semantic_apply, semantic_task
 from longform_engine.semantic.pipeline import active_planned_thread_ids, foreshadow_state_threads, planned_threads
 from longform_engine.lengths import compile_length_forecast
+from longform_engine.reader_promises import (
+    merge_planned_reader_promises,
+    write_reader_promise_ledger,
+)
 from longform_engine.quality import compact_effective_quality_contract, compile_effective_quality_contract
+
+
+def story_engine_contract() -> dict:
+    return {
+        "schema": "story_engine_contract_v1",
+        "reader_fantasy": "Outthink a stronger order and turn each costly discovery into leverage.",
+        "repeatable_action_loop": "Pursue a live lead, meet resistance, choose a cost, and act on the changed situation.",
+        "progression_loop": "Evidence becomes access, allies, status, and stronger investigative choices.",
+        "relationship_loop": "Trust changes only when characters choose, refuse, rescue, betray, or pay for one another.",
+        "mystery_or_question_loop": "Each local answer changes the long question instead of merely restating it.",
+        "expected_payoffs": {
+            "opening_three": "A first usable clue, a costly alliance, and proof that the archive is actively changing.",
+            "early_serial": "The protagonist converts evidence into access and defeats one institutional counterplay.",
+            "volume_end": "One controller is exposed while the cost and scale of memory correction widen.",
+        },
+        "carrier_palette": ["pursuit", "rescue", "negotiation", "infiltration", "training", "relationship conflict"],
+        "theme_carrier_limits": "Theme may explain consequences but records, notices, and meetings may not monopolize events.",
+    }
+
+
+def build_arc_simulation_candidate(
+    root: Path,
+    *,
+    from_chapter: int,
+    to_chapter: int,
+    characters: list[dict] | None = None,
+) -> dict:
+    """Build one complete human-approved causal planning window for integration tests."""
+
+    if characters is None:
+        loaded = json.loads((root / "10_bible" / "characters.json").read_text(encoding="utf-8"))
+        characters = [item for item in loaded if isinstance(item, dict)]
+    characters = [
+        {
+            **item,
+            "id": str(item.get("id") or f"fixture_character_{index}"),
+            "goal": str(item.get("goal") or "Protect the current causal objective."),
+            "flaw": str(item.get("flaw") or "Withholds trust under pressure."),
+        }
+        for index, item in enumerate(characters, start=1)
+    ]
+    while len(characters) < 2:
+        number = len(characters) + 1
+        characters.append(
+            {
+                "id": "lead_ari" if number == 1 else "ally_mira",
+                "goal": "Protect the route." if number == 1 else "Reach the witness first.",
+                "flaw": "Distrusts allies." if number == 1 else "Moves before consensus.",
+            }
+        )
+    participants = [str(item["id"]) for item in characters[:2]]
+    return {
+        "schema": "arc_causal_simulation_v1",
+        "from_chapter": from_chapter,
+        "to_chapter": to_chapter,
+        "basis_hashes": current_basis_hashes(root),
+        "protagonist_goal": str(characters[0]["goal"]),
+        "opposition_agenda": "Seal the altered archive route before the contradiction becomes public.",
+        "character_drives": [
+            {
+                "character_id": str(item["id"]),
+                "private_goal": str(item["goal"]),
+                "refusal_point": f"Refuses a choice that repeats {str(item['flaw']).lower()} without a visible cost.",
+                "offscreen_intent": "Pursue one private lead while the other character acts.",
+            }
+            for item in characters[:2]
+        ],
+        "knowledge_boundaries": ["The protagonist knows the route changed, but not who controls the final editor."],
+        "offstage_actions": ["The saboteur closes one route after every visible pursuit."],
+        "resource_shifts": ["Each verified clue costs time, access, or trust."],
+        "relationship_shifts": ["Trust can change only through costly mutual choices."],
+        "collision_points": [
+            {
+                "chapter_number": number,
+                "participants": participants,
+                "collision": "Verification and speed demand incompatible actions.",
+                "required_change": "The choice changes access or trust before chapter exit.",
+            }
+            for number in range(from_chapter, to_chapter + 1)
+        ],
+        "causal_obligations": [
+            {
+                "chapter_number": number,
+                "cause": "The prior clue exposes a route the saboteur can close.",
+                "pressure": "The protagonist must act before verification is complete.",
+                "choice": "The protagonist shares control of the clue.",
+                "consequence": "The suspect gains distance while the alliance becomes binding.",
+            }
+            for number in range(from_chapter, to_chapter + 1)
+        ],
+        "approved_by": "human",
+        "status": "approved",
+    }
+
+
+def write_arc_simulation_fixture(
+    root: Path,
+    *,
+    from_chapter: int,
+    to_chapter: int,
+    characters: list[dict] | None = None,
+) -> Path:
+    """Write one current causal planning window without running the task workflow."""
+
+    mark_overlapping_arc_simulations_stale(
+        root,
+        from_chapter=from_chapter,
+        to_chapter=to_chapter,
+    )
+    return write_arc_causal_simulation(
+        root,
+        build_arc_simulation_candidate(
+            root,
+            from_chapter=from_chapter,
+            to_chapter=to_chapter,
+            characters=characters,
+        ),
+    )
+
+
+def refresh_arc_simulation_fixture(root: Path) -> Path:
+    """Approve a current planning window and rebind already approved fixture cards."""
+
+    window = json.loads(
+        (root / "20_outline" / "planning_window.json").read_text(encoding="utf-8")
+    )
+    start = int(window["start_chapter"])
+    end = int(window["end_chapter"])
+    simulation_path = write_arc_simulation_fixture(
+        root,
+        from_chapter=start,
+        to_chapter=end,
+    )
+    simulation_ref = {
+        "path": simulation_path.relative_to(root).as_posix(),
+        "sha256": sha256(simulation_path.read_bytes()).hexdigest(),
+        "from_chapter": start,
+        "to_chapter": end,
+    }
+    for card_path in sorted((root / "20_outline" / "chapter_cards").glob("ch*.json")):
+        card = json.loads(card_path.read_text(encoding="utf-8"))
+        chapter_number = int(card.get("chapter_number") or 0)
+        selection = card.get("direction_selection")
+        if not start <= chapter_number <= end or not isinstance(selection, dict):
+            continue
+        if selection.get("status") != "applied":
+            continue
+        card["arc_simulation_ref"] = simulation_ref
+        stamp_chapter_contract(card)
+        write_json(card_path, card)
+    return simulation_path
 
 
 def mark_project_ready(
@@ -113,6 +274,7 @@ def mark_project_ready(
         "automation_level": "agent_skill with human approval for canonical apply.",
         "target_scale": f"{forecast.target_total_characters} content characters.",
         "story_profile": config.data["story_profile"],
+        "story_engine_contract": story_engine_contract(),
         "design_decisions": {
             "core_hook": "A border clerk discovers history is being edited overnight.",
             "world_rule": "Every supernatural correction erases a witnessed memory.",
@@ -206,6 +368,29 @@ def mark_project_ready(
     write_json(root / "20_outline" / "chapter_plan.json", chapter_plan)
     write_json(root / "20_outline" / "planning_window.json", planning_window)
     write_json(root / "20_outline" / "foreshadowing_ledger.json", ledger)
+    write_reader_promise_ledger(
+        root,
+        merge_planned_reader_promises(
+            root,
+            story_engine_contract=brief["story_engine_contract"],
+            foreshadowing_ledger=ledger,
+            estimated_chapters=forecast.estimated_chapters,
+        ),
+    )
+    horizon_start = int(planning_window["start_chapter"])
+    horizon_end = int(planning_window["end_chapter"])
+    simulation_path = write_arc_simulation_fixture(
+        root,
+        from_chapter=horizon_start,
+        to_chapter=horizon_end,
+        characters=characters,
+    )
+    simulation_ref = {
+        "path": simulation_path.relative_to(root).as_posix(),
+        "sha256": sha256(simulation_path.read_bytes()).hexdigest(),
+        "from_chapter": horizon_start,
+        "to_chapter": horizon_end,
+    }
     if direction_applied:
         for row in chapter_plan:
             chapter_number = int(row["chapter_number"])
@@ -222,9 +407,24 @@ def mark_project_ready(
                 "protagonist_goal": characters[0]["goal"],
                 "pov_character_id": row["featured_character_ids"][0],
                 "chapter_duty": row["chapter_duty"],
-                "information_release": row["information_release"],
+                "immediate_desire": "Reach the witness before the archive gate closes.",
+                "opposition_force": row["conflict"],
+                "dramatic_question": "Can Ari secure the witness without surrendering the physical clue?",
+                "key_failure": "The direct pursuit is blocked when the damaged seal triggers the gate alarm.",
+                "irreversible_choice": "Ari gives Mira the only copy of the route and follows her plan.",
+                "chapter_turn": row["chapter_turn"],
+                "reveal_boundary": "Reveal the internal route but not the editor's identity.",
                 "reader_gain": row["reader_gain"],
                 "cost": "The chosen gain narrows the protagonist's next safe option.",
+                "must_dramatize": ["the failed pursuit", "Ari's trust choice", "the suspect gaining distance"],
+                "may_summarize": ["routine movement between archive levels"],
+                "primary_story_engine": row["primary_story_engine"],
+                "scene_carriers": [row["primary_scene_carrier"]],
+                "protected_story_outcomes": [row["chapter_turn"]],
+                "prohibited_drift": ["Do not replace the pursuit with a document-verification discussion."],
+                "state_change_kind": row["state_change_kind"],
+                "dramatic_method": row["dramatic_method"],
+                "exposition_carrier": "embedded_in_action",
                 "platform_promise": str(quality_body.get("platform_promise") or ""),
                 "effective_quality_contract": compact_effective_quality_contract(
                     effective_quality_contract
@@ -234,16 +434,34 @@ def mark_project_ready(
                         "scene_id": f"ch{chapter_number:03d}:fixture",
                         "location": "archive gate",
                         "participants": row["featured_character_ids"],
+                        "carrier": row["primary_scene_carrier"],
                         "desire_collision": "Verification competes with immediate pursuit.",
+                        "action": "Ari blocks the closing mechanism while Mira reaches for the witness route.",
+                        "reaction": "The alarm seals the lower stair and forces them to split the clue.",
                         "choice": "Ari shares the clue and accepts the delay.",
                         "cost": "The suspect gains distance.",
                         "turn": "The evidence points to internal access.",
+                        "exit_state": row["chapter_turn"],
                     }
                 ],
                 "canon_refs": [],
                 "world_rule_refs": ["10_bible/world.md", "10_bible/power_system.md"],
                 "foreshadow_refs": ["thread_false_treaty"],
                 "forbidden_reveals": list(row.get("forbidden_reveals") or []),
+                "reader_promise_actions": [
+                    {
+                        "promise_id": "story_engine:opening_three" if chapter_number <= 3 else "story_engine:early_serial",
+                        "action": (
+                            "setup" if chapter_number in {1, 4}
+                            else "payoff" if chapter_number == 3
+                            else "escalate"
+                        ),
+                        "intended_reader_gain": row["reader_gain"],
+                        "evidence_requirement": "The final chapter must show a concrete changed condition.",
+                        "defer_reason": "",
+                    }
+                ],
+                "arc_simulation_ref": simulation_ref,
                 "direction_selection": {
                     "status": "applied",
                     "direction_id": "fixture_human_choice",
@@ -290,13 +508,109 @@ def checked_review_coverage(
     }
 
 
+def complete_editorial_reviews(root: Path, config, *, chapter_number: int = 1) -> None:
+    """Submit passing results for every independently selected fixture editor."""
+
+    from longform_engine.agent_pipeline import validate_production_agent_result
+    from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
+    from longform_engine.agent_tasks import load_manifest, manifest_output
+    from longform_engine.editorial import (
+        editorial_finalization_blockers,
+        editorial_review,
+        editorial_submit_review,
+    )
+    from longform_engine.roles import load_role_registry
+
+    blockers = editorial_finalization_blockers(config, chapter_number=chapter_number)
+    if blockers:
+        if not set(blockers) <= {"editorial_review_missing", "stale_editorial_aggregate"}:
+            raise AssertionError(f"candidate has unresolved editorial blockers: {blockers}")
+        review = editorial_review(config, chapter_number=chapter_number)
+        source = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+        for role_id in review.selected_roles:
+            manifest = load_manifest(
+                root,
+                f"editorial_review:{role_id}:ch{chapter_number:03d}:v4",
+            )
+            result_path = root / str(manifest_output(manifest)["path"])
+            contract = load_role_registry().resolve(
+                "editorial_review",
+                declared_role_id=role_id,
+            )
+            write_json(
+                result_path,
+                {
+                    "schema": EVIDENCE_REVIEW_SCHEMA,
+                    "verdict": "pass",
+                    "coverage": checked_review_coverage(
+                        root,
+                        source,
+                        contract.review_dimensions,
+                        canonical_dimensions=contract.canonical_ref_dimensions,
+                        canonical_ref=f"20_outline/chapter_cards/ch{chapter_number:03d}.json",
+                    ),
+                    "findings": [],
+                },
+            )
+            control = validate_production_agent_result(root, manifest, result_file=result_path)
+            if not control.ok:
+                raise AssertionError(control.normalization.errors)
+            editorial_submit_review(
+                config,
+                chapter_number=chapter_number,
+                role=role_id,
+                file_path=result_path,
+            )
+
+
+def approve_story_candidate(root: Path, config, *, chapter_number: int = 1) -> None:
+    """Complete mandatory independent editorial review and hash-bound human acceptance."""
+
+    from longform_engine.human_story_review import (
+        apply_human_story_review,
+        create_human_story_review_task,
+    )
+
+    complete_editorial_reviews(root, config, chapter_number=chapter_number)
+    task = create_human_story_review_task(config, chapter_number=chapter_number)
+    decision_path = root / task.template_file
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    decision["checks"] = {
+        key: {"passed": True, "reason": "Verified against the current candidate."}
+        for key in decision["checks"]
+    }
+    decision["decision"] = "accept"
+    draft_text = (root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md").read_text(encoding="utf-8")
+    evidence_end = min(40, len(draft_text))
+    decision["evidence_spans"] = [
+        {
+            "start": 0,
+            "end": evidence_end,
+            "text": draft_text[:evidence_end],
+            "kind": kind,
+            "note": "The final candidate makes the turn and character ownership visible.",
+        }
+        for kind in ("key_turn", "character_choice_or_emotion")
+    ]
+    decision["reader_gain_note"] = "The chapter delivers a concrete changed condition and emotional ownership."
+    decision["span_actions"] = []
+    decision["reason"] = ""
+    write_json(decision_path, decision)
+    apply_human_story_review(
+        config,
+        chapter_number=chapter_number,
+        file_path=decision_path,
+        approved_by="human",
+    )
+
+
 def write_json(path: Path, payload) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def build_outline_candidate(config, *, characters: list[dict] | None = None) -> dict:
-    """Return a valid v0.4 rolling-outline candidate for integration tests."""
+    """Return a valid v0.5 rolling-outline candidate for integration tests."""
 
     characters = characters or [{"id": "lead_ari"}, {"id": "ally_mira"}]
     forecast = compile_length_forecast(config.data["length"])
@@ -354,7 +668,7 @@ def build_outline_candidate(config, *, characters: list[dict] | None = None) -> 
                 "chapter_number": chapter_number, "title": f"Evidence {chapter_number}",
                 "chapter_duty": "Advance the active investigation.",
                 "conflict": "Ari must choose between speed and verified evidence.",
-                "information_release": "Release one bounded clue.",
+                "chapter_turn": "Ari's pursuit proves the saboteur has internal access and binds Mira to the next move.",
                 "hook": "The clue points to a larger contradiction.",
                 "reader_gain": "A prior detail gains a concrete new meaning.",
                 "volume_id": f"vol_{volume_number:02d}", "arc_id": f"arc_{arc_number:02d}",
@@ -365,6 +679,10 @@ def build_outline_candidate(config, *, characters: list[dict] | None = None) -> 
                     characters[1]["id"]: "Force a decision before the witness leaves.",
                 },
                 "relationship_move": "Pressure the uneasy alliance through a costly choice.",
+                "primary_story_engine": "pursuit_and_leverage",
+                "primary_scene_carrier": "pursuit",
+                "state_change_kind": "situation_and_relationship",
+                "dramatic_method": "failed_pursuit_then_shared_choice",
                 "active_facets": ["setting:xuanhuan", "plot_engines:progression"],
                 "forbidden_reveals": ["final editor identity"],
             }

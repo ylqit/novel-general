@@ -204,6 +204,7 @@ def init_benchmark(
         "source_state": capture_source_state(config, host_product=normalized_host_product),
         "chapter_count": chapters,
         "creation_mode": str(config.data.get("creation", {}).get("mode") or "original"),
+        "market_profile": str(config.data.get("story_profile", {}).get("market", {}).get("primary") or ""),
         "review_protocol": "blind_engine_identity",
         "stores_manuscript_body": False,
         "score_scale": {"min": 1, "max": 10, "ai_taste": "1=low AI taste, 10=high AI taste"},

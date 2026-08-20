@@ -17,7 +17,7 @@ from longform_engine.rag import (
 )
 from longform_engine.storage import init_project
 from longform_engine.vectorstore import active_source_hash_count, active_source_record_count
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import approve_story_candidate, mark_project_ready
 
 
 def test_rag_build_query_and_context(tmp_path):
@@ -231,6 +231,7 @@ def test_finalized_chapter_enters_rag_and_context_excludes_inbox(tmp_path):
     inbox_note.write_text("# Inbox\n\nINBOXONLYPHRASE is not canon.\n", encoding="utf-8")
 
     submit_agent_draft(project_config, chapter_number=1, file_path=agent_draft, agent="codex")
+    approve_story_candidate(root, project_config)
     finalize_chapter(project_config, chapter_number=1, approved_by="human")
     build_chunks(project_config)
     result = query(project_config, "FINALONLYPHRASE", top_k=3)

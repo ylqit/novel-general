@@ -9,6 +9,7 @@ from longform_engine.agent_protocols import (
     DESIGN_REQUIRED_HEADINGS,
 )
 from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
+from longform_engine.arc_simulation import load_active_arc_simulation
 from longform_engine.config import ConfigError, load_project_config
 from longform_engine.intelligence import (
     apply_compiled_design,
@@ -65,7 +66,15 @@ def validate_intelligence_output(config, root: Path, manifest: dict, candidate: 
     )
 
 
-def prepare_design_delta(config, root: Path, task_type: str, candidate: Path, payload: dict) -> Path:
+def prepare_design_delta(
+    config,
+    root: Path,
+    task_type: str,
+    candidate: Path,
+    payload: dict,
+    *,
+    validate_domain: bool = True,
+) -> Path:
     manifest = next(
         load_manifest(root, item["task_id"])
         for item in reversed(list_manifests(root))
@@ -120,36 +129,53 @@ def prepare_design_delta(config, root: Path, task_type: str, candidate: Path, pa
         result_file=delta,
     )
     assert control.ok, control.normalization.errors
+    if validate_domain:
+        domain_validation = validate_design_compile_delta(
+            config,
+            task_type=task_type,
+            document_path=candidate,
+            delta_path=delta,
+        )
+        assert domain_validation.ok, domain_validation.errors
     return delta
 
 
 def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> dict:
     card = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    card_payload = json.loads(card.read_text(encoding="utf-8"))
     scene_chain = [
         {
             "scene_id": "verify_witness",
             "location": "archive gate",
             "participants": ["lead_ari", "ally_mira"],
+            "carrier": "pursuit",
             "desire_collision": "Ari wants verification while Mira wants immediate pursuit.",
+            "action": "Ari wedges the damaged seal into the closing gate while Mira reaches for the witness.",
+            "reaction": "The alarm seals the lower stair and the witness changes route.",
             "choice": "Ari spends the last safe minute checking the damaged seal.",
             "cost": "The visible suspect gains distance.",
             "turn": "The seal proves the suspect used an internal route.",
+            "exit_state": "The pursuit moves inside the archive and the witness has a lead.",
         },
         {
             "scene_id": "share_evidence",
             "location": "witness stair",
             "participants": ["lead_ari", "ally_mira"],
+            "carrier": "relationship conflict",
             "desire_collision": "Mira demands the route while Ari wants sole control of the clue.",
+            "action": "Mira blocks Ari's path and offers her faster route in exchange for the clue.",
+            "reaction": "Ari sees the witness vanish below and can no longer keep both control and speed.",
             "choice": "Ari shares the route and accepts Mira's condition.",
             "cost": "He loses sole control of the evidence.",
             "turn": "Their alliance becomes an operational obligation.",
+            "exit_state": "Mira owns the route copy and Ari owes her a public defense.",
         },
     ]
     common = {
         "book_goal": "Expose who controls collective memory.",
         "volume_goal": "Prove the archive is being altered from inside.",
         "protagonist_goal": "Preserve evidence without treating Mira as a tool.",
-        "featured_character_ids": ["lead_ari", "ally_mira"],
+        "featured_character_ids": card_payload["featured_character_ids"],
         "scene_chain": scene_chain,
         "cast_desires": {
             "lead_ari": "Verify the physical trace before pursuit.",
@@ -158,14 +184,29 @@ def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str
         "dialogue_ownership": "Ari narrows claims; Mira forces decisions and names costs.",
         "embodiment_plan": "Use Ari's careful handling and Mira's changing distance under pressure.",
         "interiority_function": "Expose Ari's urge to control information immediately before he shares it.",
+        "immediate_desire": "Catch the witness before the archive gate closes.",
+        "opposition_force": "The gate alarm and Mira's competing plan deny Ari sole control.",
+        "dramatic_question": "Can Ari catch the witness without surrendering control of the clue?",
         "conflict": "Verification consumes the only safe pursuit window.",
-        "information_release": "The damaged seal identifies an internal route without naming the editor.",
-        "local_payoff": "A prior seal detail becomes actionable evidence.",
+        "key_failure": "Ari's direct pursuit fails when the seal triggers the gate alarm.",
+        "irreversible_choice": "Ari gives Mira the only route copy and accepts her condition.",
+        "chapter_turn": card_payload["chapter_turn"],
+        "reveal_boundary": "Reveal internal access but not the archive editor's identity.",
+        "must_dramatize": ["the alarm stopping the pursuit", "Ari sharing the route", "the witness escaping"],
+        "may_summarize": ["routine movement between archive levels"],
+        "primary_story_engine": "pursuit_and_leverage",
+        "scene_carriers": ["pursuit", "relationship conflict"],
+        "protected_story_outcomes": card_payload["protected_story_outcomes"],
+        "prohibited_drift": ["Do not replace the pursuit with document verification."],
+        "state_change_kind": card_payload["state_change_kind"],
+        "dramatic_method": "failed_pursuit_then_shared_choice",
+        "exposition_carrier": "embedded_in_action",
+        "local_payoff": card_payload["reader_gain"],
         "character_cost": "Ari surrenders sole control and loses pursuit time.",
         "mainline_move": "The investigation moves from outside sabotage to internal access.",
         "character_arc_move": "Ari makes one bounded trust decision.",
         "foreshadow_move": "The false treaty thread echoes through the matching seal cut.",
-        "relationship_move": "The alliance gains a shared obligation.",
+        "relationship_move": card_payload["relationship_move"],
         "ending_mode": "changed_problem",
         "main_risks": ["Too much procedure could flatten the choice."],
         "canon_refs": [],
@@ -176,13 +217,31 @@ def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str
     selected = {
         "id": "verify_witness",
         "title": "先核验目击者",
-        "chapter_duty": "用一次有代价的核验排除最显眼的错误判断。",
+        "chapter_duty": card_payload["chapter_duty"],
         **common,
     }
     selected["reader_gain"] = selected.pop("local_payoff")
     selected["cost"] = selected.pop("character_cost")
+    simulation, simulation_path, simulation_hash = load_active_arc_simulation(
+        root, chapter_number=chapter_number
+    )
+    selected["reader_promise_actions"] = [
+        {
+            "promise_id": "story_engine:opening_three" if chapter_number <= 3 else "story_engine:early_serial",
+            "action": "setup" if chapter_number in {1, 4} else "escalate",
+            "intended_reader_gain": selected["reader_gain"],
+            "evidence_requirement": "Show a concrete changed condition in the final prose.",
+            "defer_reason": "",
+        }
+    ]
+    selected["arc_simulation_ref"] = {
+        "path": simulation_path.relative_to(root).as_posix(),
+        "sha256": simulation_hash,
+        "from_chapter": simulation["from_chapter"],
+        "to_chapter": simulation["to_chapter"],
+    }
     return {
-        "schema": "chapter_direction_candidate_v2",
+        "schema": "chapter_direction_candidate_v4",
         "chapter_number": chapter_number,
         "chapter_card_sha256": sha256(card.read_bytes()).hexdigest(),
         "trigger_reasons": reasons,
@@ -190,6 +249,7 @@ def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str
         "selection": {
             "direction_id": "verify_witness",
             "user_adjustments": {},
+            "repetition_reason": "",
         },
         "canonical_refs": selected["canon_refs"],
         "introduced_elements": [],
@@ -367,7 +427,7 @@ def test_book_ideation_invalid_selection_does_not_pollute_bible_or_state(tmp_pat
             {"id": "option_b", "proposal": "夜间沉浸", "tradeoffs": ["氛围深", "进入慢"]},
         ],
         "selection": {"mode": "selected_option", "option_id": "missing", "answer": ""},
-    })
+    }, validate_domain=False)
     validation = validate_design_compile_delta(
         config,
         task_type="book_ideation",
@@ -508,7 +568,7 @@ def test_specific_chapter_requires_mandatory_direction_and_regenerates_retired_r
             "title": "第二份口供",
             "chapter_duty": "核对两份口供中的时间差并迫使主角放弃一个先入判断。",
             "conflict": "证人安全与当夜追踪机会不能同时保全。",
-            "information_release": "门禁记录证明嫌疑人离开时间被提前登记。",
+            "chapter_turn": "追踪失败迫使主角公开求助，并证明嫌疑人获得了内部协助。",
             "hook": "错误记录使用了主角父亲旧案的编号规则。",
         }
     )

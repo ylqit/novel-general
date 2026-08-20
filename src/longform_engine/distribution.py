@@ -20,6 +20,7 @@ from longform_engine.config import ConfigError, load_project_config
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.models import verify_models
 from longform_engine.resources import load_resource_manifest, resource_integrity_bytes, resource_path, resource_root
+from longform_engine.storage import resolve_project_root
 
 
 INSTALL_SCHEMA = "longform_skill_install_v1"
@@ -322,8 +323,21 @@ def uninstall_skills(tool: str, *, confirmed: bool) -> dict[str, Any]:
     return {"schema": STATUS_SCHEMA, "engine_version": __version__, "requested_tool": tool, "results": results}
 
 
-def _check(name: str, ok: bool, detail: str, next_command: str = "") -> dict[str, Any]:
-    return {"name": name, "ok": ok, "detail": detail, "next_command": next_command}
+def _check(
+    name: str,
+    ok: bool,
+    detail: str,
+    next_command: str = "",
+    *,
+    blocking: bool = True,
+) -> dict[str, Any]:
+    return {
+        "name": name,
+        "ok": ok,
+        "blocking": blocking,
+        "detail": detail,
+        "next_command": next_command,
+    }
 
 
 def _verify_bundled_resources() -> tuple[bool, str]:
@@ -423,6 +437,24 @@ def doctor_payload(tool: str, *, project: str | None = None) -> dict[str, Any]:
                     str(recovery_result.get("next_command") or f"longform-engine recovery status {project} --json"),
                 )
             )
+            from longform_engine.quality.editorial_patterns import read_pattern_registry
+
+            try:
+                pattern_count = len(read_pattern_registry(resolve_project_root(config)))
+                pattern_ok = True
+                pattern_detail = f"records={pattern_count}"
+            except (OSError, UnicodeError, ValueError) as exc:
+                pattern_ok = False
+                pattern_detail = str(exc)
+            checks.append(
+                _check(
+                    "editorial_pattern_registry",
+                    pattern_ok,
+                    pattern_detail,
+                    f"longform-engine editorial pattern-rebuild {project}",
+                    blocking=False,
+                )
+            )
             from longform_engine.vectorstore import healthcheck as vector_healthcheck
 
             vector_result = vector_healthcheck(config)
@@ -452,7 +484,7 @@ def doctor_payload(tool: str, *, project: str | None = None) -> dict[str, Any]:
         "requested_tool": tool,
         "project": project,
         "distribution_version": distribution_versions,
-        "ok": all(check["ok"] for check in checks),
+        "ok": all(check["ok"] or not check["blocking"] for check in checks),
         "checks": checks,
     }
 
@@ -468,7 +500,8 @@ def render_status(payload: dict[str, Any]) -> str:
 def render_doctor(payload: dict[str, Any]) -> str:
     lines = [f"Doctor: {'PASS' if payload['ok'] else 'NEEDS ATTENTION'}"]
     for check in payload["checks"]:
-        lines.append(f"[{'ok' if check['ok'] else '!!'}] {check['name']}: {check['detail']}")
+        marker = "ok" if check["ok"] else ("!!" if check["blocking"] else "warn")
+        lines.append(f"[{marker}] {check['name']}: {check['detail']}")
         if not check["ok"] and check["next_command"]:
             lines.append(f"  next: {check['next_command']}")
     return "\n".join(lines)

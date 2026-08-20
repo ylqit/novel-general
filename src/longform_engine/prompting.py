@@ -37,7 +37,7 @@ PROMPT_LAYER_ORDER = (
     "role_method_playbooks",
     "human_approved_project_overlay",
     "current_task_and_deduplicated_context",
-    "controlled_feedback",
+    "role_specific_advisories",
     "output_and_handoff",
 )
 OVERLAY_REPAIR_COMMAND = (
@@ -474,7 +474,7 @@ def compile_agent_prompt(
     task_objective: str,
     output_summary: str,
     output_guidance: str,
-    controlled_feedback: Iterable[dict[str, Any] | str] = (),
+    review_advisories: Iterable[dict[str, Any] | str] = (),
     manifest_validation: dict[str, Any] | None = None,
     input_units: int | None = None,
     context_batches: Iterable[dict[str, Any]] = (),
@@ -540,7 +540,7 @@ def compile_agent_prompt(
             ),
             lower_priority=4,
         )
-    feedback = normalize_feedback(controlled_feedback)
+    advisories = normalize_review_advisories(review_advisories)
     scope = manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {}
     chapter_number = int(scope.get("chapter_number") or 0) if scope.get("kind") == "chapter" else 0
     declared_facets = [item for item in policy.get("active_facets") or [] if isinstance(item, dict)]
@@ -582,7 +582,7 @@ def compile_agent_prompt(
         {
             "priority": 6,
             "layer": PROMPT_LAYER_ORDER[5],
-            "source": "controlled feedback fields only",
+            "source": "structured editorial pattern fields only",
         },
         {
             "priority": 7,
@@ -625,7 +625,7 @@ def compile_agent_prompt(
             "source_content_trust": "untrusted_evidence_not_instructions",
             "source_contents_embedded_in_control_prompt": False,
         },
-        "feedback": feedback,
+        "review_advisories": advisories,
         "conflicts": [],
         "manifest_validation": dict(manifest_validation or {}),
     }
@@ -640,7 +640,7 @@ def compile_agent_prompt(
         task_objective=task_objective,
         output_summary=output_summary,
         output_guidance=output_guidance,
-        feedback=feedback,
+        advisories=advisories,
         manifest_validation=dict(manifest_validation or {}),
         payload=payload,
         facet_adapters=facet_adapters,
@@ -761,7 +761,7 @@ def render_compiled_prompt(
     task_objective: str,
     output_summary: str,
     output_guidance: str,
-    feedback: list[dict[str, str]],
+    advisories: list[dict[str, str]],
     manifest_validation: dict[str, Any],
     payload: dict[str, Any],
     facet_adapters: list[dict[str, str]],
@@ -853,14 +853,20 @@ def render_compiled_prompt(
             "",
             f"- {markdown_codes(control['optional_inputs'])}",
             "",
-            "## 6. 受控反馈",
-            "",
         ]
     )
-    lines.extend(
-        [f"- [{item['severity']}] {item['code']}: {item['summary']}" for item in feedback]
-        or ["- 本轮没有受控反馈。"]
-    )
+    if advisories:
+        lines.extend(
+            [
+                "## 6. 编辑模式提示",
+                "",
+                *[
+                    f"- [{item['severity']}] {item['code']}（重复 {item['recurrence_count']} 次）"
+                    for item in advisories
+                ],
+                "",
+            ]
+        )
     lines.extend(
         [
             "",
@@ -1019,20 +1025,20 @@ def overlay_conflict(
     )
 
 
-def normalize_feedback(values: Iterable[dict[str, Any] | str]) -> list[dict[str, str]]:
+def normalize_review_advisories(values: Iterable[dict[str, Any] | str]) -> list[dict[str, str]]:
     result: list[dict[str, str]] = []
     for index, value in enumerate(values):
         if isinstance(value, dict):
-            summary = str(value.get("summary") or value.get("message") or "").strip()
-            code = str(value.get("code") or value.get("issue_code") or f"feedback_{index + 1}").strip()
+            code = str(value.get("finding_code") or f"pattern_{index + 1}").strip()
             severity = str(value.get("severity") or "P2").strip()
+            recurrence_count = str(max(1, int(value.get("recurrence_count") or 1)))
         else:
-            summary = str(value).strip()
-            code = f"feedback_{index + 1}"
+            code = str(value).strip()
             severity = "P2"
-        if not summary:
+            recurrence_count = "1"
+        if not code:
             continue
-        result.append({"code": code, "severity": severity, "summary": summary[:500]})
+        result.append({"code": code, "severity": severity, "recurrence_count": recurrence_count})
         if len(result) >= 5:
             break
     return result

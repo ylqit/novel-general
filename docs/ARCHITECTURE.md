@@ -1,6 +1,6 @@
 # Architecture
 
-本文描述 `longform-novel-engine` v0.4.4 的当前实现边界。发生冲突时，以源码、`AGENTS.md`、本文件、`STORAGE_MODEL.md` 和 `V0_4_4_RELEASE_CHECKLIST.md` 为准。
+本文描述 `longform-novel-engine` v0.5.0 的当前开发边界。发生冲突时，以源码、`AGENTS.md`、本文件、`STORAGE_MODEL.md` 和 `V0_5_0_RELEASE_CHECKLIST.md` 为准。
 
 ## 1. 系统定位
 
@@ -39,7 +39,9 @@ Host Agent
 | 生产编排 | `production.py`、`orchestration/pipeline.py` | 下一动作、章节卡、写作、定稿与批次边界 |
 | 章节合同 | `chapter_contract.py` | 唯一字段、hash、引用完整性；拒绝已删除别名 |
 | 智能设计 | `intelligence/pipeline.py` | 设计候选、rolling outline、章节方向 validate/apply |
-| 审稿与修复 | `editorial/pipeline.py`、`gates/pipeline.py`、`repair_coordination.py` | 确定性 gate、有证据审稿、修复计划与候选替换 |
+| 叙事规划状态 | `reader_promises.py`、`arc_simulation.py` | 读者期待窗口、角色场外行动和逐章因果义务；不进入事实层 |
+| 审稿与修复 | `editorial/pipeline.py`、`gates/pipeline.py`、`human_story_review.py`、`repair_coordination.py` | 确定性 gate、每章场景审稿、人工故事简审、修复计划与候选替换 |
+| 编辑模式 | `quality/editorial_patterns.py` | 从结构化 role/finding 建立无正文复发注册表；只服务编辑与 repair |
 | 章节语义 | `semantic/pipeline.py` | final 证据验证、semantic ledger 与 materialized views |
 | RAG | `rag/pipeline.py` | chunk、full embedding rebuild、chapter/memory delta 与 context |
 | 向量层 | `vectorstore/pipeline.py`、`vector_backends.py` | 本地 SQLite/HNSW upsert、source replace、query 与 health |
@@ -52,19 +54,31 @@ Host Agent
 
 ## 4. 唯一章节合同
 
-`20_outline/chapter_cards/chNNN.json` 只接受 canonical 字段：
+`20_outline/chapter_cards/chNNN.json` 使用 `chapter_contract_v3`，并绑定当前 `reader_promise_ledger_v1` 动作与已批准的 `arc_causal_simulation_v1`。核心 canonical 字段为：
 
 ```text
 chapter_number, title, book_goal, volume_goal, protagonist_goal,
-chapter_duty, platform_promise, conflict, information_release,
-scene_chain, featured_character_ids, reader_gain, cost,
+chapter_duty, platform_promise, immediate_desire, opposition_force,
+dramatic_question, conflict, key_failure, irreversible_choice,
+chapter_turn, reveal_boundary, scene_chain, must_dramatize, may_summarize,
+primary_story_engine, scene_carriers, protected_story_outcomes, prohibited_drift,
+featured_character_ids, reader_gain, cost, state_change_kind, dramatic_method,
+exposition_carrier,
 relationship_move, canon_refs, world_rule_refs, foreshadow_refs,
-forbidden_reveals
+forbidden_reveals, reader_promise_actions, arc_simulation_ref
 ```
 
-`duty`、`information`、`reader_payoff` 是已移除的章节卡/rolling plan alias。发现它们时返回 `chapter_contract_inconsistent` 或候选校验错误，不做静默双读。Outline anchor 自身的 `duty` 和 semantic chapter digest 的 `reader_payoff` 属于不同协议，不是章节合同 alias。
+`information_release`、`duty`、`information`、`reader_payoff` 是已移除字段。发现它们时返回 `chapter_contract_inconsistent` 或候选校验错误，不做静默双读。
 
 写作、Humanizer、节奏、收益、人物、场景和编辑任务消费同一合同投影及 `chapter_contract_hash`。章节方向 apply 必须同时更新章节卡和 rolling plan 的 canonical 字段。
+
+同人滚动章节计划逐章提供非空 `protected_canon_outcomes`；章节卡保留该权威列表，方向候选必须原样保留。缺失或改写该列表都视为改纲范围，不能靠局部场景方案绕过；新增长期事实也必须进入 `outline_revision`。改纲 apply 通过一个 transaction v3 同步更新纲要与承诺账本、截断受影响编辑模式、失效因果模拟/章节卡/作者工作单/Agent 任务并重建 SQLite 投影；范围内已有正式章节时必须先 rollback。
+
+Book Design 还必须提供 `story_engine_contract_v1`。规划侧通过读者承诺账本管理期待窗口，通过角色因果模拟约束滚动纲要；二者都不是世界事实。作者不会读取完整事实清单或规划控制面：CLI 将约束编译为 `chapter_story_brief_v2`，只展示欲望、动作、阻力、选择、代价、读者收益和离场状态；fact ID、source hash、promise ID、模式代码与检索来源保留在内部。
+
+独立审稿完成后，`human_story_review_v2` 绑定候选、章节合同、承诺账本与因果模拟四类 hash，并要求关键转折、人物选择/情绪归属 span 和读者收益说明。`accept` 解锁 finalize；`repair` 进入既有两轮不可变修章预算；`redirect` 通过 transaction v3 更新方向/改纲状态并保留候选审计材料。
+
+`scene_prose_editor` 对每个核心转折分别提供正文 span，证明 `attempt → counteraction → choice → visible_cost → state_delta → reader_gain`。载体名称、关键词和 3/5、4/5 统计只能触发 P2 诊断；没有正文 span 的确定性规则不能单独形成 P1。当前 P0/P1 始终进入同一候选的不可变 repair bundle，不能由跨章模式“带到下一章”来替代修复。
 
 ## 5. 写入与恢复状态机
 
@@ -97,7 +111,7 @@ preparing --快照清单逐项落盘--> prepared --开放 mutation 边界--> app
 
 ## 7. 质量和发布边界
 
-工程门禁验证协议正确性、零污染、可恢复性和可解释证据，不等价于文学质量证明。当前保持 `literary_evidence_ready=false`。
+工程门禁验证协议正确性、零污染、可恢复性和可解释证据，不等价于文学质量证明。`agent_data_pipeline_readiness_v5` 从 `literary_evidence_manifest_v1` 计算文学证据状态；只有起点前三章、番茄前三章和十五章纵向盲评三类 scope 的来源、聚合和阈值结论全部有效才可就绪。当前仓库不包含真实盲评 manifest，因此保持 `literary_evidence_ready=false`。
 
 发布检查分为：
 

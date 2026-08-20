@@ -27,6 +27,12 @@ from longform_engine.agent_tasks import (
     write_manifest,
 )
 from longform_engine.config import ConfigDocument
+from longform_engine.chapter_contract import load_verified_chapter_contract
+from longform_engine.arc_simulation import (
+    SIMULATION_DIR,
+    current_basis_hashes,
+    mark_overlapping_arc_simulations_stale,
+)
 from longform_engine.db import (
     chapter_chunk_integrity_counts,
     database_path,
@@ -37,6 +43,10 @@ from longform_engine.db import (
 from longform_engine.graph.pipeline import ensure_graph_shape, load_graph, save_graph, upsert_canon_entities
 from longform_engine.memory import apply_style_memory_delta, build_style_memory
 from longform_engine.rag import apply_embedding_delta, build_chunks, build_context, rebuild_embedding_index
+from longform_engine.reader_promises import (
+    LEDGER_PATH,
+    apply_reader_promise_actions,
+)
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import (
     list_finalized_chapter_files,
@@ -386,7 +396,8 @@ def compile_semantic_context(
                 "title",
                 "chapter_duty",
                 "conflict",
-                "information_release",
+                "chapter_turn",
+                "reveal_boundary",
                 "reader_gain",
                 "cost",
                 "relationship_move",
@@ -711,6 +722,9 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
     if payload_errors:
         raise ValueError("chapter semantic delta is invalid: " + "; ".join(payload_errors))
     candidate_sha256 = sha256(source_file.read_bytes()).hexdigest()
+    final_file = manuscript_chapter_path(root, chapter_number, lane="final")
+    if not final_file.is_file():
+        raise ValueError("chapter semantic apply requires the current finalized chapter")
 
     ledger_file = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
     graph_file = root / "30_state" / "story_graph.json"
@@ -729,6 +743,7 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
     validation_file = source_file.with_suffix(".validation.json")
 
     existing_ledger: dict[str, Any] | None = None
+    chapter_contract: dict[str, Any] = {}
     if ledger_file.exists():
         existing = read_json(ledger_file, {})
         if not isinstance(existing, dict) or existing.get("candidate_sha256") != candidate_sha256:
@@ -763,6 +778,10 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
                 )
         existing_ledger = existing
     else:
+        chapter_contract, _chapter_contract_hash = load_verified_chapter_contract(
+            root,
+            chapter_number,
+        )
         validation = semantic_validate(config, chapter_number=chapter_number, file_path=source_file)
         if not validation.ok:
             raise ValueError("chapter semantic bundle did not validate; canonical state was not mutated.")
@@ -781,6 +800,7 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
         hnsw_manifest_path(hnsw_index_file),
     ]
     if existing_ledger is None:
+        causal_basis_before = current_basis_hashes(root)
         touched.extend(
             [
                 ledger_file,
@@ -792,9 +812,13 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
                 tcs_file,
                 chapter_meta,
                 novel_state_file,
+                root / LEDGER_PATH,
                 *character_files,
+                *sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")),
             ]
         )
+    else:
+        causal_basis_before = {}
     embedding_stats = None
     context = None
     written_characters: tuple[Path, ...] = ()
@@ -826,6 +850,19 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
             tcs = materialize_tcs(root, payload, chapter_number, graph, foreshadow_state)
             tcs["source_semantic_ledger_sha256"] = sha256(ledger_file.read_bytes()).hexdigest()
             atomic_write_text(tcs_file, json.dumps(tcs, ensure_ascii=False, indent=2) + "\n")
+            apply_reader_promise_actions(
+                root,
+                chapter_number=chapter_number,
+                actions=chapter_contract["reader_promise_actions"],
+                final_path=relative_path(root, final_file),
+                final_sha256=sha256(final_file.read_bytes()).hexdigest(),
+            )
+            if current_basis_hashes(root) != causal_basis_before:
+                mark_overlapping_arc_simulations_stale(
+                    root,
+                    from_chapter=chapter_number + 1,
+                    to_chapter=10**9,
+                )
 
         style = apply_style_memory_delta(config, chapter_numbers=(chapter_number,))
         rag = build_chunks(config, chapter_numbers=(chapter_number,), sync_index=False)

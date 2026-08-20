@@ -11,7 +11,7 @@ from longform_engine.orchestration import continue_write, finalize_chapter, open
 from longform_engine.semantic import semantic_apply, semantic_task
 from longform_engine.semantic.pipeline import active_planned_thread_ids, foreshadow_state_threads, planned_threads
 from longform_engine.storage import init_project
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import approve_story_candidate, mark_project_ready
 
 
 def test_db_init_creates_schema(tmp_path):
@@ -93,6 +93,7 @@ def test_db_rebuild_recovers_agent_skill_state(tmp_path):
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(draft_text, encoding="utf-8")
     submit_agent_draft(project_config, chapter_number=1, file_path=agent_draft, agent="codex")
+    approve_story_candidate(root, project_config)
     finalize_chapter(project_config, chapter_number=1, approved_by="human")
     final = root / "40_manuscript" / "final" / "ch001.md"
     final_text = final.read_text(encoding="utf-8")

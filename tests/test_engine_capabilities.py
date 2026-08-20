@@ -22,7 +22,12 @@ from longform_engine.rag import build_chunks, build_context, query
 from longform_engine.research import detect_knowledge_gaps, search_research
 from longform_engine.revision import rollback
 from longform_engine.storage import init_project
-from tests.project_fixtures import complete_unified_semantic_lifecycle, mark_project_ready
+from tests.project_fixtures import (
+    approve_story_candidate,
+    complete_unified_semantic_lifecycle,
+    mark_project_ready,
+    refresh_arc_simulation_fixture,
+)
 
 
 def test_rag_metadata_context_and_source_safety(tmp_path):
@@ -138,7 +143,8 @@ def test_gate_writes_style_humanizer_copyedit_and_memory_artifacts(tmp_path):
 def test_editorial_research_gap_and_batch_agent_mode(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(config, chapter_number=1)
+    open_book(config)
+    mark_project_ready(root, config)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(
         "# Chapter 1\n\nTODO verify: medieval gate tax. Ari enters the city.\n",
         encoding="utf-8",
@@ -146,8 +152,6 @@ def test_editorial_research_gap_and_batch_agent_mode(tmp_path):
     review = editorial_review(config, chapter_number=1)
     status = editorial_status(config)
     gaps = detect_knowledge_gaps(config, chapter_number=1, text="needs research: medieval gate tax")
-    open_book(config)
-    mark_project_ready(root, config)
     batch = batch_write(config, chapters=2, stop_on_gate_failure=True)
 
     assert review.unresolved_items >= 1
@@ -155,7 +159,12 @@ def test_editorial_research_gap_and_batch_agent_mode(tmp_path):
     assert review_payload["agent_task_files"]
     assert all((root / path).exists() for path in review_payload["agent_task_files"])
     role_ids = {role["id"] for role in review_payload["editorial_team"]}
-    assert role_ids == {"scene_prose_editor", "anti_ai_editor"}
+    assert role_ids == {
+        "scene_prose_editor",
+        "anti_ai_editor",
+        "character_editor",
+        "reader_experience_editor",
+    }
     assert review_payload["severity_counts"]["P0"] == 1
     assert review_payload["review_round"] == 1
     assert "unresolved_P0" in review_payload["need_human_reasons"]
@@ -170,9 +179,10 @@ def test_editorial_research_gap_and_batch_agent_mode(tmp_path):
 def test_editorial_batch_review_generates_editorial_team_health_reports(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
+    open_book(config)
+    mark_project_ready(root, config)
     draft_dir = root / "40_manuscript" / "draft"
     for chapter in range(1, 11):
-        plan_chapter(config, chapter_number=chapter)
         draft_dir.joinpath(f"ch{chapter:03d}.md").write_text(
             (
                 f"# Chapter {chapter}\n\n"
@@ -297,8 +307,10 @@ def test_full_baseline_e2e_no_failed_pollution_and_rebuild(tmp_path):
     ch1 = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     ch1.write_text(passing_text("SAFECH1"), encoding="utf-8")
     submit_agent_draft(config, chapter_number=1, file_path=ch1, agent="codex")
+    approve_story_candidate(root, config)
     finalize_chapter(config, chapter_number=1, approved_by="human")
     complete_unified_semantic_lifecycle(root, config, 1)
+    refresh_arc_simulation_fixture(root)
 
     continue_write(config, chapter_number=2)
     ch2 = root / "50_workbench" / "agent_drafts" / "ch002.codex.md"

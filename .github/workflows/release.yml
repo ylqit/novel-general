@@ -8,7 +8,7 @@ on:
       release_ref:
         description: Existing version tag to rebuild and publish.
         required: true
-        default: v0.4.4
+        default: v0.5.0
         type: string
 
 permissions:
@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build-release:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,8 +39,10 @@ jobs:
       - run: python scripts/audit_sdist.py
       - run: python scripts/build_release_checksums.py --write
       - run: python scripts/build_release_checksums.py --check
-      - run: python -m pip install --force-reinstall dist/*.whl
-      - run: longform-engine release check --repository . --tag "$RELEASE_TAG" --check-remote --skip-contracts --json
+      - shell: pwsh
+        run: python -m pip install --force-reinstall (Get-ChildItem dist/*.whl).FullName
+      - shell: pwsh
+        run: longform-engine release check --repository . --tag "$env:RELEASE_TAG" --check-remote --skip-contracts --json
         env:
           RELEASE_TAG: ${{ inputs.release_ref || github.ref_name }}
       - uses: softprops/action-gh-release@v2

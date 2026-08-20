@@ -51,7 +51,7 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
             "isolated_review",
             "isolated_archival",
         }
-    assert len(TASK_CONTRACTS) == 25
+    assert len(TASK_CONTRACTS) == 26
     assert {contract["schemas"][0] for contract in TASK_CONTRACTS.values()} == set(AGENT_OUTPUT_PROTOCOLS)
     assert all(len(contract["schemas"]) == 1 for contract in TASK_CONTRACTS.values())
     facet_registries = load_facet_registries()
@@ -69,8 +69,10 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
 
     readiness = check_agent_data_pipeline_readiness(ROOT)
     assert readiness["ready_for_data_pipeline"] is True
-    assert readiness["schema"] == "agent_data_pipeline_readiness_v4"
+    assert readiness["schema"] == "agent_data_pipeline_readiness_v5"
     assert readiness["production_contract_ready"] is True
+    assert readiness["literary_evidence_ready"] is False
+    assert readiness["literary_evidence_blockers"]
     assert "production_chain_ready" not in readiness
     assert readiness["professional_prompt_ready"] is True
     assert readiness["provenance"]["execution_model"] == "single_process_sequential"
@@ -372,9 +374,9 @@ def test_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
     assert {item["aggregation"] for item in batches} == {"deterministic_source_hash_and_evidence_id"}
 
 
-def test_release_guard_tracks_current_v044_contracts():
+def test_release_guard_tracks_current_v050_contracts():
     guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_4_4_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_5_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
     production = (ROOT / "src" / "longform_engine" / "production.py").read_text(encoding="utf-8")
 
     for marker in (
@@ -427,7 +429,7 @@ def test_release_guard_covers_agent_data_pipeline_readiness_gate():
 
     for marker in (
         "check_agent_data_pipeline_readiness_guards",
-        "agent_data_pipeline_readiness_v4",
+        "agent_data_pipeline_readiness_v5",
         "production_contract_ready",
         "ready_for_data_pipeline",
         "professional_prompt_ready",

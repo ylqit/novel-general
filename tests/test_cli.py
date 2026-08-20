@@ -10,7 +10,7 @@ import yaml
 from longform_engine.cli import build_parser
 from longform_engine.config import load_project_config
 from longform_engine.storage import acquire_project_lock, apply_transaction
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import approve_story_candidate, mark_project_ready
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -152,9 +152,10 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
             "--file",
             "50_workbench/quality_reviews/ch001.reader_payoff.json",
         ),
-        ("quality", "feedback-status", "project.yaml", "--chapter", "2"),
-        ("quality", "feedback-resolve", "project.yaml", "--id", "feedback:test", "--evidence", "fixed"),
-        ("quality", "feedback-suppress", "project.yaml", "--id", "feedback:test", "--evidence", "not applicable"),
+        ("editorial", "pattern-resolve", "project.yaml", "--id", "pattern:test", "--evidence", "evidence.json"),
+        ("editorial", "pattern-suppress", "project.yaml", "--id", "pattern:test", "--evidence", "evidence.json"),
+        ("editorial", "pattern-rebuild", "project.yaml"),
+        ("editorial", "pattern-status", "project.yaml", "--chapter", "2"),
         ("creative", "expand-task", "project.yaml", "--chapter", "1", "--source", "draft"),
         ("creative", "expand-check", "project.yaml", "--chapter", "1", "--file", "50_workbench/repair_candidates/ch001.md"),
         ("research", "add", "project.yaml", "--file", "note.md"),
@@ -184,7 +185,7 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("benchmark", "rag-production-template", "project.yaml"),
         ("benchmark", "rag-production-run", "project.yaml", "--run-id", "codex-10", "--dataset", "rag-dataset.json"),
         ("benchmark", "source-attach", "project.yaml", "--run-id", "codex-10", "--source-dir", "40_manuscript/final"),
-        ("benchmark", "blind-pack", "project.yaml", "--comparison-id", "codex-vs-baseline", "--run-id", "codex-10", "--run-id", "baseline-10", "--seed", "private-seed"),
+        ("benchmark", "blind-pack", "project.yaml", "--comparison-id", "codex-vs-baseline", "--run-id", "codex-10", "--run-id", "baseline-10", "--review-scope", "qidian_opening_3", "--seed", "private-seed"),
         ("benchmark", "blind-template", "project.yaml", "--comparison-id", "codex-vs-baseline", "--judge-id", "judge-a"),
         ("benchmark", "blind-submit", "project.yaml", "--comparison-id", "codex-vs-baseline", "--judge-id", "judge-a", "--file", "judge-a.json"),
         ("benchmark", "blind-aggregate", "project.yaml", "--comparison-id", "codex-vs-baseline"),
@@ -532,6 +533,10 @@ def test_cli_chapter_finalize_agent_draft(tmp_path):
         "--agent",
         "codex",
     )
+    approve_story_candidate(
+        tmp_path / "novel",
+        load_project_config(project_yaml),
+    )
     finalize = run_cli("chapter", "finalize", str(project_yaml), "--chapter", "1", "--approved-by", "human")
 
     assert submit.returncode == 0, submit.stderr
@@ -736,7 +741,8 @@ def test_cli_editorial_review_and_need_human_request(tmp_path):
     assert init.returncode == 0
 
     project_yaml = tmp_path / "novel" / "project.yaml"
-    assert run_cli("plan-chapter", str(project_yaml), "--chapter", "1").returncode == 0
+    assert run_cli("open-book", str(project_yaml)).returncode == 0
+    mark_cli_project_ready(project_yaml)
     draft = tmp_path / "novel" / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\nTODO verify continuity before publication.\n", encoding="utf-8")
 

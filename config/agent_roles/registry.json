@@ -53,6 +53,7 @@
   ],
   "task_role_map": {
     "adaptation_analysis": "adaptation_analyst",
+    "arc_simulation": "longform_outline_architect",
     "book_design": "book_architect",
     "book_ideation": "creative_facilitator",
     "chapter_direction": "chapter_story_editor",
@@ -272,7 +273,10 @@
       "finding_codes": [
         "CANON_CONFLICT",
         "OOC_UNSUPPORTED",
-        "ORIGINAL_CHARACTER_DOMINATION"
+        "ORIGINAL_CHARACTER_DOMINATION",
+        "CANON_EVENT_DISPLACED",
+        "CANON_CHARACTER_INSTRUMENTALIZED",
+        "EMOTIONAL_OWNERSHIP_LOST"
       ]
     },
     {
@@ -793,6 +797,7 @@
         "workflow"
       ],
       "trigger_sections": {
+        "arc_simulation": "diagnostics",
         "outline_design": "diagnostics",
         "outline_extension": "diagnostics",
         "outline_window_failure": "failure_modes"
@@ -1051,7 +1056,7 @@
     },
     {
       "role_id": "scene_prose_editor",
-      "role_version": "3.0.0",
+      "role_version": "4.0.0",
       "prompt_path": "config/agent_roles/prompts/scene_prose_editor.md",
       "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
@@ -1083,14 +1088,25 @@
       ],
       "max_active_playbooks": 2,
       "review_dimensions": [
-        "scene_execution",
-        "dialogue_attribution",
-        "interiority_function"
+        "attempt",
+        "counteraction",
+        "choice",
+        "visible_cost",
+        "state_delta",
+        "reader_gain"
       ],
       "finding_codes": [
         "SCENE_SUMMARIZED",
         "SPEAKER_AMBIGUOUS",
-        "INTERIORITY_REPEATS"
+        "INTERIORITY_REPEATS",
+        "REPORT_SUBSTITUTES_EVENT",
+        "DIALOGUE_CONVEYOR",
+        "PASSIVE_PROTAGONIST",
+        "CARRIER_LABEL_LAUNDERING",
+        "SCENE_WITHOUT_CHANGED_CONDITION",
+        "RESTART_LOOP",
+        "AGENCY_EROSION",
+        "PAYOFF_DEFERRAL"
       ]
     },
     {
