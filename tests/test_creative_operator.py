@@ -190,7 +190,7 @@ def test_chinese_humanizer_detects_uniform_sentence_length(tmp_path):
     assert any(item["code"] == "humanizer_uniform_sentence_length" and item["category"] == "等长句" for item in check.issues)
 
 
-def test_humanizer_v3_rejects_empty_text_and_counts_repeated_same_pattern(tmp_path):
+def test_humanizer_v4_rejects_empty_text_and_counts_repeated_same_pattern(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
     candidate = root / "50_workbench" / "repair_candidates" / "ch001.humanized_candidate.md"

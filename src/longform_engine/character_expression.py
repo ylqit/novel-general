@@ -299,7 +299,6 @@ def build_character_expression_packet(
     characters = read_json(root / "10_bible" / "characters.json", [])
     relationships = read_json(root / "10_bible" / "relationships.json", [])
     expression = read_json(root / "10_bible" / "character_expression.json", {})
-    memory = read_json(root / "30_state" / "character_memory.json", {})
     character_rows = [item for item in characters if isinstance(item, dict)] if isinstance(characters, list) else []
     by_id = {str(item.get("id")): item for item in character_rows if item.get("id")}
     requested = [str(item) for item in card.get("featured_character_ids") or [] if str(item).strip()]
@@ -328,7 +327,12 @@ def build_character_expression_packet(
     }
     scene_wants = card.get("scene_wants") if isinstance(card.get("scene_wants"), dict) else {}
     voice_state = card.get("voice_state") if isinstance(card.get("voice_state"), dict) else {}
-    memory_rows = memory.get("characters") if isinstance(memory, dict) and isinstance(memory.get("characters"), list) else []
+    memory_rows = [
+        payload
+        for path in sorted((root / "60_rag" / "memory" / "characters").glob("*.json"))
+        if isinstance((payload := read_json(path, {})), dict)
+        and str(payload.get("character_id") or payload.get("id") or "").strip()
+    ]
     memory_by_id = {
         str(item.get("character_id") or item.get("id")): item
         for item in memory_rows

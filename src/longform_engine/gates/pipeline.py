@@ -1766,18 +1766,18 @@ def check_reverse_brake(
         }
     )
 
-    info_release = mainline_info_release(text)
-    release_warning_threshold = int(config.data.get("gates", {}).get("mainline_info_release_warning_hits") or 8)
-    if not closure_allowed and info_release["hits"] >= release_warning_threshold:
+    reveal_markers = mainline_reveal_markers(text)
+    reveal_warning_threshold = int(config.data.get("gates", {}).get("mainline_reveal_warning_hits") or 8)
+    if not closure_allowed and reveal_markers["hits"] >= reveal_warning_threshold:
         warnings.append(
-            f"mainline information release is high: {info_release['hits']} reveal markers; preserve enough uncertainty for later chapters."
+            f"mainline reveal density is high: {reveal_markers['hits']} markers; preserve enough uncertainty for later chapters."
         )
     checks.append(
         {
-            "name": "mainline_information_release",
-            "status": "warn" if not closure_allowed and info_release["hits"] >= release_warning_threshold else "pass",
-            **info_release,
-            "warning_threshold": release_warning_threshold,
+            "name": "mainline_reveal_boundary",
+            "status": "warn" if not closure_allowed and reveal_markers["hits"] >= reveal_warning_threshold else "pass",
+            **reveal_markers,
+            "warning_threshold": reveal_warning_threshold,
         }
     )
 
@@ -1818,7 +1818,7 @@ def check_reverse_brake(
             "resolution_hits": len(resolution_hits),
             "complete_reveal": complete_reveal,
             "active_quota": active_quota,
-            "mainline_info_hits": info_release["hits"],
+            "mainline_reveal_hits": reveal_markers["hits"],
             "tail_suspense_detected": tail_ok,
         },
     }
@@ -1979,7 +1979,7 @@ def complete_core_reveal_detected(text: str) -> bool:
     return False
 
 
-def mainline_info_release(text: str) -> dict[str, Any]:
+def mainline_reveal_markers(text: str) -> dict[str, Any]:
     lower = text.lower()
     markers = (
         "truth",

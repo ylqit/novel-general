@@ -18,22 +18,27 @@ validate-config
 open-book
 -> production next
 -> book_ideation one question / two or three options / explicit human selection
--> book_design_candidate_v2, including character expression contracts, after all creative decisions are applied
+-> book_design_candidate_v2 with story_engine_contract_v1 and character expression contracts
 -> character_expression_design when the current book design requests expression enrichment
 -> outline_design
+-> reader_promise_ledger_v1 planned expectation windows
+-> human-approved arc_causal_simulation_v1 covering the rolling outline window
 -> agent-task brief when an Agent task exists
 -> mandatory chapter_direction before every unapplied chapter card/write task
 -> continue-write
+-> chapter_story_brief_v2 author work order; facts, promises, simulation and editorial patterns remain separated
 -> /工程续章 pre-write guide:
-   user preference, automatic fallback, pacing precheck, tail-hook declaration, forbidden reveal confirmation, failure repair path
+   current desire, opposition, earliest failure, irreversible choice, visible cost, scene chain, protected outcomes, repetition risk
 -> plan-chapter
 -> beat
--> read the compiled Character Performance Packet / Creative Brief / RAG / Graph / TCS / Style Memory / Event Matrix / Reverse Brake
+-> CLI compiles canonical constraints and retrieval evidence into the internal fact inventory and author Story Brief
+-> author reads only chapter_story_brief_v2, never control-plane packets or the task JSON
 -> Agent writes 50_workbench/agent_drafts/chNNN.codex.md or chNNN.claude.md
 -> Agent runs Humanizer v4 two-pass self-check
 -> draft submit
 -> gate-check
 -> complete semantic / payoff / pacing / editorial reviews for the same candidate hash
+-> scene_prose_editor is mandatory; risk roles are additive
 -> repair synthesis-task when the CLI review barrier freezes blocking findings
 -> Agent repair coordinator writes and validates one immutable rNN plan
 -> creative humanize-task / humanize-check when prose cleanup is needed
@@ -42,7 +47,8 @@ open-book
 -> repair candidate-task --agent codex when the repair plan is validated
 -> submit the immutable rNN replacement and rerun the complete review barrier
 -> quality payoff-task / payoff-validate after gate pass when required
--> chapter finalize only after gate pass or valid waiver and a current required payoff review
+-> chapter human-review-task / validate / apply for accept, repair, or redirect
+-> chapter finalize only after a current hash-bound human accept
 -> reward_ledger v2 / structure_history written only inside finalize
 -> chapter semantic-task: Agent reads final once and writes canonical_delta_v1
 -> chapter semantic-validate / explicit semantic-apply
@@ -88,7 +94,7 @@ Rights status and commercial intent are advisory only. Names, relationships, wor
 
 上下文预算按项目 `writing.agent.context` 自适应。文件数和字符数只用于诊断；工作单显示 engine unit 估算、顺序读取批次与阻断原因。范围/项目证据可以顺序拆分，章节正文始终由一个作者任务完整输出；核心事实无法装入时停止在 `prompt_budget_exceeded`，不得静默截断。
 
-## Five-Step Chapter Loop
+## Chapter Loop
 
 ```text
 1. /工程续章 -> continue-write task package
@@ -96,9 +102,10 @@ Rights status and commercial intent are advisory only. Names, relationships, wor
 3. /工程提交稿 -> draft submit
 4. /工程验稿 -> gate-check, including pacing precheck artifacts and reverse_brake_report.md
 5. /工程收益审稿 -> payoff-task / payoff-validate when production next requires it
-6. /工程定稿 -> chapter finalize, or repair/waiver/branch/rollback when a gate or payoff review blocks
-7. /工程章节语义任务 -> one final read and one canonical_delta_v1; CLI materializes the internal semantic ledger
-8. /工程章节语义应用 -> atomically materialize knowledge, then /工程关闭章节
+6. /工程故事简审 -> human-review-task / validate / apply; accept, repair, or redirect
+7. /工程定稿 -> chapter finalize only after current human accept
+8. /工程章节语义任务 -> one final read and one canonical_delta_v1; CLI materializes the internal semantic ledger
+9. /工程章节语义应用 -> atomically materialize knowledge, then /工程关闭章节
 ```
 
 ## Creative Operator Flow
@@ -119,6 +126,7 @@ creative brief --init/--validate
 ```text
 editorial review
 -> planning_chief_editor / scene_prose_editor / character_editor / anti_ai_editor / reader_experience_editor / canon_fidelity_reviewer task files
+-> scene_prose_editor on every chapter; other roles are additive
 -> canon_fidelity_reviewer task for fanfiction
 -> record severity_counts, review_round, unresolved_items, conditional_pass_streak, need_human_reasons
 -> editorial batch-review every configured range

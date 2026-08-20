@@ -95,6 +95,7 @@ BASE_DIRECTORIES = [
 SUBDIRECTORIES = [
     "10_bible/fanfiction",
     "20_outline/chapter_cards",
+    "20_outline/arc_simulations",
     "20_outline/revise_reports",
     "30_state/quality",
     "30_state/semantic_ledger",
@@ -108,6 +109,8 @@ SUBDIRECTORIES = [
     "50_workbench/beats",
     "50_workbench/chapter_context",
     "50_workbench/editorial_reviews",
+    "50_workbench/editorial_patterns",
+    "50_workbench/human_story_reviews",
     "50_workbench/gate_artifacts",
     "50_workbench/graph_updates",
     "50_workbench/graph_reports",
@@ -145,6 +148,7 @@ SUBDIRECTORIES = [
     "70_runtime/models",
     "70_runtime/provenance",
     "70_runtime/benchmarks",
+    "70_runtime/literary_evidence",
     "70_runtime/artifacts/chapters",
     "70_runtime/run_reports",
     "70_runtime/snapshots",
@@ -168,6 +172,11 @@ INITIAL_TEXT_FILES = {
 }
 
 INITIAL_JSON_FILES = {
+    "30_state/reader_promise_ledger.json": {
+        "schema": "reader_promise_ledger_v1",
+        "items": [],
+        "updated_at": "initialized",
+    },
     "10_bible/creative_brief.json": {
         "schema_version": 1,
         "target_audience": "longform novel readers",

@@ -89,6 +89,11 @@ from longform_engine.gates import (
     semantic_review_task,
     semantic_review_validate,
 )
+from longform_engine.human_story_review import (
+    apply_human_story_review,
+    create_human_story_review_task,
+    validate_human_story_review,
+)
 from longform_engine.release_readiness import check_release_readiness, render_release_readiness
 from longform_engine.repair_coordination import (
     RepairCoordinationError,
@@ -154,10 +159,11 @@ from longform_engine.prompting import validate_project_prompt_overlay
 from longform_engine.quality import (
     approve_style_baseline,
     compile_effective_quality_contract,
-    feedback_registry_status,
+    pattern_registry_status,
     reader_payoff_task,
     reader_payoff_validate,
-    transition_feedback,
+    rebuild_editorial_pattern_registry,
+    transition_editorial_pattern,
 )
 from longform_engine.rag import (
     build_chunks,
@@ -451,6 +457,11 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_blind_pack.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     benchmark_blind_pack.add_argument("--comparison-id", required=True)
     benchmark_blind_pack.add_argument("--run-id", action="append", required=True)
+    benchmark_blind_pack.add_argument(
+        "--review-scope",
+        required=True,
+        choices=["qidian_opening_3", "fanqie_opening_3", "serial_arc_15"],
+    )
     benchmark_blind_pack.add_argument("--seed", required=True, help="Non-empty deterministic randomization seed.")
     benchmark_blind_pack.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     benchmark_blind_pack.set_defaults(func=cmd_benchmark_blind_pack)
@@ -591,7 +602,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--repository", default=".", help="Engine repository root."
     )
     agent_task_readiness.add_argument(
-        "--json", action="store_true", help="Print agent_data_pipeline_readiness_v4 JSON."
+        "--json", action="store_true", help="Print agent_data_pipeline_readiness_v5 JSON."
     )
     agent_task_readiness.set_defaults(func=cmd_agent_task_readiness)
 
@@ -1061,35 +1072,6 @@ def build_parser() -> argparse.ArgumentParser:
     payoff_validate_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     payoff_validate_cmd.set_defaults(func=cmd_quality_payoff_validate)
 
-    feedback_status_cmd = quality_subparsers.add_parser(
-        "feedback-status",
-        help="Inspect feedback lifecycle counts and optionally advance TTL for a target chapter.",
-    )
-    feedback_status_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    feedback_status_cmd.add_argument("--chapter", type=positive_int_arg, help="Optional target chapter for TTL evaluation.")
-    feedback_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    feedback_status_cmd.set_defaults(func=cmd_quality_feedback_status)
-
-    feedback_resolve_cmd = quality_subparsers.add_parser(
-        "feedback-resolve",
-        help="Resolve one feedback item with explicit evidence.",
-    )
-    feedback_resolve_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    feedback_resolve_cmd.add_argument("--id", required=True, dest="feedback_id", help="Stable feedback_id.")
-    feedback_resolve_cmd.add_argument("--evidence", required=True, help="Short resolution evidence.")
-    feedback_resolve_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    feedback_resolve_cmd.set_defaults(func=cmd_quality_feedback_resolve)
-
-    feedback_suppress_cmd = quality_subparsers.add_parser(
-        "feedback-suppress",
-        help="Suppress one feedback item with an explicit reason.",
-    )
-    feedback_suppress_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    feedback_suppress_cmd.add_argument("--id", required=True, dest="feedback_id", help="Stable feedback_id.")
-    feedback_suppress_cmd.add_argument("--evidence", required=True, help="Short suppression reason.")
-    feedback_suppress_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    feedback_suppress_cmd.set_defaults(func=cmd_quality_feedback_suppress)
-
     rag = subparsers.add_parser("rag", help="Build and query local RAG context.")
     rag_subparsers = rag.add_subparsers(dest="rag_command", required=True)
 
@@ -1270,10 +1252,40 @@ def build_parser() -> argparse.ArgumentParser:
     chapter_finalize = chapter_subparsers.add_parser("finalize", help="Promote a gate-approved draft into final manuscript.")
     chapter_finalize.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     chapter_finalize.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
-    chapter_finalize.add_argument("--approved-by", required=True, help="Reviewer identity approving finalization.")
+    chapter_finalize.add_argument("--approved-by", required=True, help="Must be the literal value 'human'.")
     chapter_finalize.add_argument("--overwrite", action="store_true", help="Replace an existing final manuscript.")
     chapter_finalize.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     chapter_finalize.set_defaults(func=cmd_chapter_finalize)
+
+    chapter_human_review_task = chapter_subparsers.add_parser(
+        "human-review-task",
+        help="Create the mandatory hash-bound human story review task.",
+    )
+    chapter_human_review_task.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    chapter_human_review_task.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    chapter_human_review_task.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    chapter_human_review_task.set_defaults(func=cmd_chapter_human_review_task)
+
+    chapter_human_review_validate = chapter_subparsers.add_parser(
+        "human-review-validate",
+        help="Validate a human_story_review_v2 decision against the current draft and planning evidence.",
+    )
+    chapter_human_review_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    chapter_human_review_validate.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    chapter_human_review_validate.add_argument("--file", required=True, help="Review JSON under the project root.")
+    chapter_human_review_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    chapter_human_review_validate.set_defaults(func=cmd_chapter_human_review_validate)
+
+    chapter_human_review_apply = chapter_subparsers.add_parser(
+        "human-review-apply",
+        help="Apply a validated accept, repair, or redirect story decision.",
+    )
+    chapter_human_review_apply.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    chapter_human_review_apply.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    chapter_human_review_apply.add_argument("--file", required=True, help="Validated review JSON under the project root.")
+    chapter_human_review_apply.add_argument("--approved-by", required=True, help="Must be the literal value 'human'.")
+    chapter_human_review_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    chapter_human_review_apply.set_defaults(func=cmd_chapter_human_review_apply)
 
     chapter_semantic_task_cmd = chapter_subparsers.add_parser(
         "semantic-task",
@@ -1564,6 +1576,41 @@ def build_parser() -> argparse.ArgumentParser:
     editorial_need.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     editorial_need.set_defaults(func=cmd_editorial_need_human)
 
+    pattern_status_cmd = editorial_subparsers.add_parser(
+        "pattern-status", help="Inspect the derived editorial recurrence registry."
+    )
+    pattern_status_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    pattern_status_cmd.add_argument(
+        "--chapter",
+        type=positive_int_arg,
+        help="Optional observation boundary; P2 expiry still requires three recorded chapter closures.",
+    )
+    pattern_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    pattern_status_cmd.set_defaults(func=cmd_editorial_pattern_status)
+
+    pattern_transition_commands = []
+    for command_name, transition in (("pattern-resolve", "resolved"), ("pattern-suppress", "suppressed")):
+        pattern_transition_cmd = editorial_subparsers.add_parser(
+            command_name, help=f"Mark one editorial pattern {transition} with explicit evidence."
+        )
+        pattern_transition_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+        pattern_transition_cmd.add_argument("--id", required=True, dest="pattern_id", help="Stable pattern_id.")
+        pattern_transition_cmd.add_argument(
+            "--evidence",
+            required=True,
+            help="Project-local editor or human evidence file.",
+        )
+        pattern_transition_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+        pattern_transition_cmd.set_defaults(func=cmd_editorial_pattern_transition, pattern_status=transition)
+        pattern_transition_commands.append(pattern_transition_cmd)
+
+    pattern_rebuild_cmd = editorial_subparsers.add_parser(
+        "pattern-rebuild", help="Rebuild editorial patterns from structured aggregate reviews."
+    )
+    pattern_rebuild_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    pattern_rebuild_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    pattern_rebuild_cmd.set_defaults(func=cmd_editorial_pattern_rebuild)
+
     for command in (
         init,
         db_init,
@@ -1601,6 +1648,9 @@ def build_parser() -> argparse.ArgumentParser:
         auto_report,
         draft_submit,
         chapter_finalize,
+        chapter_human_review_task,
+        chapter_human_review_validate,
+        chapter_human_review_apply,
         chapter_semantic_task_cmd,
         chapter_semantic_validate_cmd,
         chapter_semantic_apply_cmd,
@@ -1648,9 +1698,9 @@ def build_parser() -> argparse.ArgumentParser:
         character_audit_apply,
         character_samples_approve,
         baseline_approve_cmd,
-        feedback_status_cmd,
-        feedback_resolve_cmd,
-        feedback_suppress_cmd,
+        pattern_status_cmd,
+        *pattern_transition_commands,
+        pattern_rebuild_cmd,
         fanfiction_canon_task,
         fanfiction_canon_validate,
         fanfiction_canon_apply,
@@ -2311,6 +2361,7 @@ def cmd_benchmark_blind_pack(args: argparse.Namespace) -> int:
         comparison_id=args.comparison_id,
         run_ids=args.run_id,
         seed=args.seed,
+        review_scope=args.review_scope,
     )
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
@@ -3426,46 +3477,51 @@ def cmd_quality_payoff_validate(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
-def cmd_quality_feedback_status(args: argparse.Namespace) -> int:
+def cmd_editorial_pattern_status(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = feedback_registry_status(config, target_chapter=args.chapter)
+    result = pattern_registry_status(config, target_chapter=args.chapter)
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
-        print("OK: quality feedback registry inspected")
+        print("OK: editorial pattern registry inspected")
         print(f"Registry: {result.registry_file}")
         print(f"Total: {result.total}")
-        print(f"Active: {result.active}")
-        print(f"Carried: {result.carried}")
+        print(f"Monitoring: {result.monitoring}")
         print(f"Resolved: {result.resolved}")
         print(f"Suppressed: {result.suppressed}")
         print(f"Expired: {result.expired}")
     return 0
 
 
-def cmd_quality_feedback_resolve(args: argparse.Namespace) -> int:
-    return cmd_quality_feedback_transition(args, status="resolved")
-
-
-def cmd_quality_feedback_suppress(args: argparse.Namespace) -> int:
-    return cmd_quality_feedback_transition(args, status="suppressed")
-
-
-def cmd_quality_feedback_transition(args: argparse.Namespace, *, status: str) -> int:
+def cmd_editorial_pattern_transition(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = transition_feedback(
+    result = transition_editorial_pattern(
         config,
-        feedback_id=args.feedback_id,
-        status=status,
+        pattern_id=args.pattern_id,
+        status=args.pattern_status,
         evidence=args.evidence,
     )
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
-        print(f"OK: quality feedback marked {status}")
-        print(f"Feedback: {result.updated_feedback_id}")
+        print(f"OK: editorial pattern marked {args.pattern_status}")
+        print(f"Pattern: {result.updated_pattern_id}")
         print(f"Registry: {result.registry_file}")
-        print(f"Active: {result.active}")
+        print(f"Monitoring: {result.monitoring}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_editorial_pattern_rebuild(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = rebuild_editorial_pattern_registry(config)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: editorial pattern registry rebuilt")
+        print(f"Registry: {result.registry_file}")
+        print(f"Total: {result.total}")
+        print(f"Monitoring: {result.monitoring}")
         print(f"Next command: {result.next_command}")
     return 0
 
@@ -3955,6 +4011,60 @@ def cmd_chapter_finalize(args: argparse.Namespace) -> int:
         print(f"SQLite synced: {result.db_synced}")
         print(f"Next command: {result.next_command}")
         print(f"Run report: {result.run_report}")
+    return 0
+
+
+def cmd_chapter_human_review_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = create_human_story_review_task(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: human story review task written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Task: {result.task_file}")
+        print(f"Template: {result.template_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_chapter_human_review_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = validate_human_story_review(
+        config,
+        chapter_number=args.chapter,
+        file_path=args.file,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: human story review validated" if result.ok else "BLOCKED: human story review is invalid")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Decision: {result.decision}")
+        print(f"Validation: {result.report_file}")
+        print(f"Errors: {len(result.errors)}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.ok else 1
+
+
+def cmd_chapter_human_review_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = apply_human_story_review(
+        config,
+        chapter_number=args.chapter,
+        file_path=args.file,
+        approved_by=args.approved_by,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: human story review applied")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Decision: {result.decision}")
+        print(f"Decision file: {result.decision_file}")
+        if result.transaction_report:
+            print(f"Transaction report: {result.transaction_report}")
+        print(f"Next command: {result.next_command}")
     return 0
 
 

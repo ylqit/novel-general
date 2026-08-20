@@ -22,6 +22,7 @@ from longform_engine.intelligence import (
     validate_intelligence_candidate,
 )
 from longform_engine.storage import init_project
+from tests.project_fixtures import story_engine_contract
 
 
 def seed_project(tmp_path: Path):
@@ -52,6 +53,7 @@ def book_design_payload() -> dict:
             "automation_level": "agent_skill with human approval",
             "target_scale": "2000000 content characters",
             "story_profile": load_project_config(template="qidian-longform").data["story_profile"],
+            "story_engine_contract": story_engine_contract(),
             "design_decisions": {
                 "core_hook": "The archive changes overnight",
                 "world_rule": "Corrections erase a witnessed memory",
@@ -187,7 +189,7 @@ def prepare_book_design(config, root: Path, payload: dict):
 def test_manifest_v4_and_four_protocol_surface_rejects_history(tmp_path):
     seed_project(tmp_path)
     root = tmp_path / "novel"
-    assert len(TASK_CONTRACTS) == 25
+    assert len(TASK_CONTRACTS) == 26
     assert DESIGN_TASK_TYPES
     assert {output_protocol_for_task(task_type) for task_type in TASK_CONTRACTS} == {
         "prose_markdown_v1", "design_document_v1", "evidence_review_v2", "canonical_delta_v1"

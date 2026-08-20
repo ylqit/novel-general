@@ -1,7 +1,9 @@
 import json
+from hashlib import sha256
 
 from longform_engine.agent_protocols import PROSE_MARKDOWN_SCHEMA
 from longform_engine.agent_tasks import build_manifest, list_manifests, write_manifest
+from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_review
 from longform_engine.gates import semantic_pacing_task
@@ -23,9 +25,11 @@ from longform_engine.production import production_next
 from longform_engine.semantic import semantic_apply
 from longform_engine.storage import init_project
 from tests.project_fixtures import (
+    approve_story_candidate,
     complete_unified_semantic_lifecycle,
     mark_project_ready,
     prepare_unified_semantic_bundle,
+    write_arc_simulation_fixture,
 )
 
 
@@ -64,14 +68,14 @@ def test_plan_chapter_and_beat_sheet(tmp_path):
     assert card.chapter_number == 12
     assert card_payload["chapter_duty"]
     assert card_payload["conflict"]
-    assert card_payload["information_release"]
+    assert card_payload["chapter_turn"]
     assert not {"duty", "information", "reader_payoff"} & set(card_payload)
     assert card_payload["hook"]
     assert beat.chapter_number == 12
     assert len(beat_payload["beats"]) == 5
     assert all(item["chapter_duty"] == card_payload["chapter_duty"] for item in beat_payload["beats"])
     assert all(item["reader_gain"] == card_payload["reader_gain"] for item in beat_payload["beats"])
-    assert all(item["information_release"] for item in beat_payload["beats"])
+    assert all(item["chapter_turn"] for item in beat_payload["beats"])
     assert all(not {"duty", "information", "reader_payoff"} & set(item) for item in beat_payload["beats"])
 
 
@@ -129,10 +133,12 @@ def test_continue_write_creates_agent_writing_task_by_default(tmp_path):
     assert task["draft_submission_path"] == "50_workbench/agent_drafts/ch001.codex.md"
     assert "draft submit" in task["next_command"]
     assert task["fact_inventory_summary"]["categories"].get("feedback", 0) == 0
-    assert "第 001 章写作工作单" in task_md
+    assert "第 001 章故事工作单" in task_md
     assert "## 未解决反馈" not in task_md
-    assert "## 唯一章节合同" in task_md
-    assert "## 当前写作方法" in task_md
+    assert "## 唯一章节合同" not in task_md
+    assert "## 当前写作方法" not in task_md
+    assert "## 逐场行动" in task_md
+    assert "## 演出边界" in task_md
     assert report["artifacts"]["writing_task_markdown"].endswith("ch001.md")
 
     state = json.loads((root / "30_state" / "novel_state.json").read_text(encoding="utf-8"))
@@ -206,7 +212,7 @@ def test_auto_write_plan_and_run_waits_for_agent_draft(tmp_path):
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
 
-def test_auto_write_resume_after_finalize_schedules_next_chapter(tmp_path):
+def test_auto_write_resume_after_finalize_pauses_for_next_causal_window(tmp_path):
     project_config = seed_project(tmp_path)
     open_book(project_config)
     root = tmp_path / "novel"
@@ -216,6 +222,7 @@ def test_auto_write_resume_after_finalize_schedules_next_chapter(tmp_path):
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(passing_draft_text(), encoding="utf-8")
     submit_agent_draft(project_config, chapter_number=1, file_path=agent_draft, agent="codex")
+    approve_story_candidate(root, project_config)
     finalize_chapter(project_config, chapter_number=1, approved_by="human")
     second = auto_write_run(project_config)
     complete_unified_semantic_lifecycle(root, project_config, 1)
@@ -225,11 +232,12 @@ def test_auto_write_resume_after_finalize_schedules_next_chapter(tmp_path):
     assert first.status == "awaiting_agent_draft"
     assert second.status == "blocked"
     assert "semantic" in second.next_command
-    assert third.status == "awaiting_agent_draft"
+    assert third.status == "blocked"
+    assert "arc_simulation" in third.next_command
     assert state["last_finalized_chapter"] == 1
     assert state["current_chapter"] == 2
-    assert "ch002.codex.md" in state["next_command"]
-    assert (root / "50_workbench" / "writing_tasks" / "ch002.md").exists()
+    assert "arc_simulation" in state["next_command"]
+    assert not (root / "50_workbench" / "writing_tasks" / "ch002.md").exists()
 
 
 def test_auto_write_pauses_on_gate_failure(tmp_path):
@@ -266,9 +274,9 @@ def test_auto_write_pauses_when_gate_passed_but_not_final(tmp_path):
     paused = auto_write_run(project_config)
     state = json.loads((root / "70_runtime" / "auto_write_state.json").read_text(encoding="utf-8"))
 
-    assert paused.status == "awaiting_finalize"
-    assert "not finalized" in paused.pause_reason
-    assert "chapter finalize" in state["next_command"]
+    assert paused.status == "reviews_pending"
+    assert "review pipeline" in paused.pause_reason
+    assert state["next_command"] == "longform-engine production next project.yaml"
     assert not (root / "50_workbench" / "writing_tasks" / "ch002.md").exists()
 
 
@@ -282,7 +290,7 @@ def test_auto_write_recognizes_repair_semantic_and_editorial_agent_waits(tmp_pat
 
     semantic_config = seed_project(tmp_path / "semantic")
     semantic_root = tmp_path / "semantic" / "novel"
-    plan_chapter(semantic_config, chapter_number=1)
+    mark_project_ready(semantic_root, semantic_config)
     (semantic_root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_draft_text(), encoding="utf-8")
     semantic_pacing_task(semantic_config, chapter_number=1)
     auto_write_plan(semantic_config)
@@ -291,7 +299,7 @@ def test_auto_write_recognizes_repair_semantic_and_editorial_agent_waits(tmp_pat
 
     editorial_config = seed_project(tmp_path / "editorial")
     editorial_root = tmp_path / "editorial" / "novel"
-    plan_chapter(editorial_config, chapter_number=1)
+    mark_project_ready(editorial_root, editorial_config)
     (editorial_root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_draft_text(), encoding="utf-8")
     editorial_review(editorial_config, chapter_number=1)
     auto_write_plan(editorial_config)
@@ -441,6 +449,7 @@ def test_finalize_chapter_requires_gate_and_refreshes_memory(tmp_path):
     pending_state["pending_semantic_review_chapter"] = 1
     pending_state_path.write_text(json.dumps(pending_state, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    approve_story_candidate(root, project_config)
     result = finalize_chapter(project_config, chapter_number=1, approved_by="human")
     finalize_chapter(project_config, chapter_number=1, approved_by="human", overwrite=True)
     semantic_ledger = root / "30_state" / "semantic_ledger" / "ch001.json"
@@ -506,10 +515,17 @@ def test_semantic_apply_rolls_back_touched_paths_on_index_failure(tmp_path, monk
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(passing_draft_text(), encoding="utf-8")
     submit_agent_draft(project_config, chapter_number=1, file_path=agent_draft, agent="codex")
+    approve_story_candidate(root, project_config)
     finalize_chapter(project_config, chapter_number=1, approved_by="human")
     semantic_output = prepare_unified_semantic_bundle(root, project_config, 1)
     graph_before = (root / "30_state" / "story_graph.json").read_text(encoding="utf-8")
     state_before = (root / "30_state" / "novel_state.json").read_text(encoding="utf-8")
+    promise_ledger = root / "30_state" / "reader_promise_ledger.json"
+    promise_before = promise_ledger.read_bytes()
+    simulations_before = {
+        path: path.read_bytes()
+        for path in (root / "20_outline" / "arc_simulations").glob("ch*-ch*.json")
+    }
 
     def fail_build_chunks(*args, **kwargs):
         raise RuntimeError("simulated rag rebuild failure")
@@ -533,6 +549,8 @@ def test_semantic_apply_rolls_back_touched_paths_on_index_failure(tmp_path, monk
     assert not (root / "30_state" / "semantic_ledger" / "ch001.json").exists()
     assert (root / "30_state" / "story_graph.json").read_text(encoding="utf-8") == graph_before
     assert (root / "30_state" / "novel_state.json").read_text(encoding="utf-8") == state_before
+    assert promise_ledger.read_bytes() == promise_before
+    assert all(path.read_bytes() == content for path, content in simulations_before.items())
     assert not query_table(project_config, "chapter_chunks", limit=20)
 
 
@@ -554,7 +572,7 @@ def test_continue_write_blocks_when_previous_chapter_is_not_final(tmp_path):
     assert not (root / "50_workbench" / "writing_tasks" / "ch002.md").exists()
 
 
-def test_continue_write_carries_previous_controlled_feedback_forward(tmp_path):
+def test_continue_write_does_not_leak_previous_editorial_findings_to_author(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
     open_book(project_config)
@@ -562,6 +580,7 @@ def test_continue_write_carries_previous_controlled_feedback_forward(tmp_path):
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(passing_draft_text(), encoding="utf-8")
     submit_agent_draft(project_config, chapter_number=1, file_path=agent_draft, agent="codex")
+    approve_story_candidate(root, project_config)
     finalize_chapter(project_config, chapter_number=1, approved_by="human")
 
     gate_dir = root / "50_workbench" / "gate_artifacts" / "ch001"
@@ -621,6 +640,20 @@ def test_continue_write_carries_previous_controlled_feedback_forward(tmp_path):
     )
 
     complete_unified_semantic_lifecycle(root, project_config, 1)
+    simulation_path = write_arc_simulation_fixture(root, from_chapter=1, to_chapter=20)
+    chapter_two_card_path = root / "20_outline" / "chapter_cards" / "ch002.json"
+    chapter_two_card = json.loads(chapter_two_card_path.read_text(encoding="utf-8"))
+    chapter_two_card["arc_simulation_ref"] = {
+        "path": simulation_path.relative_to(root).as_posix(),
+        "sha256": sha256(simulation_path.read_bytes()).hexdigest(),
+        "from_chapter": 1,
+        "to_chapter": 20,
+    }
+    stamp_chapter_contract(chapter_two_card)
+    chapter_two_card_path.write_text(
+        json.dumps(chapter_two_card, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     result = continue_write(project_config, chapter_number=2)
 
@@ -629,9 +662,11 @@ def test_continue_write_carries_previous_controlled_feedback_forward(tmp_path):
     task = json.loads(task_path.read_text(encoding="utf-8"))
     task_md = (root / "50_workbench" / "writing_tasks" / "ch002.md").read_text(encoding="utf-8")
     manifest = json.loads((root / "50_workbench" / "writing_tasks" / "ch002.agent_task.json").read_text(encoding="utf-8"))
-    assert task["fact_inventory_summary"]["categories"]["feedback"] == 1
-    assert "## 未解决反馈" in task_md
-    assert "humanizer_summary_voice" in task_md
+    assert "feedback" not in task["fact_inventory_summary"]["categories"]
+    assert "pattern" not in task["fact_inventory_summary"]["categories"]
+    assert "未解决反馈" not in task_md
+    assert "humanizer_summary_voice" not in task_md
+    assert "motive_gap" not in task_md
     assert "story graph must remain frozen" not in task_md
     assert "graph update waits for chapter finalize" not in task_md
     manifest_inputs = {item["path"] for item in manifest["io"]["inputs"]}

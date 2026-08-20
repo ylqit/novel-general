@@ -37,7 +37,7 @@ def build_structure_observation(
     prose_chars = max(1, len(re.sub(r"\s+", "", text)))
     paragraph_lengths = [len(re.sub(r"\s+", "", item)) for item in paragraphs]
     return {
-        "schema": "structure_observation_v1",
+        "schema": "structure_observation_v2",
         "chapter_number": chapter_number,
         "source_hash": sha256_text(text),
         "chapter_duty": str(card.get("chapter_duty") or ""),
@@ -46,6 +46,24 @@ def build_structure_observation(
         "ending_mode": str(craft.get("ending_mode") or infer_ending_mode(text)),
         "scene_count": int(craft.get("scene_count") or max(1, text.count("\n---\n") + 1)),
         "dominant_scene_type": str(craft.get("dominant_scene_type") or "unreviewed"),
+        "primary_story_engine": str(
+            craft.get("primary_story_engine") or card.get("primary_story_engine") or "unreviewed"
+        ),
+        "primary_scene_carrier": str(
+            craft.get("primary_scene_carrier")
+            or ((card.get("scene_carriers") or [""])[0] if isinstance(card.get("scene_carriers"), list) else "")
+            or craft.get("dominant_scene_type")
+            or "unreviewed"
+        ),
+        "state_change_kind": str(
+            craft.get("state_change_kind") or card.get("state_change_kind") or "unreviewed"
+        ),
+        "dramatic_method": str(
+            craft.get("dramatic_method") or card.get("dramatic_method") or "unreviewed"
+        ),
+        "exposition_carrier": str(
+            craft.get("exposition_carrier") or card.get("exposition_carrier") or "unreviewed"
+        ),
         "reader_gain_position": str(craft.get("reader_gain_position") or "unreviewed"),
         "dialogue_acts": clean_strings(craft.get("dialogue_acts")),
         "emotional_curve": clean_strings(craft.get("emotional_curve")),

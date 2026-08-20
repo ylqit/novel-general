@@ -5,7 +5,25 @@ updated_at: "2026-08-02"
 evidence_level: "public_platform_signals_plus_editorial_heuristic"
 source_refs:
   - "https://www.qidian.com/"
-  - "https://book.qidian.com/honor/1044762088"
+  - "https://book.qidian.com/honor/1048862481"
+evidence_bindings:
+  contract.platform_policy: [qidian_public_platform_2026_08]
+  contract.opening_promise_window: [qidian_public_platform_2026_08, qidian_public_serial_sample_2026_08]
+  contract.chapter_duty_distribution: [qidian_public_serial_sample_2026_08]
+  contract.payoff_cadence: [qidian_public_serial_sample_2026_08]
+  contract.upgrade_cost: [qidian_public_serial_sample_2026_08]
+  contract.scene_entry_friction: [qidian_public_serial_sample_2026_08]
+  contract.exposition_density: [qidian_public_serial_sample_2026_08]
+  contract.dialogue: [qidian_public_serial_sample_2026_08]
+  contract.relationship_change_cadence: [qidian_public_serial_sample_2026_08]
+  contract.foreshadow_release: [qidian_public_serial_sample_2026_08]
+  contract.ending_distribution: [qidian_public_serial_sample_2026_08]
+  contract.slow_chapter_policy: [qidian_public_serial_sample_2026_08]
+  phase_overrides.opening: [qidian_public_platform_2026_08, qidian_public_serial_sample_2026_08]
+  phase_overrides.early_serial: [qidian_public_serial_sample_2026_08]
+  phase_overrides.stable_serial: [qidian_public_serial_sample_2026_08]
+  phase_overrides.volume_climax: [qidian_public_serial_sample_2026_08]
+  phase_overrides.aftermath: [qidian_public_serial_sample_2026_08]
 heuristic_notes: "用于起点男频写作适配，不反推推荐算法，不把追读经验变成统一短句、对白率或悬崖门禁。"
 contract:
   platform_policy: {primary_deviation: P2_advisory, fixed_sentence_template: false, fixed_dialogue_ratio: false, mandatory_cliffhanger: false}

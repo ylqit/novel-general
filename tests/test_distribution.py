@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from longform_engine import __version__
+from longform_engine.config import load_project_config
 from longform_engine.distribution import (
     distribution_version_payload,
     doctor_payload,
@@ -15,6 +16,7 @@ from longform_engine.distribution import (
     update_skills,
 )
 from longform_engine.resources import RESOURCE_HASH_POLICY, load_resource_manifest, resource_integrity_bytes, resource_path
+from longform_engine.storage import init_project
 
 
 def configure_skill_roots(monkeypatch, tmp_path: Path):
@@ -29,7 +31,7 @@ def test_version_and_bundled_resource_manifest_are_aligned(tmp_path):
     manifest = load_resource_manifest()
     asset_paths = [item["path"] for item in manifest["assets"]]
 
-    assert __version__ == "0.4.4"
+    assert __version__ == "0.5.0"
     assert manifest["engine_version"] == __version__
     assert manifest["hash_policy"] == RESOURCE_HASH_POLICY
     for prefix in ("config/", "templates/", "longform-novel-codex/", "longform-novel-claude/", "shared/"):
@@ -115,7 +117,7 @@ def test_doctor_json_contract_reports_actionable_checks(monkeypatch, tmp_path):
     payload = doctor_payload("all")
 
     assert payload["schema"] == "doctor_v1"
-    assert payload["engine_version"] == "0.4.4"
+    assert payload["engine_version"] == "0.5.0"
     checks = {item["name"]: item for item in payload["checks"]}
     assert checks["distribution_version"]["ok"]
     assert checks["bundled_resources"]["ok"]
@@ -139,3 +141,23 @@ def test_distribution_version_mismatch_blocks_doctor_with_one_reinstall_command(
     assert versions["mismatches"] == {"distribution_metadata": "0.3.0"}
     assert check["next_command"] == versions["next_command"]
     assert not payload["ok"]
+
+
+def test_doctor_reports_corrupt_editorial_pattern_registry_as_rebuildable_warning(monkeypatch, tmp_path):
+    configure_skill_roots(monkeypatch, tmp_path)
+    install_skills("all")
+    monkeypatch.setattr("longform_engine.distribution.importlib_metadata.version", lambda _name: __version__)
+    monkeypatch.setattr("longform_engine.distribution.importlib.util.find_spec", lambda _name: object())
+    project = init_project(
+        load_project_config(template="qidian-longform"),
+        output=tmp_path / "novel",
+    )
+    registry = project.root / "50_workbench" / "editorial_patterns" / "registry.jsonl"
+    registry.write_text("{broken\n", encoding="utf-8")
+
+    payload = doctor_payload("all", project=str(project.project_config))
+    check = next(item for item in payload["checks"] if item["name"] == "editorial_pattern_registry")
+
+    assert not check["ok"]
+    assert check["blocking"] is False
+    assert "pattern-rebuild" in check["next_command"]

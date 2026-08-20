@@ -4,8 +4,26 @@ id: fanqie_free
 updated_at: "2026-08-02"
 evidence_level: "public_platform_guidance_plus_editorial_heuristic"
 source_refs:
-  - "https://fanqienovel.com/writer/zone/article/7659317147297923134"
-  - "https://fanqienovel.com/writer/zone/article/7602553801446260761"
+  - "https://fanqienovel.com/writer/zone/article/7551631577109774398"
+  - "https://fanqienovel.com/writer/zone/article/7571294020903632958"
+evidence_bindings:
+  contract.platform_policy: [fanqie_writer_guidance_opening_2026_08]
+  contract.opening_promise_window: [fanqie_writer_guidance_opening_2026_08]
+  contract.chapter_duty_distribution: [fanqie_writer_guidance_serial_2026_08]
+  contract.payoff_cadence: [fanqie_writer_guidance_serial_2026_08]
+  contract.upgrade_cost: [fanqie_writer_guidance_serial_2026_08]
+  contract.scene_entry_friction: [fanqie_writer_guidance_opening_2026_08]
+  contract.exposition_density: [fanqie_writer_guidance_opening_2026_08]
+  contract.dialogue: [fanqie_writer_guidance_serial_2026_08]
+  contract.relationship_change_cadence: [fanqie_writer_guidance_serial_2026_08]
+  contract.foreshadow_release: [fanqie_writer_guidance_serial_2026_08]
+  contract.ending_distribution: [fanqie_writer_guidance_serial_2026_08]
+  contract.slow_chapter_policy: [fanqie_writer_guidance_serial_2026_08]
+  phase_overrides.opening: [fanqie_writer_guidance_opening_2026_08]
+  phase_overrides.early_serial: [fanqie_writer_guidance_serial_2026_08]
+  phase_overrides.stable_serial: [fanqie_writer_guidance_serial_2026_08]
+  phase_overrides.volume_climax: [fanqie_writer_guidance_serial_2026_08]
+  phase_overrides.aftermath: [fanqie_writer_guidance_serial_2026_08]
 heuristic_notes: "用于免费阅读写作适配与非阻断兼容观察，不模拟或反推推荐验证算法。"
 contract:
   platform_policy: {primary_deviation: P2_advisory, fixed_sentence_template: false, fixed_dialogue_ratio: false, mandatory_cliffhanger: false}
@@ -36,15 +54,23 @@ phase_overrides:
 compatibility_guidance:
   - field: opening_promise_window
     code: fanqie_opening_clarity
+    evidence_refs: [fanqie_writer_guidance_opening_2026_08]
+    execution_level: P2_advisory
     phases: [opening]
     message: "番茄兼容观察：检查开篇能否更早识别主角困境、阅读收益和下一步压力；这只是P2提示。"
   - field: payoff_cadence
     code: fanqie_concrete_payoff
+    evidence_refs: [fanqie_writer_guidance_serial_2026_08]
+    execution_level: P2_advisory
     message: "番茄兼容观察：检查本章收益是否具体可感并改变后续选择；不得用无代价碾压替代。"
   - field: scene_entry_friction
     code: fanqie_scene_entry_friction
+    evidence_refs: [fanqie_writer_guidance_opening_2026_08]
+    execution_level: P2_advisory
     message: "番茄兼容观察：检查场景进入是否被回顾、设定说明或静态铺垫拖慢；不强制短句。"
   - field: slow_chapter_policy
     code: fanqie_slow_chapter_state_change
+    evidence_refs: [fanqie_writer_guidance_serial_2026_08]
+    execution_level: P2_advisory
     phases: [early_serial, stable_serial, aftermath]
     message: "番茄兼容观察：连续慢章仍需改变人物状态、关系或读者认知；不要求每章悬崖。"

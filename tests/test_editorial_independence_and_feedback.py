@@ -10,15 +10,22 @@ from longform_engine.agent_tasks import list_manifests, load_manifest, validate_
 from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_aggregate, editorial_review, editorial_submit_review
-from longform_engine.orchestration.pipeline import build_feedback_carryover
+from longform_engine.human_story_review import (
+    apply_human_story_review,
+    create_human_story_review_task,
+    validate_human_story_review,
+)
 from longform_engine.production import editorial_task_is_current, production_next
 from longform_engine.quality import (
-    carry_feedback,
-    refresh_feedback_registry,
-    transition_feedback,
-    truncate_feedback_registry,
+    editorial_patterns_for_task,
+    pattern_registry_status,
+    rebuild_editorial_pattern_registry,
+    refresh_editorial_pattern_registry,
+    transition_editorial_pattern,
+    truncate_editorial_pattern_registry,
 )
-from longform_engine.quality.feedback import read_registry
+from longform_engine.quality.editorial_patterns import read_pattern_registry
+from longform_engine.distribution import doctor_payload
 from longform_engine.repair_coordination import create_repair_synthesis_task, review_barrier_status
 from longform_engine.roles import load_role_registry
 from longform_engine.storage import init_project
@@ -50,7 +57,7 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
     assert review_payload["role_selection"]["policy"] == "risk_based_editorial_selection_v1"
     assert {"scene_prose_editor", "planning_chief_editor"} <= selected
     assert "continuity_or_relationship_risk" in review.risk_signals
-    assert "blocking_P0_P1_risk" in review.risk_signals
+    assert "blocking_P0_P1_risk" not in review.risk_signals
 
     manifests = [
         load_manifest(root, item["task_id"])
@@ -118,7 +125,7 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
     assert "minority_P0_P1" in aggregate.need_human_reasons
     assert "editorial_evidence_conflict" in aggregate.need_human_reasons
     assert payload["human_decisions"]
-    assert payload["feedback_registry"]["status"] == "updated"
+    assert payload["editorial_pattern_registry"]["status"] == "updated"
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
     gate_dir = root / "50_workbench" / "gate_artifacts" / "ch001"
@@ -141,6 +148,41 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
         )
         + "\n",
         encoding="utf-8",
+    )
+    human_task = create_human_story_review_task(config, chapter_number=1)
+    human_file = root / human_task.template_file
+    human_payload = json.loads(human_file.read_text(encoding="utf-8"))
+    human_payload["checks"] = {
+        field: {
+            "passed": field not in {"key_turn_dramatized", "character_owns_choice_and_emotion"},
+            "reason": "The current draft and independent finding require one bounded repair.",
+        }
+        for field in human_payload["checks"]
+    }
+    human_payload["decision"] = "repair"
+    human_payload["span_actions"] = [
+        {
+            "start": 0,
+            "end": len(draft.read_text(encoding="utf-8")),
+            "text": draft.read_text(encoding="utf-8"),
+            "action": "expand_scene",
+            "note": "Repair the admitted agency and speaker-ownership problem in this candidate.",
+        }
+    ]
+    human_file.write_text(
+        json.dumps(human_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    assert validate_human_story_review(
+        config,
+        chapter_number=1,
+        file_path=human_file,
+    ).ok
+    apply_human_story_review(
+        config,
+        chapter_number=1,
+        file_path=human_file,
+        approved_by="human",
     )
     barrier = review_barrier_status(config, chapter_number=1)
     next_action = production_next(config)
@@ -210,12 +252,12 @@ def test_partial_editorial_submissions_do_not_invalidate_peer_contexts(tmp_path)
         "# Chapter 1\n\nAri chooses the marked retreat route and records its cost.\n",
         encoding="utf-8",
     )
-    refresh_feedback_registry(
+    refresh_editorial_pattern_registry(
         root,
-        chapter_number=0,
-        observations=[feedback_observation("prior_style_risk", "P2", "prior")],
+        chapter_number=1,
+        observations=[pattern_observation("prior_style_risk", "P2", "prior")],
     )
-    registry = root / "50_workbench" / "quality_feedback" / "registry.jsonl"
+    registry = root / "50_workbench" / "editorial_patterns" / "registry.jsonl"
     registry_before = hashlib.sha256(registry.read_bytes()).hexdigest()
     review = editorial_review(config, chapter_number=1)
 
@@ -229,7 +271,7 @@ def test_partial_editorial_submissions_do_not_invalidate_peer_contexts(tmp_path)
             / f"{role_id}.context.json"
         )
         context = json.loads(context_path.read_text(encoding="utf-8"))
-        assert "50_workbench/quality_feedback/registry.jsonl" not in context[
+        assert "50_workbench/editorial_patterns/registry.jsonl" not in context[
             "provenance_source_files"
         ]
         result_file = (
@@ -343,103 +385,92 @@ def test_editorial_v2_requires_exact_chapter_evidence_for_blocking_finding(tmp_p
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
 
-def test_feedback_registry_ttl_recurrence_resolution_limit_and_rollback(tmp_path):
+def test_editorial_pattern_registry_ttl_recurrence_resolution_and_rollback(tmp_path):
     config, root = seed_project(tmp_path)
     canonical_before = canonical_hashes(root)
     observations = [
-        feedback_observation(f"issue_{index}", "P2", f"hash-{index}")
+        pattern_observation(f"ISSUE_{index}", "P2", f"hash-{index}")
         for index in range(7)
     ]
-    observations.append(feedback_observation("dialogue_sameness", "P1", "first"))
-    observations.append(feedback_observation("continuity_risk", "P1", "stable"))
-    refresh_feedback_registry(root, chapter_number=1, observations=observations)
+    observations.append(pattern_observation("DIALOGUE_SAMENESS", "P1", "first"))
+    observations.append(pattern_observation("CONTINUITY_RISK", "P1", "stable"))
+    refresh_editorial_pattern_registry(root, chapter_number=1, observations=observations)
 
-    carried = carry_feedback(root, target_chapter=2, task_type="chapter_write")
+    assert editorial_patterns_for_task(root, task_type="chapter_write") == ()
+    carried = editorial_patterns_for_task(root, task_type="editorial_review")
     assert len(carried) == 5
-    assert all(item["status"] == "carried" for item in carried)
+    assert all(item["status"] == "monitoring" for item in carried)
 
-    refresh_feedback_registry(
+    refresh_editorial_pattern_registry(
         root,
         chapter_number=2,
-        observations=[feedback_observation("dialogue_sameness", "P1", "second")],
+        observations=[pattern_observation("DIALOGUE_SAMENESS", "P1", "second")],
     )
-    dialogue = next(item for item in read_registry(root) if item["issue_code"] == "dialogue_sameness")
+    dialogue = next(item for item in read_pattern_registry(root) if item["finding_code"] == "DIALOGUE_SAMENESS")
     assert dialogue["recurrence_count"] == 2
-    assert dialogue["gate_gaming_risk"] is True
 
-    transition_feedback(
+    evidence = root / "50_workbench" / "editorial_reviews" / "pattern_resolution.json"
+    evidence.parent.mkdir(parents=True, exist_ok=True)
+    evidence.write_text('{"verified": true}\n', encoding="utf-8")
+    transition_editorial_pattern(
         config,
-        feedback_id=dialogue["feedback_id"],
+        pattern_id=dialogue["pattern_id"],
         status="resolved",
-        evidence="Chapter 2 gives each speaker a distinct goal and speech act.",
-    )
-    refresh_feedback_registry(
-        root,
-        chapter_number=2,
-        observations=[feedback_observation("dialogue_sameness", "P1", "second")],
+        evidence=evidence.relative_to(root).as_posix(),
     )
     assert next(
-        item for item in read_registry(root) if item["feedback_id"] == dialogue["feedback_id"]
+        item for item in read_pattern_registry(root) if item["pattern_id"] == dialogue["pattern_id"]
     )["status"] == "resolved"
-    assert dialogue["feedback_id"] not in {
-        item["feedback_id"]
-        for item in carry_feedback(root, target_chapter=3, task_type="chapter_write")
-    }
 
-    carry_feedback(root, target_chapter=5, task_type="chapter_write")
-    records = read_registry(root)
+    pattern_registry_status(config, target_chapter=5)
+    assert all(
+        item["status"] == "monitoring"
+        for item in read_pattern_registry(root)
+        if item["finding_code"].startswith("ISSUE_")
+    )
+    assert canonical_hashes(root) == canonical_before
+    closures = root / "30_state" / "chapter_closures"
+    closures.mkdir(parents=True, exist_ok=True)
+    for chapter_number in range(2, 5):
+        (closures / f"ch{chapter_number:03d}.json").write_text(
+            json.dumps({"chapter_number": chapter_number}),
+            encoding="utf-8",
+        )
+    canonical_before = canonical_hashes(root)
+    pattern_registry_status(config, target_chapter=5)
+    records = read_pattern_registry(root)
     assert all(
         item["status"] == "expired"
         for item in records
-        if item["issue_code"].startswith("issue_")
+        if item["finding_code"].startswith("ISSUE_")
     )
-    continuity = next(item for item in records if item["issue_code"] == "continuity_risk")
-    assert continuity["status"] == "resolved"
-    assert "auto:no_recurrence_for_two_completed_chapters" in continuity["resolution_evidence"]
+    continuity = next(item for item in records if item["finding_code"] == "CONTINUITY_RISK")
+    assert continuity["status"] == "monitoring"
 
-    refresh_feedback_registry(
+    refresh_editorial_pattern_registry(
         root,
         chapter_number=6,
-        observations=[feedback_observation("late_issue", "P2", "late")],
+        observations=[pattern_observation("LATE_ISSUE", "P2", "late")],
     )
-    changed = truncate_feedback_registry(root, to_chapter=2)
-    assert changed == ("50_workbench/quality_feedback/registry.jsonl",)
-    assert not any(item["issue_code"] == "late_issue" for item in read_registry(root))
+    changed = truncate_editorial_pattern_registry(root, to_chapter=2)
+    assert changed == ("50_workbench/editorial_patterns/registry.jsonl",)
+    assert not any(item["finding_code"] == "LATE_ISSUE" for item in read_pattern_registry(root))
     assert canonical_hashes(root) == canonical_before
 
 
-def test_corrupt_feedback_registry_uses_bounded_fallback_without_canonical_writes(tmp_path):
-    _, root = seed_project(tmp_path)
-    canonical_before = canonical_hashes(root)
-    registry = root / "50_workbench" / "quality_feedback" / "registry.jsonl"
+def test_corrupt_editorial_pattern_registry_requires_explicit_rebuild(tmp_path):
+    config, root = seed_project(tmp_path)
+    registry = root / "50_workbench" / "editorial_patterns" / "registry.jsonl"
     registry.parent.mkdir(parents=True, exist_ok=True)
     registry.write_text("{broken\n", encoding="utf-8")
-    humanize = root / "50_workbench" / "humanizer_tasks" / "ch001.humanize_check.json"
-    humanize.parent.mkdir(parents=True, exist_ok=True)
-    humanize.write_text(
-        json.dumps(
-            {
-                "passed": False,
-                "issues": [
-                    {
-                        "code": "dialogue_sameness",
-                        "severity": "P1",
-                        "message": "The speakers use the same speech acts.",
-                    }
-                ],
-                "warnings": [],
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    carryover = build_feedback_carryover(root, 2)
-
-    assert carryover["status"] == "available"
-    assert carryover["items"][0]["schema"] == "quality_feedback_fallback_v1"
-    assert len(carryover["items"]) <= 5
-    assert any("warning" in note.lower() for note in carryover["notes"])
+    with pytest.raises(ValueError, match="Invalid editorial pattern JSONL"):
+        pattern_registry_status(config)
+    doctor = doctor_payload("all", project=str(config.path))
+    check = next(item for item in doctor["checks"] if item["name"] == "editorial_pattern_registry")
+    assert check["ok"] is False
+    canonical_before = canonical_hashes(root)
+    rebuilt = rebuild_editorial_pattern_registry(config)
+    assert rebuilt.total == 0
     assert canonical_hashes(root) == canonical_before
 
 
@@ -506,15 +537,16 @@ def seed_project(tmp_path: Path):
     return config, project.root
 
 
-def feedback_observation(issue_code: str, severity: str, evidence_hash: str) -> dict:
+def pattern_observation(finding_code: str, severity: str, evidence_hash: str) -> dict:
+    digest = hashlib.sha256(evidence_hash.encode("utf-8")).hexdigest()
     return {
-        "issue_code": issue_code,
+        "role_id": "scene_prose_editor",
+        "finding_code": finding_code,
         "severity": severity,
-        "kind": "editorial_aggregate",
         "source_path": "50_workbench/editorial_reviews/ch001.aggregate.json",
-        "owner_task": "chapter_write:ch002",
-        "summary": f"Resolve {issue_code} through causal scene work.",
-        "evidence_hash": hashlib.sha256(evidence_hash.encode("utf-8")).hexdigest(),
+        "source_sha256": digest,
+        "candidate_sha256": hashlib.sha256(b"candidate").hexdigest(),
+        "evidence_hash": digest,
     }
 
 

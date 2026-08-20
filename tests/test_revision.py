@@ -2,8 +2,11 @@ import json
 
 import pytest
 
+from longform_engine.arc_simulation import current_basis_hashes, write_arc_causal_simulation
 from longform_engine.config import load_project_config
 from longform_engine.db import query_table, status as db_status
+from longform_engine.quality import refresh_editorial_pattern_registry
+from longform_engine.reader_promises import materialize_reader_promise_ledger, write_reader_promise_ledger
 from longform_engine.revision import create_revision_branch, project_status, rollback, rollback_impact
 from longform_engine.revision import pipeline as revision_pipeline
 from longform_engine.storage import init_project
@@ -63,6 +66,18 @@ def test_revision_rollback_detaches_future_files_marks_stale_and_reports(tmp_pat
     assert graph_stale["to_chapter"] == 1
     assert "50_workbench/writing_tasks/ch004.json" in task_stale["stale_paths"]["writing_tasks"]
     assert "60_rag/chunks/ch002.json" in rag_stale["stale_paths"]["rag_chunks"]
+    assert not (root / "50_workbench" / "editorial_patterns" / "registry.jsonl").read_text(
+        encoding="utf-8"
+    ).strip()
+    simulation = json.loads(
+        (root / "20_outline" / "arc_simulations" / "ch001-ch004.json").read_text(encoding="utf-8")
+    )
+    assert simulation["status"] == "stale"
+    promises = json.loads(
+        (root / "30_state" / "reader_promise_ledger.json").read_text(encoding="utf-8")
+    )
+    assert promises["items"][0]["status"] == "planned"
+    assert promises["items"][0]["actual_evidence"] == []
 
     impact = rollback_impact(project_config)
     assert "ch002" in "\n".join(impact.affected_summaries)
@@ -108,6 +123,9 @@ def test_revision_rollback_late_failure_restores_files_vector_and_sqlite(tmp_pat
             root / "40_manuscript" / "draft" / "ch004.md",
             root / "20_outline" / "chapter_cards" / "ch002.json",
             root / "30_state" / "novel_state.json",
+            root / "30_state" / "reader_promise_ledger.json",
+            root / "50_workbench" / "editorial_patterns" / "registry.jsonl",
+            root / "20_outline" / "arc_simulations" / "ch001-ch004.json",
         )
     }
     database_rows = query_table(project_config, "chapters", limit=20)
@@ -139,6 +157,114 @@ def seed_revision_project(tmp_path):
     config = load_project_config(template="qidian-longform")
     project = init_project(config, output=tmp_path / "novel")
     root = project.root
+    (root / "20_outline" / "planning_window.json").write_text(
+        json.dumps(
+            {
+                "schema": "rolling_outline_window_v1",
+                "start_chapter": 1,
+                "end_chapter": 4,
+                "detailed_horizon": 4,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    write_reader_promise_ledger(
+        root,
+        materialize_reader_promise_ledger(
+            [
+                {
+                    "promise_id": "test:route_control",
+                    "promise_type": "situation",
+                    "reader_expectation": "Control of the route must visibly change.",
+                    "owner_story_engine": "route_conflict",
+                    "setup_chapter": 2,
+                    "payoff_window": {"earliest": 2, "target": 3, "latest": 4},
+                    "staged_payoffs": [],
+                    "status": "paid",
+                    "actual_evidence": [
+                        {
+                            "chapter_number": 2,
+                            "action": "setup",
+                            "reader_gain": "The route becomes contested.",
+                            "source_path": "40_manuscript/final/ch002.md",
+                            "source_sha256": "d" * 64,
+                        },
+                        {
+                            "chapter_number": 3,
+                            "action": "payoff",
+                            "reader_gain": "Control of the route changes.",
+                            "source_path": "40_manuscript/final/ch003.md",
+                            "source_sha256": "e" * 64,
+                        },
+                    ],
+                    "deferrals": [],
+                }
+            ]
+        ),
+    )
+
+    refresh_editorial_pattern_registry(
+        root,
+        chapter_number=2,
+        observations=[
+            {
+                "role_id": "scene_prose_editor",
+                "finding_code": "RESTART_LOOP",
+                "severity": "P1",
+                "source_path": "50_workbench/editorial_reviews/ch002.aggregate.json",
+                "source_sha256": "a" * 64,
+                "candidate_sha256": "b" * 64,
+                "evidence_hash": "c" * 64,
+            }
+        ],
+    )
+    write_arc_causal_simulation(
+        root,
+        {
+            "schema": "arc_causal_simulation_v1",
+            "from_chapter": 1,
+            "to_chapter": 4,
+            "basis_hashes": current_basis_hashes(root),
+            "protagonist_goal": "Protect the route through the rollback boundary.",
+            "opposition_agenda": "Force the route into an irreversible detour.",
+            "character_drives": [
+                {
+                    "character_id": "lin_chi",
+                    "private_goal": "Keep the route open.",
+                    "refusal_point": "Will not abandon the witness.",
+                    "offscreen_intent": "Checks the second gate.",
+                }
+            ],
+            "knowledge_boundaries": ["Lin Chi does not know who sealed the second gate."],
+            "offstage_actions": ["The opposition closes the lower route."],
+            "resource_shifts": ["The route token moves to the ally."],
+            "relationship_shifts": ["Trust becomes operational liability."],
+            "collision_points": [
+                {
+                    "chapter_number": 2,
+                    "participants": ["lin_chi", "opposition"],
+                    "collision": "Both need the same gate.",
+                    "required_change": "Control of the route changes.",
+                }
+            ],
+            "causal_obligations": [
+                {
+                    "chapter_number": number,
+                    "cause": "The lower route closes.",
+                    "pressure": "The witness will be cut off.",
+                    "choice": "Lin Chi shares the token.",
+                    "consequence": "The ally controls the next move.",
+                }
+                for number in range(1, 5)
+            ],
+            "approved_by": "human",
+            "status": "approved",
+        },
+    )
 
     state = {
         "current_chapter": 4,

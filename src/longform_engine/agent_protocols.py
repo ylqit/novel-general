@@ -45,6 +45,7 @@ DESIGN_TASK_TYPES = frozenset(
         "book_design",
         "character_expression_design",
         "outline_design",
+        "arc_simulation",
         "outline_extension",
         "chapter_direction",
         "outline_revision",
@@ -96,6 +97,14 @@ DESIGN_REQUIRED_HEADINGS: dict[str, tuple[str, ...]] = {
         "人物弧",
         "伏笔窗口",
         "结局闭环",
+    ),
+    "arc_simulation": (
+        "模拟范围与依据",
+        "角色私人目标与拒绝点",
+        "知识边界与场外行动",
+        "资源与关系变化",
+        "碰撞点与因果义务",
+        "人工批准",
     ),
     "outline_extension": (
         "承接状态",

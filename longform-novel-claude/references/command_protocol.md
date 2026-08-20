@@ -30,7 +30,12 @@
 | `/工程生产看板` | `longform-engine production board project.yaml` | `project.yaml` | 只读 | 按章节显示 draft、final、gate、repair、graph、memory、pacing 和 editorial 状态。 |
 | `/工程推进` | `longform-engine production loop project.yaml --no-apply` | `project.yaml` | 确定性流程产物；不自动 apply/finalize | 推进确定性步骤，遇到 Agent 输出、人工确认或 canonical apply/finalize 时暂停。 |
 | `/工程创意工单` | `longform-engine intelligence task project.yaml --task-type book_ideation` | `project.yaml` | workbench 候选 | 每轮只处理一个创意维度，Agent 给 2-3 个带取舍的选项；必须记录用户明确选择。 |
+| `/工程因果模拟` | `longform-engine intelligence task project.yaml --task-type arc_simulation --from-chapter A --to-chapter B` | 滚动窗口、当前故事引擎/承诺/角色/宏观纲要 basis | 人工批准的规划约束 | 为窗口逐章声明人物目标、场外行动、碰撞和因果义务；basis 变化后必须重做。 |
+| `/工程滚动扩纲` | `longform-engine intelligence task project.yaml --task-type outline_extension --from-chapter A --to-chapter B` | 已批准且完整覆盖同一范围的因果模拟 | workbench 候选 | 直接 CLI 与 `production next` 都会拒绝缺失、过期或不覆盖的模拟；扩纲上下文实际携带其因果义务。 |
 | `/工程章节方向` | `longform-engine intelligence task project.yaml --task-type chapter_direction --chapter N` | `--chapter N` | workbench 候选 | 每个尚未应用方向的章节都生成 2-3 个因果不同且带代价的方向；人工 apply 后由 CLI 更新章节卡。 |
+| `/工程故事简审任务` | `longform-engine chapter human-review-task project.yaml --chapter N` | `--chapter N` | `50_workbench/human_story_reviews/` | 全部独立审稿完成后，生成绑定当前正文与章节合同 hash 的六项人工简审。 |
+| `/工程故事简审校验` | `longform-engine chapter human-review-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation 报告 | 校验 accept/repair/redirect、五项判断和 preserve/expand_scene/compress/replace_carrier span。 |
+| `/工程故事简审应用` | `longform-engine chapter human-review-apply project.yaml --chapter N --file ... --approved-by human` | `--chapter N`、`--file`、人工确认 | 决定工件；redirect 使用 transaction v3 | accept 解锁 finalize；repair 进入两轮修章预算；redirect 返回方向或人工改纲。 |
 | `/工程人物设计` | `longform-engine character design-task project.yaml` | `project.yaml` | workbench 候选 | 生成 `character_expression_profile_v1` 工单；旧 Book Design v1 会在写第一章前进入此补全步骤。 |
 | `/工程人物设计校验` | `longform-engine character design-validate project.yaml --file ...` | `--file` | validation 报告 | 校验叙事表达画像、人物覆盖、声音/行为/身体/面具/反差合同，不写 Bible。 |
 | `/工程人物设计应用` | `longform-engine character design-apply project.yaml --file ... --approved-by human` | `--file`、人工确认 | `10_bible/character_expression.json` | 事务应用人物表达合同；Agent 不能直接写 Bible。 |
@@ -69,7 +74,7 @@
 | --- | --- | --- | --- | --- |
 | `/工程章节卡` | `longform-engine plan-chapter project.yaml --chapter N` | `--chapter N` | `20_outline/chapter_cards/` | 生成或刷新章节卡。 |
 | `/工程分镜` | `longform-engine beat project.yaml --chapter N` | `--chapter N` | `50_workbench/beats/` | 生成 Beat Sheet。 |
-| `/工程续章` | `longform-engine continue-write project.yaml --chapter N` | `--chapter N` | `50_workbench/writing_tasks/` | 生成给 Agent 的章节任务包。 |
+| `/工程续章` | `longform-engine continue-write project.yaml --chapter N` | `--chapter N` | `50_workbench/writing_tasks/` | 生成 `chapter_story_brief_v2` 作者任务；事实、承诺 ID、因果模拟和编辑模式不进入作者 Markdown。 |
 | `/工程批量续章` | `longform-engine batch-write project.yaml --chapters N --stop-on-gate-failure` | `--chapters N` | `50_workbench/writing_tasks/`、run reports | 安全调度多章任务，遇到门禁失败停止。 |
 
 ## 草稿与门禁
@@ -165,7 +170,7 @@
 | `/工程重写分支` | `longform-engine revision branch project.yaml --chapter N` | `--chapter N` | `40_manuscript/rewrite/` | 创建章节重写候选分支。 |
 | `/工程回滚` | `longform-engine revision rollback project.yaml --to-chapter N` | `--to-chapter N` | `40_manuscript/detached/`、stale 标记 | 回滚到指定章节并保留脱离稿。 |
 | `/工程快照` | `longform-engine revision snapshot project.yaml --label label` | `--label` | `70_runtime/snapshots/` | 创建轻量项目快照。 |
-| `/工程改纲` | `longform-engine revise-outline project.yaml --from-chapter N --change-description "..."` | `--from-chapter`、`--change-description` | `20_outline/`、stale 标记 | 重算大纲锚点并标记受影响产物。 |
+| `/工程改纲` | `longform-engine intelligence task project.yaml --task-type outline_revision --from-chapter N --to-chapter M` | 起止章节、人工批准的改纲文档及 compile delta；延期时在 `replacements.reader_promise_deferrals` 给出 promise ID、严格后移的最迟章与理由 | 通过 transaction v3 更新纲要/承诺，截断受影响编辑模式，并同步失效因果模拟、章节卡、作者工作单、Agent 任务与 SQLite 投影 | 已定稿章节必须先 rollback；承诺延期只接受人工批准且必须延长原边界；候选校验、compile/apply 均完成后才生效。 |
 
 ## 创作与审稿
 
@@ -180,9 +185,10 @@
 | `/工程校验润色语义` | `longform-engine creative humanize-semantic-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | `50_workbench/humanizer_tasks/` | 校验双侧 hash/span、事实维度、人物声音和阻断 finding；通过后仍需 `draft submit`。 |
 | `/工程收益审稿` | `longform-engine quality payoff-task project.yaml --chapter N` | `--chapter N` | `50_workbench/quality_reviews/` | 在 gate 通过后生成读者收益、代价、承诺进度与章节结构观察工作单。 |
 | `/工程校验收益` | `longform-engine quality payoff-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | `50_workbench/quality_reviews/` | 校验当前 draft hash、计划字段、精确 span、伪兑现 finding 与结构重复；通过后仍需显式 finalize。 |
-| `/工程反馈状态` | `longform-engine quality feedback-status project.yaml --chapter N` | 可选 `--chapter N` | `50_workbench/quality_feedback/` | 查看 active/carried/resolved/suppressed/expired，并按目标章节计算 TTL。 |
-| `/工程解决反馈` | `longform-engine quality feedback-resolve project.yaml --id ... --evidence "..."` | `--id`、`--evidence` | `50_workbench/quality_feedback/registry.jsonl` | 用明确证据解决一条反馈，后续工作单不再携带。 |
-| `/工程抑制反馈` | `longform-engine quality feedback-suppress project.yaml --id ... --evidence "..."` | `--id`、`--evidence` | `50_workbench/quality_feedback/registry.jsonl` | 明确抑制误报或不适用反馈；不改小说 canonical state。 |
+| `/工程编辑模式状态` | `longform-engine editorial pattern-status project.yaml --chapter N` | 可选观察边界 `--chapter N` | `50_workbench/editorial_patterns/` | 查看结构化审稿 finding 的跨章复发与证据状态；P2 仅在其后已有三个 chapter closure 时过期，参数本身不能推进完成度；不代表读者行为。 |
+| `/工程解决编辑模式` | `longform-engine editorial pattern-resolve project.yaml --id ... --evidence path/to/evidence.json` | `--id`、项目内证据文件 | `50_workbench/editorial_patterns/registry.jsonl` | 用可哈希的编辑或人工证据解决；P1 不会因后续未报告自动关闭。 |
+| `/工程抑制编辑模式` | `longform-engine editorial pattern-suppress project.yaml --id ... --evidence path/to/evidence.json` | `--id`、项目内证据文件 | `50_workbench/editorial_patterns/registry.jsonl` | 以证据抑制不适用模式；不改变当前 review bundle 门禁。 |
+| `/工程重建编辑模式` | `longform-engine editorial pattern-rebuild project.yaml` | `project.yaml` | `50_workbench/editorial_patterns/registry.jsonl` | 仅从结构化审稿工件显式重建；损坏时 doctor 只警告，不自动猜测自然语言代码。 |
 | `/工程审稿` | `longform-engine editorial review project.yaml --chapter N` | `--chapter N` | `50_workbench/editorial_reviews/` | 生成单章审稿。 |
 | `/工程批审` | `longform-engine editorial batch-review project.yaml --chapter-start A --chapter-end B` | `--chapter-start`、`--chapter-end` | `50_workbench/editorial_reviews/` | 生成章节范围审稿。 |
 | `/工程审稿状态` | `longform-engine editorial status project.yaml` | `project.yaml` | 只读 | 查看审稿状态。 |
@@ -211,21 +217,23 @@ Editorial review contract:
 
 `/工程续章` 是续写章节的主入口，对应 `longform-engine continue-write project.yaml --chapter N`。它只生成或刷新 Agent 写作任务包，不直接写 final、RAG、story graph、memory、TCS 或 SQLite；中文工程命令保持为唯一主入口。
 
-执行 `/工程续章` 前，Agent 必须完成以下预检：
+执行 `/工程续章` 前，作者 Agent 只读取 `50_workbench/writing_tasks/chNNN.md` 中的 `chapter_story_brief_v2`。配对 JSON、fact inventory、承诺账本、因果模拟、编辑模式、RAG、Graph、TCS 和数据库工件属于 CLI/规划/编辑/语义档案控制面，不得作为作者上下文直接加载。作者必须完成以下预检：
 
-1. 用户偏好：确认 Creative Brief 或任务包里的目标读者、文风、禁忌体验、自动化等级和最近用户要求。
-2. 自动兜底：偏好缺失时使用任务包默认值，不要求用户提供额外 API key；只有章节号、项目路径等安全信息缺失时才询问。
-3. 节奏预检：读取 `event_recommendation`、`constraint_packet.event_matrix`、最近 5 章节奏、柔和事件要求、快档配额和 gate history。
-4. 章末钩子声明：读取 `writing_brief.chapter_hook`、`reverse_brake.must_keep_suspense`，写稿前明确本章最后要保留的压力、线索或反转。
-5. 禁揭露确认：读取 `reverse_brake.forbidden_reveals`、`this_chapter_must_not_solve`、`allowed_reveal_level`，非终局章节不得完整解决核心秘密。
-6. 失败兜底：上一章未 final、上一章 gate failed、stale indexes、人工暂停或任务包缺失时，停止续章并转入 `/工程修章`、`/工程验稿`、`/工程放行`、`/工程重写分支`、`/工程回滚` 或 rebuild 路径。
+1. 故事压力：确认本章正在发生什么、主角要什么、谁或什么拒绝、最早失败、不可逆选择和可见代价。
+2. 场景链：逐场确认行动、反应、选择、代价和离场状态；关键转折必须完整演出，只压缩 Brief 允许压缩的过程。
+3. 读者与人物：确认读者收益、情绪余波和关系变化属于事件与人物选择，而不是旁白说明。
+4. 保护边界：保留受保护结果和禁止偏移；若 Brief 缺少边界或与方向冲突，停止并回到 CLI 校验/人工改向。
+5. 载体风险：读取 Brief 的最近五章载体与重复风险；通过改变压力、人物承担者或解决方式处理，不使用固定战斗/对白/钩子配额。
+6. 失败兜底：上一章未 close、当前 gate failed、stale indexes、人工暂停或 Story Brief 缺失时，停止续章并按 `production next` 返回修章、审稿、改向、改纲、回滚或 rebuild 路径。
 
 五步闭环：
 
-1. `/工程续章` -> `continue-write` 生成 `50_workbench/writing_tasks/chNNN.md` 和 JSON。
+1. `/工程续章` -> `continue-write` 生成作者可读的 `chNNN.md` Story Brief 和 CLI 内部 JSON/fact inventory；作者只读 Markdown。
 2. Agent 只写 `50_workbench/agent_drafts/chNNN.codex.md` 或 `chNNN.claude.md`。
 3. `/工程提交稿` -> `draft submit` 把候选稿送入受控 draft。
 4. `/工程验稿` -> `gate-check` 检查节奏、反向刹车、风格、Humanizer、图谱、记忆和语义风险。
-5. `/工程定稿` -> `chapter finalize` 只在 gate 通过或有效放行后写入正式正文、收益和结构观察；失败则修章、润色、审稿、放行、重写分支或回滚。
-6. `/工程章节语义任务` -> Agent 对 final 做一次证据化统一抽取，CLI validate 后由用户显式 `/工程章节语义应用`。
-7. `/工程关闭章节` -> 验证图谱、角色当前状态、伏笔、TCS 与派生索引完整后关闭；关闭前不得续写下一章。
+5. `/工程审稿` -> 每章必做 `scene_prose_editor`，风险角色追加；所有独立审稿必须绑定当前候选 hash。
+6. `/工程故事简审` -> 人工选择 accept、repair 或 redirect；只有当前 hash 的 accept 才允许定稿。
+7. `/工程定稿` -> `chapter finalize --approved-by human` 写入正式正文、收益和结构观察；失败则修章、改向、改纲或回滚。
+8. `/工程章节语义任务` -> Agent 对 final 做一次证据化统一抽取，CLI validate 后由用户显式 `/工程章节语义应用`。
+9. `/工程关闭章节` -> 验证图谱、角色当前状态、伏笔、TCS 与派生索引完整后关闭；关闭前不得续写下一章。

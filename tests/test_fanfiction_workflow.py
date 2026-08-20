@@ -9,6 +9,7 @@ from longform_engine.agent_protocols import (
     DESIGN_REQUIRED_HEADINGS,
 )
 from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
+from longform_engine.arc_simulation import current_basis_hashes, load_active_arc_simulation, write_arc_causal_simulation
 from longform_engine.config import load_project_config
 from longform_engine.creative import humanize_check, humanize_task
 from longform_engine.editorial import editorial_review
@@ -181,6 +182,21 @@ def book_design() -> dict:
             "automation_level": "agent_skill with explicit human apply.",
             "target_scale": "4 chapters.",
             "story_profile": load_project_config(template="qidian-longform").data["story_profile"],
+            "story_engine_contract": {
+                "schema": "story_engine_contract_v1",
+                "reader_fantasy": "See familiar characters retain agency while a changed choice opens a new route.",
+                "repeatable_action_loop": "Test a canon rule, face a character refusal, choose a cost, and follow the divergence.",
+                "progression_loop": "Earn access and understanding without making canon abilities irrelevant.",
+                "relationship_loop": "Divergence changes trust through choices owned by each canon character.",
+                "mystery_or_question_loop": "Each gate answer changes who controls the next choice.",
+                "expected_payoffs": {
+                    "opening_three": "A recognizable canon choice, one visible divergence cost, and a new gate problem.",
+                    "early_serial": "The changed route pays off without displacing canon character agency.",
+                    "volume_end": "The new gate resolves while the protected canon question remains owned by its characters.",
+                },
+                "carrier_palette": ["exploration", "rescue", "negotiation", "relationship conflict"],
+                "theme_carrier_limits": "Canon explanation cannot replace character action or make ritual discussion the only carrier.",
+            },
             "design_decisions": {
                 "core_hook": "The key opens a different gate after one changed choice.",
                 "world_rule": "Every divergence must create a visible consequence.",
@@ -382,6 +398,9 @@ def valid_outline(config) -> dict:
                 "voice_refs": ["classic:lin_zhou", "classic:gatekeeper"],
                 "original_contribution": "Advance the alternate-gate duty conflict.",
                 "protected_reveals": ["identity of the original gate controller"],
+                "protected_canon_outcomes": [
+                    "Lin Zhou owns the decision to accept or refuse the threshold duty."
+                ],
             }
         )
     return outline
@@ -624,6 +643,29 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
     write_design_candidate(outline_candidate, "outline_design", outline_payload)
     apply_design_output(config, root, "outline_design", outline_candidate, outline_payload)
 
+    window = outline_payload["planning_window"]
+    simulation = {
+        "schema": "arc_causal_simulation_v1",
+        "from_chapter": window["start_chapter"],
+        "to_chapter": window["end_chapter"],
+        "basis_hashes": current_basis_hashes(root),
+        "protagonist_goal": "Test the alternate gate without surrendering agency.",
+        "opposition_agenda": "Bind the protagonist to the threshold before revealing its controller.",
+        "character_drives": [
+            {"character_id": "classic:lin_zhou", "private_goal": "Preserve a route of retreat.", "refusal_point": "Refuses an open-ended oath.", "offscreen_intent": "Tests one physical limit before bargaining."},
+            {"character_id": "classic:gatekeeper", "private_goal": "Protect the threshold.", "refusal_point": "Refuses proof without duty.", "offscreen_intent": "Closes the safe route before the second test."},
+        ],
+        "knowledge_boundaries": ["Neither character knows the final controller's identity."],
+        "offstage_actions": ["The controller changes one threshold condition after each test."],
+        "resource_shifts": ["Every test consumes a safe route or bargaining option."],
+        "relationship_shifts": ["A witnessed condition can create a bounded operational bargain."],
+        "collision_points": [{"chapter_number": number, "participants": ["classic:lin_zhou", "classic:gatekeeper"], "collision": "Proof requires a duty the protagonist will not grant freely.", "required_change": "One route or condition becomes unavailable."} for number in range(window["start_chapter"], window["end_chapter"] + 1)],
+        "causal_obligations": [{"chapter_number": number, "cause": "The prior test changes the threshold.", "pressure": "The safe route is closing.", "choice": "Lin Zhou narrows the offered duty.", "consequence": "The bargain binds both parties to one condition."} for number in range(window["start_chapter"], window["end_chapter"] + 1)],
+        "approved_by": "human",
+        "status": "approved",
+    }
+    write_arc_causal_simulation(root, simulation)
+
     direction_task = create_intelligence_task(
         config,
         task_type="chapter_direction",
@@ -631,30 +673,39 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
     )
     direction_candidate = root / direction_task.candidate_file
     card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
+    card_payload = json.loads(card_path.read_text(encoding="utf-8"))
     reasons = assess_chapter_direction(config, 1)["reasons"]
     direction = {
         "book_goal": "Resolve who controls the alternate gate.",
         "volume_goal": "Make the first divergence create a visible obligation.",
         "protagonist_goal": "Test the gate without surrendering agency.",
-        "featured_character_ids": ["classic:lin_zhou", "classic:gatekeeper"],
+        "featured_character_ids": card_payload["featured_character_ids"],
         "scene_chain": [
             {
                 "scene_id": "test_threshold",
                 "location": "alternate gate",
                 "participants": ["classic:lin_zhou", "classic:gatekeeper"],
+                "carrier": "exploration",
                 "desire_collision": "Lin Zhou wants proof while the keeper wants compliance.",
+                "action": "Lin Zhou turns the key against the keeper's warning and tests the threshold.",
+                "reaction": "The gate records his voice and seals the route behind him.",
                 "choice": "Lin Zhou tests one boundary before answering.",
                 "cost": "The key records his voice and closes the safe route.",
                 "turn": "The keeper must reveal one rule to prevent a breach.",
+                "exit_state": "Lin Zhou is inside the threshold without the safe route back.",
             },
             {
                 "scene_id": "accept_condition",
                 "location": "inside the threshold",
                 "participants": ["classic:lin_zhou", "classic:gatekeeper"],
+                "carrier": "negotiation",
                 "desire_collision": "Lin Zhou wants an exit while the keeper needs a binding witness.",
+                "action": "The keeper offers an open oath; Lin Zhou names a narrower duty.",
+                "reaction": "The keeper rejects the first limit but accepts a witnessed condition.",
                 "choice": "Lin Zhou accepts one named duty but refuses an open-ended oath.",
                 "cost": "The safe route stays closed until the duty is discharged.",
                 "turn": "Their guarded relationship becomes a temporary operational bargain.",
+                "exit_state": "Both characters own one enforceable condition of the bargain.",
             },
         ],
         "cast_desires": {
@@ -664,36 +715,70 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
         "dialogue_ownership": "Lin Zhou narrows claims; the keeper answers with conditions.",
         "embodiment_plan": "Use the key turning in a sleeve and a hand resting on the gate seam.",
         "interiority_function": "Expose the urge to withhold trust before the costly answer.",
+        "immediate_desire": "Test the alternate gate while preserving a route of retreat.",
+        "opposition_force": "The gatekeeper refuses proof without a binding duty and the gate itself records choices.",
+        "dramatic_question": "Can Lin Zhou test the gate without surrendering his future choices?",
         "conflict": "Testing the gate consumes the only safe retreat window.",
-        "information_release": "The alternate gate records voice as part of its access rule.",
-        "local_payoff": "The changed answer produces an immediate mechanical consequence.",
+        "key_failure": "The first test records Lin Zhou's voice and closes the safe route.",
+        "irreversible_choice": "Lin Zhou accepts one named duty and refuses the open oath.",
+        "chapter_turn": card_payload["chapter_turn"],
+        "reveal_boundary": "Reveal the voice rule without revealing the original controller.",
+        "must_dramatize": ["the failed gate test", "the keeper's refusal", "the bounded oath"],
+        "may_summarize": ["routine movement within the threshold"],
+        "primary_story_engine": "rule_test_and_bargain",
+        "scene_carriers": ["exploration", "negotiation"],
+        "protected_story_outcomes": card_payload["protected_story_outcomes"],
+        "prohibited_drift": ["Do not let the original protagonist solve the gate for Lin Zhou."],
+        "state_change_kind": card_payload["state_change_kind"],
+        "dramatic_method": "failed_test_then_bounded_bargain",
+        "exposition_carrier": "rule_revealed_by_consequence",
+        "local_payoff": card_payload["reader_gain"],
         "character_cost": "Lin Zhou loses the unrecorded route back.",
         "mainline_move": "The divergence becomes an active duty conflict.",
         "character_arc_move": "Lin Zhou chooses a bounded test instead of passive distrust.",
         "foreshadow_move": "The hidden controller remains protected while its method appears.",
-        "relationship_move": "Mutual testing becomes a temporary operational bargain.",
+        "relationship_move": card_payload["relationship_move"],
         "ending_mode": "changed_problem",
         "main_risks": ["Canon terminology could replace visible consequence."],
         "canon_refs": ["classic:event_warning"],
         "world_rule_refs": ["classic:rule_fire"],
         "foreshadow_refs": [],
         "forbidden_reveals": ["identity of the original gate controller"],
+        "protected_canon_outcomes": ["Lin Zhou owns the decision to accept or refuse the threshold duty."],
+        "changed_scene_means": "The alternate gate records voice instead of opening through the original ritual sequence.",
+        "canon_character_agency": "Lin Zhou tests, refuses, and narrows the bargain; the gatekeeper independently sets the threshold cost.",
+        "new_long_term_facts": [],
+        "outline_revision_required": False,
     }
     selected_direction = {
         "id": "test_gate",
         "title": "Test the gate",
-        "chapter_duty": "Turn the first divergence into a costly choice.",
+        "chapter_duty": card_payload["chapter_duty"],
         **direction,
     }
     selected_direction["reader_gain"] = selected_direction.pop("local_payoff")
     selected_direction["cost"] = selected_direction.pop("character_cost")
+    current_simulation, simulation_path, simulation_hash = load_active_arc_simulation(root, chapter_number=1)
+    selected_direction["reader_promise_actions"] = [{
+        "promise_id": "story_engine:opening_three",
+        "action": "setup",
+        "intended_reader_gain": selected_direction["reader_gain"],
+        "evidence_requirement": "Show the changed gate condition in final prose.",
+        "defer_reason": "",
+    }]
+    selected_direction["arc_simulation_ref"] = {
+        "path": simulation_path.relative_to(root).as_posix(),
+        "sha256": simulation_hash,
+        "from_chapter": current_simulation["from_chapter"],
+        "to_chapter": current_simulation["to_chapter"],
+    }
     direction_payload = {
-        "schema": "chapter_direction_candidate_v2",
+        "schema": "chapter_direction_candidate_v4",
         "chapter_number": 1,
         "chapter_card_sha256": sha256(card_path.read_bytes()).hexdigest(),
         "trigger_reasons": reasons,
         "selected_direction": selected_direction,
-        "selection": {"direction_id": "test_gate", "user_adjustments": {}},
+        "selection": {"direction_id": "test_gate", "user_adjustments": {}, "repetition_reason": ""},
         "canonical_refs": selected_direction["canon_refs"],
         "introduced_elements": [],
     }
@@ -863,7 +948,7 @@ def test_fanfiction_similarity_excludes_names_but_detects_continuous_source_pros
     assert any(item["code"] == "fanfiction_source_prose_reproduction" for item in failures)
 
 
-def test_humanizer_v3_escalates_fact_and_excessive_rewrite_drift(tmp_path):
+def test_humanizer_v4_escalates_fact_and_excessive_rewrite_drift(tmp_path):
     config, root, source_path = seed_fanfiction_project(tmp_path)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# 第一章\n\n林舟在第12层青铜门前握住星纹钥匙。\n", encoding="utf-8")

@@ -54,6 +54,7 @@ SUPPORTED_HOSTS = frozenset({"codex", "claude-code"})
 
 TASK_OBJECTIVES: dict[str, str] = {
     "adaptation_analysis": "只提炼可迁移的结构与技法，不重构来源正文。",
+    "arc_simulation": "在滚动窗口内模拟人物目标、拒绝、场外行动与逐章因果义务，不代写正文。",
     "book_design": "建立可执行的读者承诺、稳定人物、世界规则、长期矛盾与结局边界。",
     "book_ideation": "只解决一个明确创作决定，并呈现每个可行选择的真实代价。",
     "chapter_direction": "提供因果上真正不同的章节方向与代价，不代写正文。",
@@ -386,7 +387,7 @@ def compile_isolated_agent_package(
     manifest: dict[str, Any],
     *,
     host: str,
-    controlled_feedback: Iterable[dict[str, Any] | str] = (),
+    review_advisories: Iterable[dict[str, Any] | str] = (),
     registry: RoleRegistry | None = None,
 ) -> IsolatedAgentPackage:
     """Compile one complete Phase 5 package without registering or advancing it."""
@@ -417,7 +418,7 @@ def compile_isolated_agent_package(
         task_objective=TASK_OBJECTIVES[task_type],
         output_summary=f"按 `{output_contract.protocol}` 写入 `{output_contract.output_path}`。",
         output_guidance=output_instructions,
-        controlled_feedback=controlled_feedback,
+        review_advisories=review_advisories,
         manifest_validation={
             "ok": validation.ok,
             "errors": list(validation.errors),

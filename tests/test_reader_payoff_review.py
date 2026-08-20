@@ -18,7 +18,7 @@ from longform_engine.quality import (
 )
 from longform_engine.revision import rollback
 from longform_engine.storage import init_project
-from tests.project_fixtures import checked_review_coverage, mark_project_ready
+from tests.project_fixtures import approve_story_candidate, checked_review_coverage, mark_project_ready
 
 
 def test_production_schedules_strict_bounded_reader_payoff_task(tmp_path):
@@ -149,6 +149,7 @@ def test_payoff_finalize_records_observed_reward_and_structure_atomically(tmp_pa
     write_json(output, payload)
     assert validate_payoff_output(config, root, task, output).passed is True
 
+    approve_story_candidate(root, config)
     result = finalize_chapter(config, chapter_number=1, approved_by="human")
 
     rewards = read_jsonl(root / "30_state" / "reward_ledger.jsonl")
@@ -165,7 +166,7 @@ def test_payoff_finalize_records_observed_reward_and_structure_atomically(tmp_pa
     assert rewards[0]["planned_gain"] == card["reader_gain"]
     assert rewards[0]["observed_cost"] == positive_diagnosis(payload, "COST_VISIBLE")
     assert rewards[0]["evidence_source_hash"] == hashlib.sha256((text + "\n").encode("utf-8")).hexdigest()
-    assert structures[0]["schema"] == "structure_observation_v1"
+    assert structures[0]["schema"] == "structure_observation_v2"
     assert structures[0]["chapter_number"] == 1
     assert structures[0]["opening_mode"] == "discovery"
     assert structures[0]["language_metrics"]["ngram_signature"]
@@ -236,6 +237,7 @@ def test_finalize_failure_rolls_back_reward_and_structure_history(tmp_path, monk
     output = Path(task.output_file)
     write_json(output, valid_review_payload(root, chapter_number=1))
     assert validate_payoff_output(config, root, task, output).passed is True
+    approve_story_candidate(root, config)
 
     def fail_quality_history(*args, **kwargs):
         raise RuntimeError("simulated quality transaction failure")
@@ -266,8 +268,8 @@ def test_revision_rollback_rebuilds_quality_histories(tmp_path):
     write_jsonl(
         root / "30_state" / "quality" / "structure_history.jsonl",
         [
-            {"schema": "structure_observation_v1", "chapter_number": 1},
-            {"schema": "structure_observation_v1", "chapter_number": 2},
+            {"schema": "structure_observation_v2", "chapter_number": 1},
+            {"schema": "structure_observation_v2", "chapter_number": 2},
         ],
     )
     state_path = root / "30_state" / "novel_state.json"
@@ -302,7 +304,7 @@ def test_production_loop_creates_and_validates_payoff_without_finalize(tmp_path)
     validated = production_loop(config, max_steps=1, no_apply=True)
     assert validated["steps"][0]["action"] == "reader_payoff_validate"
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
-    assert production_next(config)["status"] == "awaiting_finalize"
+    assert production_next(config)["status"] == "ready_for_editorial_review"
 
 
 def test_milestone_payoff_pass_requires_editorial_review_before_finalize(tmp_path):

@@ -7,8 +7,6 @@ from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
-import json
-import re
 
 from longform_engine.agent_isolation import (
     IsolatedAgentPackage,
@@ -29,6 +27,7 @@ from longform_engine.agent_tasks import (
     utc_now,
 )
 from longform_engine.resources import resource_root
+from longform_engine.quality import editorial_patterns_for_task
 from longform_engine.prompting import (
     PromptCompilation,
     refresh_prompt_compilation,
@@ -39,17 +38,6 @@ from longform_engine.storage import apply_transaction
 
 PIPELINE_SCHEMA = "agent_first_production_pipeline_v1"
 AUTHORIZATION_SCHEMA = "agent_first_pipeline_authorization_v2"
-FEEDBACK_SCHEMA = "controlled_agent_feedback_v1"
-SAFE_CODE_PATTERN = re.compile(r"[^A-Za-z0-9_.:-]+")
-FEEDBACK_FILES = (
-    ("gate", "50_workbench/gate_artifacts/ch{chapter:03d}/gate_result.json"),
-    ("humanizer", "50_workbench/humanizer_tasks/ch{chapter:03d}.humanize_check.json"),
-    ("payoff", "50_workbench/quality_reviews/ch{chapter:03d}.reader_payoff.validation.json"),
-    ("pacing", "50_workbench/gate_artifacts/ch{chapter:03d}/semantic_pacing_result.json"),
-    ("editorial", "50_workbench/editorial_reviews/ch{chapter:03d}.aggregate.json"),
-)
-
-
 class AgentProductionPipelineError(ValueError):
     """Raised before an unauthorized or invalid Agent result can advance lifecycle state."""
 
@@ -83,7 +71,6 @@ def require_agent_first_production_pipeline() -> dict[str, Any]:
         "execution_model": report["provenance"]["execution_model"],
     }
 
-
 def compile_production_agent_package(
     root: Path,
     manifest: dict[str, Any],
@@ -93,12 +80,17 @@ def compile_production_agent_package(
     """Compile the production work order only after the shared readiness gate authorizes it."""
 
     require_agent_first_production_pipeline()
-    feedback = controlled_feedback(root.resolve(), manifest)
+    role = manifest.get("role") if isinstance(manifest.get("role"), dict) else {}
+    advisories = editorial_patterns_for_task(
+        root.resolve(),
+        task_type=str(manifest.get("task_type") or ""),
+        role_id=str(role.get("id") or ""),
+    )
     package = compile_isolated_agent_package(
         root.resolve(),
         manifest,
         host=host,
-        controlled_feedback=feedback["items"],
+        review_advisories=advisories,
     )
     protocol_command = (
         f"longform-engine agent-task result-validate project.yaml {package.task_id} "
@@ -258,67 +250,3 @@ def production_package_payload(package: IsolatedAgentPackage) -> dict[str, Any]:
         "host": package.host_work_order.host,
         "work_order_markdown": package.host_work_order.markdown,
     }
-
-
-def controlled_feedback(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
-    """Compile code-only review carryover; never forward prose, evidence spans, or commands."""
-
-    chapter_number = manifest_chapter_number(manifest)
-    task_type = str(manifest.get("task_type") or "")
-    source_chapter = chapter_number - 1 if task_type == "chapter_write" else chapter_number
-    if source_chapter <= 0:
-        return {"schema": FEEDBACK_SCHEMA, "source_chapter": 0, "items": []}
-
-    items: list[dict[str, Any]] = []
-    for kind, template in FEEDBACK_FILES:
-        path = root / template.format(chapter=source_chapter)
-        if not path.is_file():
-            continue
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        codes = feedback_codes(payload)
-        counts = payload.get("severity_counts") if isinstance(payload.get("severity_counts"), dict) else {}
-        status = safe_code(payload.get("status") or payload.get("verdict") or payload.get("severity") or "recorded")
-        item = {
-            "kind": kind,
-            "source_chapter": source_chapter,
-            "source_sha256": sha256(path.read_bytes()).hexdigest(),
-            "status": status,
-            "passed": payload.get("passed") if isinstance(payload.get("passed"), bool) else None,
-            "need_human": payload.get("need_human") is True,
-            "severity_counts": {
-                key: int(counts.get(key) or 0) for key in ("P0", "P1", "P2", "P3")
-            },
-            "codes": codes[:8],
-            "summary": f"{kind} status={status}; codes={','.join(codes[:8]) or 'none'}",
-            "authority": "advisory_only",
-        }
-        items.append(item)
-    return {"schema": FEEDBACK_SCHEMA, "source_chapter": source_chapter, "items": items[:5]}
-
-
-def feedback_codes(payload: dict[str, Any]) -> list[str]:
-    codes: list[str] = []
-    for key in ("failures", "warnings", "issues", "findings", "unresolved_items", "need_human_reasons"):
-        values = payload.get(key)
-        if not isinstance(values, list):
-            continue
-        for value in values:
-            raw = (
-                value.get("code") or value.get("id") or value.get("kind") or value.get("severity")
-                if isinstance(value, dict)
-                else value
-            )
-            code = safe_code(raw)
-            if code and code not in codes:
-                codes.append(code)
-    return codes
-
-
-def safe_code(value: Any) -> str:
-    text = SAFE_CODE_PATTERN.sub("_", str(value or "").strip()).strip("_")[:80]
-    return text or "unspecified"

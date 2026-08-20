@@ -31,9 +31,7 @@ from longform_engine.storage.layout import manuscript_chapter_path
 from .contracts import compile_effective_quality_contract
 
 
-OPENING_MODES = {"action", "dialogue", "aftermath", "discovery", "reflection", "travel", "description", "other"}
 ENDING_MODES = {"decision", "reveal", "threat", "question", "closure", "reversal", "aftermath", "image", "other"}
-GAIN_POSITIONS = {"opening", "middle", "ending", "distributed", "implicit"}
 PROMISE_STATUSES = {"advanced", "fulfilled", "complicated", "unchanged"}
 VERDICTS = {"pass", "repair", "need_human"}
 FINAL_LANE = "fin" + "al"
@@ -881,39 +879,6 @@ def validate_fake_payoff_flags(
             if not isinstance(item.get(key), str) or not item[key].strip():
                 errors.append(f"{label}.{key} must be non-empty.")
         validate_span_indices(item.get("evidence_span_indices"), evidence, f"{label}.evidence_span_indices", errors)
-
-
-def validate_craft_observation(value: Any, errors: list[str]) -> None:
-    expected = {
-        "opening_mode",
-        "topology_id",
-        "ending_mode",
-        "scene_count",
-        "dominant_scene_type",
-        "reader_gain_position",
-        "dialogue_acts",
-        "emotional_curve",
-    }
-    if not isinstance(value, dict):
-        errors.append("craft_observation must be an object.")
-        return
-    require_exact_keys(value, expected, "craft_observation", errors)
-    if value.get("opening_mode") not in OPENING_MODES:
-        errors.append(f"craft_observation.opening_mode must be one of: {', '.join(sorted(OPENING_MODES))}.")
-    if value.get("ending_mode") not in ENDING_MODES:
-        errors.append(f"craft_observation.ending_mode must be one of: {', '.join(sorted(ENDING_MODES))}.")
-    if value.get("reader_gain_position") not in GAIN_POSITIONS:
-        errors.append(
-            f"craft_observation.reader_gain_position must be one of: {', '.join(sorted(GAIN_POSITIONS))}."
-        )
-    if not isinstance(value.get("scene_count"), int) or isinstance(value.get("scene_count"), bool) or value["scene_count"] <= 0:
-        errors.append("craft_observation.scene_count must be a positive integer.")
-    for key in ("topology_id", "dominant_scene_type"):
-        if not isinstance(value.get(key), str) or not value[key].strip():
-            errors.append(f"craft_observation.{key} must be non-empty.")
-    for key in ("dialogue_acts", "emotional_curve"):
-        if not isinstance(value.get(key), list) or any(not isinstance(item, str) or not item.strip() for item in value[key]):
-            errors.append(f"craft_observation.{key} must be a list of non-empty strings.")
 
 
 def validate_span_indices(value: Any, evidence: list[dict[str, Any]], label: str, errors: list[str]) -> None:

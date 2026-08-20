@@ -32,7 +32,7 @@ from longform_engine.repair_coordination import (
 from longform_engine.roles import load_role_registry
 from longform_engine.semantic import semantic_task
 from longform_engine.storage import init_project, resolve_project_root
-from tests.project_fixtures import checked_review_coverage, mark_project_ready
+from tests.project_fixtures import approve_story_candidate, checked_review_coverage, mark_project_ready
 
 
 def test_no_key_agent_task_chapter_loop_and_manifest_index(tmp_path, monkeypatch):
@@ -47,6 +47,7 @@ def test_no_key_agent_task_chapter_loop_and_manifest_index(tmp_path, monkeypatch
     draft_path = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     draft_path.write_text(passing_text("SAFE_AGENT_TASK"), encoding="utf-8")
     submitted = submit_agent_draft(config, chapter_number=1, file_path=draft_path, agent="codex")
+    approve_story_candidate(root, config)
     finalized = finalize_chapter(config, chapter_number=1, approved_by="human")
 
     manifest = root / "50_workbench" / "writing_tasks" / "ch001.agent_task.json"
@@ -107,6 +108,7 @@ def test_finalize_applies_submitted_candidate_and_supersedes_unused_repair(tmp_p
         root / "50_workbench" / "repair_candidates" / "ch001.codex.repair_task.agent_task.json",
     )
 
+    approve_story_candidate(root, config)
     finalize_chapter(config, chapter_number=1, approved_by="human")
 
     manifests = {item["task_id"]: item for item in list_manifests(root, chapter_number=1)}
@@ -595,7 +597,9 @@ def test_required_semantic_pacing_blocks_finalize_until_current_v2_result_is_app
     semantic_pacing_apply(config, chapter_number=1, file_path=result_file)
 
     action = production_next(config)
-    assert action["status"] == "awaiting_finalize"
+    assert action["status"] == "awaiting_human_story_review"
+    approve_story_candidate(root, config)
+    assert production_next(config)["status"] == "awaiting_finalize"
     finalized = finalize_chapter(config, chapter_number=1, approved_by="human")
     assert Path(finalized.final_file).is_file()
 

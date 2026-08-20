@@ -30,6 +30,11 @@ from longform_engine.agent_tasks import (
     task_reconciliation_status,
     validate_manifest_strict,
 )
+from longform_engine.arc_simulation import (
+    ArcSimulationError,
+    load_active_arc_simulation,
+    load_covering_arc_simulation,
+)
 from longform_engine.config import ConfigDocument
 from longform_engine.completion import fast_completion_marker
 from longform_engine.creative import expand_check, humanize_check, humanize_semantic_validate
@@ -85,6 +90,7 @@ TASK_WAITING_FOR = {
     "fanfiction_design": "fanfiction_design_markdown",
     "book_design": "book_design_markdown",
     "outline_design": "outline_design_markdown",
+    "arc_simulation": "human_approved_arc_causal_simulation_markdown",
     "outline_extension": "outline_extension_markdown",
     "chapter_direction": "human_selected_chapter_direction_markdown",
     "outline_revision": "outline_revision_markdown",
@@ -202,6 +208,7 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
         or chapter_semantic_lifecycle_action(root)
         or chapter_workflow_action(config, root)
         or project_readiness_action(config, root)
+        or arc_simulation_action(config, root)
         or rolling_outline_action(config, root)
         or chapter_direction_action(config, root)
         or first_active_agent_task(root)
@@ -1408,6 +1415,9 @@ def rolling_outline_action(config: ConfigDocument, root: Path) -> dict[str, Any]
         return None
     start = last_planned + 1
     end = start + int(planning["detailed_horizon"]) - 1
+    simulation_action = missing_arc_simulation_action(root, start=start, end=end, chapter_number=next_chapter)
+    if simulation_action is not None:
+        return simulation_action
     forecast = compile_length_forecast(config.data["length"])
     return base_action(
         status="ready_for_intelligence_task",
@@ -1427,11 +1437,91 @@ def rolling_outline_action(config: ConfigDocument, root: Path) -> dict[str, Any]
     )
 
 
+def arc_simulation_action(config: ConfigDocument, root: Path) -> dict[str, Any] | None:
+    """Require a current human-approved causal window before chapter direction."""
+
+    chapter_number = highest_finalized_chapter(root) + 1
+    try:
+        load_active_arc_simulation(root, chapter_number=chapter_number)
+        return None
+    except ArcSimulationError:
+        pass
+    window = read_json(root / "20_outline" / "planning_window.json")
+    if not isinstance(window, dict):
+        return None
+    start = int(window.get("start_chapter") or chapter_number)
+    end = int(window.get("end_chapter") or max(start, chapter_number))
+    if not start <= chapter_number <= end:
+        start = chapter_number
+        end = chapter_number + int(config.data["length"]["planning"]["detailed_horizon"]) - 1
+    return missing_arc_simulation_action(root, start=start, end=end, chapter_number=chapter_number)
+
+
+def missing_arc_simulation_action(
+    root: Path,
+    *,
+    start: int,
+    end: int,
+    chapter_number: int,
+) -> dict[str, Any] | None:
+    try:
+        load_covering_arc_simulation(
+            root,
+            from_chapter=start,
+            to_chapter=end,
+        )
+        return None
+    except ArcSimulationError as exc:
+        reason = str(exc)
+    active_statuses = {"awaiting_agent", "submitted", "validated", "invalid", "approved"}
+    if any(
+        task.get("task_type") == "arc_simulation"
+        and task.get("status") in active_statuses
+        for task in list_manifests(root, chapter_number=0)
+    ):
+        return None
+    return base_action(
+        status="ready_for_intelligence_task",
+        chapter_number=chapter_number,
+        task_type="arc_simulation",
+        blocked_by="arc_causal_simulation_required",
+        waiting_for="cli",
+        next_command=(
+            "longform-engine intelligence task project.yaml --task-type arc_simulation "
+            f"--from-chapter {start} --to-chapter {end}"
+        ),
+        human_summary=(
+            f"Prepare and approve the causal simulation for ch{start:03d}-ch{end:03d} "
+            f"before direction selection ({reason})."
+        ),
+        planning_window={"from_chapter": start, "to_chapter": end},
+    )
+
+
 def chapter_direction_action(config: ConfigDocument, root: Path) -> dict[str, Any] | None:
     chapter_number = highest_finalized_chapter(root) + 1
     status = assess_chapter_direction(config, chapter_number)
     if not status["required"]:
         return None
+    if status.get("status") == "outline_revision_required":
+        return base_action(
+            status="ready_for_intelligence_task",
+            chapter_number=chapter_number,
+            task_type="outline_revision",
+            blocked_by="outline_revision_required",
+            waiting_for="cli",
+            next_command=(
+                "longform-engine intelligence task project.yaml --task-type outline_revision "
+                f"--from-chapter {chapter_number} --to-chapter {chapter_number}"
+            ),
+            human_summary=(
+                f"ch{chapter_number:03d} changed a protected outcome or downstream dependency; "
+                "revise the outline before selecting another chapter direction."
+            ),
+            trigger_reasons=["outline_revision_required"],
+        )
+    if status.get("status") == "arc_simulation_required":
+        return arc_simulation_action(config, root)
     active = {
         "awaiting_agent",
         "submitted",
@@ -1723,6 +1813,33 @@ def chapter_workflow_action(config: ConfigDocument, root: Path) -> dict[str, Any
             )
         if stage_name == "editorial_pending":
             return editorial_review_action(config, root)
+        if stage_name == "human_story_review_pending":
+            command = f"longform-engine chapter human-review-task project.yaml --chapter {chapter_number}"
+            return base_action(
+                status="awaiting_human_story_review",
+                chapter_number=chapter_number,
+                blocked_by="mandatory_human_story_review",
+                waiting_for="human_decision",
+                task_type="human_story_review",
+                next_command=command,
+                failure_next_command=command,
+                human_summary=(
+                    f"ch{chapter_number:03d} completed all independent reviews and now requires the brief human story review."
+                ),
+                sources=as_string_list(stage.get("sources")),
+            )
+        if stage_name == "human_story_redirect":
+            command = str(stage.get("next_command") or "")
+            return base_action(
+                status="redirect_required",
+                chapter_number=chapter_number,
+                blocked_by="human_story_redirect",
+                waiting_for="human_direction",
+                next_command=command,
+                failure_next_command=command,
+                human_summary=f"ch{chapter_number:03d} was redirected by the human story review.",
+                sources=as_string_list(stage.get("sources")),
+            )
         if stage_name == "repair_synthesis_pending":
             command = f"longform-engine repair synthesis-task project.yaml --chapter {chapter_number}"
             return base_action(
@@ -1870,6 +1987,31 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
             if review.get("required") and not review.get("complete"):
                 return {"stage": stage_name, "sources": [relative_path(root, gate_path)]}
         barrier_status = str(barrier.get("status") or "reviews_pending")
+        if barrier_status == "awaiting_human_story_review":
+            return {
+                "stage": "human_story_review_pending",
+                "sources": [relative_path(root, gate_path)],
+            }
+        if barrier_status == "redirect_required":
+            human_stage = stages.get("human_story") if isinstance(stages.get("human_story"), dict) else {}
+            from longform_engine.human_story_review import human_story_review_status
+
+            human_status = human_story_review_status(config, chapter_number=chapter_number)
+            if human_status.get("redirect_scope") == "outline_revision":
+                command = (
+                    f"longform-engine intelligence task project.yaml --task-type outline_revision "
+                    f"--from-chapter {chapter_number} --to-chapter {chapter_number}"
+                )
+            else:
+                command = (
+                    f"longform-engine intelligence task project.yaml --task-type chapter_direction "
+                    f"--chapter {chapter_number}"
+                )
+            return {
+                "stage": "human_story_redirect",
+                "sources": [str(human_stage.get("source") or relative_path(root, gate_path))],
+                "next_command": command,
+            }
         if barrier_status == "need_human":
             return {
                 "stage": "review_need_human",

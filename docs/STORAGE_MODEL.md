@@ -1,6 +1,6 @@
 # Storage Model
 
-本文定义 v0.4.4 的项目落盘合同、事务恢复语义和派生数据边界。
+本文定义 v0.5.0 的项目落盘合同、事务恢复语义和派生数据边界。
 
 ## 1. 标准目录
 
@@ -9,14 +9,18 @@
 | `00_governance/` | canonical | 经批准的 CLI apply | 事务回滚 |
 | `10_bible/` | canonical | intelligence/research apply | 事务回滚 |
 | `20_outline/` | canonical | planning/intelligence apply | 事务回滚 |
+| `20_outline/arc_simulations/` | approved planning constraint | intelligence apply + human approval | basis 变化标 stale；改纲/redirect/rollback 事务同步失效 |
+| `30_state/reader_promise_ledger.json` | author-side planning ledger | outline/semantic apply | transaction v3；从规划与已批准正文证据推进 |
 | `30_state/semantic_ledger/` | canonical evidence | semantic apply | final + candidate hash 验证后事务写入 |
 | `30_state/` 其余文件 | materialized canonical view | semantic/planning apply | 可从批准设计、final、ledger 重建 |
 | `40_manuscript/draft/` | submitted working state | draft submit | 可替换，不能冒充 final |
 | `40_manuscript/final/` | canonical prose | chapter finalize | hash 审批与事务回滚 |
 | `50_workbench/` | non-canonical evidence | Agent + CLI | 可归档；不得被查询层当 canonical |
+| `50_workbench/human_story_reviews/` | hash-bound human evidence | CLI + human | 决定按候选 hash 不可变保留；latest 仅指向当前决定 |
+| `50_workbench/editorial_patterns/registry.jsonl` | derived editorial diagnostics | editorial aggregate / explicit commands | 不承担门禁；损坏由 doctor 警告并显式 rebuild |
 | `60_rag/chunks/` | derived | RAG builder | 从 final/ledger 重建 |
 | `60_rag/metadata/embeddings.jsonl` | derived full snapshot | explicit full rebuild | 从 chunks/memory 重建 |
-| `60_rag/memory/` | materialized view | semantic/memory apply | 从 ledger 或 memory compression source 重建 |
+| `60_rag/memory/` | materialized view | chapter semantic apply / memory compression | 从 ledger 或 memory compression source 重建 |
 | `60_rag/context/`、`query_cache/` | ephemeral derived | RAG query/context | 可删除重建 |
 | `70_runtime/db/*.sqlite` | derived runtime | DB/vector layer | 从 canonical 文件/full embedding snapshot 重建 |
 | `70_runtime/locks/` | lifecycle | lock manager/recovery | 只可按恢复协议回收 |
@@ -24,6 +28,7 @@
 | `70_runtime/tx/` | temporary recovery data | transaction manager | 仅由 commit/rollback/recovery 清理 |
 | `70_runtime/recovery/` | immutable recovery audit | recovery commands | 保留审计 |
 | `70_runtime/artifacts/` | compacted audit | artifact subsystem | hash verify 后可恢复工作材料 |
+| `70_runtime/literary_evidence/` | prose-free external evidence manifest | blind-review aggregate | 验证 pack/source/aggregate hash；缺失或篡改即不就绪 |
 | `80_exports/` | publication output | publication subsystem | 从 final 重建 |
 
 ## 2. 路径与文件名合同
@@ -31,6 +36,8 @@
 正式正文与摘要只接受 `ch{chapter:03d}.md`：`ch001.md`、`ch999.md`、`ch1000.md`。`chapter_001.md`、`1.md`、中文章名和任何 `.txt` 都会被直接拒绝，不执行别名搜索或自动迁移。章节卡、语义账本和其他结构化产物仍按各自 schema 使用 `chNNN.json`。非章节 JSON 不参与正文枚举。
 
 Agent 只能写 manifest 中唯一声明的 `io.output.path`。它不能直接写 Bible、outline、state、final、RAG 或 runtime DB。CLI 在 validate 成功后才可通过 apply/finalize 将候选物化到 canonical 路径。
+
+`reader_promise_ledger_v1` 是作者向读者建立的期待窗口，不是实际读者行为；`arc_causal_simulation_v1` 是经人工批准的滚动规划约束，不是世界事实；`editorial_pattern_item_v1` 是无正文的编辑复发诊断，不是事实或作者提示。这三个层面禁止相互混写。因果模拟的角色状态 basis 直接哈希 semantic apply 维护的 `60_rag/memory/characters/`，不再读取旧的单文件 character-memory 投影。
 
 所有写路径在进入事务前解析为绝对路径并验证位于项目根目录下。事务快照引用必须位于 `70_runtime/tx/<transaction-id>/`；恢复报告必须位于 `70_runtime/transactions/`。
 

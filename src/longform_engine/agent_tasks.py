@@ -306,6 +306,14 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "apply_prefixes": ("longform-engine intelligence apply ",),
         "failure_prefixes": ("longform-engine intelligence task ",),
     },
+    "arc_simulation": {
+        "scope_kinds": ("range",),
+        "schemas": (output_protocol_for_task("arc_simulation"),),
+        "output_prefixes": ("50_workbench/intelligence_candidates/",),
+        "validate_prefixes": ("longform-engine intelligence validate ",),
+        "apply_prefixes": ("longform-engine intelligence apply ",),
+        "failure_prefixes": ("longform-engine intelligence task ",),
+    },
     "outline_extension": {
         "scope_kinds": ("range",),
         "schemas": (output_protocol_for_task("outline_extension"),),

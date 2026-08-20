@@ -22,7 +22,7 @@ from longform_engine.rag import build_chunks, build_context, query
 from longform_engine.research import detect_knowledge_gaps, search_research
 from longform_engine.revision import rollback
 from longform_engine.storage import init_project
-from tests.project_fixtures import complete_unified_semantic_lifecycle, mark_project_ready
+from tests.project_fixtures import approve_story_candidate, complete_unified_semantic_lifecycle, mark_project_ready
 
 
 def test_rag_metadata_context_and_source_safety(tmp_path):
@@ -297,6 +297,7 @@ def test_full_baseline_e2e_no_failed_pollution_and_rebuild(tmp_path):
     ch1 = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     ch1.write_text(passing_text("SAFECH1"), encoding="utf-8")
     submit_agent_draft(config, chapter_number=1, file_path=ch1, agent="codex")
+    approve_story_candidate(root, config)
     finalize_chapter(config, chapter_number=1, approved_by="human")
     complete_unified_semantic_lifecycle(root, config, 1)
 

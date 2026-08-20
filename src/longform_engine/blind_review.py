@@ -22,10 +22,29 @@ from longform_engine.storage import atomic_write_text, resolve_project_root
 
 
 SOURCE_MANIFEST_SCHEMA = "benchmark_source_manifest_v1"
-BLIND_PACK_SCHEMA = "blind_review_pack_v2"
-BLIND_MAPPING_SCHEMA = "blind_review_private_mapping_v2"
-BLIND_SUBMISSION_SCHEMA = "blind_review_submission_v2"
-BLIND_AGGREGATE_SCHEMA = "blind_review_aggregate_v2"
+BLIND_PACK_SCHEMA = "blind_review_pack_v3"
+BLIND_MAPPING_SCHEMA = "blind_review_private_mapping_v3"
+BLIND_SUBMISSION_SCHEMA = "blind_review_submission_v3"
+BLIND_AGGREGATE_SCHEMA = "blind_review_aggregate_v3"
+LITERARY_MANIFEST_SCHEMA = "literary_evidence_manifest_v1"
+LITERARY_MANIFEST_PATH = Path("70_runtime/literary_evidence/manifest.json")
+REVIEW_SCOPES = {
+    "qidian_opening_3": 3,
+    "fanqie_opening_3": 3,
+    "serial_arc_15": 15,
+}
+LITERARY_SCORE_METRICS = (
+    "critical_turn",
+    "character_agency",
+    "reader_gain",
+    *SCORE_METRICS,
+)
+LONG_TERM_FAILURE_CODES = {
+    "SERIAL_CARRIER_REPETITION",
+    "RESTART_LOOP",
+    "AGENCY_EROSION",
+    "PAYOFF_DEFERRAL",
+}
 
 
 @dataclass(frozen=True)
@@ -137,6 +156,7 @@ def create_blind_review_pack(
     comparison_id: str,
     run_ids: Iterable[str],
     seed: str,
+    review_scope: str,
 ) -> BlindPackResult:
     """Create randomized public prose copies and a private run-id mapping."""
 
@@ -147,20 +167,31 @@ def create_blind_review_pack(
         raise ValueError("A formal blind pack requires exactly two unique run ids.")
     if not str(seed).strip():
         raise ValueError("Blind pack seed cannot be empty.")
+    if review_scope not in REVIEW_SCOPES:
+        raise ValueError("review_scope must be qidian_opening_3, fanqie_opening_3, or serial_arc_15.")
 
     runs = [read_valid_run(root, run_id) for run_id in normalized_run_ids]
     if len({run.get("scenario_sha256") for run in runs}) != 1 or not runs[0].get("scenario_sha256"):
         raise ValueError("Blind pack runs must share a non-empty scenario_sha256.")
     if len({run.get("chapter_count") for run in runs}) != 1:
         raise ValueError("Blind pack runs must use the same chapter_count.")
-    if int(runs[0].get("chapter_count") or 0) < 10:
-        raise ValueError("Formal blind packs require at least 10 chapters.")
+    expected_chapters = REVIEW_SCOPES[review_scope]
+    if int(runs[0].get("chapter_count") or 0) != expected_chapters:
+        raise ValueError(f"{review_scope} requires exactly {expected_chapters} chapters.")
     if any(str(run.get("host_product") or "") not in {"codex", "claude-code"} for run in runs):
         raise ValueError("A formal blind pack requires supported host_product metadata for both runs.")
-    for field in ("host_product", "agent_model", "host_version", "creation_mode"):
+    for field in (
+        "host_product", "agent_model", "host_version", "workflow_version",
+        "creation_mode", "market_profile",
+    ):
         values = {str(run.get(field) or "") for run in runs}
         if len(values) != 1 or "" in values:
             raise ValueError(f"Blind pack runs must share a non-empty {field}.")
+    expected_market = "qidian_male" if review_scope == "qidian_opening_3" else "fanqie_free"
+    if review_scope != "serial_arc_15" and any(
+        str(run.get("market_profile") or "") != expected_market for run in runs
+    ):
+        raise ValueError(f"{review_scope} requires both runs to use market_profile={expected_market}.")
 
     manifests = {
         run_id: read_and_verify_source_manifest(root, run_id)
@@ -204,11 +235,12 @@ def create_blind_review_pack(
 
     public_payload = {
         "schema": BLIND_PACK_SCHEMA,
+        "review_scope": review_scope,
         "comparison_id": normalized_comparison_id,
         "scenario_sha256": runs[0]["scenario_sha256"],
         "chapter_count": int(runs[0]["chapter_count"]),
         "blind_ids": sorted(blind_map),
-        "score_metrics": list(SCORE_METRICS),
+        "score_metrics": list(LITERARY_SCORE_METRICS),
         "fanfiction_score_metrics": (
             list(FANFICTION_SCORE_METRICS)
             if runs[0].get("creation_mode") == "fanfiction"
@@ -228,6 +260,7 @@ def create_blind_review_pack(
 
     mapping_payload = {
         "schema": BLIND_MAPPING_SCHEMA,
+        "review_scope": review_scope,
         "comparison_id": normalized_comparison_id,
         "pack_hash": pack_hash,
         "mapping": blind_map,
@@ -264,6 +297,7 @@ def create_blind_review_template(
     validate_public_manifest(manifest, comparison_id=normalized_comparison_id)
     verify_public_pack_files(pack_root, manifest)
     fanfiction_metrics = list(manifest.get("fanfiction_score_metrics") or [])
+    score_metrics = list(manifest.get("score_metrics") or [])
     entries = []
     for blind_id in manifest["blind_ids"]:
         entries.append(
@@ -272,7 +306,7 @@ def create_blind_review_template(
                 "chapters": [
                     {
                         "chapter_number": chapter,
-                        "scores": {metric: None for metric in SCORE_METRICS},
+                        "scores": {metric: None for metric in score_metrics},
                         "fanfiction_scores": {metric: None for metric in fanfiction_metrics},
                         "confidence": None,
                         "notes": "",
@@ -300,6 +334,8 @@ def create_blind_review_template(
             "conflict_of_interest": False,
         },
         "entries": entries,
+        "overall_preference": {"blind_id": "", "reason": ""},
+        "long_term_failure_modes": [],
         "overall_notes": "",
     }
     template = pack_root / "review_templates" / f"{normalized_judge_id}.json"
@@ -428,8 +464,76 @@ def aggregate_blind_reviews(
                 )
         records_by_run[run_id] = records
 
+    candidate_runs = [run_id for run_id in run_ids if str(read_valid_run(root, run_id).get("engine_version")) == "0.5.0"]
+    baseline_runs = [run_id for run_id in run_ids if str(read_valid_run(root, run_id).get("engine_version")) == "0.4.4"]
+    if len(candidate_runs) != 1 or len(baseline_runs) != 1:
+        raise ValueError("Literary evidence requires exactly one v0.5.0 run and one v0.4.4 run.")
+    candidate_run, baseline_run = candidate_runs[0], baseline_runs[0]
+    by_judge = {
+        str(submission["judge_id"]): submission_entries(submission)
+        for submission in submissions
+    }
+    judge_ids = sorted(by_judge)
+    blind_for_run = {str(run_id): str(blind_id) for blind_id, run_id in blind_map.items()}
+    metric_medians: dict[str, dict[str, float]] = {}
+    for run_id in run_ids:
+        blind_id = blind_for_run[run_id]
+        metric_medians[run_id] = {
+            metric: round(
+                float(
+                    median(
+                        by_judge[judge_id][blind_id][chapter]["scores"][metric]
+                        for judge_id in judge_ids
+                        for chapter in range(1, int(manifest["chapter_count"]) + 1)
+                    )
+                ),
+                3,
+            )
+            for metric in LITERARY_SCORE_METRICS
+        }
+    candidate_preference_count = sum(
+        str(submission["overall_preference"]["blind_id"]) == blind_for_run[candidate_run]
+        for submission in submissions
+    )
+    required_preferences = (2 * len(submissions) + 2) // 3
+    improvements = {
+        metric: round(metric_medians[candidate_run][metric] - metric_medians[baseline_run][metric], 3)
+        for metric in LITERARY_SCORE_METRICS
+    }
+    failure_confirmations = {
+        code: len(
+            {
+                str(submission["judge_id"])
+                for submission in submissions
+                if any(
+                    item.get("blind_id") == blind_for_run[candidate_run] and item.get("code") == code
+                    for item in submission.get("long_term_failure_modes") or []
+                    if isinstance(item, dict)
+                )
+            }
+        )
+        for code in sorted(LONG_TERM_FAILURE_CODES)
+    }
+    passed = (
+        candidate_preference_count >= required_preferences
+        and all(improvements[metric] >= 1 for metric in ("critical_turn", "character_agency", "reader_gain"))
+        and all(improvements[metric] >= 0 for metric in ("continuity", "character_consistency"))
+        and (manifest.get("review_scope") != "serial_arc_15" or all(count < 2 for count in failure_confirmations.values()))
+    )
+    literary_assessment = {
+        "candidate_run_id": candidate_run,
+        "baseline_run_id": baseline_run,
+        "candidate_preference_count": candidate_preference_count,
+        "required_preference_count": required_preferences,
+        "metric_medians": metric_medians,
+        "candidate_improvements": improvements,
+        "long_term_failure_confirmations": failure_confirmations,
+        "conclusion": "pass" if passed else "fail",
+    }
+
     aggregate_base = {
         "schema": BLIND_AGGREGATE_SCHEMA,
+        "review_scope": manifest["review_scope"],
         "comparison_id": normalized_comparison_id,
         "pack_hash": manifest["pack_hash"],
         "run_ids": list(run_ids),
@@ -452,6 +556,7 @@ def aggregate_blind_reviews(
             for run_id in run_ids
         },
         "aggregation": "per-chapter median",
+        "literary_assessment": literary_assessment,
         "stores_manuscript_body": False,
     }
     aggregate_path = pack_root / "aggregate.json"
@@ -460,11 +565,6 @@ def aggregate_blind_reviews(
     aggregate_payload["aggregate_sha256"] = aggregate_sha
     write_json(aggregate_path, aggregate_payload)
 
-    by_judge = {
-        str(submission["judge_id"]): submission_entries(submission)
-        for submission in submissions
-    }
-    judge_ids = sorted(by_judge)
     for blind_id, run_id in blind_map.items():
         run_dir = benchmark_dir(root, str(run_id))
         records = records_by_run[str(run_id)]
@@ -505,6 +605,18 @@ def aggregate_blind_reviews(
                 ),
             }
         write_json(run_dir / "chapter_records.json", records)
+
+    write_literary_scope_evidence(
+        root,
+        review_scope=str(manifest["review_scope"]),
+        pack_hash=str(manifest["pack_hash"]),
+        source_merkle_roots=dict(aggregate_base["source_merkle_roots"]),
+        aggregate_file=relative(root, aggregate_path),
+        aggregate_sha256=aggregate_sha,
+        reviewer_count=len(submissions),
+        assessment=literary_assessment,
+    )
+    refresh_literary_evidence_manifest(root)
 
     return BlindAggregateResult(
         schema=BLIND_AGGREGATE_SCHEMA,
@@ -661,6 +773,7 @@ def validate_blind_submission(
     if set(entry_map) != expected_ids or len(entry_map) != len(entries):
         errors.append("entries must contain every blind_id exactly once.")
     chapter_count = int(manifest.get("chapter_count") or 0)
+    score_metrics = set(manifest.get("score_metrics") or [])
     fanfiction_metrics = set(manifest.get("fanfiction_score_metrics") or [])
     for blind_id, entry in entry_map.items():
         chapters = entry.get("chapters")
@@ -679,7 +792,7 @@ def validate_blind_submission(
             if number in seen:
                 errors.append(f"{blind_id}.chapter_number {number} is duplicated.")
             seen.add(number)
-            errors.extend(validate_score_map(chapter.get("scores"), set(SCORE_METRICS), f"{blind_id}.ch{number:03d}.scores"))
+            errors.extend(validate_score_map(chapter.get("scores"), score_metrics, f"{blind_id}.ch{number:03d}.scores"))
             errors.extend(
                 validate_score_map(
                     chapter.get("fanfiction_scores"),
@@ -695,6 +808,31 @@ def validate_blind_submission(
                 errors.append(f"{blind_id}.ch{number:03d}.notes must be at most 500 characters.")
     if any(field in payload for field in ("engine", "run_id", "private_mapping", "manuscript_body")):
         errors.append("submission must not contain engine identity, run ids, private mapping, or manuscript bodies.")
+    preference = payload.get("overall_preference")
+    if (
+        not isinstance(preference, dict)
+        or set(preference) != {"blind_id", "reason"}
+        or preference.get("blind_id") not in expected_ids
+        or not isinstance(preference.get("reason"), str)
+        or not preference["reason"].strip()
+    ):
+        errors.append("overall_preference must select one blind_id with a non-empty reason.")
+    failures = payload.get("long_term_failure_modes")
+    if not isinstance(failures, list):
+        errors.append("long_term_failure_modes must be a list.")
+        failures = []
+    if manifest.get("review_scope") != "serial_arc_15" and failures:
+        errors.append("long_term_failure_modes are only accepted for serial_arc_15.")
+    for index, item in enumerate(failures):
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"blind_id", "code", "note"}
+            or item.get("blind_id") not in expected_ids
+            or item.get("code") not in LONG_TERM_FAILURE_CODES
+            or not isinstance(item.get("note"), str)
+            or not item["note"].strip()
+        ):
+            errors.append(f"long_term_failure_modes[{index}] is invalid.")
     overall_notes = payload.get("overall_notes")
     if not isinstance(overall_notes, str) or len(overall_notes) > 2000:
         errors.append("overall_notes must be at most 2000 characters.")
@@ -726,6 +864,11 @@ def validate_public_manifest(payload: Any, *, comparison_id: str) -> None:
         raise ValueError("Blind review public manifest is missing or invalid.")
     if payload.get("comparison_id") != comparison_id:
         raise ValueError("Blind review public manifest comparison_id does not match.")
+    review_scope = payload.get("review_scope")
+    if review_scope not in REVIEW_SCOPES or payload.get("chapter_count") != REVIEW_SCOPES[review_scope]:
+        raise ValueError("Blind review public manifest review_scope is missing or inconsistent.")
+    if tuple(payload.get("score_metrics") or ()) != LITERARY_SCORE_METRICS:
+        raise ValueError("Blind review public manifest literary score metrics are invalid.")
     stored_hash = str(payload.get("pack_hash") or "")
     basis = dict(payload)
     basis.pop("pack_hash", None)
@@ -839,8 +982,9 @@ def render_review_instructions(payload: dict[str, Any]) -> str:
         "",
         "Read only this public directory and your submission template.",
         "Do not inspect sibling project files, private mappings, benchmark run IDs, or engine metadata.",
-        "Score every chapter from 1 to 10 for continuity, character consistency, foreshadowing control, pacing, reader payoff, and AI taste.",
+        "Score every chapter from 1 to 10 for critical turn, character agency, reader gain, continuity, character consistency, foreshadowing control, pacing, reader payoff, and AI taste.",
         "For AI taste, 1 means low AI taste and 10 means high AI taste.",
+        "Choose one overall preferred blind entry and explain the preference without inferring engine identity.",
         "",
     ]
     return "\n".join(lines)
@@ -848,6 +992,177 @@ def render_review_instructions(payload: dict[str, Any]) -> str:
 
 def blind_review_dir(root: Path, comparison_id: str) -> Path:
     return root / "70_runtime" / "benchmarks" / "blind_reviews" / comparison_id
+
+
+def write_literary_scope_evidence(
+    root: Path,
+    *,
+    review_scope: str,
+    pack_hash: str,
+    source_merkle_roots: dict[str, str],
+    aggregate_file: str,
+    aggregate_sha256: str,
+    reviewer_count: int,
+    assessment: dict[str, Any],
+) -> Path:
+    payload = {
+        "schema": "literary_scope_evidence_v1",
+        "review_scope": review_scope,
+        "pack_hash": pack_hash,
+        "source_merkle_roots": source_merkle_roots,
+        "aggregate_file": aggregate_file,
+        "aggregate_sha256": aggregate_sha256,
+        "reviewer_count": reviewer_count,
+        "protocol_version": BLIND_PACK_SCHEMA,
+        "conclusion": str(assessment.get("conclusion") or "fail"),
+        "assessment_sha256": payload_sha256(assessment),
+        "stores_manuscript_body": False,
+    }
+    payload["evidence_sha256"] = payload_sha256(payload)
+    path = root / "70_runtime" / "literary_evidence" / f"{review_scope}.json"
+    write_json(path, payload)
+    return path
+
+
+def refresh_literary_evidence_manifest(root: Path) -> dict[str, Any] | None:
+    manifest_path = root / LITERARY_MANIFEST_PATH
+    scopes: list[dict[str, Any]] = []
+    for review_scope in REVIEW_SCOPES:
+        path = root / "70_runtime" / "literary_evidence" / f"{review_scope}.json"
+        evidence = read_object(path)
+        if not valid_literary_scope_evidence(root, evidence, expected_scope=review_scope):
+            manifest_path.unlink(missing_ok=True)
+            return None
+        scopes.append(evidence)
+    manifest = {
+        "schema": LITERARY_MANIFEST_SCHEMA,
+        "protocol_version": BLIND_PACK_SCHEMA,
+        "scopes": scopes,
+        "reviewer_count": sum(int(item["reviewer_count"]) for item in scopes),
+        "overall_conclusion": "pass",
+        "stores_manuscript_body": False,
+    }
+    manifest["manifest_sha256"] = payload_sha256(manifest)
+    write_json(manifest_path, manifest)
+    return manifest
+
+
+def literary_evidence_status(root: Path) -> tuple[bool, list[str]]:
+    manifest_path = root / LITERARY_MANIFEST_PATH
+    manifest = read_object(manifest_path)
+    if manifest.get("schema") != LITERARY_MANIFEST_SCHEMA:
+        return False, ["literary_evidence_manifest_missing"]
+    stored_hash = str(manifest.get("manifest_sha256") or "")
+    basis = dict(manifest)
+    basis.pop("manifest_sha256", None)
+    errors: list[str] = []
+    expected_manifest_fields = {
+        "schema", "protocol_version", "scopes", "reviewer_count",
+        "overall_conclusion", "stores_manuscript_body", "manifest_sha256",
+    }
+    if set(manifest) != expected_manifest_fields:
+        errors.append("literary_evidence_manifest_fields_invalid")
+    if manifest.get("protocol_version") != BLIND_PACK_SCHEMA or manifest.get("stores_manuscript_body") is not False:
+        errors.append("literary_evidence_manifest_protocol_invalid")
+    if not stored_hash or payload_sha256(basis) != stored_hash:
+        errors.append("literary_evidence_manifest_hash_invalid")
+    scopes = manifest.get("scopes")
+    by_scope = {
+        str(item.get("review_scope")): item
+        for item in scopes or []
+        if isinstance(item, dict)
+    }
+    if set(by_scope) != set(REVIEW_SCOPES):
+        errors.append("literary_evidence_scopes_incomplete")
+    for review_scope in REVIEW_SCOPES:
+        evidence = by_scope.get(review_scope)
+        if not valid_embedded_literary_scope_evidence(evidence, expected_scope=review_scope):
+            errors.append(f"literary_evidence_scope_invalid:{review_scope}")
+            continue
+        current_scope = read_object(
+            root / "70_runtime" / "literary_evidence" / f"{review_scope}.json"
+        )
+        if current_scope != evidence:
+            errors.append(f"literary_evidence_scope_manifest_mismatch:{review_scope}")
+        elif not valid_literary_scope_evidence(root, evidence, expected_scope=review_scope):
+            errors.append(f"literary_evidence_live_provenance_invalid:{review_scope}")
+    if int(manifest.get("reviewer_count") or 0) != sum(
+        int(item.get("reviewer_count") or 0) for item in by_scope.values()
+    ):
+        errors.append("literary_evidence_reviewer_count_invalid")
+    if manifest.get("overall_conclusion") != "pass":
+        errors.append("literary_evidence_conclusion_failed")
+    return not errors, errors
+
+
+def valid_embedded_literary_scope_evidence(payload: Any, *, expected_scope: str) -> bool:
+    expected_fields = {
+        "schema", "review_scope", "pack_hash", "source_merkle_roots",
+        "aggregate_file", "aggregate_sha256", "reviewer_count", "protocol_version",
+        "conclusion", "assessment_sha256", "stores_manuscript_body", "evidence_sha256",
+    }
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != expected_fields
+        or payload.get("schema") != "literary_scope_evidence_v1"
+        or payload.get("review_scope") != expected_scope
+        or payload.get("protocol_version") != BLIND_PACK_SCHEMA
+        or payload.get("conclusion") != "pass"
+        or int(payload.get("reviewer_count") or 0) < 3
+        or payload.get("stores_manuscript_body") is not False
+        or not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("pack_hash") or ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("aggregate_sha256") or ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("assessment_sha256") or ""))
+        or not isinstance(payload.get("source_merkle_roots"), dict)
+        or len(payload["source_merkle_roots"]) != 2
+        or any(
+            not re.fullmatch(r"[0-9a-f]{64}", str(value or ""))
+            for value in payload["source_merkle_roots"].values()
+        )
+    ):
+        return False
+    stored_hash = str(payload.get("evidence_sha256") or "")
+    basis = dict(payload)
+    basis.pop("evidence_sha256", None)
+    return bool(stored_hash) and payload_sha256(basis) == stored_hash
+
+
+def valid_literary_scope_evidence(
+    root: Path,
+    payload: Any,
+    *,
+    expected_scope: str,
+) -> bool:
+    if not valid_embedded_literary_scope_evidence(payload, expected_scope=expected_scope):
+        return False
+    aggregate_path = (root / str(payload.get("aggregate_file") or "")).resolve()
+    try:
+        aggregate_path.relative_to((root / "70_runtime" / "benchmarks" / "blind_reviews").resolve())
+    except ValueError:
+        return False
+    aggregate = read_object(aggregate_path)
+    aggregate_hash = str(aggregate.pop("aggregate_sha256", ""))
+    if not (
+        aggregate.get("schema") == BLIND_AGGREGATE_SCHEMA
+        and aggregate.get("review_scope") == expected_scope
+        and aggregate_hash == payload.get("aggregate_sha256")
+        and payload_sha256(aggregate) == aggregate_hash
+        and aggregate.get("pack_hash") == payload.get("pack_hash")
+        and aggregate.get("source_merkle_roots") == payload.get("source_merkle_roots")
+        and len(aggregate.get("judge_ids") or []) == int(payload.get("reviewer_count") or 0)
+        and payload_sha256(aggregate.get("literary_assessment") or {})
+        == payload.get("assessment_sha256")
+    ):
+        return False
+    for run_id, expected_root in (payload.get("source_merkle_roots") or {}).items():
+        try:
+            source_manifest = read_and_verify_source_manifest(root, str(run_id))
+            verify_current_source_files(source_manifest, run_id=str(run_id))
+        except (OSError, ValueError):
+            return False
+        if source_manifest.get("source_merkle_root") != expected_root:
+            return False
+    return True
 
 
 def clean_identifier(value: str, *, field: str) -> str:

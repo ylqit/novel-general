@@ -107,16 +107,18 @@ def test_current_release_checklist_and_management_docs_are_linked():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     install = (ROOT / "docs" / "SKILL_INSTALLATION.md").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_4_4_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_5_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
 
     for document in (
         "ARCHITECTURE.md",
         "STORAGE_MODEL.md",
         "V0_4_4_RELEASE_CHECKLIST.md",
+        "V0_5_0_RELEASE_CHECKLIST.md",
     ):
         assert document in readme
-    assert "V0_4_4_RELEASE_CHECKLIST.md" in agents
+    assert "V0_5_0_RELEASE_CHECKLIST.md" in agents
     assert "V0_4_4_RELEASE_CHECKLIST.md" in install
+    assert "V0_5_0_RELEASE_CHECKLIST.md" in install
     for section in (
         "配置与覆盖来源",
         "统一章节路径",
@@ -137,9 +139,11 @@ def test_shared_protocols_keep_chapter_and_editorial_contracts():
         "/工程续章",
         "pre-write guide",
         "pacing precheck",
-        "tail-hook declaration",
-        "forbidden reveal confirmation",
-        "five-step closed loop",
+        "chapter_story_brief_v2",
+        "protected outcomes",
+        "required production closed loop",
+        "human-review-task",
+        "hash-bound human accept",
         "planning_chief_editor",
         "anti_ai_editor",
         "scene_prose_editor",

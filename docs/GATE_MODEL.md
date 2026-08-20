@@ -62,7 +62,7 @@ gate 的 P0/P1 只是一类已验证 finding，不会跳过其他独立审稿。
 
 - 正文 meta 污染：检测 `TODO`、`写作说明`、`作者按`、`角色定位`、`[说明]`、AI 自述等 prompt/草稿残留，触发 P0。
 - 正文字符硬阈值：根据 `length.chapter.hard_min` 和 `hard_max`，使用 `content_characters_v1` 判断 P1；标题、空白、标点和 Markdown 标记不计入生产规模。
-- 章节卡完整性：检查 `chapter_duty`、`conflict`、`information_release`、`reader_gain`、`hook` 是否存在；发现 `duty`、`information` 或 `reader_payoff` 遗留别名时直接返回 `chapter_contract_inconsistent`。
+- 章节卡完整性：检查欲望、阻力、失败、不可逆选择、`chapter_turn`、`reveal_boundary`、`reader_gain`、载体与状态变化；发现 `information_release` 或任何 v1 别名时直接返回 `chapter_contract_inconsistent`。
 - 图谱一致性：复用 `graph check` 的人物位置、能力边界、时间线等冲突报告。
 - 节奏失衡：检测连续快章、A/B/C 重大事件超配额、核心秘密过早完整揭露风险。
 
