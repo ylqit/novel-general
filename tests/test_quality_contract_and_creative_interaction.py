@@ -9,6 +9,7 @@ from longform_engine.agent_protocols import (
     DESIGN_REQUIRED_HEADINGS,
 )
 from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
+from longform_engine.arc_simulation import load_active_arc_simulation
 from longform_engine.config import ConfigError, load_project_config
 from longform_engine.intelligence import (
     apply_compiled_design,
@@ -644,4 +645,3 @@ def test_chapter_direction_apply_failure_rolls_back_card_and_plan(tmp_path, monk
     assert card.read_bytes() == before["card"]
     assert plan.read_bytes() == before["plan"]
     assert list((root / "70_runtime" / "transactions").glob("*.rollback.json"))
-from longform_engine.arc_simulation import load_active_arc_simulation

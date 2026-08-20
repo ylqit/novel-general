@@ -11,6 +11,7 @@ from longform_engine.agent_protocols import (
     DESIGN_REQUIRED_HEADINGS,
 )
 from longform_engine.agent_tasks import load_manifest, validate_manifest_strict
+from longform_engine.arc_simulation import load_active_arc_simulation
 from longform_engine.config import load_project_config
 from longform_engine.intelligence import (
     apply_compiled_design,
@@ -435,4 +436,3 @@ def test_two_million_character_project_keeps_outline_extension_context_bounded(t
     assert context["selection"]["full_history_exposed"] is False
     assert context["selection"]["budget_profile"] == "standard"
     assert context["selection"]["estimated_units"] > 0
-from longform_engine.arc_simulation import load_active_arc_simulation

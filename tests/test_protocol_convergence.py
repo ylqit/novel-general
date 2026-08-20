@@ -32,7 +32,6 @@ from longform_engine.orchestration import (
     continue_write,
     finalize_chapter,
     open_book,
-    plan_chapter,
     submit_agent_draft,
 )
 from longform_engine.production import production_next
