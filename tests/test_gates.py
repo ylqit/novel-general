@@ -37,8 +37,23 @@ def test_tail_suspense_recognizes_chinese_deadline_pressure():
 def test_gate_check_passes_reasonable_draft(tmp_path):
     project_config = seed_gate_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(project_config, chapter_number=1)
-    text = "# 第一章\n\n" + "林迟沿着山门前的石阶前行，旧钟声在远处回荡。他必须面对新的阻力，并在短暂犹豫后选择继续前进。" * 60
+    open_book(project_config)
+    mark_project_ready(root, project_config)
+    actions = (
+        "林迟踩上湿滑石阶，先用肩膀顶住正在合拢的山门。",
+        "守门人横过长枪，逼他交出怀里的旧钟碎片。",
+        "他没有解释来路，只把掌心被铜边割出的血按在门契上。",
+        "远处钟声压过雨幕，追兵的火把随即转入山道。",
+        "林迟把唯一的退路让给同伴，自己留下拖住守门人。",
+        "门轴终于转动，却露出一条通往禁院、无法回头的窄路。",
+    )
+    paragraphs = [
+        actions[index % len(actions)]
+        + ("雨水顺着袖口灌进伤处。" if index % 3 == 0 else "")
+        + f"他离门内的阴影又近了{index + 1}步。"
+        for index in range(72)
+    ]
+    text = "# 第一章\n\n" + "\n\n".join(paragraphs)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(text, encoding="utf-8")
 
     result = gate_check(project_config, chapter_number=1)

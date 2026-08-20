@@ -151,7 +151,8 @@ def test_chapter_card_writer_brief_and_humanizer_share_one_bounded_contract(tmp_
     assert task["writer_craft_brief"]["reader_gain"] == card["reader_gain"]
     assert "reader_payoff" not in task["writer_craft_brief"]
     assert task["fact_inventory_summary"]["categories"]["methods"] >= 2
-    assert "fanqie_free" in task_markdown
+    assert "fanqie_free" not in task_markdown
+    assert "本章正在发生" in task_markdown
     assert len(manifest["io"]["inputs"]) <= 7
     assert task["context_plan"]["budget_profile"] == "standard"
     assert task["context_plan"]["budget_status"] in {"within_soft_target", "advisory"}

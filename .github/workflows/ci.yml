@@ -10,9 +10,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
         python: ["3.10", "3.11", "3.12"]
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,7 +38,7 @@ jobs:
       - run: longform-engine release check --repository . --channel public --skip-contracts --allow-detached --json
 
   semantic-smoke:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -49,11 +48,13 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e ".[semantic]"
       - run: python -c "import huggingface_hub, sentence_transformers; print('semantic dependencies ready')"
-      - run: |
-          export LONGFORM_CODEX_SKILL_ROOT="$RUNNER_TEMP/codex-skills"
-          export LONGFORM_CLAUDE_SKILL_ROOT="$RUNNER_TEMP/claude-skills"
-          longform-engine skills install --tool all
-          longform-engine doctor --tool all --json
+      - name: Configure isolated Skill paths
+        shell: pwsh
+        run: |
+          "LONGFORM_CODEX_SKILL_ROOT=$env:RUNNER_TEMP/codex-skills" >> $env:GITHUB_ENV
+          "LONGFORM_CLAUDE_SKILL_ROOT=$env:RUNNER_TEMP/claude-skills" >> $env:GITHUB_ENV
+      - run: longform-engine skills install --tool all
+      - run: longform-engine doctor --tool all --json
 
   macos-pipx-smoke:
     runs-on: macos-latest

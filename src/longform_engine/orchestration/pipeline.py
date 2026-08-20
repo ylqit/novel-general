@@ -3657,8 +3657,15 @@ def build_chapter_story_brief(
         "promised_reader_gains": promise_gains,
         "emotional_aftereffect": str(card.get("emotional_aftereffect") or ""),
         "relationship_change": str(card.get("relationship_move") or ""),
-        "protected_outcomes": as_list(card.get("protected_story_outcomes")),
-        "prohibited_drift": as_list(card.get("prohibited_drift")),
+        "protected_outcomes": dedupe_strings(
+            as_list(card.get("protected_story_outcomes"))
+            + as_list(card.get("must_preserve_suspense"))
+        ),
+        "prohibited_drift": dedupe_strings(
+            as_list(card.get("prohibited_drift"))
+            + [f"不得提前揭示：{item}" for item in as_list(card.get("forbidden_reveals"))]
+            + [f"不得提前解决：{item}" for item in as_list(card.get("resolution_markers"))]
+        ),
         "local_freedom": str(card.get("dramatic_freedom") or "可自由设计动作、摩擦、细节与潜台词。"),
         "recent_carriers": recent_carriers,
         "repetition_risk": {

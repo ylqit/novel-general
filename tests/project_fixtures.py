@@ -141,6 +141,39 @@ def write_arc_simulation_fixture(
     )
 
 
+def refresh_arc_simulation_fixture(root: Path) -> Path:
+    """Approve a current planning window and rebind already approved fixture cards."""
+
+    window = json.loads(
+        (root / "20_outline" / "planning_window.json").read_text(encoding="utf-8")
+    )
+    start = int(window["start_chapter"])
+    end = int(window["end_chapter"])
+    simulation_path = write_arc_simulation_fixture(
+        root,
+        from_chapter=start,
+        to_chapter=end,
+    )
+    simulation_ref = {
+        "path": simulation_path.relative_to(root).as_posix(),
+        "sha256": sha256(simulation_path.read_bytes()).hexdigest(),
+        "from_chapter": start,
+        "to_chapter": end,
+    }
+    for card_path in sorted((root / "20_outline" / "chapter_cards").glob("ch*.json")):
+        card = json.loads(card_path.read_text(encoding="utf-8"))
+        chapter_number = int(card.get("chapter_number") or 0)
+        selection = card.get("direction_selection")
+        if not start <= chapter_number <= end or not isinstance(selection, dict):
+            continue
+        if selection.get("status") != "applied":
+            continue
+        card["arc_simulation_ref"] = simulation_ref
+        stamp_chapter_contract(card)
+        write_json(card_path, card)
+    return simulation_path
+
+
 def mark_project_ready(
     root: Path,
     config,
@@ -475,8 +508,8 @@ def checked_review_coverage(
     }
 
 
-def approve_story_candidate(root: Path, config, *, chapter_number: int = 1) -> None:
-    """Complete mandatory independent editorial review and hash-bound human acceptance."""
+def complete_editorial_reviews(root: Path, config, *, chapter_number: int = 1) -> None:
+    """Submit passing results for every independently selected fixture editor."""
 
     from longform_engine.agent_pipeline import validate_production_agent_result
     from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
@@ -485,10 +518,6 @@ def approve_story_candidate(root: Path, config, *, chapter_number: int = 1) -> N
         editorial_finalization_blockers,
         editorial_review,
         editorial_submit_review,
-    )
-    from longform_engine.human_story_review import (
-        apply_human_story_review,
-        create_human_story_review_task,
     )
     from longform_engine.roles import load_role_registry
 
@@ -532,6 +561,17 @@ def approve_story_candidate(root: Path, config, *, chapter_number: int = 1) -> N
                 role=role_id,
                 file_path=result_path,
             )
+
+
+def approve_story_candidate(root: Path, config, *, chapter_number: int = 1) -> None:
+    """Complete mandatory independent editorial review and hash-bound human acceptance."""
+
+    from longform_engine.human_story_review import (
+        apply_human_story_review,
+        create_human_story_review_task,
+    )
+
+    complete_editorial_reviews(root, config, chapter_number=chapter_number)
     task = create_human_story_review_task(config, chapter_number=chapter_number)
     decision_path = root / task.template_file
     decision = json.loads(decision_path.read_text(encoding="utf-8"))

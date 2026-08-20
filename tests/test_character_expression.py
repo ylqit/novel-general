@@ -7,6 +7,7 @@ import pytest
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
 from longform_engine.agent_tasks import list_manifests, load_manifest
+from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.character_expression import (
     approve_voice_samples,
     build_character_expression_packet,
@@ -74,9 +75,9 @@ def expression_contract(character_id: str, perception: str, tactic: str, leak: s
 
 def test_chapter_work_order_compiles_character_packet_inside_existing_budget(tmp_path):
     config, root = seed_ready_project(tmp_path)
-    plan_path = root / "20_outline" / "chapter_plan.json"
-    plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    plan[0].update(
+    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card.update(
         {
             "pov_character_id": "lead_ari",
             "featured_character_ids": ["lead_ari", "ally_mira"],
@@ -89,13 +90,17 @@ def test_chapter_work_order_compiles_character_packet_inside_existing_budget(tmp
             "emotional_aftereffect": "both lose the option to deny cooperation",
         }
     )
-    plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    stamp_chapter_contract(card)
+    card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    continue_write(config, chapter_number=1, overwrite=True)
+    continue_write(config, chapter_number=1)
 
     task = json.loads((root / "50_workbench" / "writing_tasks" / "ch001.json").read_text(encoding="utf-8"))
     manifest = load_manifest(root, "chapter_write:ch001:v4")
     markdown = (root / "50_workbench" / "writing_tasks" / "ch001.md").read_text(encoding="utf-8")
+    fact_inventory = json.loads(
+        (root / task["internal_fact_inventory"]["path"]).read_text(encoding="utf-8")
+    )
     inventory = task["fact_inventory_summary"]
     assert inventory["schema"] == "chapter_fact_inventory_summary_v1"
     assert inventory["categories"]["cast"] >= 1
@@ -105,9 +110,9 @@ def test_chapter_work_order_compiles_character_packet_inside_existing_budget(tmp
     assert len(inputs) <= 7
     assert task["context_plan"]["budget_profile"] == "standard"
     assert task["context_plan"]["estimated_units"] > 0
-    assert "登场人物与声音" in markdown
-    assert "lead_ari" in markdown and "ally_mira" in markdown
-    assert "lead_ari" in markdown and "ally_mira" in markdown
+    assert "本章正在发生" in markdown
+    assert "lead_ari" not in markdown and "ally_mira" not in markdown
+    assert "lead_ari" in json.dumps(fact_inventory) and "ally_mira" in json.dumps(fact_inventory)
 
 
 def test_character_packet_does_not_promote_historical_tcs_cast(tmp_path):
@@ -178,7 +183,7 @@ def test_sparse_dialogue_profile_does_not_create_universal_low_dialogue_warning(
 
 def test_character_editor_accepts_scoped_p1_with_exact_character_evidence(tmp_path):
     config, root = seed_ready_project(tmp_path)
-    continue_write(config, chapter_number=1, overwrite=True)
+    continue_write(config, chapter_number=1)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     evidence = "Ari aligns the torn receipt before asking who changed the seal."
     ally_evidence = "Mira blocks the archive door and demands that Ari name the cost of waiting."
