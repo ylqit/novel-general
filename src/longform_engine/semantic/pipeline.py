@@ -722,7 +722,6 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
     if payload_errors:
         raise ValueError("chapter semantic delta is invalid: " + "; ".join(payload_errors))
     candidate_sha256 = sha256(source_file.read_bytes()).hexdigest()
-    chapter_contract, _chapter_contract_hash = load_verified_chapter_contract(root, chapter_number)
     final_file = manuscript_chapter_path(root, chapter_number, lane="final")
     if not final_file.is_file():
         raise ValueError("chapter semantic apply requires the current finalized chapter")
@@ -744,6 +743,7 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
     validation_file = source_file.with_suffix(".validation.json")
 
     existing_ledger: dict[str, Any] | None = None
+    chapter_contract: dict[str, Any] = {}
     if ledger_file.exists():
         existing = read_json(ledger_file, {})
         if not isinstance(existing, dict) or existing.get("candidate_sha256") != candidate_sha256:
@@ -778,6 +778,10 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
                 )
         existing_ledger = existing
     else:
+        chapter_contract, _chapter_contract_hash = load_verified_chapter_contract(
+            root,
+            chapter_number,
+        )
         validation = semantic_validate(config, chapter_number=chapter_number, file_path=source_file)
         if not validation.ok:
             raise ValueError("chapter semantic bundle did not validate; canonical state was not mutated.")

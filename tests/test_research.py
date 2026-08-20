@@ -8,7 +8,11 @@ from longform_engine.orchestration import continue_write
 from longform_engine.rag import query
 from longform_engine.research import add_research, impact_analyze, promote_research, search_research
 from longform_engine.storage import init_project
-from tests.project_fixtures import complete_unified_semantic_lifecycle, mark_project_ready
+from tests.project_fixtures import (
+    complete_unified_semantic_lifecycle,
+    mark_project_ready,
+    refresh_arc_simulation_fixture,
+)
 
 
 def test_research_add_only_writes_inbox_and_does_not_pollute_rag(tmp_path):
@@ -37,6 +41,7 @@ def test_research_add_only_writes_inbox_and_does_not_pollute_rag(tmp_path):
 
     mark_project_ready(root, project_config, preserve_existing_characters=True)
     complete_unified_semantic_lifecycle(root, project_config, 1)
+    refresh_arc_simulation_fixture(root)
     continue_write(project_config, chapter_number=2)
     task = (root / "50_workbench" / "writing_tasks" / "ch002.md").read_text(encoding="utf-8")
     assert "INBOX_ONLY_MARKER" not in task
@@ -127,10 +132,16 @@ def test_research_impact_promote_syncs_canon_rag_graph_and_sqlite(tmp_path):
 
     mark_project_ready(root, project_config, preserve_existing_characters=True)
     complete_unified_semantic_lifecycle(root, project_config, 1)
-    continue_write(project_config, chapter_number=2, overwrite=True)
-    task = (root / "50_workbench" / "writing_tasks" / "ch002.md").read_text(encoding="utf-8")
-    assert "PROMOTED_CANON_MARKER" in task
-    assert "research_canon.jsonl" in task
+    refresh_arc_simulation_fixture(root)
+    continue_write(project_config, chapter_number=2)
+    task_file = root / "50_workbench" / "writing_tasks" / "ch002.json"
+    task = json.loads(task_file.read_text(encoding="utf-8"))
+    task_markdown = task_file.with_suffix(".md").read_text(encoding="utf-8")
+    inventory = (root / task["internal_fact_inventory"]["path"]).read_text(encoding="utf-8")
+    assert "PROMOTED_CANON_MARKER" in inventory
+    assert "research_canon.jsonl" in inventory
+    assert "PROMOTED_CANON_MARKER" not in task_markdown
+    assert "research_canon.jsonl" not in task_markdown
 
 
 def test_research_promote_late_failure_restores_files_cache_and_sqlite(tmp_path, monkeypatch):

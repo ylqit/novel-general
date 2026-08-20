@@ -286,6 +286,8 @@ def test_revision_rollback_rebuilds_quality_histories(tmp_path):
     ] == [1]
     stale = read_json(root / "30_state" / "stale_indexes.json")
     assert set(stale["rebuilt_quality_indexes"]) == {
+        "20_outline/arc_simulations/ch001-ch020.json",
+        "30_state/reader_promise_ledger.json",
         "30_state/reward_ledger.jsonl",
         "30_state/quality/structure_history.jsonl",
     }
