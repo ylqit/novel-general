@@ -9,7 +9,7 @@
 - 本地文件是事实源；SQLite、RAG 和图谱是受控写入或可重建派生状态。
 - 每个 Agent 工单声明输入文件、允许输出、schema、validate、apply、失败命令与硬边界。
 
-> 当前稳定版为 `v0.5.0`：新增故事引擎合同、读者承诺账本、跨章角色因果模拟、`chapter_story_brief_v2`、场景语义必审、证据化人工故事简审和文学盲评 manifest。发布门禁见 [v0.5.0 Checklist](docs/V0_5_0_RELEASE_CHECKLIST.md)。
+> 当前稳定版为 `v0.6.0`：以起点男频为主合同，加入方向选择 sidecar、十项人工可视化深审、只读咨询闭环和三态质量状态。发布门禁与验证记录见 [v0.6.0 Checklist](docs/V0_6_0_RELEASE_CHECKLIST.md)。
 
 当前实现边界见 [Architecture](docs/ARCHITECTURE.md)，落盘、transaction v3 与崩溃恢复合同见 [Storage Model](docs/STORAGE_MODEL.md)。
 
@@ -35,28 +35,28 @@
 | 项目级智能任务 | 开书、纲要、改纲、研究、风格与改编分析均走候选/校验/显式 apply |
 | 人物表现与场景化叙事 | Book Design v2 建立人物表达合同；每章编译最小人物包，人物编辑按证据检查声音可交换性、工具人化和旁白代讲 |
 | 同人创作 | 支持原角色、关系、世界观、力量体系、续写、前传、AU、分歧与 crossover |
-| 中文网文质量 | 故事引擎合同、滚动载体轮换、Humanizer v4、动态章节职责、读者收益/代价与人工 accept/repair/redirect |
+| 中文网文质量 | 故事引擎合同、滚动载体轮换、Humanizer v4、动态章节职责、读者收益/代价与 `human_story_review_v3` 十项深审 |
 
 ## 安装
 
 唯一发布源是 [ylqit/novel-general](https://github.com/ylqit/novel-general)。公开安装使用 pipx，把 engine 放入隔离环境，再由 engine 原子复制对应 Skill。无需先 clone 仓库，也不执行远程 `curl | shell`。
 
-> 当前公开稳定版为 `v0.5.0`。以下命令固定到不可变 tag。
+> 当前公开稳定版为 `v0.6.0`。以下命令固定到不可变 tag。
 
-`v0.5.0` 协议不兼容 v0.4.x 项目，也不提供自动迁移；请新建项目，或由人工审核后重新导入权威资料。当前 `literary_evidence_ready=false`。
+`v0.6.0` 的人工审稿与方向选择协议不兼容旧项目，也不提供自动迁移；请新建项目，或由人工审核后重新导入权威资料。当前 `literary_evidence_ready=false`。
 
 ### 让 Agent 安装
 
 复制到 Codex：
 
 ```text
-请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.5.0。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool codex --force 和 longform-engine doctor --tool codex。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Codex 会话，并从 /工程下一步 开始。
+请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.6.0。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool codex --force 和 longform-engine doctor --tool codex。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Codex 会话，并从 /工程下一步 开始。
 ```
 
 复制到 Claude Code：
 
 ```text
-请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.5.0。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool claude-code --force 和 longform-engine doctor --tool claude-code。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Claude Code 会话，并从 /工程下一步 开始。
+请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.6.0。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool claude-code --force 和 longform-engine doctor --tool claude-code。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Claude Code 会话，并从 /工程下一步 开始。
 ```
 
 ### Windows PowerShell
@@ -66,7 +66,7 @@ py -3 -m pip install --user --upgrade pipx
 py -3 -m pipx ensurepath
 $env:PIPX_BIN_DIR = if ($env:PIPX_BIN_DIR) { $env:PIPX_BIN_DIR } else { Join-Path $env:USERPROFILE ".local\bin" }
 $env:PATH = "$env:PIPX_BIN_DIR;$env:PATH"
-py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.5.0'
+py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.6.0'
 longform-engine skills install --tool all --force
 longform-engine doctor --tool all
 ```
@@ -82,7 +82,7 @@ python3 -m pip install --user --upgrade pipx
 python3 -m pipx ensurepath
 export PIPX_BIN_DIR="${PIPX_BIN_DIR:-$HOME/.local/bin}"
 export PATH="$PIPX_BIN_DIR:$PATH"
-python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.5.0'
+python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.6.0'
 longform-engine skills install --tool all --force
 longform-engine doctor --tool all
 ```
@@ -92,7 +92,7 @@ longform-engine doctor --tool all
 ### 升级与卸载
 
 ```powershell
-py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.5.0'
+py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.6.0'
 longform-engine skills update --tool all
 longform-engine doctor --tool all
 ```
@@ -142,11 +142,12 @@ open-book
 典型章节闭环：
 
 ```text
-/工程续章 -> /工程下一步 -> /工程工单
+/工程续章 -> 方向候选 -> 人工 direction-select -> 批准/编译 -> /工程工单
 -> Agent 写 chNNN.codex.md 或 chNNN.claude.md
 -> /工程提交稿 -> gate
--> /工程修章，或 gate 通过后执行 /工程收益审稿
--> /工程校验收益 -> 显式 /工程定稿
+-> 独立审稿 -> 冻结 review bundle
+-> review serve 中完成人工十项深审，必要时进行只读咨询
+-> accept 后显式 /工程定稿；repair/redirect 必须回到对应闭环
 -> /工程章节语义任务 -> Agent 一次读取 final 并输出统一语义 JSON
 -> /工程章节语义校验 -> 显式 /工程章节语义应用
 -> /工程关闭章节 -> 下一章
@@ -246,10 +247,10 @@ Bible、outline、research canon、final、semantic ledger、RAG、graph、fores
 
 - Humanizer v4 检查空文本、重复模板、信息轰炸、流水账升级、纸片人/工具人、对白同质、伪细节、情绪标签、意义膨胀和强制钩子。
 - Humanizer v4 的第二遍改写读取 `character_expression_packet_v1`，保护人物的感知偏向、决策偏向、话语层级、社交面具和情绪泄漏，并强化相反欲望、隐藏议程、不可逆行动和情绪余波。
-- 经批准的设计 Markdown 必须先编译为 `canonical_delta_v1`，再由 CLI 原子物化人物与关系视图；v0.5.0 不接收旧 book design 或章节项目协议，也不允许 Agent 直接写 Bible。
-- v0.5.0 工作区使用自适应上下文预算：`compact/standard/large` 分别提供 24K/48K/96K engine-controlled units，也可由项目覆盖。字符数和文件数只作诊断；CLI 依次去重、移除未触发参考、按需加载证据并拆分范围上下文，只有核心事实仍无法容纳时才进入 `need-human`。
+- 经批准的设计 Markdown 必须先编译为 `canonical_delta_v1`，再由 CLI 原子物化人物与关系视图；v0.6.0 不接收旧 book design、旧方向选择或旧人工审稿协议，也不允许 Agent 直接写 Bible。
+- v0.6.0 工作区使用自适应上下文预算：`compact/standard/large` 分别提供 24K/48K/96K engine-controlled units，也可由项目覆盖。字符数和文件数只作诊断；CLI 依次去重、移除未触发参考、按需加载证据并拆分范围上下文，只有核心事实仍无法容纳时才进入 `need-human`。
 - 每章作者使用新的章节会话；repair 可继续该章作者会话；Humanizer、连贯/人物/节奏/收益/同人审稿和 final 语义档案使用独立新会话。CLI 只给出会话要求和第一条命令，不创建子进程，也不把聊天历史当长期状态。
-- 28 个任务角色、25 类任务、4 类输出协议与 12 个中文写作 Playbook 按区段渐进加载；其中 `repair_coordinator` 只编排已验证 finding 的根因、顺序、最小修复半径和保护项。44 个故事分面均有独立中文适配器，每轮最多激活三个。当前只能称为“高级专业候选 Prompt”，真实混合题材人工盲评完成前不作文学等级承诺。
+- 29 个任务角色、27 类任务、4 类输出协议与 12 个中文写作 Playbook 按区段渐进加载；其中 `repair_coordinator` 只编排已验证 finding，`human_review_advisor` 只提供不可直接写 canonical 的咨询。44 个故事分面均有独立中文适配器，每轮最多激活三个。当前只能称为“高级专业候选 Prompt”，真实混合题材人工盲评完成前不作文学等级承诺。
 - 第 1-3 章、人物初登场、POV 切换、关系转折和对白同质复发会选择 `character_editor`；即使 pass，也必须给每个 featured character 提供正文证据。
 - 润色候选会与来源稿比较数字事实、角色保留和改写比例；过度重写会触发 `need-human`，避免“去 AI 味”把剧情和人物一起洗掉。
 - Humanizer v4 Phase 1 在风险改写、里程碑、卷边界、strict 和同人场景创建独立语义审稿任务，校验人物、事件、因果、时间、关系、能力和禁揭露七类事实；复核后修改候选会使旧结果失效。
@@ -259,10 +260,12 @@ Bible、outline、research canon、final、semantic ledger、RAG、graph、fores
 - 当前候选的 P0/P1 finding 固定进入不可变 review bundle 并必须本章修复；跨章复发只由结构化 `role_id + finding_code` 写入内部 editorial pattern registry。该注册表不进入作者工作单、事实、RAG 或 Graph，也不冒充读者反馈。
 - 章节卡和写作者工作单携带生效质量合同；它允许慢章、完整收束和余波章，不把画像变成固定句长、对白率或钩子模板。
 - `qidian_male` 是默认主合同；`fanqie_free` 只输出最多三条非阻断兼容建议，不会自动改章或阻断定稿。
-- 起点与番茄画像的每项建议必须绑定 `market_evidence_registry_v1` 的来源、核验日期、证据等级与执行级别；平台节奏建议默认 P2，不推断推荐算法。
+- 起点与番茄画像的每项建议必须绑定 `market_evidence_registry_v2` 的 claim、来源类型、发布者、核验日期和适用范围；平台经验只能是 P2 非阻断观察，不推断推荐算法。
 - 章节卡明确区分平台承诺、章节职责、读者收益、代价与关系变化；Reader Payoff 必须从正文证据验证，不能把计划当成事实。
 - `quality baseline-approve` 只能显式批准已定稿章节的 prose-free 结构指纹，CLI 不会自动把新章节加入风格基线。
-- 每章方向使用 `design_document_v1`：Agent 提供 2 至 3 个有明确代价的方向，用户显式批准后再编译为 `canonical_delta_v1`，随后生成章节卡和正文工作单。CLI 不替作者决定关键剧情。
+- 每章方向使用 `design_document_v1`：Agent 提供 2 至 3 个带稳定 option ID 和明确代价的方向，用户通过 `chapter_direction_selection_v1` sidecar 显式选择；批准与语义编译必须同时消费 Markdown 和 sidecar。CLI 不替作者决定关键剧情。
+- `human_story_review_v3` 是唯一可解锁 finalize 的人工协议：十项全部通过，并用精确 span 证明关键转折、人物选择/情绪和读者收益；决定同时绑定候选、章节合同、承诺账本、因果模拟及冻结 review bundle 五类 hash。
+- repair 批注必须给出 span、维度、P0/P1/P2、动作、修改意图和必须保护项。人工亲改只能提交完整 repair 候选并标记 `agent=human`，随后消耗既有修章预算并重跑全部 gate 与独立审稿。
 
 查看本章实际合同：
 
@@ -270,6 +273,9 @@ Bible、outline、research canon、final、semantic ledger、RAG、graph、fores
 longform-engine quality contract project.yaml --chapter N
 longform-engine quality contract project.yaml --chapter N --explain
 longform-engine quality contract project.yaml --chapter N --compare-market fanqie_free
+longform-engine quality status project.yaml --json
+longform-engine intelligence direction-select project.yaml --chapter N --option OPTION_ID
+longform-engine review serve project.yaml --chapter N --port 8765
 longform-engine quality baseline-approve project.yaml --chapter N --approved-by editor
 longform-engine character audit-task project.yaml --from-chapter 1 --to-chapter 15
 longform-engine character samples-approve project.yaml --file 50_workbench/character_reviews/voice_samples.json --approved-by human
@@ -279,7 +285,7 @@ longform-engine character samples-approve project.yaml --file 50_workbench/chara
 
 ## 长篇一致性
 
-v0.5.0 延续 `content_characters_v1` 作为唯一生产规模口径：只统计正文中的 Unicode 字母和数字，不计空白、标点、Markdown 标记、标题、工作单或审稿文件。默认目标为 200 万正文字符，每章目标 3000、软区间 2400 至 3600，预测约 667 章和 8 卷；章节数与卷数会随实际章长和故事密度重估，不再是硬约束。200 万以内属于正式工程支持，超过 200 万可配置但 doctor 标记为 experimental。
+v0.6.0 延续 `content_characters_v1` 作为唯一生产规模口径：只统计正文中的 Unicode 字母和数字，不计空白、标点、Markdown 标记、标题、工作单或审稿文件。默认目标为 200 万正文字符，每章目标 3000、软区间 2400 至 3600，预测约 667 章和 8 卷；章节数与卷数会随实际章长和故事密度重估，不再是硬约束。200 万以内属于正式工程支持，超过 200 万可配置但 doctor 标记为 experimental。
 
 全书完成条件是“人工批准的结局完成 + 必要承诺闭环 + 正文字符数进入容差 + 无 P0/P1”，不是抵达某个固定章节号。低于目标时只能由人批准扩展故事弧，禁止自动注水；超过目标时提示重估，不机械压缩已经成立的剧情。核心状态层包括：
 
@@ -386,7 +392,7 @@ longform-engine release check --repository . --channel rc
 
 ## 质量基准
 
-工程回归和文学证据分开记录，不手工修改聚合 JSON，也不把正文复制进 manifest。文学证据固定比较相同宿主、模型、场景与生成条件下的一组 v0.5.0 与一组 v0.4.4：
+工程回归、作者接受和文学证据分开记录，不手工修改聚合 JSON，也不把正文复制进 manifest。v0.6.0 文学证据固定比较相同宿主、模型、场景与生成条件下的一组 v0.6.0 候选与一组 v0.5.0 基线；既有 v0.5.0/v0.4.4 结果不能替代本版本证据：
 
 ```powershell
 longform-engine benchmark init project.yaml --run-id codex-smoke-5 --host-product codex --chapters 5 --scenario-id setting-v1 --agent-model MODEL --host-version VERSION
@@ -394,7 +400,7 @@ longform-engine benchmark record project.yaml --run-id codex-smoke-5 --chapter 1
 longform-engine benchmark report project.yaml --run-id codex-smoke-5
 longform-engine benchmark rag-scale-run project.yaml --scale-chapters 667 --backend local_hnsw
 longform-engine benchmark compare project.yaml --comparison-id workflow-a-b-10 --run-id workflow-a-10 --run-id workflow-b-10
-longform-engine benchmark blind-pack project.yaml --comparison-id qidian-opening-v050 --run-id candidate-qidian-3 --run-id baseline-qidian-3 --review-scope qidian_opening_3 --seed PRIVATE_SEED
+longform-engine benchmark blind-pack project.yaml --comparison-id qidian-opening-v060 --run-id candidate-qidian-3 --run-id baseline-qidian-3 --review-scope qidian_opening_3 --seed PRIVATE_SEED
 ```
 
 `rag-scale-run` 使用固定种子验证 50/200/500/667 章下的向量索引、增量更新、stale 和 rollback；结果明确标记为 `synthetic_engineering`，不等于文学质量证据。`blind_review_pack_v3` 分别要求起点前三章、番茄前三章和十五章纵向 scope，每组至少三名独立人工评审；三组来源与聚合 hash 全部通过后，才生成可令 `literary_evidence_ready=true` 的无正文 manifest。
@@ -407,6 +413,8 @@ longform-engine benchmark blind-pack project.yaml --comparison-id qidian-opening
 - [配置契约](docs/CONFIGURATION.md)
 - [质量证据管理](docs/QUALITY_BENCHMARK_RUNBOOK.md)
 - [公开发布 Runbook](docs/RELEASE_RUNBOOK.md)
+- [v0.6.0 实施与发布 Checklist](docs/V0_6_0_RELEASE_CHECKLIST.md)
+- [v0.5.0 历史发布 Checklist](docs/V0_5_0_RELEASE_CHECKLIST.md)
 - [v0.4.4 发布 Checklist](docs/V0_4_4_RELEASE_CHECKLIST.md)
 
 ## 质量声明

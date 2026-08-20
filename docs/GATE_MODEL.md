@@ -17,11 +17,14 @@ longform-engine gate-waiver project.yaml --chapter 12 --reason "P2 风险已人�
 longform-engine pacing-review project.yaml --chapter 12
 longform-engine production next project.yaml
 longform-engine repair synthesis-task project.yaml --chapter 12
+longform-engine review serve project.yaml --chapter 12 --port 8765
 ```
 
 `gate-check` 在通过时返回 0；失败时仍会完整落盘产物，但 CLI 返回 1，方便 Agent 和 CI 判断阻断状态。
 
 gate 的 P0/P1 只是一类已验证 finding，不会跳过其他独立审稿。全部必审角色完成且绑定同一候选 hash 后，CLI 才冻结 review bundle；`repair synthesis-task` 让修复主编编排根因、依赖、最小修改半径与保护项，验证通过后再使用 `repair candidate-task` 创建完整替代稿任务。
+
+冻结后必须完成 `human_story_review_v3` 十项深审。accept 需要关键转折、人物选择/情绪和读者收益三类精确 span；repair 需要结构化批注；redirect 必须选择回到章节方向或改纲。任何五类绑定 hash 漂移都使决定失效，未完成深审绝不能 finalize。
 
 ## 3. 产物契约
 
@@ -108,3 +111,5 @@ waiver 会写入：
 ## 9. 修复额度
 
 每轮产物使用不可变 `r01`、`r02` 编号。只有完整替代稿成功提交才消耗一次内容额度；无效审稿 JSON、无效计划或任务重建不计次。两轮后仍存在 P0/P1 时进入 `repair_budget_exhausted`，CLI 不生成第三轮命令。
+
+人工改稿没有旁路：审稿台只允许保存到当前已验证 repair task 的完整候选文件，提交时标记 `agent=human`，然后与 Agent 候选一样重跑 gate、所有独立审稿、冻结 bundle 和人工深审。旧决定与旧咨询同时 stale。

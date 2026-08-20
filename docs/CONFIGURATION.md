@@ -142,13 +142,15 @@ writing:
 
 ## 每章人工方向
 
-每章方向选择是 schema v4 的固定工作流，不提供跳过开关。每章写作前，`chapter_direction_candidate_v4` 必须引用覆盖当前章节、basis hash 有效且经人工批准的因果模拟，并为相关读者承诺声明 setup/escalate/partial_payoff/payoff/defer 动作，再由用户显式选择。方向合同同时包含目标阶梯、当下欲望、对抗力量、最早失败、不可逆选择、`chapter_turn`、逐场行动/反应/离场状态、故事引擎、场景载体、状态变化和最近五章重复理由。
+每章方向选择是 schema v4 的固定工作流，不提供跳过开关。每章写作前，`chapter_direction_candidate_v4` 必须引用覆盖当前章节、basis hash 有效且经人工批准的因果模拟，并为相关读者承诺声明 setup/escalate/partial_payoff/payoff/defer 动作。Markdown 必须提供 2–3 个稳定 option ID；用户选择另存为 `chapter_direction_selection_v1`，绑定文档 hash、选项、调整和重复载体理由。方向合同同时包含目标阶梯、当下欲望、对抗力量、最早失败、不可逆选择、`chapter_turn`、逐场行动/反应/离场状态、故事引擎、场景载体、状态变化和最近五章重复理由。
 
 用户选择后，CLI 才能生成章节卡、beat 和 writing task。普通章节也不跳过此步骤。
 
 ## 平台证据注册表
 
-`config/quality_profiles/market_evidence_registry.yaml` 使用 `market_evidence_registry_v1`，是起点、番茄画像建议的唯一证据索引。当前市场合同及 phase override 必须绑定非空 evidence ref；每条记录包含来源、核验日期、证据等级和执行级别。跨平台共同叙事核心可以成为合同约束；单平台节奏建议默认仅为 P2 advisory，不得据此推断推荐算法、留存或真实读者行为。
+`config/quality_profiles/market_evidence_registry.yaml` 使用 `market_evidence_registry_v2`，是起点、番茄画像观察的唯一证据索引。每条证据必须声明具体 `claims`、`source_type`、`publisher`、发布日期、`verified_at`、`applicability`、证据等级与执行级别。跨平台共同叙事核心仍由 `chapter_contract_v3` 约束；`qidian_male` 是主合同，`fanqie_free` 只提供 P2 非阻断兼容观察。禁止从公开经验推断推荐算法、留存或真实读者行为。
+
+本地审稿台没有远程监听配置。`review serve` 固定绑定 `127.0.0.1`，使用一次性 token、Host/Origin/CSRF/CSP 和预期 hash；网页不能直接写 canonical、批准章节或 finalize。`quality status --json` 分开报告 `protocol_ready`、`author_acceptance_ready` 与 `literary_evidence_ready`。
 
 ## 创作模式与同人
 
@@ -198,4 +200,4 @@ python -m longform_engine.cli init-project --template qidian-longform --output n
 python -m longform_engine.cli quality story-profile novels/demo/project.yaml --json
 ```
 
-当前 v0.5.0 配置与发布验收状态见 [`V0_5_0_RELEASE_CHECKLIST.md`](V0_5_0_RELEASE_CHECKLIST.md)；公开稳定版为 v0.5.0。
+当前 v0.6.0 稳定配置与发布验收记录见 [`V0_6_0_RELEASE_CHECKLIST.md`](V0_6_0_RELEASE_CHECKLIST.md)。

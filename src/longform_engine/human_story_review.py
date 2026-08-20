@@ -17,17 +17,31 @@ from longform_engine.storage import apply_transaction, atomic_write_text, resolv
 from longform_engine.storage.layout import manuscript_chapter_path
 
 
-SCHEMA = "human_story_review_v2"
+SCHEMA = "human_story_review_v3"
 DECISIONS = {"accept", "repair", "redirect"}
-SPAN_ACTIONS = {"preserve", "expand_scene", "compress", "replace_carrier"}
-CHECK_FIELDS = {
-    "protected_outcome_preserved",
-    "desire_and_opposition_clear",
-    "key_turn_dramatized",
-    "character_owns_choice_and_emotion",
-    "no_expository_or_repeated_carrier",
+ANNOTATION_ACTIONS = {
+    "preserve",
+    "expand_scene",
+    "compress",
+    "clarify",
+    "reorder",
+    "rewrite",
+    "replace_carrier",
 }
-EVIDENCE_KINDS = {"key_turn", "character_choice_or_emotion"}
+ANNOTATION_SEVERITIES = {"P0", "P1", "P2"}
+CHECK_FIELDS = {
+    "story_contract_preserved",
+    "desire_opposition_and_question_clear",
+    "scene_causality_and_key_turn_dramatized",
+    "protagonist_agency_voice_and_emotion",
+    "supporting_cast_and_relationship_logic",
+    "reader_gain_and_promise_progress",
+    "continuity_world_rules_and_ability_bounds",
+    "pacing_information_and_carrier_effective",
+    "prose_natural_and_readable",
+    "exit_state_and_emotional_aftereffect",
+}
+EVIDENCE_KINDS = {"key_turn", "character_choice_or_emotion", "reader_gain"}
 
 
 class HumanStoryReviewError(ValueError):
@@ -43,6 +57,8 @@ class HumanStoryReviewTaskResult:
     chapter_contract_sha256: str
     reader_promise_ledger_sha256: str
     arc_causal_simulation_sha256: str
+    review_bundle_file: str
+    review_bundle_sha256: str
     next_command: str
 
 
@@ -82,6 +98,17 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
         )
     except ValueError as exc:
         return {"required": True, "status": "pending", "reason": str(exc)}
+    from longform_engine.repair_coordination import human_review_bundle_binding
+
+    try:
+        bundle_binding = human_review_bundle_binding(
+            config,
+            chapter_number=chapter_number,
+            freeze=False,
+        )
+    except ValueError as exc:
+        return {"required": True, "status": "pending", "reason": str(exc)}
+    review_bundle_hash = str(bundle_binding["review_bundle_sha256"])
     latest_path = review_root(root) / f"ch{chapter_number:03d}.latest.json"
     latest = load_json(latest_path)
     if not isinstance(latest, dict):
@@ -92,6 +119,7 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
             "chapter_contract_sha256": contract_hash,
             "reader_promise_ledger_sha256": promise_hash,
             "arc_causal_simulation_sha256": simulation_hash,
+            "review_bundle_sha256": review_bundle_hash,
         }
     decision_path = resolve_decision_pointer(root, chapter_number, latest)
     decision_record = load_json(decision_path) if decision_path is not None else None
@@ -118,6 +146,9 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
         or str(latest.get("arc_causal_simulation_sha256") or "") != simulation_hash
         or str(decision_record.get("reader_promise_ledger_sha256") or "") != promise_hash
         or str(decision_record.get("arc_causal_simulation_sha256") or "") != simulation_hash
+        or str(latest.get("review_bundle_sha256") or "") != review_bundle_hash
+        or str(decision_record.get("review_bundle_sha256") or "") != review_bundle_hash
+        or not bundle_binding.get("frozen")
     ):
         return {
             "required": True,
@@ -126,6 +157,7 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
             "chapter_contract_sha256": contract_hash,
             "reader_promise_ledger_sha256": promise_hash,
             "arc_causal_simulation_sha256": simulation_hash,
+            "review_bundle_sha256": review_bundle_hash,
             "decision_file": relative_path(root, decision_path),
         }
     decision = str(decision_record.get("decision") or "")
@@ -137,11 +169,20 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
         "chapter_contract_sha256": contract_hash,
         "reader_promise_ledger_sha256": promise_hash,
         "arc_causal_simulation_sha256": simulation_hash,
+        "review_bundle_sha256": review_bundle_hash,
         "decision_file": relative_path(root, decision_path),
+        "decision_sha256": sha256(decision_path.read_bytes()).hexdigest(),
+        "approved_by": "human",
+        "checks": decision_record.get("checks") if isinstance(decision_record.get("checks"), dict) else {},
+        "evidence_spans": (
+            decision_record.get("evidence_spans")
+            if isinstance(decision_record.get("evidence_spans"), list)
+            else []
+        ),
         "redirect_scope": str(decision_record.get("redirect_scope") or ""),
-        "span_actions": (
-            decision_record.get("span_actions")
-            if isinstance(decision_record.get("span_actions"), list)
+        "annotations": (
+            decision_record.get("annotations")
+            if isinstance(decision_record.get("annotations"), list)
             else []
         ),
     }
@@ -171,19 +212,30 @@ def create_human_story_review_task(
     _simulation, _simulation_path, simulation_hash = load_active_arc_simulation(
         root, chapter_number=chapter_number
     )
+    from longform_engine.repair_coordination import human_review_bundle_binding
+
+    bundle_binding = human_review_bundle_binding(
+        config,
+        chapter_number=chapter_number,
+        freeze=True,
+    )
+    review_bundle_hash = str(bundle_binding["review_bundle_sha256"])
     task_path = review_root(root) / f"ch{chapter_number:03d}.{candidate_hash[:12]}.task.md"
     template_path = review_root(root) / f"ch{chapter_number:03d}.{candidate_hash[:12]}.candidate.json"
     story_brief = root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.md"
     lines = [
-        f"# ch{chapter_number:03d} 人工故事简审",
+        f"# ch{chapter_number:03d} 人工故事深审",
         "",
         f"- 正文：`{relative_path(root, draft)}`",
         f"- 故事工作单：`{relative_path(root, story_brief)}`",
         "",
-        "逐项给出 passed 与 reason：批准结果是否保持；欲望与阻力是否清楚；关键转折是否场景化；",
-        "人物是否拥有自己的选择与情绪；是否说明文化、会议化或重复载体；最后选择 accept、repair 或 redirect。",
-        "accept 还必须标注 key_turn 与 character_choice_or_emotion 两类正文证据，并填写 reader_gain_note。",
-        "repair 可用 span 动作为 preserve、expand_scene、compress、replace_carrier。",
+        f"- 冻结审稿包：`{bundle_binding['review_bundle']}`",
+        f"- 审稿包 SHA-256：`{review_bundle_hash}`",
+        "",
+        "逐项审查十个维度：合同保护、欲望/阻力/戏剧问题、场景因果/转折、主角主体性/声音/情绪、",
+        "配角/关系、读者收益/承诺、连续性/世界规则/能力边界、节奏/信息/载体、文字自然度、离场状态/余波。",
+        "accept 必须十项全过，并标注 key_turn、character_choice_or_emotion、reader_gain 三类精确正文证据。",
+        "repair 至少提供一个非 preserve 结构化批注；redirect 必须选择 direction 或 outline_revision。",
         "",
         f"填写：`{relative_path(root, template_path)}`",
         f"校验：`longform-engine chapter human-review-validate project.yaml --chapter {chapter_number} --file {relative_path(root, template_path)}`",
@@ -196,6 +248,7 @@ def create_human_story_review_task(
         "chapter_contract_sha256": contract_hash,
         "reader_promise_ledger_sha256": promise_hash,
         "arc_causal_simulation_sha256": simulation_hash,
+        "review_bundle_sha256": review_bundle_hash,
         "checks": {
             field: {"passed": False, "reason": ""}
             for field in sorted(CHECK_FIELDS)
@@ -203,7 +256,7 @@ def create_human_story_review_task(
         "decision": "repair",
         "evidence_spans": [],
         "reader_gain_note": "",
-        "span_actions": [],
+        "annotations": [],
         "redirect_scope": "direction",
         "reason": "",
     }
@@ -217,6 +270,8 @@ def create_human_story_review_task(
         chapter_contract_sha256=contract_hash,
         reader_promise_ledger_sha256=promise_hash,
         arc_causal_simulation_sha256=simulation_hash,
+        review_bundle_file=str(bundle_binding["review_bundle"]),
+        review_bundle_sha256=review_bundle_hash,
         next_command=(
             f"longform-engine chapter human-review-validate project.yaml --chapter {chapter_number} "
             f"--file {relative_path(root, template_path)}"
@@ -233,7 +288,7 @@ def validate_human_story_review(
     root = resolve_project_root(config)
     path = resolve_inside(root, file_path)
     payload = load_json(path)
-    errors = human_story_review_errors(root, chapter_number, payload)
+    errors = human_story_review_errors(config, chapter_number, payload)
     from longform_engine.repair_coordination import review_barrier_status
 
     barrier = review_barrier_status(config, chapter_number=chapter_number)
@@ -245,7 +300,7 @@ def validate_human_story_review(
     decision = str(payload.get("decision") or "") if isinstance(payload, dict) else ""
     report_path = path.with_suffix(".validation.json")
     report = {
-        "schema": "human_story_review_validation_v2",
+        "schema": "human_story_review_validation_v3",
         "chapter_number": chapter_number,
         "candidate_file": relative_path(root, path),
         "ok": not errors,
@@ -279,7 +334,7 @@ def apply_human_story_review(
     root = resolve_project_root(config)
     path = resolve_inside(root, file_path)
     payload = load_json(path)
-    errors = human_story_review_errors(root, chapter_number, payload)
+    errors = human_story_review_errors(config, chapter_number, payload)
     from longform_engine.repair_coordination import review_barrier_status
 
     barrier = review_barrier_status(config, chapter_number=chapter_number)
@@ -301,12 +356,13 @@ def apply_human_story_review(
     record = {**payload, "approved_by": approved_by, "source_file": relative_path(root, path)}
     record_text = json.dumps(record, ensure_ascii=False, indent=2) + "\n"
     latest = {
-        "schema": "human_story_review_latest_v2",
+        "schema": "human_story_review_latest_v3",
         "chapter_number": chapter_number,
         "candidate_sha256": candidate_hash,
         "chapter_contract_sha256": payload["chapter_contract_sha256"],
         "reader_promise_ledger_sha256": payload["reader_promise_ledger_sha256"],
         "arc_causal_simulation_sha256": payload["arc_causal_simulation_sha256"],
+        "review_bundle_sha256": payload["review_bundle_sha256"],
         "decision_file": relative_path(root, decision_path),
         "decision_sha256": sha256(record_text.encode("utf-8")).hexdigest(),
     }
@@ -404,16 +460,21 @@ def require_human_story_accept(config: ConfigDocument, *, chapter_number: int) -
     return status
 
 
-def human_story_review_errors(root: Path, chapter_number: int, payload: Any) -> list[str]:
+def human_story_review_errors(
+    config: ConfigDocument,
+    chapter_number: int,
+    payload: Any,
+) -> list[str]:
+    root = resolve_project_root(config)
     errors: list[str] = []
     required = {
         "schema", "chapter_number", "candidate_sha256", "chapter_contract_sha256",
         "reader_promise_ledger_sha256", "arc_causal_simulation_sha256",
-        "checks", "decision", "evidence_spans", "reader_gain_note", "span_actions",
+        "review_bundle_sha256", "checks", "decision", "evidence_spans", "reader_gain_note", "annotations",
         "redirect_scope", "reason",
     }
     if not isinstance(payload, dict) or set(payload) != required:
-        return ["review must contain exactly the human_story_review_v2 fields"]
+        return ["review must contain exactly the human_story_review_v3 fields"]
     if payload.get("schema") != SCHEMA:
         errors.append(f"schema must be {SCHEMA}")
     if payload.get("chapter_number") != chapter_number:
@@ -441,9 +502,24 @@ def human_story_review_errors(root: Path, chapter_number: int, payload: Any) -> 
         simulation_hash = ""
     if payload.get("arc_causal_simulation_sha256") != simulation_hash:
         errors.append("arc_causal_simulation_sha256 is stale")
+    try:
+        from longform_engine.repair_coordination import human_review_bundle_binding
+
+        bundle_binding = human_review_bundle_binding(
+            config,
+            chapter_number=chapter_number,
+            freeze=False,
+        )
+        if (
+            payload.get("review_bundle_sha256") != bundle_binding["review_bundle_sha256"]
+            or bundle_binding.get("actual_sha256") != bundle_binding["review_bundle_sha256"]
+        ):
+            errors.append("review_bundle_sha256 is stale")
+    except ValueError as exc:
+        errors.append(str(exc))
     checks = payload.get("checks")
     if not isinstance(checks, dict) or set(checks) != CHECK_FIELDS:
-        errors.append("checks must contain exactly five reasoned story judgments")
+        errors.append("checks must contain exactly ten reasoned story judgments")
         checks = {}
     for field in CHECK_FIELDS:
         check = checks.get(field) if isinstance(checks, dict) else None
@@ -478,38 +554,68 @@ def human_story_review_errors(root: Path, chapter_number: int, payload: Any) -> 
             evidence_kinds.add(str(item["kind"]))
         if not isinstance(item.get("note"), str) or not item["note"].strip():
             errors.append(f"evidence_spans[{index}].note must be non-empty")
-    spans = payload.get("span_actions")
-    if not isinstance(spans, list):
-        errors.append("span_actions must be a list")
-        spans = []
-    for index, item in enumerate(spans):
-        if not isinstance(item, dict) or set(item) != {"start", "end", "text", "action", "note"}:
-            errors.append(f"span_actions[{index}] has invalid fields")
+    annotations = payload.get("annotations")
+    if not isinstance(annotations, list):
+        errors.append("annotations must be a list")
+        annotations = []
+    annotation_ids: set[str] = set()
+    for index, item in enumerate(annotations):
+        annotation_fields = {
+            "annotation_id", "start", "end", "text", "check_id", "severity",
+            "action", "intent", "must_preserve", "note",
+        }
+        if not isinstance(item, dict) or set(item) != annotation_fields:
+            errors.append(f"annotations[{index}] has invalid fields")
             continue
+        annotation_id = str(item.get("annotation_id") or "")
+        if (
+            not annotation_id
+            or not all(character.isalnum() or character in {"_", "-"} for character in annotation_id)
+            or annotation_id in annotation_ids
+        ):
+            errors.append(f"annotations[{index}].annotation_id must be unique and stable")
+        annotation_ids.add(annotation_id)
         start, end = item.get("start"), item.get("end")
         if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start or end > len(draft_text):
-            errors.append(f"span_actions[{index}] has invalid bounds")
+            errors.append(f"annotations[{index}] has invalid bounds")
         elif item.get("text") != draft_text[start:end]:
-            errors.append(f"span_actions[{index}].text does not match the current candidate")
-        if item.get("action") not in SPAN_ACTIONS:
-            errors.append(f"span_actions[{index}].action is unsupported")
+            errors.append(f"annotations[{index}].text does not match the current candidate")
+        if item.get("check_id") not in CHECK_FIELDS:
+            errors.append(f"annotations[{index}].check_id is unsupported")
+        if item.get("severity") not in ANNOTATION_SEVERITIES:
+            errors.append(f"annotations[{index}].severity must be P0, P1, or P2")
+        if item.get("action") not in ANNOTATION_ACTIONS:
+            errors.append(f"annotations[{index}].action is unsupported")
+        if not isinstance(item.get("intent"), str) or not item["intent"].strip():
+            errors.append(f"annotations[{index}].intent must be non-empty")
+        must_preserve = item.get("must_preserve")
+        if not isinstance(must_preserve, list) or any(
+            not isinstance(value, str) or not value.strip() for value in must_preserve
+        ):
+            errors.append(f"annotations[{index}].must_preserve must be a list of non-empty strings")
         if not isinstance(item.get("note"), str) or not item["note"].strip():
-            errors.append(f"span_actions[{index}].note must be non-empty")
+            errors.append(f"annotations[{index}].note must be non-empty")
     if decision == "accept" and (
         not isinstance(checks, dict)
         or any(not isinstance(checks.get(field), dict) or checks[field].get("passed") is not True for field in CHECK_FIELDS)
     ):
-        errors.append("accept requires all five story checks to pass")
+        errors.append("accept requires all ten story checks to pass")
     if decision == "accept" and EVIDENCE_KINDS - evidence_kinds:
-        errors.append("accept requires key_turn and character_choice_or_emotion evidence spans")
+        errors.append("accept requires key_turn, character_choice_or_emotion, and reader_gain evidence spans")
     if decision == "accept" and not str(payload.get("reader_gain_note") or "").strip():
         errors.append("accept requires a non-empty reader_gain_note")
-    if decision == "repair" and not spans:
-        errors.append("repair requires at least one marked span")
-    elif decision == "repair" and not any(
-        isinstance(item, dict) and item.get("action") != "preserve" for item in spans
+    if decision == "accept" and any(
+        isinstance(item, dict)
+        and (item.get("severity") in {"P0", "P1"} or item.get("action") != "preserve")
+        for item in annotations
     ):
-        errors.append("repair requires at least one non-preserve span action")
+        errors.append("accept cannot retain P0/P1 or non-preserve annotations")
+    if decision == "repair" and not annotations:
+        errors.append("repair requires at least one structured annotation")
+    elif decision == "repair" and not any(
+        isinstance(item, dict) and item.get("action") != "preserve" for item in annotations
+    ):
+        errors.append("repair requires at least one non-preserve annotation")
     if payload.get("redirect_scope") not in {"direction", "outline_revision"}:
         errors.append("redirect_scope must be direction or outline_revision")
     if decision == "redirect" and not str(payload.get("reason") or "").strip():
@@ -525,11 +631,12 @@ def resolve_decision_pointer(root: Path, chapter_number: int, latest: dict[str, 
     expected = {
         "schema", "chapter_number", "candidate_sha256", "chapter_contract_sha256",
         "reader_promise_ledger_sha256", "arc_causal_simulation_sha256",
+        "review_bundle_sha256",
         "decision_file", "decision_sha256",
     }
     if (
         set(latest) != expected
-        or latest.get("schema") != "human_story_review_latest_v2"
+        or latest.get("schema") != "human_story_review_latest_v3"
         or latest.get("chapter_number") != chapter_number
     ):
         return None

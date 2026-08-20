@@ -34,6 +34,7 @@ from longform_engine.storage.layout import manuscript_chapter_path
 
 
 REVIEW_BUNDLE_SCHEMA = "repair_review_bundle_v1"
+HUMAN_REVIEW_BUNDLE_SCHEMA = "human_review_bundle_v1"
 REPAIR_ATTEMPTS_SCHEMA = "repair_attempts_v1"
 REPAIR_PLAN_VALIDATION_SCHEMA = "validation_report_v1"
 BLOCKING_SEVERITIES = frozenset({"P0", "P1"})
@@ -135,8 +136,8 @@ def editorial_human_resolution_reasons(aggregate: dict[str, Any]) -> list[str]:
     return sorted(human_reasons - repairable)
 
 
-def review_barrier_status(config: ConfigDocument, *, chapter_number: int) -> dict[str, Any]:
-    """Describe review completeness separately from content verdicts for one candidate."""
+def independent_review_status(config: ConfigDocument, *, chapter_number: int) -> dict[str, Any]:
+    """Return the current independent-review evidence without consulting a human decision."""
 
     if chapter_number <= 0:
         raise RepairCoordinationError("chapter_number must be positive")
@@ -178,6 +179,95 @@ def review_barrier_status(config: ConfigDocument, *, chapter_number: int) -> dic
         if stage.get("required") and not stage.get("complete")
     ]
     findings = _collect_findings(config, root, chapter_number, candidate_hash, gate, stages)
+    human_reasons = [
+        f"{name}: {stage['reason']}"
+        for name, stage in stages.items()
+        if stage.get("complete") and stage.get("need_human")
+    ]
+    status = (
+        "reviews_pending"
+        if protocol_blockers
+        else "need_human"
+        if human_reasons
+        else "ready_for_human_story_review"
+    )
+    return _barrier_result(
+        chapter_number,
+        candidate_path=relative_path(root, draft),
+        candidate_hash=candidate_hash,
+        stages=stages,
+        findings=findings,
+        status=status,
+        blockers=protocol_blockers + human_reasons,
+    )
+
+
+def human_review_bundle_binding(
+    config: ConfigDocument,
+    *,
+    chapter_number: int,
+    freeze: bool = False,
+) -> dict[str, Any]:
+    """Compute and optionally freeze the exact independent-review packet used by a human."""
+
+    root = resolve_project_root(config)
+    state = independent_review_status(config, chapter_number=chapter_number)
+    if state.get("status") != "ready_for_human_story_review":
+        raise RepairCoordinationError(
+            "independent reviews are not ready for a frozen human review bundle: "
+            + "; ".join(str(item) for item in state.get("blockers") or [state.get("status")])
+        )
+    bundle = {
+        "schema": HUMAN_REVIEW_BUNDLE_SCHEMA,
+        "chapter_number": chapter_number,
+        "candidate_path": state["candidate_path"],
+        "candidate_sha256": state["candidate_sha256"],
+        "required_reviews": [name for name in REVIEW_ORDER[:-1] if state["stages"][name]["required"]],
+        "completed_reviews": [name for name in REVIEW_ORDER[:-1] if state["stages"][name]["complete"]],
+        "review_stages": state["stages"],
+        "findings": state["findings"],
+        "blocking_finding_ids": state["blocking_finding_ids"],
+        "canonical_write_allowed": False,
+    }
+    rendered = json.dumps(bundle, ensure_ascii=False, indent=2) + "\n"
+    digest = sha256(rendered.encode("utf-8")).hexdigest()
+    bundle_file = (
+        root
+        / "50_workbench"
+        / "human_story_reviews"
+        / "bundles"
+        / f"ch{chapter_number:03d}.{state['candidate_sha256'][:12]}.{digest[:12]}.review_bundle.json"
+    )
+    if freeze:
+        if bundle_file.is_file() and bundle_file.read_bytes() != rendered.encode("utf-8"):
+            raise RepairCoordinationError("an immutable human review bundle path contains different bytes")
+        if not bundle_file.exists():
+            atomic_write_text(bundle_file, rendered)
+    actual_hash = _file_hash(bundle_file) if bundle_file.is_file() else ""
+    return {
+        "schema": "human_review_bundle_binding_v1",
+        "chapter_number": chapter_number,
+        "candidate_sha256": state["candidate_sha256"],
+        "review_bundle": relative_path(root, bundle_file),
+        "review_bundle_sha256": digest,
+        "actual_sha256": actual_hash,
+        "frozen": bundle_file.is_file() and actual_hash == digest,
+        "payload": bundle,
+    }
+
+
+def review_barrier_status(config: ConfigDocument, *, chapter_number: int) -> dict[str, Any]:
+    """Describe review completeness separately from content verdicts for one candidate."""
+
+    independent = independent_review_status(config, chapter_number=chapter_number)
+    candidate_hash = str(independent.get("candidate_sha256") or "")
+    stages = dict(independent.get("stages") or {})
+    findings = list(independent.get("findings") or [])
+    protocol_blockers = (
+        list(independent.get("blockers") or [])
+        if independent.get("status") == "reviews_pending"
+        else []
+    )
     human_story = human_story_review_status(config, chapter_number=chapter_number)
     stages["human_story"] = {
         "required": True,
@@ -188,37 +278,38 @@ def review_barrier_status(config: ConfigDocument, *, chapter_number: int) -> dic
         "source": human_story.get("decision_file") or "",
     }
     if human_story.get("status") == "repair":
-        for index, item in enumerate(human_story.get("span_actions") or []):
+        for index, item in enumerate(human_story.get("annotations") or []):
             if not isinstance(item, dict) or item.get("action") == "preserve":
                 continue
-            findings.append(
-                _admit_finding(
+            admitted = _admit_finding(
                     "human_story",
                     {
                         "code": f"HUMAN_STORY_{str(item.get('action') or 'REPAIR').upper()}",
-                        "severity": "P1",
-                        "diagnosis": str(item.get("note") or "human story repair requested"),
+                        "severity": str(item.get("severity") or "P1"),
+                        "diagnosis": str(item.get("intent") or item.get("note") or "human story repair requested"),
                         "evidence_ids": [
                             f"40_manuscript/draft/ch{chapter_number:03d}.md@{int(item.get('start') or 0)}:{int(item.get('end') or 0)}"
                         ],
                         "repair_target": str(item.get("action") or "repair"),
                         "preserve": [
-                            str(marked.get("note") or "")
-                            for marked in human_story.get("span_actions") or []
-                            if isinstance(marked, dict) and marked.get("action") == "preserve"
+                            str(value)
+                            for marked in human_story.get("annotations") or []
+                            if isinstance(marked, dict)
+                            for value in marked.get("must_preserve") or []
                         ],
                         "reviewer_role": "human_story_reviewer",
                     },
                     candidate_hash,
-                    fallback_evidence=f"human_story#/span_actions/{index}",
+                    fallback_evidence=f"human_story#/annotations/{index}",
                     selected_p2=set(),
                 )
-            )
-    human_reasons = [
-        f"{name}: {stage['reason']}"
-        for name, stage in stages.items()
-        if stage.get("complete") and stage.get("need_human")
-    ]
+            admitted["selected"] = True
+            findings.append(admitted)
+    human_reasons = (
+        list(independent.get("blockers") or [])
+        if independent.get("status") == "need_human"
+        else []
+    )
     blocking = [item for item in findings if item.get("selected") and item.get("severity") in BLOCKING_SEVERITIES]
     if protocol_blockers:
         status = "reviews_pending"
@@ -234,7 +325,7 @@ def review_barrier_status(config: ConfigDocument, *, chapter_number: int) -> dic
         status = "ready_to_finalize"
     return _barrier_result(
         chapter_number,
-        candidate_path=relative_path(root, draft),
+        candidate_path=str(independent.get("candidate_path") or ""),
         candidate_hash=candidate_hash,
         stages=stages,
         findings=findings,

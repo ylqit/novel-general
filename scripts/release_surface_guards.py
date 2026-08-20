@@ -143,12 +143,12 @@ SINGLE_PROJECT_FORBIDDEN_TERMS = tuple(
 
 REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
-        "docs/V0_5_0_RELEASE_CHECKLIST.md",
+        "docs/V0_6_0_RELEASE_CHECKLIST.md",
         (
-            "配置与覆盖来源",
-            "统一章节路径",
-            "内部质量证据",
-            "单进程定向验证",
+            "市场证据与质量合同",
+            "人工深审 v3",
+            "本地可视化审稿台",
+            "本地验证证据",
             "literary_evidence_ready=false",
         ),
     ),
@@ -189,6 +189,8 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         "src/longform_engine/intelligence/pipeline.py",
         (
             '"schema": "chapter_direction_candidate_v4"',
+            '"schema": "chapter_direction_selection_v1"',
+            "load_chapter_direction_selection",
             '"story_engine_contract_v1"',
             '"reader_promise_actions"',
             '"arc_simulation_ref"',
@@ -210,12 +212,15 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "src/longform_engine/human_story_review.py",
         (
-            'SCHEMA = "human_story_review_v2"',
+            'SCHEMA = "human_story_review_v3"',
             'DECISIONS = {"accept", "repair", "redirect"}',
+            "CHECK_FIELDS",
+            "EVIDENCE_KINDS",
             "candidate_sha256",
             "chapter_contract_sha256",
             "reader_promise_ledger_sha256",
             "arc_causal_simulation_sha256",
+            "review_bundle_sha256",
             "apply_transaction",
             "approved_by=human",
         ),
@@ -240,19 +245,52 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "config/quality_profiles/market_evidence_registry.yaml",
         (
-            "schema: market_evidence_registry_v1",
-            "source_date:",
+            "schema: market_evidence_registry_v2",
+            "source_type:",
+            "publisher:",
+            "verified_at:",
+            "claims:",
+            "applicability:",
             "evidence_grade:",
             "execution_level: P2_advisory",
+            "algorithm_inference_allowed: false",
         ),
     ),
     (
         "src/longform_engine/quality/contracts.py",
         (
-            'MARKET_EVIDENCE_SCHEMA = "market_evidence_registry_v1"',
+            'MARKET_EVIDENCE_SCHEMA = "market_evidence_registry_v2"',
             "load_market_evidence_registry",
             "validate_market_evidence_refs",
             'item.get("execution_level") != "P2_advisory"',
+        ),
+    ),
+    (
+        "src/longform_engine/human_review_consultation.py",
+        (
+            'SESSION_SCHEMA = "human_review_consult_session_v1"',
+            "create_human_review_consult_task",
+            "validate_human_review_consultation",
+            "record_human_review_consultation",
+            "mark_stale_human_consultations",
+        ),
+    ),
+    (
+        "src/longform_engine/review_server.py",
+        (
+            'super().__init__(("127.0.0.1", port)',
+            "Content-Security-Policy",
+            "X-Review-CSRF",
+            "acquire_project_lock",
+            'agent="human"',
+        ),
+    ),
+    (
+        "src/longform_engine/quality/status.py",
+        (
+            '"protocol_ready"',
+            '"author_acceptance_ready"',
+            '"literary_evidence_ready"',
         ),
     ),
     (
@@ -351,9 +389,9 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "docs/V0_5_0_RELEASE_CHECKLIST.md",
+        "docs/V0_6_0_RELEASE_CHECKLIST.md",
         (
-            "发布前本地证据",
+            "本地验证证据",
             "远程发布证据",
             "GitHub Release",
             "wheel",
@@ -363,7 +401,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "tests/test_agent_skill_integrity.py",
         (
-            "test_release_guard_tracks_current_v050_contracts",
+            "test_release_guard_tracks_current_v060_contracts",
             "check_experience_layer_guards",
             "DIRECT_WRITER_PATTERNS",
         ),
@@ -780,7 +818,7 @@ def check_removed_runtime_guards() -> list[str]:
     failures: list[str] = []
     retired_module = "leg" + "acy.py"
     if (SRC / retired_module).exists():
-        failures.append(f"{retired_module} must not ship in the v0.5.0 runtime")
+        failures.append(f"{retired_module} must not ship in the v0.6.0 runtime")
     combined = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")
         for path in (

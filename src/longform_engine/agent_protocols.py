@@ -53,6 +53,7 @@ DESIGN_TASK_TYPES = frozenset(
         "style_analysis",
         "adaptation_analysis",
         "fanfiction_design",
+        "human_review_consult",
     }
 )
 EVIDENCE_REVIEW_TASK_TYPES = frozenset(
@@ -145,6 +146,13 @@ DESIGN_REQUIRED_HEADINGS: dict[str, tuple[str, ...]] = {
         "关系发展",
         "世界规则变化",
         "结局边界",
+    ),
+    "human_review_consult": (
+        "问题复述",
+        "证据判断",
+        "可选修法",
+        "风险与保护项",
+        "建议动作",
     ),
 }
 
@@ -243,12 +251,34 @@ def parse_design_document(text: str, *, expected_type: str) -> DesignDocument:
     empty = [heading for heading in required if not parsed[heading].strip()]
     if empty:
         raise AgentProtocolError("design document has empty required sections: " + ", ".join(empty))
-    return DesignDocument(
+    document = DesignDocument(
         document_type=expected_type,
         headings=tuple(parsed),
         sections=parsed,
         markdown=normalized,
     )
+    if expected_type == "chapter_direction":
+        chapter_direction_option_ids(document)
+    return document
+
+
+def chapter_direction_option_ids(document: DesignDocument) -> tuple[str, ...]:
+    """Return the two or three stable option IDs declared by a direction document."""
+
+    if document.document_type != "chapter_direction":
+        raise AgentProtocolError("stable direction options apply only to chapter_direction documents")
+    section = document.sections.get("方向选项", "")
+    matches = re.findall(
+        r"(?m)^#{3,6}\s+option:([a-z][a-z0-9_-]{2,63})\s+(?:[-—:：]\s*)?\S.*$",
+        section,
+    )
+    if not 2 <= len(matches) <= 3:
+        raise AgentProtocolError(
+            "chapter_direction 方向选项 must declare two or three `### option:<stable_id> — 标题` headings"
+        )
+    if len(set(matches)) != len(matches):
+        raise AgentProtocolError("chapter_direction option IDs must be unique")
+    return tuple(matches)
 
 
 def _markdown_sections(markdown: str) -> dict[str, str]:

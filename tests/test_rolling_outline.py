@@ -19,6 +19,7 @@ from longform_engine.intelligence import (
     assess_chapter_direction,
     create_design_compile_task,
     create_intelligence_task,
+    record_chapter_direction_selection,
     validate_design_compile_delta,
     validate_intelligence_candidate,
 )
@@ -61,6 +62,15 @@ def write_design_candidate(root: Path, task, task_type: str, payload: dict) -> P
         body = ["本节决定已经由用户审阅。"]
         if index == 0:
             body.extend(f"- {fact}" for fact in facts)
+        if task_type == "chapter_direction" and heading == "方向选项":
+            direction_id = str(payload["selected_direction"]["id"])
+            body = [
+                f"### option:{direction_id} — {payload['selected_direction']['title']}",
+                "沿当前证据链推进并承担明确代价。",
+                "",
+                "### option:alternate_route — 改由关系压力切入",
+                "保留章节保护结果，但改变场景进入和冲突承担者。",
+            ]
         sections.extend((f"## {heading}", "", *body, ""))
     candidate.write_text(f"# {task_type} 设计文档\n\n" + "\n".join(sections), encoding="utf-8")
     control = validate_production_agent_result(
@@ -75,6 +85,15 @@ def write_design_candidate(root: Path, task, task_type: str, payload: dict) -> P
 def apply_design_candidate(config, root: Path, task_type: str, candidate: Path, payload: dict):
     approval = validate_intelligence_candidate(config, task_type=task_type, file_path=candidate)
     assert approval.ok, approval.errors
+    if task_type == "chapter_direction":
+        record_chapter_direction_selection(
+            config,
+            document_path=candidate,
+            selected_option_id=str(payload["selected_direction"]["id"]),
+            user_adjustments=dict(payload["selection"]["user_adjustments"]),
+            repetition_reason=str(payload["selection"]["repetition_reason"]),
+            selected_by="human",
+        )
     approve_design_document(
         config,
         task_type=task_type,
@@ -93,7 +112,9 @@ def apply_design_candidate(config, root: Path, task_type: str, candidate: Path, 
         "arc_simulation": (
             "from_chapter", "to_chapter", "basis_hashes", "approved_by", "status",
         ),
-        "chapter_direction": ("chapter_number", "chapter_card_sha256", "trigger_reasons"),
+        "chapter_direction": (
+            "chapter_number", "chapter_card_sha256", "trigger_reasons", "selection",
+        ),
         "outline_revision": ("from_chapter", "to_chapter"),
     }.get(task_type, ()):
         changes.pop(cli_field, None)

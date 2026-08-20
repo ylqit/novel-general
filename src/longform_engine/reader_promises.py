@@ -484,11 +484,8 @@ def merge_planned_reader_promises(
         for item in current.get("items") or []
         if isinstance(item, dict) and item.get("promise_id")
     }
-    payoffs = (
-        story_engine_contract.get("expected_payoffs")
-        if isinstance(story_engine_contract.get("expected_payoffs"), dict)
-        else {}
-    )
+    raw_payoffs = story_engine_contract.get("expected_payoffs")
+    payoffs: dict[str, Any] = raw_payoffs if isinstance(raw_payoffs, dict) else {}
     opening_latest = min(3, max(1, estimated_chapters))
     early_target = min(max(6, opening_latest + 1), max(1, estimated_chapters))
     early_latest = min(max(12, early_target), max(1, estimated_chapters))

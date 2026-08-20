@@ -25,7 +25,7 @@ STORY_PHASE_IDS = ("opening", "early_serial", "stable_serial", "volume_climax", 
 QUALITY_STRICTNESS = ("light", "balanced", "strict")
 APPROVED_BASELINE_PATH = "10_bible/style_profiles/approved_style_baseline.json"
 PLATFORM_DEVIATION_POLICIES = ("P2_advisory", "P1_blocking")
-MARKET_EVIDENCE_SCHEMA = "market_evidence_registry_v1"
+MARKET_EVIDENCE_SCHEMA = "market_evidence_registry_v2"
 COMPACT_CONTRACT_FIELDS = (
     "platform_promise",
     "phase_focus",
@@ -578,8 +578,20 @@ def load_market_evidence_registry() -> dict[str, dict[str, Any]]:
         raise ValueError(f"Invalid market evidence registry: {path}")
     items = payload.get("items")
     required = {
-        "evidence_id", "market_id", "source_url", "source_date",
-        "evidence_grade", "execution_level", "claim_boundary",
+        "schema",
+        "evidence_id",
+        "market_id",
+        "source_url",
+        "source_type",
+        "publisher",
+        "published_at",
+        "verified_at",
+        "claims",
+        "applicability",
+        "evidence_grade",
+        "execution_level",
+        "algorithm_inference_allowed",
+        "claim_boundary",
     }
     if not isinstance(items, list):
         raise ValueError(f"Invalid market evidence registry: {path} (items must be a list)")
@@ -588,7 +600,18 @@ def load_market_evidence_registry() -> dict[str, dict[str, Any]]:
         if (
             not isinstance(item, dict)
             or set(item) != required
-            or any(not isinstance(item[field], str) or not item[field].strip() for field in required)
+            or item.get("schema") != "market_evidence_item_v2"
+            or any(
+                not isinstance(item[field], str) or not item[field].strip()
+                for field in required - {"claims", "applicability", "algorithm_inference_allowed"}
+            )
+            or any(
+                not isinstance(item[field], list)
+                or not item[field]
+                or any(not isinstance(value, str) or not value.strip() for value in item[field])
+                for field in ("claims", "applicability")
+            )
+            or item.get("algorithm_inference_allowed") is not False
         ):
             raise ValueError(f"Invalid market evidence registry: {path} (items[{index}])")
         evidence_id = str(item["evidence_id"])
@@ -598,12 +621,13 @@ def load_market_evidence_registry() -> dict[str, dict[str, Any]]:
         if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
             raise ValueError(f"Invalid market evidence registry: {path} (source_url)")
         try:
-            date.fromisoformat(str(item["source_date"]))
+            date.fromisoformat(str(item["published_at"]))
+            date.fromisoformat(str(item["verified_at"]))
         except ValueError as exc:
             raise ValueError(
-                f"Invalid market evidence registry: {path} (source_date must be YYYY-MM-DD)"
+                f"Invalid market evidence registry: {path} (published_at/verified_at must be YYYY-MM-DD)"
             ) from exc
-        if item["execution_level"] not in {"P2_advisory", "contract_required"}:
+        if item["execution_level"] != "P2_advisory":
             raise ValueError(f"Invalid market evidence registry: {path} (execution_level)")
         registry[evidence_id] = item
     return registry

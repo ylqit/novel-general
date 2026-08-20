@@ -12,6 +12,7 @@ from longform_engine.quality import (
     compact_effective_quality_contract,
     compile_effective_quality_contract,
 )
+from longform_engine.quality.contracts import load_market_evidence_registry
 from longform_engine.storage import init_project
 from tests.project_fixtures import mark_project_ready
 
@@ -28,6 +29,22 @@ def test_default_config_uses_the_unified_quality_profile_shape():
     assert "genre" not in quality["profile"]
     assert "market_profile" not in quality
     assert "genre_profile" not in quality
+
+
+def test_market_evidence_registry_v2_has_explicit_claim_scope_and_advisory_boundary():
+    registry = load_market_evidence_registry()
+
+    assert registry
+    assert all(item["schema"] == "market_evidence_item_v2" for item in registry.values())
+    assert all(item["claims"] for item in registry.values())
+    assert all(item["source_type"] for item in registry.values())
+    assert all(item["publisher"] for item in registry.values())
+    assert all(item["verified_at"] == "2026-08-20" for item in registry.values())
+    assert all(item["applicability"] for item in registry.values())
+    assert all(item["execution_level"] == "P2_advisory" for item in registry.values())
+    assert all(item["algorithm_inference_allowed"] is False for item in registry.values())
+    assert not any("/honor/1048862481" in item["source_url"] for item in registry.values())
+    assert {item["market_id"] for item in registry.values()} == {"qidian_male", "fanqie_free"}
 
 
 @pytest.mark.parametrize(

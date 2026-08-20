@@ -18,6 +18,7 @@ from longform_engine.agent_protocols import (
     AgentProtocolError,
     build_validation_report,
     canonical_delta_domain_payload,
+    chapter_direction_option_ids,
     output_protocol_for_task,
     parse_design_document,
     validate_canonical_delta,
@@ -354,6 +355,19 @@ class DesignApprovalResult:
     document_file: str
     approval_file: str
     document_sha256: str
+    selection_file: str
+    selection_sha256: str
+    next_command: str
+
+
+@dataclass(frozen=True)
+class ChapterDirectionSelectionResult:
+    chapter_number: int
+    document_file: str
+    selection_file: str
+    document_sha256: str
+    selection_sha256: str
+    selected_option_id: str
     next_command: str
 
 
@@ -657,6 +671,79 @@ def apply_intelligence_candidate(
     )
 
 
+def record_chapter_direction_selection(
+    config: ConfigDocument,
+    *,
+    document_path: str | Path,
+    selected_option_id: str,
+    user_adjustments: dict[str, Any] | None = None,
+    repetition_reason: str = "",
+    selected_by: str,
+) -> ChapterDirectionSelectionResult:
+    """Record the human choice separately from Agent-authored direction Markdown."""
+
+    if selected_by != "human":
+        raise ValueError("Chapter direction selection requires selected_by=human.")
+    root = resolve_project_root(config)
+    document = resolve_candidate(root, document_path)
+    try:
+        parsed = parse_design_document(
+            document.read_text(encoding="utf-8"),
+            expected_type="chapter_direction",
+        )
+    except (OSError, UnicodeError, AgentProtocolError) as exc:
+        raise ValueError(f"Chapter direction document is invalid: {exc}") from exc
+    option_ids = chapter_direction_option_ids(parsed)
+    selected_option_id = str(selected_option_id or "").strip()
+    if selected_option_id not in option_ids:
+        raise ValueError("selected_option_id must reference one stable option ID in the document.")
+    adjustments = {} if user_adjustments is None else user_adjustments
+    if not isinstance(adjustments, dict) or any(
+        not isinstance(key, str)
+        or not key.strip()
+        or value in (None, "", [], {})
+        for key, value in adjustments.items()
+    ):
+        raise ValueError("user_adjustments must be an object with non-empty field names and values.")
+    if not isinstance(repetition_reason, str):
+        raise ValueError("repetition_reason must be text.")
+    manifest = manifest_for_output(root, "chapter_direction", document)
+    if manifest is None:
+        raise ValueError("Chapter direction document is not bound to an active Agent task.")
+    chapter_number = manifest_chapter_number(manifest)
+    if chapter_number <= 0:
+        raise ValueError("Chapter direction task has no valid chapter scope.")
+    document_hash = sha256(document.read_bytes()).hexdigest()
+    selection_path = chapter_direction_selection_path(root, document)
+    selection = {
+        "schema": "chapter_direction_selection_v1",
+        "task_id": str(manifest.get("task_id") or ""),
+        "chapter_number": chapter_number,
+        "document_path": relative(root, document),
+        "document_sha256": document_hash,
+        "option_ids": list(option_ids),
+        "selected_option_id": selected_option_id,
+        "user_adjustments": adjustments,
+        "repetition_reason": repetition_reason.strip(),
+        "selected_by": selected_by,
+        "selected_at": datetime.now(timezone.utc).isoformat(),
+    }
+    atomic_write_text(selection_path, json.dumps(selection, ensure_ascii=False, indent=2) + "\n")
+    selection_hash = sha256(selection_path.read_bytes()).hexdigest()
+    return ChapterDirectionSelectionResult(
+        chapter_number=chapter_number,
+        document_file=relative(root, document),
+        selection_file=relative(root, selection_path),
+        document_sha256=document_hash,
+        selection_sha256=selection_hash,
+        selected_option_id=selected_option_id,
+        next_command=(
+            "longform-engine intelligence approve project.yaml --task-type chapter_direction "
+            f"--document {relative(root, document)} --approved-by human"
+        ),
+    )
+
+
 def approve_design_document(
     config: ConfigDocument,
     *,
@@ -681,6 +768,12 @@ def approve_design_document(
     if manifest is None:
         raise ValueError("Design document is not bound to an active Agent task.")
     document_hash = sha256(document.read_bytes()).hexdigest()
+    selection_file = ""
+    selection_hash = ""
+    if task_type == "chapter_direction":
+        selection = load_chapter_direction_selection(root, document)
+        selection_file = str(selection["selection_file"])
+        selection_hash = str(selection["selection_sha256"])
     approval = design_approval_path(root, document)
     approval_payload = {
         "schema": "design_document_approval_v1",
@@ -691,6 +784,13 @@ def approve_design_document(
         "approved_by": approved_by,
         "approved_at": datetime.now(timezone.utc).isoformat(),
     }
+    if task_type == "chapter_direction":
+        approval_payload.update(
+            {
+                "selection_file": selection_file,
+                "selection_sha256": selection_hash,
+            }
+        )
     atomic_write_text(approval, json.dumps(approval_payload, ensure_ascii=False, indent=2) + "\n")
     mark_tasks_for_output(
         root,
@@ -706,6 +806,8 @@ def approve_design_document(
         document_file=relative(root, document),
         approval_file=relative(root, approval),
         document_sha256=document_hash,
+        selection_file=selection_file,
+        selection_sha256=selection_hash,
         next_command=(
             "longform-engine intelligence compile-task project.yaml "
             f"--task-type {task_type} --document {relative(root, document)}"
@@ -743,12 +845,22 @@ def create_design_compile_task(
     instruction = root / "50_workbench" / "intelligence_tasks" / f"{base}.md"
     delta = root / "50_workbench" / "intelligence_candidates" / f"{base}.delta.json"
     manifest_file = root / "50_workbench" / "agent_tasks" / f"{base}.manifest.json"
+    selection_path = (
+        root / str(approval["selection_file"])
+        if task_type == "chapter_direction"
+        else None
+    )
     instruction_text = render_design_compile_instruction(
         task_type=task_type,
         document=relative(root, document),
         document_hash=str(approval["document_sha256"]),
         domain_schema=str(TASK_SPECS[task_type]["schema"]),
         output=relative(root, delta),
+        selection=(
+            load_chapter_direction_selection(root, document)
+            if task_type == "chapter_direction"
+            else None
+        ),
     )
     atomic_write_text(instruction, instruction_text)
     document_rel = relative(root, document)
@@ -767,7 +879,7 @@ def create_design_compile_task(
         task_type="design_semantic_compile",
         chapter_number=int(scope.get("chapter_number") or 0) or None,
         scope=scope,
-        input_files=(instruction, document),
+        input_files=(instruction, document, *([selection_path] if selection_path is not None else [])),
         allowed_output_paths=(delta,),
         output_schema=CANONICAL_DELTA_SCHEMA,
         validate_command=validate_command,
@@ -779,7 +891,7 @@ def create_design_compile_task(
         canonical_targets=intelligence_canonical_targets(root, task_type, scope),
         requires_human_apply=True,
         context_policy={
-            "required_files": [instruction, document],
+            "required_files": [instruction, document, *([selection_path] if selection_path is not None else [])],
             "optional_files": [],
             "compiled_brief": instruction,
             "selection_report": instruction,
@@ -948,6 +1060,11 @@ def apply_compiled_design(
     scope = dict(manifest.get("scope") or {})
     canonical_document = design_document_target(root, task_type, scope)
     canonical_delta = design_delta_target(root, task_type, scope)
+    selection = (
+        load_chapter_direction_selection(root, document)
+        if task_type == "chapter_direction"
+        else {}
+    )
     touched = design_apply_targets(root, task_type, scope, payload=domain_payload)
     touched.append(root / "50_workbench" / "agent_tasks")
     touched = list(dict.fromkeys(touched))
@@ -955,13 +1072,22 @@ def apply_compiled_design(
         root,
         command=f"intelligence apply compiled {task_type}",
         chapter_number=int(scope.get("chapter_number") or 0) or None,
-        source_paths=(document, delta),
+        source_paths=(
+            document,
+            delta,
+            *(
+                [root / str(selection["selection_file"])]
+                if selection
+                else []
+            ),
+        ),
         touched_paths=tuple(touched),
         metadata={
             "task_type": task_type,
             "compile_task_id": str(manifest.get("task_id") or ""),
             "approved_by": approved_by,
             "document_sha256": sha256(document.read_bytes()).hexdigest(),
+            "selection_sha256": str(selection.get("selection_sha256") or ""),
         },
     ) as transaction:
         atomic_write_text(canonical_document, document.read_text(encoding="utf-8").rstrip() + "\n")
@@ -973,10 +1099,35 @@ def apply_compiled_design(
                 "scope": scope,
                 "document_path": relative(root, canonical_document),
                 "document_sha256": sha256(document.read_bytes()).hexdigest(),
+                "selection": (
+                    {
+                        "path": str(selection["selection_file"]),
+                        "sha256": str(selection["selection_sha256"]),
+                        "selected_option_id": str(selection["selected_option_id"]),
+                    }
+                    if selection
+                    else {}
+                ),
                 "delta": raw_delta,
             },
         )
         write_targets(config, root, task_type, domain_payload, scope=scope)
+        if task_type == "chapter_direction" and selection:
+            from longform_engine.chapter_contract import stamp_chapter_contract
+            from longform_engine.orchestration.pipeline import upsert_chapter_plan, write_chapter_card_artifacts
+
+            chapter_number = int(scope.get("chapter_number") or 0)
+            card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+            card = read_json(card_path, {})
+            direction_selection = card.get("direction_selection") if isinstance(card, dict) else None
+            if not isinstance(card, dict) or not isinstance(direction_selection, dict):
+                raise ValueError("chapter direction apply did not produce a direction selection record.")
+            direction_selection["selection_file"] = str(selection["selection_file"])
+            direction_selection["selection_sha256"] = str(selection["selection_sha256"])
+            direction_selection["document_sha256"] = sha256(document.read_bytes()).hexdigest()
+            stamp_chapter_contract(card)
+            write_chapter_card_artifacts(root, card)
+            upsert_chapter_plan(root, card)
         mark_tasks_for_chapter_type(
             root,
             chapter_number=int(scope.get("chapter_number") or 0),
@@ -1001,6 +1152,64 @@ def design_approval_path(root: Path, document: Path) -> Path:
     return root / "50_workbench" / "intelligence_approvals" / f"{document.stem}.approval.json"
 
 
+def chapter_direction_selection_path(root: Path, document: Path) -> Path:
+    return root / "50_workbench" / "intelligence_selections" / f"{document.stem}.selection.json"
+
+
+def load_chapter_direction_selection(
+    root: Path,
+    document: Path,
+    *,
+    errors: list[str] | None = None,
+) -> dict[str, Any]:
+    target = errors if errors is not None else []
+    path = chapter_direction_selection_path(root, document)
+    payload = read_json(path, {})
+    required = {
+        "schema", "task_id", "chapter_number", "document_path", "document_sha256",
+        "option_ids", "selected_option_id", "user_adjustments", "repetition_reason",
+        "selected_by", "selected_at",
+    }
+    if not isinstance(payload, dict) or set(payload) != required:
+        target.append("chapter direction has no valid chapter_direction_selection_v1 record.")
+    else:
+        if payload.get("schema") != "chapter_direction_selection_v1":
+            target.append("chapter direction selection schema is invalid.")
+        if payload.get("document_path") != relative(root, document):
+            target.append("chapter direction selection points to a different document.")
+        document_hash = sha256(document.read_bytes()).hexdigest() if document.is_file() else ""
+        if payload.get("document_sha256") != document_hash:
+            target.append("chapter direction document changed after selection; select an option again.")
+        try:
+            parsed = parse_design_document(
+                document.read_text(encoding="utf-8"),
+                expected_type="chapter_direction",
+            )
+            option_ids = chapter_direction_option_ids(parsed)
+        except (OSError, UnicodeError, AgentProtocolError) as exc:
+            target.append(f"chapter direction selection cannot parse current options: {exc}")
+            option_ids = ()
+        if payload.get("option_ids") != list(option_ids):
+            target.append("chapter direction option IDs changed after selection; select an option again.")
+        if payload.get("selected_option_id") not in option_ids:
+            target.append("chapter direction selected option is not present in the current document.")
+        if payload.get("selected_by") != "human":
+            target.append("chapter direction selection must be recorded by human.")
+        if not isinstance(payload.get("user_adjustments"), dict):
+            target.append("chapter direction user_adjustments must be an object.")
+        if not isinstance(payload.get("repetition_reason"), str):
+            target.append("chapter direction repetition_reason must be text.")
+    if target and errors is None:
+        raise ValueError(" ".join(target))
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        **payload,
+        "selection_file": relative(root, path),
+        "selection_sha256": sha256(path.read_bytes()).hexdigest() if path.is_file() else "",
+    }
+
+
 def load_design_approval(
     root: Path,
     task_type: str,
@@ -1023,6 +1232,14 @@ def load_design_approval(
             target.append("design document changed after approval; revalidate and approve it again.")
         if payload.get("approved_by") != "human":
             target.append("design approval must be recorded by human.")
+        if task_type == "chapter_direction":
+            selection_errors: list[str] = []
+            selection = load_chapter_direction_selection(root, document, errors=selection_errors)
+            target.extend(selection_errors)
+            if payload.get("selection_file") != selection.get("selection_file"):
+                target.append("design approval points to a different chapter direction selection.")
+            if payload.get("selection_sha256") != selection.get("selection_sha256"):
+                target.append("chapter direction selection changed after approval; approve it again.")
     if target and errors is None:
         raise ValueError(" ".join(target))
     return payload if isinstance(payload, dict) else {}
@@ -1035,6 +1252,7 @@ def render_design_compile_instruction(
     document_hash: str,
     domain_schema: str,
     output: str,
+    selection: dict[str, Any] | None = None,
 ) -> str:
     task_specific = (
         "chapter_direction 只编译 selected_direction、selection、canonical_refs、introduced_elements；"
@@ -1049,6 +1267,15 @@ def render_design_compile_instruction(
             f"- 原设计任务：`{task_type}`",
             f"- 已批准文档：`{document}`",
             f"- 文档 SHA-256：`{document_hash}`",
+            *(
+                (
+                    f"- 人工选择：`{selection['selected_option_id']}`",
+                    f"- 选择 sidecar：`{selection['selection_file']}`",
+                    f"- 选择 SHA-256：`{selection['selection_sha256']}`",
+                )
+                if selection is not None
+                else ()
+            ),
             f"- CLI 内部领域 schema：`{domain_schema}`",
             f"- 唯一输出：`{output}`",
             "",
@@ -1058,6 +1285,13 @@ def render_design_compile_instruction(
             "evidence 必须使用 /changes/... JSON Pointer 映射到 document@start:end。",
             "备选方案、被否决内容、示例和分析理由不能作为已批准事实。",
             task_specific,
+            *(
+                (
+                    "chapter_direction 的 selection 由 CLI 从 sidecar 注入；delta 不得自行编写 selection。",
+                )
+                if selection is not None
+                else ()
+            ),
             "任何稳定 ID、窗口、关系或语义存在歧义时写入 uncertainties；CLI 将阻止 apply。",
             "",
         )
@@ -1074,10 +1308,23 @@ def design_cli_fields(
     if task_type == "chapter_direction":
         chapter_number = int(scope.get("chapter_number") or 0)
         card = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+        document = (
+            root / str(manifest_input_paths(manifest or {})[1])
+            if len(manifest_input_paths(manifest or {})) >= 2
+            else None
+        )
+        if document is None or not document.is_file():
+            raise ValueError("chapter direction compile task is missing its approved Markdown input.")
+        selection = load_chapter_direction_selection(root, document)
         return {
             "chapter_number": chapter_number,
             "chapter_card_sha256": sha256(card.read_bytes()).hexdigest() if card.is_file() else "",
             "trigger_reasons": assess_chapter_direction(config, chapter_number)["reasons"],
+            "selection": {
+                "direction_id": str(selection["selected_option_id"]),
+                "user_adjustments": dict(selection["user_adjustments"]),
+                "repetition_reason": str(selection["repetition_reason"]),
+            },
         }
     if task_type == "arc_simulation":
         return {
@@ -4930,7 +5177,8 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "CLI 会根据真实依赖重新计算。"
         ),
         "chapter_direction": (
-            "给出二至三个因果路径不同的方向，明确当下欲望、真实阻力、最早失败、不可逆选择、可见代价、"
+            "在方向选项下用 `### option:<stable_id> — 标题` 给出二至三个因果路径不同的方向，"
+            "稳定 ID 在人工选择后不得改名；明确当下欲望、真实阻力、最早失败、不可逆选择、可见代价、"
             "chapter_turn，以及逐场行动、反应和离场状态；声明必须演出、可压缩过程、故事引擎、载体与状态变化。"
             "最近五章载体达到重复门槛时记录人工理由。同人必须保护原作结果、人物能动性与情绪归属；"
             "改变长期事实或保护结果必须要求 outline_revision。"

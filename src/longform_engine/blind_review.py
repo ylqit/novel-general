@@ -464,10 +464,10 @@ def aggregate_blind_reviews(
                 )
         records_by_run[run_id] = records
 
-    candidate_runs = [run_id for run_id in run_ids if str(read_valid_run(root, run_id).get("engine_version")) == "0.5.0"]
-    baseline_runs = [run_id for run_id in run_ids if str(read_valid_run(root, run_id).get("engine_version")) == "0.4.4"]
+    candidate_runs = [run_id for run_id in run_ids if str(read_valid_run(root, run_id).get("engine_version")) == "0.6.0"]
+    baseline_runs = [run_id for run_id in run_ids if str(read_valid_run(root, run_id).get("engine_version")) == "0.5.0"]
     if len(candidate_runs) != 1 or len(baseline_runs) != 1:
-        raise ValueError("Literary evidence requires exactly one v0.5.0 run and one v0.4.4 run.")
+        raise ValueError("Literary evidence requires exactly one v0.6.0 run and one v0.5.0 run.")
     candidate_run, baseline_run = candidate_runs[0], baseline_runs[0]
     by_judge = {
         str(submission["judge_id"]): submission_entries(submission)

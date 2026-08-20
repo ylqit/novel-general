@@ -1,7 +1,7 @@
 {
   "schema": "release_channel_v1",
-  "development_version": "0.5.0",
-  "public_stable_version": "0.5.0",
+  "development_version": "0.6.0",
+  "public_stable_version": "0.6.0",
   "status": "stable",
   "release_blockers": [],
   "deferred_quality_evidence": [

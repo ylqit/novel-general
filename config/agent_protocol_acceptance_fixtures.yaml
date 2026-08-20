@@ -199,6 +199,10 @@ professional_prompt_calibration:
       positive: "逐项核对双稿中的人物知识、关系结果、能力代价和受保护线索。"
       negative: "只因两稿主题相似就认定语义等价。"
       boundary: "等价走位和感官替换可接受，但改变谁看见证据会改变知识状态。"
+    human_review_advisor:
+      positive: "用选中 span 证明转折来自人物主动选择，并列出扩场与保持克制两种修法的风险和保护项。"
+      negative: "不经人工决定直接重写正文并宣布章节可以定稿。"
+      boundary: "证据不足时可以列出需要核对的相邻因果，但不能补造角色动机或把平台观察升级为规则。"
     longform_outline_architect:
       positive: "按卷承诺与字数预算只细化未来二十章，每章职责改变不同后续条件。"
       negative: "一次生成六百个继续调查、遭遇强敌式占位章节。"

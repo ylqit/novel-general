@@ -9,7 +9,7 @@
 ```powershell
 git status --short
 git log -1 --oneline
-git tag --list "v0.5.*"
+git tag --list "v0.6.*"
 longform-engine --version
 longform-engine skills status --tool codex --json
 python scripts/check_agent_data_pipeline_readiness.py
@@ -25,7 +25,7 @@ python scripts/check_agent_data_pipeline_readiness.py
 
 ## 2. 当前发布状态
 
-- 当前稳定版为不兼容旧项目的 `v0.5.0`；旧项目不迁移。它在 v0.4.4 的 transaction v3 和语义物化边界上增加故事引擎合同、作者 Story Brief、载体诊断、每章场景必审和人工故事简审。
+- 当前稳定版为不兼容旧人工审稿协议的 `v0.6.0`。它在故事引擎基础上增加方向选择 sidecar、五类 hash 绑定的十项人工深审、非 canonical 咨询、本地审稿台与三态质量状态。
 - 协议与生产合同 readiness 以 `scripts/check_agent_data_pipeline_readiness.py` 的输出为准。
 - `literary_evidence_ready` 保持 `false`，直到真实章节与独立盲评证据完整。
 - 不要把任一本地小说运行、全局 Skill 状态或历史阶段文档当作源码事实源。
@@ -163,11 +163,14 @@ design task
 
 ```text
 story engine and rolling carrier plan
--> reader promise ledger / arc causal simulation / chapter direction and chapter_contract_v3
+-> reader promise ledger / arc causal simulation / chapter direction options
+-> chapter_direction_selection_v1 / approve / semantic compile / chapter_contract_v3
 -> chapter_write
 -> draft submit and deterministic gate
 -> independent review barrier
--> mandatory human story review accept / repair / redirect
+-> immutable review bundle
+-> mandatory human_story_review_v3 ten-dimension accept / repair / redirect
+-> optional non-canonical consultation or full human repair candidate
 -> conditional repair plan and replacement candidate
 -> explicit chapter finalize
 -> chapter semantic task
@@ -194,7 +197,7 @@ story engine and rolling carrier plan
 
 ## 8. Prompt、角色与会话
 
-当前注册表包含 28 个专业角色、25 类任务、4 类输出协议、12 个渐进式 Playbook 和 44 个正交故事分面。第 28 个角色是 `repair_coordinator`。
+当前注册表包含 29 个专业角色、27 类任务、4 类输出协议、12 个渐进式 Playbook 和 44 个正交故事分面。`repair_coordinator` 编排修复，`human_review_advisor` 只提供不能直接写 canonical 的咨询。
 
 运行时 Prompt 按以下顺序编译：
 
@@ -219,6 +222,7 @@ story engine and rolling carrier plan
 - Humanizer 使用独立修订会话。
 - 连贯性、人物、收益、节奏、场景、反 AI 和同人审稿使用隔离审稿会话。
 - final 后语义档案使用独立档案会话。
+- 同一候选的人工咨询复用章节咨询会话；候选变化后旧咨询全部 stale。
 
 CLI 不创建 Codex/Claude 子进程，聊天记录也不是长期状态。交接只依赖 manifest、brief、canonical 文件和审计事件。
 
@@ -247,6 +251,8 @@ CLI freezes complete review_bundle
 ```
 
 修复主编只归并根因、依赖顺序、最小修改半径、保护项和回归维度。它不能删除、降级或投票否决有效 P0/P1，也不能写正文。只有有效替代稿提交才消耗一次修复额度；两轮后仍有 P0/P1 必须进入 `repair_budget_exhausted`。
+
+冻结 bundle 后，`human_story_review_v3` 必须完成十项检查；accept 需要关键转折、人物选择/情绪、读者收益三类精确 span，并绑定候选、章节合同、承诺账本、因果模拟和 bundle 五类 hash。人工改稿只能发生在已验证 repair task 的完整候选中，以 `agent=human` 提交后重跑 gate 和全部独立审稿。本地网页与咨询不得直接 apply、finalize 或写 canonical。
 
 ## 10. 生命周期、事务与无污染
 
@@ -293,7 +299,9 @@ task event/index 记录：
 - 生产状态机：`production.py`、`orchestration/pipeline.py`
 - 章节合同：`chapter_contract.py`
 - 门禁与审稿：`gates/pipeline.py`、`editorial/pipeline.py`
-- repair 编排：`repair_coordination.py`
+- repair 与人工深审：`repair_coordination.py`、`human_story_review.py`
+- 人工咨询与本地审稿台：`human_review_consultation.py`、`review_server.py`
+- 三态质量状态：`quality/status.py`
 - 章节语义：`semantic/pipeline.py`
 - RAG 与向量：`rag/pipeline.py`、`vectorstore/pipeline.py`、`vector_backends.py`
 - SQLite full/delta 索引：`db/sqlite_index.py`
@@ -316,7 +324,7 @@ task event/index 记录：
 1. `README.md`
 2. `docs/ARCHITECTURE.md`
 3. `docs/STORAGE_MODEL.md`
-4. `docs/V0_5_0_RELEASE_CHECKLIST.md`
+4. `docs/V0_6_0_RELEASE_CHECKLIST.md`
 5. `docs/GATE_MODEL.md`
 6. `docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`
 7. `docs/CONFIGURATION.md`
@@ -325,7 +333,7 @@ task event/index 记录：
 10. `docs/SKILL_INSTALLATION.md`
 11. `docs/RELEASE_RUNBOOK.md`
 
-历史发布说明只记录版本变化，不得覆盖当前 Manifest v4、`evidence_review_v2`、28 角色、配置注册表或 `chNNN.md` 存储契约。
+历史发布说明只记录版本变化，不得覆盖当前 Manifest v4、`evidence_review_v2`、29 角色、配置注册表或 `chNNN.md` 存储契约。
 
 ## 15. 验证与发布纪律
 
@@ -341,7 +349,7 @@ python scripts/build_resource_manifest.py --check
 python scripts/check_markdown_links.py
 python scripts/check_agent_data_pipeline_readiness.py
 python scripts/release_surface_guards.py
-longform-engine release check --repository . --channel public --check-remote --json
+longform-engine release check --repository . --channel rc --json
 ```
 
 发布候选还需构建并审计 wheel/sdist、执行临时 pipx smoke 和远程版本检查。只有用户明确授权后才能创建 tag、推送或发布。tag 不得移动或覆盖；发现缺陷时使用新补丁版本。

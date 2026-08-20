@@ -186,6 +186,14 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
             "longform-engine editorial need-human ",
         ),
     },
+    "human_review_consult": {
+        "scope_kinds": ("chapter",),
+        "schemas": (output_protocol_for_task("human_review_consult"),),
+        "output_prefixes": ("50_workbench/human_story_reviews/consultations/",),
+        "validate_prefixes": ("longform-engine review consult-validate ",),
+        "apply_prefixes": ("longform-engine review consult-record ",),
+        "failure_prefixes": ("longform-engine review consult-task ",),
+    },
     "humanize": {
         "scope_kinds": ("chapter",),
         "schemas": (output_protocol_for_task("humanize"),),

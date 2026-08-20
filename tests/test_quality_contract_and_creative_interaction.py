@@ -17,6 +17,7 @@ from longform_engine.intelligence import (
     assess_chapter_direction,
     create_design_compile_task,
     create_intelligence_task,
+    record_chapter_direction_selection,
     validate_design_compile_delta,
     validate_intelligence_candidate,
 )
@@ -52,6 +53,15 @@ def write_design_candidate(path: Path, task_type: str, payload: dict) -> None:
         body = ["本节决定已经由用户审阅。"]
         if index == 0:
             body.extend(f"- {fact}" for fact in facts)
+        if task_type == "chapter_direction" and heading == "方向选项":
+            direction_id = str(payload["selected_direction"]["id"])
+            body = [
+                f"### option:{direction_id} — {payload['selected_direction']['title']}",
+                "沿当前证据链推进并承担明确代价。",
+                "",
+                "### option:alternate_route — 改由关系压力切入",
+                "保留章节保护结果，但改变场景进入和冲突承担者。",
+            ]
         sections.extend((f"## {heading}", "", *body, ""))
     path.write_text(f"# {task_type} 设计文档\n\n" + "\n".join(sections), encoding="utf-8")
 
@@ -82,6 +92,15 @@ def prepare_design_delta(
         and candidate.relative_to(root).as_posix() == (item.get("io") or {}).get("output", {}).get("path")
     )
     assert validate_intelligence_output(config, root, manifest, candidate).ok
+    if task_type == "chapter_direction":
+        record_chapter_direction_selection(
+            config,
+            document_path=candidate,
+            selected_option_id=str(payload["selected_direction"]["id"]),
+            user_adjustments=dict(payload["selection"]["user_adjustments"]),
+            repetition_reason=str(payload["selection"]["repetition_reason"]),
+            selected_by="human",
+        )
     approve_design_document(
         config,
         task_type=task_type,
@@ -97,7 +116,7 @@ def prepare_design_delta(
     changes = {key: value for key, value in payload.items() if key != "schema"}
     for cli_field in {
         "book_ideation": ("round", "dimension"),
-        "chapter_direction": ("chapter_number", "chapter_card_sha256", "trigger_reasons"),
+        "chapter_direction": ("chapter_number", "chapter_card_sha256", "trigger_reasons", "selection"),
         "outline_revision": ("from_chapter", "to_chapter"),
     }.get(task_type, ()):
         changes.pop(cli_field, None)
@@ -556,6 +575,54 @@ def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
     assert applied_card["reader_gain"] == valid["selected_direction"]["reader_gain"]
     assert assess_chapter_direction(config, 1)["required"] is False
     assert production_next(config)["status"] == "ready_for_continue_write"
+
+
+def test_chapter_direction_selection_sidecar_binds_document_option_and_compile_inputs(tmp_path):
+    config, root = seed_project(tmp_path)
+    mark_project_ready(root, config, direction_applied=False)
+    task = create_intelligence_task(config, task_type="chapter_direction", chapter_number=1)
+    candidate = root / task.candidate_file
+    payload = valid_direction_candidate(root, 1, assess_chapter_direction(config, 1)["reasons"])
+    write_design_candidate(candidate, "chapter_direction", payload)
+    manifest = load_manifest(root, task.task_id)
+    assert validate_intelligence_output(config, root, manifest, candidate).ok
+
+    selected = record_chapter_direction_selection(
+        config,
+        document_path=candidate,
+        selected_option_id="verify_witness",
+        user_adjustments={},
+        repetition_reason="",
+        selected_by="human",
+    )
+    selection_path = root / selected.selection_file
+    sidecar = json.loads(selection_path.read_text(encoding="utf-8"))
+    assert sidecar["schema"] == "chapter_direction_selection_v1"
+    assert sidecar["document_sha256"] == sha256(candidate.read_bytes()).hexdigest()
+    assert sidecar["selected_option_id"] == "verify_witness"
+    assert sidecar["option_ids"] == ["verify_witness", "alternate_route"]
+
+    approve_design_document(
+        config,
+        task_type="chapter_direction",
+        document_path=candidate,
+        approved_by="human",
+    )
+    compile_task = create_design_compile_task(
+        config,
+        task_type="chapter_direction",
+        document_path=candidate,
+    )
+    compile_manifest = load_manifest(root, compile_task.task_id)
+    assert selected.selection_file in [item["path"] for item in compile_manifest["io"]["inputs"]]
+
+    selection_path.write_text(selection_path.read_text(encoding="utf-8") + " ", encoding="utf-8")
+    with pytest.raises(ValueError, match="selection changed after approval"):
+        create_design_compile_task(
+            config,
+            task_type="chapter_direction",
+            document_path=candidate,
+        )
 
 
 def test_specific_chapter_requires_mandatory_direction_and_regenerates_retired_reason(tmp_path):

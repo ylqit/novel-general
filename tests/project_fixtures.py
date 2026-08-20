@@ -590,10 +590,10 @@ def approve_story_candidate(root: Path, config, *, chapter_number: int = 1) -> N
             "kind": kind,
             "note": "The final candidate makes the turn and character ownership visible.",
         }
-        for kind in ("key_turn", "character_choice_or_emotion")
+        for kind in ("key_turn", "character_choice_or_emotion", "reader_gain")
     ]
     decision["reader_gain_note"] = "The chapter delivers a concrete changed condition and emotional ownership."
-    decision["span_actions"] = []
+    decision["annotations"] = []
     decision["reason"] = ""
     write_json(decision_path, decision)
     apply_human_story_review(

@@ -24,7 +24,9 @@ open-book
 -> reader_promise_ledger_v1 planned expectation windows
 -> human-approved arc_causal_simulation_v1 covering the rolling outline window
 -> agent-task brief when an Agent task exists
--> mandatory chapter_direction before every unapplied chapter card/write task
+-> mandatory chapter_direction with 2–3 stable option IDs
+-> chapter_direction_selection_v1 binds the Markdown hash and explicit human selection
+-> direction approve and semantic compile consume Markdown plus selection sidecar
 -> continue-write
 -> chapter_story_brief_v2 author work order; facts, promises, simulation and editorial patterns remain separated
 -> /工程续章 pre-write guide:
@@ -47,8 +49,11 @@ open-book
 -> repair candidate-task --agent codex when the repair plan is validated
 -> submit the immutable rNN replacement and rerun the complete review barrier
 -> quality payoff-task / payoff-validate after gate pass when required
--> chapter human-review-task / validate / apply for accept, repair, or redirect
--> chapter finalize only after a current hash-bound human accept
+-> freeze immutable review bundle
+-> optional review consult-task / validate / record; advice remains non-canonical
+-> chapter human-review-task / validate / apply for ten-dimension accept, repair, or redirect
+-> optional full human repair candidate submitted as agent=human, followed by full re-review
+-> chapter finalize only after a current five-hash-bound v3 human accept
 -> reward_ledger v2 / structure_history written only inside finalize
 -> chapter semantic-task: Agent reads final once and writes canonical_delta_v1
 -> chapter semantic-validate / explicit semantic-apply

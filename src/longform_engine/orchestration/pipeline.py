@@ -1065,6 +1065,10 @@ def submit_agent_draft(
         raise WorkflowError(str(exc)) from exc
     candidate_task_id = str(candidate_task.get("task_id") or "")
     candidate_task_type = str(candidate_task.get("task_type") or "")
+    if agent == "human" and candidate_task_type != "repair":
+        raise WorkflowError(
+            "agent=human may submit only the full output file owned by a validated repair task"
+        )
     if candidate_task_type == "repair":
         try:
             preflight_repair_submission(
@@ -1088,6 +1092,9 @@ def submit_agent_draft(
         raise WorkflowError(f"Draft already exists for ch{chapter_number:03d}; pass --overwrite to replace it.")
 
     atomic_write_text(draft_path, text + "\n")
+    from longform_engine.human_review_consultation import mark_stale_human_consultations
+
+    mark_stale_human_consultations(root, chapter_number=chapter_number)
     candidate_snapshot = ensure_candidate_snapshot(root, chapter_number=chapter_number)
     submitted_at = utc_now()
     submission_path = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.submission.json"
@@ -1327,7 +1334,7 @@ def finalize_chapter(
             f"({', '.join(editorial_blockers)})."
         )
     try:
-        require_human_story_accept(config, chapter_number=chapter_number)
+        human_accept = require_human_story_accept(config, chapter_number=chapter_number)
     except HumanStoryReviewError as exc:
         raise WorkflowError(str(exc)) from exc
     review_barrier = review_barrier_status(config, chapter_number=chapter_number)
@@ -1373,6 +1380,7 @@ def finalize_chapter(
         source_paths=[
             draft_path,
             gate_path,
+            root / str(human_accept["decision_file"]),
             *([payoff_output, payoff_report] if payoff_output is not None and payoff_report is not None else []),
             *(
                 [root / str(pacing_status.get("result_file"))]
@@ -1419,6 +1427,16 @@ def finalize_chapter(
                 if payoff_output is not None and payoff_status.get("passed")
                 else ""
             ),
+            "human_story_review": {
+                "schema": "human_story_review_finalization_binding_v1",
+                "decision_file": str(human_accept["decision_file"]),
+                "decision_sha256": str(human_accept["decision_sha256"]),
+                "candidate_sha256": str(human_accept["candidate_sha256"]),
+                "chapter_contract_sha256": str(human_accept["chapter_contract_sha256"]),
+                "reader_promise_ledger_sha256": str(human_accept["reader_promise_ledger_sha256"]),
+                "arc_causal_simulation_sha256": str(human_accept["arc_causal_simulation_sha256"]),
+                "review_bundle_sha256": str(human_accept["review_bundle_sha256"]),
+            },
             "draft_sha256": sha256_text(final_text),
             "final_sha256": sha256_text(final_text),
         }

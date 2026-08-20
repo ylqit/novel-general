@@ -794,12 +794,17 @@ def apply_human_repair_review(config, root: Path, draft: Path) -> None:
         for key in review["checks"]
     }
     review["decision"] = "repair"
-    review["span_actions"] = [
+    review["annotations"] = [
         {
+            "annotation_id": "ability-rule-chain",
             "start": 14,
             "end": 28,
             "text": draft.read_text(encoding="utf-8")[14:28],
+            "check_id": "continuity_world_rules_and_ability_bounds",
+            "severity": "P1",
             "action": "expand_scene",
+            "intent": "Show the full contact, drinking, and delayed-effect action chain.",
+            "must_preserve": ["主角放弃追击并优先救人"],
             "note": "Show the full contact, drinking, and delayed-effect action chain.",
         }
     ]

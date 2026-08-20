@@ -4,6 +4,7 @@ from .pipeline import (
     INTELLIGENCE_TASK_TYPES,
     DESIGN_INTELLIGENCE_TASK_TYPES,
     DesignApprovalResult,
+    ChapterDirectionSelectionResult,
     IntelligenceApplyResult,
     IntelligenceTaskResult,
     IntelligenceValidationResult,
@@ -16,6 +17,7 @@ from .pipeline import (
     create_intelligence_task,
     create_design_compile_task,
     fanfiction_status,
+    record_chapter_direction_selection,
     validate_intelligence_candidate,
     validate_design_compile_delta,
 )
@@ -24,6 +26,7 @@ __all__ = [
     "INTELLIGENCE_TASK_TYPES",
     "DESIGN_INTELLIGENCE_TASK_TYPES",
     "DesignApprovalResult",
+    "ChapterDirectionSelectionResult",
     "IntelligenceApplyResult",
     "IntelligenceTaskResult",
     "IntelligenceValidationResult",
@@ -36,6 +39,7 @@ __all__ = [
     "create_intelligence_task",
     "create_design_compile_task",
     "fanfiction_status",
+    "record_chapter_direction_selection",
     "validate_intelligence_candidate",
     "validate_design_compile_delta",
 ]

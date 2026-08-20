@@ -54,6 +54,7 @@ SESSION_POLICIES = frozenset(
         "isolated_revision",
         "isolated_review",
         "isolated_archival",
+        "candidate_consultation",
     }
 )
 ROLE_FAMILIES = frozenset(

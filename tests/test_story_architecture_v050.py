@@ -36,8 +36,9 @@ from longform_engine.intelligence.pipeline import (
     recompute_revision_impact,
     validate_chapter_direction,
 )
-from longform_engine.orchestration import continue_write, open_book, submit_agent_draft
+from longform_engine.orchestration import continue_write, finalize_chapter, open_book, submit_agent_draft
 from longform_engine.quality import refresh_editorial_pattern_registry
+from longform_engine.quality.status import quality_status
 from longform_engine.reader_promises import (
     ReaderPromiseError,
     apply_reader_promise_actions,
@@ -153,10 +154,24 @@ def write_review(root: Path, template_file: str, *, decision: str, span_actions=
         end = min(40, len(draft))
         payload["evidence_spans"] = [
             {"start": 0, "end": end, "text": draft[:end], "kind": kind, "note": "The turn and owned choice are visible here."}
-            for kind in ("key_turn", "character_choice_or_emotion")
+            for kind in ("key_turn", "character_choice_or_emotion", "reader_gain")
         ]
         payload["reader_gain_note"] = "The reader sees a concrete change in route, trust, and immediate risk."
-    payload["span_actions"] = span_actions or []
+    payload["annotations"] = [
+        {
+            "annotation_id": f"annotation-{index}",
+            "start": item["start"],
+            "end": item["end"],
+            "text": item["text"],
+            "check_id": "scene_causality_and_key_turn_dramatized",
+            "severity": "P1",
+            "action": item["action"],
+            "intent": item["note"],
+            "must_preserve": [],
+            "note": item["note"],
+        }
+        for index, item in enumerate(span_actions or [], start=1)
+    ]
     payload["redirect_scope"] = redirect_scope
     payload["reason"] = "The carrier must change before another draft." if decision == "redirect" else ""
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -485,6 +500,105 @@ def test_human_accept_is_hash_bound_and_unlocks_review_barrier(tmp_path):
     assert human_story_review_status(config, chapter_number=1)["status"] == "stale"
 
 
+def test_human_review_v3_freezes_independent_bundle_and_exposes_ten_dimensions(tmp_path):
+    config, root, _task = seed_candidate(tmp_path)
+
+    task = create_human_story_review_task(config, chapter_number=1)
+    payload = json.loads((root / task.template_file).read_text(encoding="utf-8"))
+
+    assert payload["schema"] == "human_story_review_v3"
+    assert payload["review_bundle_sha256"] == task.review_bundle_sha256
+    assert (root / task.review_bundle_file).is_file()
+    assert len(payload["checks"]) == 10
+    assert set(payload["checks"]) == {
+        "story_contract_preserved",
+        "desire_opposition_and_question_clear",
+        "scene_causality_and_key_turn_dramatized",
+        "protagonist_agency_voice_and_emotion",
+        "supporting_cast_and_relationship_logic",
+        "reader_gain_and_promise_progress",
+        "continuity_world_rules_and_ability_bounds",
+        "pacing_information_and_carrier_effective",
+        "prose_natural_and_readable",
+        "exit_state_and_emotional_aftereffect",
+    }
+    assert payload["annotations"] == []
+    assert "span_actions" not in payload
+
+
+def test_human_review_v3_rejects_v2_and_requires_three_accept_evidence_kinds(tmp_path):
+    config, root, _task = seed_candidate(tmp_path)
+    task = create_human_story_review_task(config, chapter_number=1)
+    review = root / task.template_file
+    payload = json.loads(review.read_text(encoding="utf-8"))
+    payload["schema"] = "human_story_review_v2"
+    review.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    rejected = validate_human_story_review(config, chapter_number=1, file_path=review)
+    assert not rejected.ok
+    assert "schema must be human_story_review_v3" in rejected.errors
+
+    payload["schema"] = "human_story_review_v3"
+    payload["checks"] = {
+        key: {"passed": True, "reason": "Verified against current prose."}
+        for key in payload["checks"]
+    }
+    payload["decision"] = "accept"
+    draft = (root / "40_manuscript" / "draft" / "ch001.md").read_text(encoding="utf-8")
+    payload["evidence_spans"] = [
+        {
+            "start": 0,
+            "end": min(40, len(draft)),
+            "text": draft[: min(40, len(draft))],
+            "kind": kind,
+            "note": "Exact evidence in the accepted candidate.",
+        }
+        for kind in ("key_turn", "character_choice_or_emotion")
+    ]
+    payload["reader_gain_note"] = "A concrete gain changes the next choice."
+    review.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    missing = validate_human_story_review(config, chapter_number=1, file_path=review)
+    assert not missing.ok
+    assert "accept requires key_turn, character_choice_or_emotion, and reader_gain evidence spans" in missing.errors
+
+
+def test_human_review_v3_rejects_review_bundle_hash_drift(tmp_path):
+    config, root, _task = seed_candidate(tmp_path)
+    task = create_human_story_review_task(config, chapter_number=1)
+    review = root / task.template_file
+    bundle = root / task.review_bundle_file
+    bundle.write_text(bundle.read_text(encoding="utf-8") + " ", encoding="utf-8")
+
+    result = validate_human_story_review(config, chapter_number=1, file_path=review)
+
+    assert not result.ok
+    assert "review_bundle_sha256 is stale" in result.errors
+
+
+def test_quality_status_keeps_author_acceptance_separate_from_literary_evidence(tmp_path):
+    config, root, _task = seed_candidate(tmp_path)
+    before = quality_status(config)
+    assert before["protocol_ready"] is True
+    assert before["author_acceptance_ready"] is False
+    assert before["literary_evidence_ready"] is False
+
+    task = create_human_story_review_task(config, chapter_number=1)
+    review = write_review(root, task.template_file, decision="accept")
+    apply_human_story_review(config, chapter_number=1, file_path=review, approved_by="human")
+    finalize_chapter(config, chapter_number=1, approved_by="human")
+
+    accepted = quality_status(config)
+    assert accepted["author_acceptance_ready"] is True
+    assert accepted["literary_evidence_ready"] is False
+    assert accepted["author_acceptance"]["chapters"][0]["accepted"] is True
+
+    decision_path = root / accepted["author_acceptance"]["chapters"][0]["decision_file"]
+    decision_path.write_text(decision_path.read_text(encoding="utf-8") + " ", encoding="utf-8")
+    stale = quality_status(config)
+    assert stale["author_acceptance_ready"] is False
+    assert any("human_accept_decision_hash_mismatch" in item for item in stale["author_acceptance"]["blockers"])
+
+
 def test_human_accept_requires_story_spans_and_reader_gain_note(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
     task = create_human_story_review_task(config, chapter_number=1)
@@ -496,7 +610,7 @@ def test_human_accept_requires_story_spans_and_reader_gain_note(tmp_path):
 
     result = validate_human_story_review(config, chapter_number=1, file_path=review)
     assert not result.ok
-    assert "accept requires key_turn and character_choice_or_emotion evidence spans" in result.errors
+    assert "accept requires key_turn, character_choice_or_emotion, and reader_gain evidence spans" in result.errors
     assert "accept requires a non-empty reader_gain_note" in result.errors
 
 

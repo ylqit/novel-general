@@ -19,11 +19,14 @@ python -m longform_engine.cli continue-write project.yaml --chapter 1
 story_engine_contract_v1
 -> reader_promise_ledger_v1
 -> human-approved arc_causal_simulation_v1
--> rolling outline / chapter_direction_candidate_v4
+-> rolling outline / chapter_direction_candidate_v4 Markdown
+-> chapter_direction_selection_v1 / approve / semantic compile
 -> chapter_contract_v3 / chapter_story_brief_v2
 -> draft
 -> span-backed scene review + risk editors
--> human_story_review_v2 accept / repair / redirect
+-> immutable review bundle
+-> human_story_review_v3 ten-dimension accept / repair / redirect
+-> optional non-canonical consultation / complete human repair candidate
 -> finalize / semantic apply (promise materialization) / close
 -> blind_review_pack_v3 evidence outside ordinary chapter production
 ```
@@ -121,7 +124,7 @@ write Agent task manifest and run report
 
 注意：`continue-write` 只生成任务包，不生成正文，也不直接写入 draft/final。Agent 只能写 manifest 声明的 `50_workbench/agent_drafts/` 候选，再由 `draft submit` 进入受控 draft。定稿、门禁产物、修复计划和正式语义更新必须由对应 CLI 命令完成。
 
-作者 Markdown 只渲染 `chapter_story_brief_v2`。内部 `chapter_fact_inventory` 继续供 canonical、RAG、Graph、TCS 与语义校验使用；承诺账本、因果模拟和编辑模式使用独立的 planning/editorial context，均不作为作者工作单。全部独立审稿后必须执行 `chapter human-review-task / human-review-validate / human-review-apply`；只有同时绑定候选、章节合同、承诺账本和因果模拟 hash 的 `accept` 决定可进入 `chapter finalize`。
+作者 Markdown 只渲染 `chapter_story_brief_v2`。内部 `chapter_fact_inventory` 继续供 canonical、RAG、Graph、TCS 与语义校验使用；承诺账本、因果模拟和编辑模式使用独立的 planning/editorial context，均不作为作者工作单。全部独立审稿后必须冻结 review bundle，再执行 `chapter human-review-task / human-review-validate / human-review-apply`；只有十项全过、三类精确 span 齐全，并同时绑定候选、章节合同、承诺账本、因果模拟和 review bundle 五类 hash 的 `accept` 决定可进入 `chapter finalize`。`review serve` 只提供本地可视化校验与咨询，不能自行 apply 或 finalize。
 
 ## Gate Blocking
 

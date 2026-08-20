@@ -2,7 +2,7 @@
 
 中文斜杠指令只用于 Codex App、Codex CLI 和 ClaudeCode 的交互层。所有正式执行必须落到 `longform-engine ...` CLI；Agent 只能写入 `50_workbench/agent_drafts/`，不能直接写 final、RAG、story graph、memory、TCS 或 SQLite。
 
-当前运行时合同固定为 28 个角色、25 类任务、4 类 Agent 输出协议和单进程顺序执行。
+当前运行时合同固定为 29 个角色、27 类任务、4 类 Agent 输出协议和单进程顺序执行。
 
 ## 使用规则
 
@@ -32,10 +32,13 @@
 | `/工程创意工单` | `longform-engine intelligence task project.yaml --task-type book_ideation` | `project.yaml` | workbench 候选 | 每轮只处理一个创意维度，Agent 给 2-3 个带取舍的选项；必须记录用户明确选择。 |
 | `/工程因果模拟` | `longform-engine intelligence task project.yaml --task-type arc_simulation --from-chapter A --to-chapter B` | 滚动窗口、当前故事引擎/承诺/角色/宏观纲要 basis | 人工批准的规划约束 | 为窗口逐章声明人物目标、场外行动、碰撞和因果义务；basis 变化后必须重做。 |
 | `/工程滚动扩纲` | `longform-engine intelligence task project.yaml --task-type outline_extension --from-chapter A --to-chapter B` | 已批准且完整覆盖同一范围的因果模拟 | workbench 候选 | 直接 CLI 与 `production next` 都会拒绝缺失、过期或不覆盖的模拟；扩纲上下文实际携带其因果义务。 |
-| `/工程章节方向` | `longform-engine intelligence task project.yaml --task-type chapter_direction --chapter N` | `--chapter N` | workbench 候选 | 每个尚未应用方向的章节都生成 2-3 个因果不同且带代价的方向；人工 apply 后由 CLI 更新章节卡。 |
-| `/工程故事简审任务` | `longform-engine chapter human-review-task project.yaml --chapter N` | `--chapter N` | `50_workbench/human_story_reviews/` | 全部独立审稿完成后，生成绑定当前正文与章节合同 hash 的六项人工简审。 |
-| `/工程故事简审校验` | `longform-engine chapter human-review-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation 报告 | 校验 accept/repair/redirect、五项判断和 preserve/expand_scene/compress/replace_carrier span。 |
-| `/工程故事简审应用` | `longform-engine chapter human-review-apply project.yaml --chapter N --file ... --approved-by human` | `--chapter N`、`--file`、人工确认 | 决定工件；redirect 使用 transaction v3 | accept 解锁 finalize；repair 进入两轮修章预算；redirect 返回方向或人工改纲。 |
+| `/工程章节方向` | `longform-engine intelligence task project.yaml --task-type chapter_direction --chapter N` | `--chapter N` | workbench 候选 | 每个尚未应用方向的章节都生成 2–3 个带稳定 option ID、因果不同且有代价的方向。 |
+| `/工程选择方向` | `longform-engine intelligence direction-select project.yaml --chapter N --option OPTION_ID` | 章节、option ID；可选调整/载体理由 | `50_workbench/intelligence_selections/` | 写入绑定 Markdown hash 的 `chapter_direction_selection_v1`；批准和语义编译必须同时消费 sidecar。 |
+| `/工程故事深审任务` | `longform-engine chapter human-review-task project.yaml --chapter N` | `--chapter N` | `50_workbench/human_story_reviews/` | 全部独立审稿完成后冻结 review bundle，生成绑定五类 hash 的十项人工深审。 |
+| `/工程故事深审校验` | `longform-engine chapter human-review-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation 报告 | 校验十项检查、三类精确 span、结构化批注和 accept/repair/redirect。 |
+| `/工程故事深审应用` | `longform-engine chapter human-review-apply project.yaml --chapter N --file ... --approved-by human` | `--chapter N`、`--file`、人工确认 | 决定工件；redirect 使用 transaction v3 | accept 解锁 finalize；repair 进入两轮修章预算；redirect 返回方向或人工改纲。 |
+| `/工程审稿台` | `longform-engine review serve project.yaml --chapter N --port 8765` | 章节；可选 `--no-open` | loopback 本地 UI / non-canonical 工件 | 三栏展示合同、正文、diff、finding、平台观察、十项表单与咨询；网页不能直接 finalize 或写 canonical。 |
+| `/工程审稿咨询` | `longform-engine review consult-task project.yaml --chapter N --question ...` | 章节、问题；可选选中 span | non-canonical Agent task | 依次使用 `consult-validate`、`consult-record`；建议只能由人工转换为批注。 |
 | `/工程人物设计` | `longform-engine character design-task project.yaml` | `project.yaml` | workbench 候选 | 生成 `character_expression_profile_v1` 工单；旧 Book Design v1 会在写第一章前进入此补全步骤。 |
 | `/工程人物设计校验` | `longform-engine character design-validate project.yaml --file ...` | `--file` | validation 报告 | 校验叙事表达画像、人物覆盖、声音/行为/身体/面具/反差合同，不写 Bible。 |
 | `/工程人物设计应用` | `longform-engine character design-apply project.yaml --file ... --approved-by human` | `--file`、人工确认 | `10_bible/character_expression.json` | 事务应用人物表达合同；Agent 不能直接写 Bible。 |
@@ -43,6 +46,7 @@
 | `/工程人物审稿校验` | `longform-engine character audit-validate project.yaml --file ...` | `--file` | validation 报告 | 每章和每个被审人物都必须有当前 hash/span 证据，pass 也不能空审。 |
 | `/工程人物样本批准` | `longform-engine character samples-approve project.yaml --file ... --approved-by human` | 定稿 span、人工确认 | `10_bible/character_expression.json` | 只允许把 final 精确片段批准为有界正/反例；不复制整章，不由 Agent 自批。 |
 | `/工程质量合同` | `longform-engine quality contract project.yaml --chapter N --explain` | `--chapter N`；可选 `--compare-market fanqie_free` | 只读 | 编译起点主合同、题材、全局/平台阶段、人工批准基线和项目覆盖；番茄比较始终非阻断。 |
+| `/工程质量状态` | `longform-engine quality status project.yaml --json` | `project.yaml` | 只读 | 分开报告协议就绪、作者接受和独立文学证据；三者不得互相替代。 |
 | `/工程批准风格基线` | `longform-engine quality baseline-approve project.yaml --chapter N --approved-by NAME` | 已定稿章节、批准者 | `10_bible/style_profiles/approved_style_baseline.json` | 只保存 prose-free 结构指纹；不会自动扩充。 |
 
 生产体验入口规则：
@@ -95,6 +99,7 @@
 | `/工程修复主编` | `longform-engine repair synthesis-task project.yaml --chapter N` | `--chapter N` | `50_workbench/repair_plans/chNNN/` | 仅在全部必审结果绑定同一候选 hash 后冻结 review bundle，并生成修复主编任务。 |
 | `/工程校验修复计划` | `longform-engine repair synthesis-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation report | 确认全部 P0/P1、稳定 finding ID、严重级别、最小修改范围和 preserve 冲突。 |
 | `/工程候选修章` | `longform-engine repair candidate-task project.yaml --chapter N --agent codex` | `--chapter N`、`--agent` | `50_workbench/repair_candidates/` | 根据已验证的不可变 rNN 计划生成完整替代稿任务，不直接进入 final。 |
+| `/工程人工候选修章` | 审稿台提交当前 repair task 的完整候选，内部使用 `draft submit ... --agent human --overwrite` | 已验证 repair plan 与预期 hash | repair 候选、受控 draft、全量复审 | 不允许直接编辑 draft/final，不绕过修章预算或独立审稿。 |
 | `/工程定稿` | `longform-engine chapter finalize project.yaml --chapter N --approved-by human` | `--chapter N`、`--approved-by` | `40_manuscript/final/`、收益与结构账本 | 将通过或有效放行的章节写入唯一正文证据层；不会根据正文开头伪造摘要，也不会提前更新图谱、TCS、RAG 或 SQLite。 |
 | `/工程章节语义任务` | `longform-engine chapter semantic-task project.yaml --chapter N` | `--chapter N` | `50_workbench/semantic_tasks/` | 让 Agent 只完整读取一次 final，输出统一章节语义 delta。 |
 | `/工程章节语义校验` | `longform-engine chapter semantic-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation report | 校验 final hash、精确 span、实体 ID、关系旧状态、角色知识来源、伏笔 ID/窗口和完整性声明。 |

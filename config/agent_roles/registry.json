@@ -67,6 +67,7 @@
     "fanfiction_design": "fanfiction_architect",
     "humanize": "humanizer",
     "humanize_semantic_review": "humanizer_semantic_reviewer",
+    "human_review_consult": "human_review_advisor",
     "outline_design": "longform_outline_architect",
     "outline_extension": "longform_outline_architect",
     "outline_revision": "continuity_outline_editor",
@@ -104,6 +105,7 @@
     "fanfiction_canon_archivist": "isolated_archival",
     "humanizer": "isolated_revision",
     "humanizer_semantic_reviewer": "isolated_review",
+    "human_review_advisor": "candidate_consultation",
     "longform_outline_architect": "project_coordinator",
     "planning_chief_editor": "isolated_review",
     "reader_experience_editor": "isolated_review",
@@ -775,6 +777,43 @@
         "HUMANIZE_VOICE_LOSS",
         "HUMANIZE_EVENT_CHANGE"
       ]
+    },
+    {
+      "role_id": "human_review_advisor",
+      "role_version": "3.0.0",
+      "prompt_path": "config/agent_roles/prompts/human_review_advisor.md",
+      "output_mode": "design_document_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [
+        "target_reader",
+        "platform_advisories",
+        "character_voice_contracts",
+        "content_exclusions"
+      ],
+      "role_family": "facilitation",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "human_review_consult": "diagnostics",
+        "consult_conflict": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "scene_causality",
+        "character_agency"
+      ],
+      "optional_playbook_ids": [
+        "relationship_dynamics",
+        "interiority_and_emotion",
+        "serial_pacing"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
     },
     {
       "role_id": "longform_outline_architect",

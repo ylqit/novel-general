@@ -94,6 +94,12 @@ from longform_engine.human_story_review import (
     create_human_story_review_task,
     validate_human_story_review,
 )
+from longform_engine.human_review_consultation import (
+    consultation_status,
+    create_human_review_consult_task,
+    record_human_review_consultation,
+    validate_human_review_consultation,
+)
 from longform_engine.release_readiness import check_release_readiness, render_release_readiness
 from longform_engine.repair_coordination import (
     RepairCoordinationError,
@@ -104,6 +110,7 @@ from longform_engine.repair_coordination import (
     review_barrier_status,
     validate_repair_plan,
 )
+from longform_engine.review_server import ReviewDeskService, ReviewHTTPServer
 from longform_engine.graph import (
     check_graph,
     retrieve_graph,
@@ -119,6 +126,7 @@ from longform_engine.intelligence import (
     create_design_compile_task,
     create_intelligence_task,
     fanfiction_status,
+    record_chapter_direction_selection,
     validate_intelligence_candidate,
     validate_design_compile_delta,
 )
@@ -165,6 +173,7 @@ from longform_engine.quality import (
     rebuild_editorial_pattern_registry,
     transition_editorial_pattern,
 )
+from longform_engine.quality.status import quality_status
 from longform_engine.rag import (
     build_chunks,
     build_context,
@@ -655,6 +664,23 @@ def build_parser() -> argparse.ArgumentParser:
     intelligence_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     intelligence_validate.set_defaults(func=cmd_intelligence_validate)
 
+    intelligence_direction_select = intelligence_subparsers.add_parser(
+        "direction-select",
+        help="Record a human chapter-direction option in chapter_direction_selection_v1.",
+    )
+    intelligence_direction_select.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    intelligence_direction_select.add_argument("--document", required=True, help="Validated chapter_direction Markdown.")
+    intelligence_direction_select.add_argument("--option-id", required=True, help="Stable option ID declared by the Markdown.")
+    intelligence_direction_select.add_argument(
+        "--adjustments-json",
+        default="{}",
+        help="JSON object of human field adjustments; defaults to an empty object.",
+    )
+    intelligence_direction_select.add_argument("--repetition-reason", default="", help="Human reason for an intentional repeated carrier.")
+    intelligence_direction_select.add_argument("--selected-by", required=True, choices=["human"])
+    intelligence_direction_select.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    intelligence_direction_select.set_defaults(func=cmd_intelligence_direction_select)
+
     intelligence_approve = intelligence_subparsers.add_parser(
         "approve",
         help="Approve one validated authoritative Markdown design document.",
@@ -1015,6 +1041,14 @@ def build_parser() -> argparse.ArgumentParser:
     quality = subparsers.add_parser("quality", help="Manage semantic reader-payoff and craft-structure checks.")
     quality_subparsers = quality.add_subparsers(dest="quality_command", required=True)
 
+    quality_status_cmd = quality_subparsers.add_parser(
+        "status",
+        help="Report protocol, author-acceptance, and independent literary-evidence readiness separately.",
+    )
+    quality_status_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    quality_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    quality_status_cmd.set_defaults(func=cmd_quality_status)
+
     quality_contract_cmd = quality_subparsers.add_parser(
         "contract",
         help="Compile the effective market + story facets + phase + approved-baseline quality contract.",
@@ -1071,6 +1105,57 @@ def build_parser() -> argparse.ArgumentParser:
     payoff_validate_cmd.add_argument("--file", required=True, help="Reader payoff review JSON path.")
     payoff_validate_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     payoff_validate_cmd.set_defaults(func=cmd_quality_payoff_validate)
+
+    review = subparsers.add_parser(
+        "review", help="Run the local human deep-review and advisory consultation workflow."
+    )
+    review_subparsers = review.add_subparsers(dest="review_command", required=True)
+
+    review_consult_task = review_subparsers.add_parser(
+        "consult-task", help="Create one evidence-bound advisory turn for a selected draft span."
+    )
+    review_consult_task.add_argument("config", nargs="?", default="project.yaml")
+    review_consult_task.add_argument("--chapter", type=positive_int_arg, required=True)
+    review_consult_task.add_argument("--start", type=non_negative_int_arg, required=True)
+    review_consult_task.add_argument("--end", type=positive_int_arg, required=True)
+    review_consult_task.add_argument("--question", required=True)
+    review_consult_task.add_argument("--json", action="store_true")
+    review_consult_task.set_defaults(func=cmd_review_consult_task)
+
+    review_consult_validate = review_subparsers.add_parser(
+        "consult-validate", help="Validate an advisor response without changing canonical state."
+    )
+    review_consult_validate.add_argument("config", nargs="?", default="project.yaml")
+    review_consult_validate.add_argument("--chapter", type=positive_int_arg, required=True)
+    review_consult_validate.add_argument("--file", required=True)
+    review_consult_validate.add_argument("--json", action="store_true")
+    review_consult_validate.set_defaults(func=cmd_review_consult_validate)
+
+    review_consult_record = review_subparsers.add_parser(
+        "consult-record", help="Record validated advice as non-canonical consultation history."
+    )
+    review_consult_record.add_argument("config", nargs="?", default="project.yaml")
+    review_consult_record.add_argument("--chapter", type=positive_int_arg, required=True)
+    review_consult_record.add_argument("--file", required=True)
+    review_consult_record.add_argument("--json", action="store_true")
+    review_consult_record.set_defaults(func=cmd_review_consult_record)
+
+    review_consult_status = review_subparsers.add_parser(
+        "consult-status", help="Inspect current and stale consultation sessions."
+    )
+    review_consult_status.add_argument("config", nargs="?", default="project.yaml")
+    review_consult_status.add_argument("--chapter", type=positive_int_arg, required=True)
+    review_consult_status.add_argument("--json", action="store_true")
+    review_consult_status.set_defaults(func=cmd_review_consult_status)
+
+    review_serve = review_subparsers.add_parser(
+        "serve", help="Serve the loopback-only three-column human deep-review desk."
+    )
+    review_serve.add_argument("config", nargs="?", default="project.yaml")
+    review_serve.add_argument("--chapter", type=positive_int_arg, required=True)
+    review_serve.add_argument("--port", type=positive_int_arg, default=8765)
+    review_serve.add_argument("--no-open", action="store_true")
+    review_serve.set_defaults(func=cmd_review_serve)
 
     rag = subparsers.add_parser("rag", help="Build and query local RAG context.")
     rag_subparsers = rag.add_subparsers(dest="rag_command", required=True)
@@ -1268,7 +1353,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     chapter_human_review_validate = chapter_subparsers.add_parser(
         "human-review-validate",
-        help="Validate a human_story_review_v2 decision against the current draft and planning evidence.",
+        help="Validate a human_story_review_v3 decision against the frozen independent-review bundle.",
     )
     chapter_human_review_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     chapter_human_review_validate.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
@@ -1622,6 +1707,9 @@ def build_parser() -> argparse.ArgumentParser:
         style_extract_cmd,
         payoff_task_cmd,
         payoff_validate_cmd,
+        review_consult_task,
+        review_consult_validate,
+        review_consult_record,
         humanize_task_cmd,
         humanize_check_cmd,
         humanize_semantic_task_cmd,
@@ -1689,6 +1777,10 @@ def build_parser() -> argparse.ArgumentParser:
         agent_result_validate,
         intelligence_task,
         intelligence_validate,
+        intelligence_direction_select,
+        intelligence_approve,
+        intelligence_compile_task,
+        intelligence_compile_validate,
         intelligence_apply,
         character_design_task,
         character_design_validate,
@@ -2865,6 +2957,33 @@ def cmd_intelligence_validate(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
+def cmd_intelligence_direction_select(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    try:
+        adjustments = json.loads(args.adjustments_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"--adjustments-json must be a JSON object: {exc}") from exc
+    if not isinstance(adjustments, dict):
+        raise ValueError("--adjustments-json must decode to a JSON object.")
+    result = record_chapter_direction_selection(
+        config,
+        document_path=args.document,
+        selected_option_id=args.option_id,
+        user_adjustments=adjustments,
+        repetition_reason=args.repetition_reason,
+        selected_by=args.selected_by,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: chapter direction selection recorded")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Option: {result.selected_option_id}")
+        print(f"Selection: {result.selection_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
 def cmd_intelligence_approve(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
     result = approve_design_document(
@@ -3372,6 +3491,22 @@ def cmd_quality_payoff_task(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_quality_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = quality_status(config)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Protocol ready: {str(payload['protocol_ready']).lower()}")
+        print(f"Author acceptance ready: {str(payload['author_acceptance_ready']).lower()}")
+        print(f"Literary evidence ready: {str(payload['literary_evidence_ready']).lower()}")
+        for blocker in payload["author_acceptance"]["blockers"]:
+            print(f"- author acceptance: {blocker}")
+        for blocker in payload["literary_evidence_blockers"]:
+            print(f"- literary evidence: {blocker}")
+    return 0
+
+
 def cmd_quality_contract(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
     payload = compile_effective_quality_contract(
@@ -3475,6 +3610,93 @@ def cmd_quality_payoff_validate(args: argparse.Namespace) -> int:
         print(f"Blocking findings: {len(result.blocking_findings)}")
         print(f"Next command: {result.next_command}")
     return 0 if result.ok else 1
+
+
+def cmd_review_consult_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = create_human_review_consult_task(
+        config,
+        chapter_number=args.chapter,
+        start=args.start,
+        end=args.end,
+        question=args.question,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: human review consultation task written")
+        print(f"Session: {result.session_id}")
+        print(f"Turn: {result.turn_number}")
+        print(f"Manifest: {result.manifest_file}")
+        print(f"Response: {result.response_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_review_consult_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = validate_human_review_consultation(
+        config, chapter_number=args.chapter, file_path=args.file
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: consultation response validated" if result.ok else "BLOCKED: consultation response is invalid")
+        print(f"Task: {result.task_id}")
+        print(f"Validation: {result.report_file}")
+        print(f"Errors: {len(result.errors)}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.ok else 1
+
+
+def cmd_review_consult_record(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = record_human_review_consultation(
+        config, chapter_number=args.chapter, file_path=args.file
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: consultation advice recorded as non-canonical history")
+        print(f"Session: {result.session_id}")
+        print(f"Turn: {result.turn_number}")
+        print(f"Record: {result.record_file}")
+        print(f"Next: {result.next_command}")
+    return 0
+
+
+def cmd_review_consult_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = consultation_status(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Consultation sessions: {len(payload['sessions'])}")
+        for item in payload["sessions"]:
+            print(
+                f"- {item.get('session_id')}: {item.get('status')} "
+                f"({len(item.get('turns') or [])} turns)"
+            )
+    return 0
+
+
+def cmd_review_serve(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    service = ReviewDeskService(config, chapter_number=args.chapter)
+    server = ReviewHTTPServer(service, port=args.port)
+    print(f"Review desk: {server.bootstrap_url}")
+    print("Binding: 127.0.0.1 only; the URL token can be used once.")
+    if not args.no_open:
+        import webbrowser
+
+        webbrowser.open(server.bootstrap_url)
+    try:
+        server.serve_forever(poll_interval=0.25)
+    except KeyboardInterrupt:
+        print("Review desk stopped.")
+    finally:
+        server.server_close()
+    return 0
 
 
 def cmd_editorial_pattern_status(args: argparse.Namespace) -> int:
@@ -4826,6 +5048,7 @@ def _command_label(args: argparse.Namespace) -> str:
         "research_command",
         "revision_command",
         "editorial_command",
+        "review_command",
     ):
         value = getattr(args, attr, None)
         if value:

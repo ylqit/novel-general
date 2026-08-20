@@ -154,18 +154,26 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
     human_payload = json.loads(human_file.read_text(encoding="utf-8"))
     human_payload["checks"] = {
         field: {
-            "passed": field not in {"key_turn_dramatized", "character_owns_choice_and_emotion"},
+            "passed": field not in {
+                "scene_causality_and_key_turn_dramatized",
+                "protagonist_agency_voice_and_emotion",
+            },
             "reason": "The current draft and independent finding require one bounded repair.",
         }
         for field in human_payload["checks"]
     }
     human_payload["decision"] = "repair"
-    human_payload["span_actions"] = [
+    human_payload["annotations"] = [
         {
+            "annotation_id": "agency-speaker-repair",
             "start": 0,
             "end": len(draft.read_text(encoding="utf-8")),
             "text": draft.read_text(encoding="utf-8"),
+            "check_id": "protagonist_agency_voice_and_emotion",
+            "severity": "P1",
             "action": "expand_scene",
+            "intent": "Repair the admitted agency and speaker-ownership problem in this candidate.",
+            "must_preserve": [],
             "note": "Repair the admitted agency and speaker-ownership problem in this candidate.",
         }
     ]

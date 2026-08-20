@@ -31,7 +31,7 @@ def test_version_and_bundled_resource_manifest_are_aligned(tmp_path):
     manifest = load_resource_manifest()
     asset_paths = [item["path"] for item in manifest["assets"]]
 
-    assert __version__ == "0.5.0"
+    assert __version__ == "0.6.0"
     assert manifest["engine_version"] == __version__
     assert manifest["hash_policy"] == RESOURCE_HASH_POLICY
     for prefix in ("config/", "templates/", "longform-novel-codex/", "longform-novel-claude/", "shared/"):
@@ -117,7 +117,7 @@ def test_doctor_json_contract_reports_actionable_checks(monkeypatch, tmp_path):
     payload = doctor_payload("all")
 
     assert payload["schema"] == "doctor_v1"
-    assert payload["engine_version"] == "0.5.0"
+    assert payload["engine_version"] == "0.6.0"
     checks = {item["name"]: item for item in payload["checks"]}
     assert checks["distribution_version"]["ok"]
     assert checks["bundled_resources"]["ok"]

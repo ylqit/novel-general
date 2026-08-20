@@ -1,30 +1,162 @@
-schema: market_evidence_registry_v1
+schema: market_evidence_registry_v2
 items:
-  - evidence_id: qidian_public_platform_2026_08
+  - schema: market_evidence_item_v2
+    evidence_id: qidian_yuewen_platform_identity_2026_08
     market_id: qidian_male
-    source_url: "https://www.qidian.com/"
-    source_date: "2026-08-20"
-    evidence_grade: public_platform_observation
+    source_url: "https://www.yuewen.com/"
+    source_type: official_publisher_profile
+    publisher: "阅文集团"
+    published_at: "2026-08-20"
+    verified_at: "2026-08-20"
+    claims:
+      - "起点读书属于阅文数字阅读与网络文学产品体系。"
+      - "阅文公开展示跨品类、长线连载与IP培育生态。"
+    applicability: [platform_identity, longform_serial_context, multi_genre_scope]
+    evidence_grade: official_public_material
     execution_level: P2_advisory
-    claim_boundary: "Supports an editorial market profile only; does not reveal or imply recommendation algorithms."
-  - evidence_id: qidian_public_serial_sample_2026_08
+    algorithm_inference_allowed: false
+    claim_boundary: "只支持平台身份、品类广度和长篇生态背景，不支持固定节奏、推荐或订阅算法推断。"
+  - schema: market_evidence_item_v2
+    evidence_id: qidian_subscription_help_2026_08
     market_id: qidian_male
-    source_url: "https://book.qidian.com/honor/1048862481"
-    source_date: "2026-08-20"
-    evidence_grade: public_serial_observation
+    source_url: "https://help.yuewen.com/helpcenter/pc/menu?cateId=1&qId=8&siteId=0"
+    source_type: official_help_center
+    publisher: "阅文集团帮助与客服"
+    published_at: "2023-04-06"
+    verified_at: "2026-08-20"
+    claims:
+      - "起点存在按VIP章节字数计费和逐章订阅的公开产品边界。"
+      - "章节是公开订阅与连续阅读的基本消费单元。"
+    applicability: [chapter_serialization_boundary, subscription_context]
+    evidence_grade: official_product_rule
     execution_level: P2_advisory
-    claim_boundary: "Supports observable serial-story comparison, not a universal pacing rule."
-  - evidence_id: fanqie_writer_guidance_opening_2026_08
+    algorithm_inference_allowed: false
+    claim_boundary: "只支持发布、订阅和章长产品边界，不证明优秀文学写法或强制章节模板。"
+  - schema: market_evidence_item_v2
+    evidence_id: qidian_multi_genre_catalog_2026_08
+    market_id: qidian_male
+    source_url: "https://www.qidian.com/all/"
+    source_type: public_multi_genre_observation
+    publisher: "起点中文网"
+    published_at: "2026-08-20"
+    verified_at: "2026-08-20"
+    claims:
+      - "起点公开书库同时容纳玄幻、都市、历史、科幻等多个长篇题材。"
+      - "公开样本呈现多种开篇、章节职责和节奏组合，不存在可由目录页证明的统一句式或对白率。"
+    applicability: [opening_variation, serial_duty_variation, multi_genre_observation]
+    evidence_grade: public_cross_title_observation
+    execution_level: P2_advisory
+    algorithm_inference_allowed: false
+    claim_boundary: "跨题材公开观察只用于避免把单本经验普遍化，不证明因果性的读者偏好。"
+  - schema: market_evidence_item_v2
+    evidence_id: qidian_multi_genre_rank_2026_08
+    market_id: qidian_male
+    source_url: "https://www.qidian.com/rank/"
+    source_type: public_multi_genre_observation
+    publisher: "起点中文网"
+    published_at: "2026-08-20"
+    verified_at: "2026-08-20"
+    claims:
+      - "起点公开榜单可观察到不同题材作品并存和不同连载阶段作品并存。"
+      - "公开作品观察只支持长线积累、阶段兑现和载体轮换的编辑假设需要跨样本复核。"
+    applicability: [payoff_cadence_observation, long_arc_observation, carrier_variation]
+    evidence_grade: public_cross_title_observation
+    execution_level: P2_advisory
+    algorithm_inference_allowed: false
+    claim_boundary: "榜单只作为公开观察入口，不把排名归因于任一写法，也不复制正文或推断算法。"
+  - schema: market_evidence_item_v2
+    evidence_id: qidian_golden_three_community_transcript_2026_08
+    market_id: qidian_male
+    source_url: "https://www.qidianclub.com/threads/276/"
+    source_type: community_transcript_of_writer_article
+    publisher: "起点中文网社区转录（非官方事实源）"
+    published_at: "2022-09-17"
+    verified_at: "2026-08-20"
+    claims:
+      - "社区转录展示了作者关于开篇尽早建立阅读期待的经验表达。"
+      - "该材料只能支持编辑观察，不能承担平台强制规则。"
+    applicability: [opening_editorial_observation]
+    evidence_grade: community_secondary_source
+    execution_level: P2_advisory
+    algorithm_inference_allowed: false
+    claim_boundary: "非官方转录、非平台规则；不得据此强制黄金三章、句式、对白率、悬崖或推荐结论。"
+  - schema: market_evidence_item_v2
+    evidence_id: fanqie_opening_expectation_course_2026_08
     market_id: fanqie_free
-    source_url: "https://fanqienovel.com/writer/zone/article/7551631577109774398"
-    source_date: "2025-09-19"
+    source_url: "https://fanqienovel.com/writer/zone/article/7480089164512247832"
+    source_type: official_writer_course
+    publisher: "番茄小说网"
+    published_at: "2025-07-17"
+    verified_at: "2026-08-20"
+    claims:
+      - "官方课程建议开篇形成期待感，并控制人物、视角、静态描述和世界观信息的同时涌入。"
+      - "开篇卖点应通过叙事结构和具体内容被读者识别。"
+    applicability: [opening_window, scene_entry_friction, exposition_density]
     evidence_grade: official_writer_guidance
     execution_level: P2_advisory
-    claim_boundary: "Supports opening clarity advice; does not imply traffic or retention algorithms."
-  - evidence_id: fanqie_writer_guidance_serial_2026_08
+    algorithm_inference_allowed: false
+    claim_boundary: "支持低摩擦和期待清晰度观察，不等于强制短句、固定人物数或流量算法。"
+  - schema: market_evidence_item_v2
+    evidence_id: fanqie_serial_causality_course_2026_08
     market_id: fanqie_free
     source_url: "https://fanqienovel.com/writer/zone/article/7571294020903632958"
-    source_date: "2025-11-11"
+    source_type: official_writer_course
+    publisher: "番茄小说网"
+    published_at: "2025-11-11"
+    verified_at: "2026-08-20"
+    claims:
+      - "官方课程区分快节奏与情节压缩，并讨论情节连接、人物塑造和长线角色管理。"
+      - "连载推进不能以省略人物、前因后果和角色主体性为代价。"
+    applicability: [serial_causality, character_agency, long_arc_management, pacing]
     evidence_grade: official_writer_guidance
     execution_level: P2_advisory
-    claim_boundary: "Supports concrete serial-writing advice, not fixed quotas or mandatory cliffhangers."
+    algorithm_inference_allowed: false
+    claim_boundary: "支持因果、人物和长线管理的编辑检查，不要求固定收益间隔或每章悬崖。"
+  - schema: market_evidence_item_v2
+    evidence_id: fanqie_transition_revision_course_2026_08
+    market_id: fanqie_free
+    source_url: "https://fanqienovel.com/writer/zone/article/7626655961792380953"
+    source_type: official_writer_course
+    publisher: "番茄小说网"
+    published_at: "2026-04-09"
+    verified_at: "2026-08-20"
+    claims:
+      - "官方课程讨论过渡章、自然转折、冲突张力和低读完率/跳章后的修改方向。"
+      - "数据反馈可触发人工诊断，但不能直接给出唯一结构修法。"
+    applicability: [transition_chapter, revision_feedback, conflict_and_turn]
+    evidence_grade: official_writer_guidance
+    execution_level: P2_advisory
+    algorithm_inference_allowed: false
+    claim_boundary: "只支持用数据发现问题并人工诊断，不推断推荐算法、不把指标优化变成自动改文。"
+  - schema: market_evidence_item_v2
+    evidence_id: fanqie_course_catalog_2026_08
+    market_id: fanqie_free
+    source_url: "https://fanqienovel.com/writer/zone/tutorial?tab=1"
+    source_type: official_writer_course_catalog
+    publisher: "番茄小说网"
+    published_at: "2026-08-03"
+    verified_at: "2026-08-20"
+    claims:
+      - "官方课程体系将开篇、剧情、钩子、代入、人物、内容调整和连载管理作为不同写作问题。"
+      - "平台写作适配应保持多维审查，而不是压缩成单一节奏指标。"
+    applicability: [multi_dimension_review, serial_workflow]
+    evidence_grade: official_writer_guidance_index
+    execution_level: P2_advisory
+    algorithm_inference_allowed: false
+    claim_boundary: "课程目录只证明平台公开教学覆盖范围，不证明具体技巧的绝对效果。"
+  - schema: market_evidence_item_v2
+    evidence_id: fanqie_recommendation_rule_boundary_2026_08
+    market_id: fanqie_free
+    source_url: "https://fanqienovel.com/writer/zone/article/7659317147297923134"
+    source_type: official_platform_rule
+    publisher: "番茄小说网"
+    published_at: "2026-07-08"
+    verified_at: "2026-08-20"
+    claims:
+      - "番茄公开存在推荐验证期规则与合规边界。"
+      - "内容符合公开规则也不能被解释为必然获得流量。"
+    applicability: [platform_rule_boundary, algorithm_claim_prohibition]
+    evidence_grade: official_platform_rule
+    execution_level: P2_advisory
+    algorithm_inference_allowed: false
+    claim_boundary: "只登记公开规则边界；引擎不建模、复刻或声称理解推荐验证算法。"

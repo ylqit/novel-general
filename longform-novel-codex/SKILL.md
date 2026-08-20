@@ -21,11 +21,11 @@ description: Codex App / Codex CLI 中文长篇小说生产 Skill；用户说“
 
 上下文采用 `compact/standard/large` 自适应容量。字符数和文件数只是诊断；遇到顺序批次时按清单读取，不把范围证据一次塞满。章节正文始终一次输出完整正文；工作单出现 `prompt_budget_exceeded` 或 `need_human` 时停止，不静默截断核心事实。
 
-开书阶段按 `book_ideation -> book_design -> outline_design` 推进。Book Design 必须建立 `story_engine_contract_v1`，纲要建立 `reader_promise_ledger_v1`，滚动窗口在章节方向前必须有人工批准且 basis hash 有效的 `arc_causal_simulation_v1`。每个尚未应用方向的章节都必须先完成 `chapter_direction`，声明承诺动作并检查最近五章载体。作者只读取 `chapter_story_brief_v2`；事实 ID、promise ID、模式代码、hash、RAG、Graph 与 SQLite 词汇留在 CLI/规划/编辑控制面。写正文时遵守质量合同，但不能把平台画像机械化为统一短句、对白率、快节奏或悬崖结尾。
+开书阶段按 `book_ideation -> book_design -> outline_design` 推进。Book Design 必须建立 `story_engine_contract_v1`，纲要建立 `reader_promise_ledger_v1`，滚动窗口在章节方向前必须有人工批准且 basis hash 有效的 `arc_causal_simulation_v1`。每个尚未应用方向的章节都必须先完成 `chapter_direction`，提供 2–3 个稳定 option ID，并通过 `chapter_direction_selection_v1` 记录人工选择；方向批准与语义编译必须同时消费 Markdown 和 sidecar。作者只读取 `chapter_story_brief_v2`；事实 ID、promise ID、模式代码、hash、RAG、Graph 与 SQLite 词汇留在 CLI/规划/编辑控制面。写正文时遵守质量合同，但不能把平台画像机械化为统一短句、对白率、快节奏或悬崖结尾。
 
 同人项目允许使用 manifest 声明来源中的角色名、关系、世界观、能力和时间线。先完成 `fanfiction canon-task` 与 `fanfiction design-task`，再进入纲要和章节；不得扫描未声明原作，也不得在 canon JSON 或正文中搬运、拆分重构连续 `source prose`。`rights status` 只记录和提示，不由 Agent 擅自阻断工作流。正文与修章遵守 `Humanizer v4` 和 `character_expression_packet_v1`；人物差异来自感知、决策、欲望、面具、身体和关系压力，不得强制统一对白或外貌配额。润色触发 `humanize_semantic_review` 时，必须由独立审稿角色比较来源稿与候选稿并通过 CLI 校验，不能由润色写作者自审放行。gate 通过后若出现 `reader_payoff_review`，必须按 span 证明实际收益与代价，再等待显式 finalize。
 
-每章必须由 `scene_prose_editor` 以正文 span 证明 attempt → counteraction → choice → visible_cost → state_delta → reader_gain，其他角色按风险追加。P0/P1 必须在当前不可变 review bundle 中修复，`editorial_pattern_registry` 只供编辑风险与修章协调，永不进入作者工作单。全部独立审稿完成后执行 `chapter human-review-task / validate / apply`：`accept` 必须绑定候选、合同、承诺账本和因果模拟四类 hash 并提供转折/人物归属 span；`repair` 并入 review bundle，`redirect` 返回章节方向或改纲。两轮替代稿均失败时停止在 `repair_budget_exhausted`。
+每章必须由 `scene_prose_editor` 以正文 span 证明 attempt → counteraction → choice → visible_cost → state_delta → reader_gain，其他角色按风险追加。P0/P1 必须在当前不可变 review bundle 中修复，`editorial_pattern_registry` 只供编辑风险与修章协调，永不进入作者工作单。全部独立审稿完成后执行 `chapter human-review-task / validate / apply`：唯一 `human_story_review_v3` 要求十项全过、关键转折/人物选择或情绪/读者收益三类精确 span，并绑定候选、合同、承诺账本、因果模拟和 review bundle 五类 hash；`repair` 需要结构化批注，`redirect` 返回章节方向或改纲。`review serve` 与 `human_review_consult` 只写 non-canonical 工件；人工亲改只能提交已验证 repair plan 的完整候选并重跑全量复审。两轮替代稿均失败时停止在 `repair_budget_exhausted`。
 
 ## 写入边界
 
@@ -47,7 +47,8 @@ production next
 -> agent-task brief
 -> Codex output
 -> validate / draft submit
--> mandatory human story review accept / repair / redirect
+-> freeze review bundle / optional non-canonical consultation
+-> mandatory human_story_review_v3 accept / repair / redirect
 -> explicit apply or chapter finalize --approved-by human after accept
 -> chapter semantic-task / Agent unified JSON / semantic-validate
 -> explicit semantic-apply / chapter close --approved-by human
@@ -58,6 +59,8 @@ production next
 ```text
 longform-engine draft submit project.yaml --chapter N --file 50_workbench/agent_drafts/chNNN.codex.md --agent codex
 longform-engine chapter human-review-task project.yaml --chapter N
+longform-engine review serve project.yaml --chapter N --port 8765
+longform-engine quality status project.yaml --json
 longform-engine chapter finalize project.yaml --chapter N --approved-by human
 longform-engine chapter semantic-task project.yaml --chapter N
 longform-engine chapter close project.yaml --chapter N --approved-by human

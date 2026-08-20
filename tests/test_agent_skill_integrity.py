@@ -27,7 +27,7 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
     registry = load_role_registry(ROOT)
     assert_current_protocol_coverage(registry)
     assert registry.registry_version == 3
-    assert len(registry.roles) == 28
+    assert len(registry.roles) == 29
     assert len(registry.playbooks) == 12
     assert "executive_editor" not in registry.roles
     assert not {"graph_extract", "memory_extract", "character_memory"} & set(TASK_CONTRACTS)
@@ -50,8 +50,9 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
             "isolated_revision",
             "isolated_review",
             "isolated_archival",
+            "candidate_consultation",
         }
-    assert len(TASK_CONTRACTS) == 26
+    assert len(TASK_CONTRACTS) == 27
     assert {contract["schemas"][0] for contract in TASK_CONTRACTS.values()} == set(AGENT_OUTPUT_PROTOCOLS)
     assert all(len(contract["schemas"]) == 1 for contract in TASK_CONTRACTS.values())
     facet_registries = load_facet_registries()
@@ -98,7 +99,7 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
             assert set(case) == {"positive", "negative", "boundary"}
             assert all(any("\u3400" <= char <= "\u9fff" for char in text) for text in case.values())
             calibration_texts.extend("".join(text.split()) for text in case.values())
-    assert len(calibration_texts) == 84 * 3
+    assert len(calibration_texts) == 85 * 3
     assert len(calibration_texts) == len(set(calibration_texts))
 
     professional_check = next(
@@ -106,8 +107,8 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
     )
     inventory = professional_check["detail"]["inventory"]
     assert professional_check["status"] == "pass"
-    assert inventory["item_count"] == 84
-    assert len(inventory["roles"]) == 28
+    assert inventory["item_count"] == 85
+    assert len(inventory["roles"]) == 29
     assert len(inventory["playbooks"]) == 12
     assert len(inventory["facets"]) == 44
     assert all(item["estimated_units"] > 0 and len(item["contract_hash"]) == 64 for item in inventory["roles"])
@@ -374,9 +375,9 @@ def test_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
     assert {item["aggregation"] for item in batches} == {"deterministic_source_hash_and_evidence_id"}
 
 
-def test_release_guard_tracks_current_v050_contracts():
+def test_release_guard_tracks_current_v060_contracts():
     guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_5_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_6_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
     production = (ROOT / "src" / "longform_engine" / "production.py").read_text(encoding="utf-8")
 
     for marker in (
@@ -390,11 +391,11 @@ def test_release_guard_tracks_current_v050_contracts():
     ):
         assert marker in guard
     for section in (
-        "配置与覆盖来源",
-        "统一章节路径",
-        "内部质量证据",
-        "单进程定向验证",
-        "发布前本地证据",
+        "市场证据与质量合同",
+        "人工深审 v3",
+        "章节方向人工选择",
+        "本地可视化审稿台",
+        "本地验证证据",
         "远程发布证据",
     ):
         assert section in checklist

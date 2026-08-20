@@ -21,15 +21,15 @@ longform-engine benchmark report project.yaml --run-id candidate-qidian-3
 
 ## 匿名盲评
 
-每组两次运行必须使用相同宿主、模型、宿主版本、工作流/生成条件、场景、创作模式和章节数，并且恰好是一组 v0.5.0 候选与一组 v0.4.4 基线。分别附加只读来源目录，再生成匿名包：
+每组两次运行必须使用相同宿主、模型、宿主版本、工作流/生成条件、场景、创作模式和章节数，并且恰好是一组 v0.6.0 候选与一组 v0.5.0 基线。既有 v0.5.0/v0.4.4 结果不构成 v0.6.0 文学证据。分别附加只读来源目录，再生成匿名包：
 
 ```powershell
 longform-engine benchmark source-attach project.yaml --run-id candidate-qidian-3 --source-dir SOURCE_A
 longform-engine benchmark source-attach project.yaml --run-id baseline-qidian-3 --source-dir SOURCE_B
-longform-engine benchmark blind-pack project.yaml --comparison-id qidian-opening-v050 --run-id candidate-qidian-3 --run-id baseline-qidian-3 --review-scope qidian_opening_3 --seed PRIVATE_SEED
-longform-engine benchmark blind-template project.yaml --comparison-id qidian-opening-v050 --judge-id reviewer-a
-longform-engine benchmark blind-submit project.yaml --comparison-id qidian-opening-v050 --judge-id reviewer-a --file REVIEW_A
-longform-engine benchmark blind-aggregate project.yaml --comparison-id qidian-opening-v050
+longform-engine benchmark blind-pack project.yaml --comparison-id qidian-opening-v060 --run-id candidate-qidian-3 --run-id baseline-qidian-3 --review-scope qidian_opening_3 --seed PRIVATE_SEED
+longform-engine benchmark blind-template project.yaml --comparison-id qidian-opening-v060 --judge-id reviewer-a
+longform-engine benchmark blind-submit project.yaml --comparison-id qidian-opening-v060 --judge-id reviewer-a --file REVIEW_A
+longform-engine benchmark blind-aggregate project.yaml --comparison-id qidian-opening-v060
 ```
 
 对 `qidian_opening_3`、`fanqie_opening_3` 和 `serial_arc_15` 各执行一组。至少需要三名相互独立并完成声明的人工评审；公开包不得泄露 run id、宿主、模型或工作流身份。候选须获得不少于三分之二总体偏好，关键转折、人物主动性和读者收益中位提升至少 1 分，连续性与人物一致性不得下降；十五章组中任何长期失败模式被两人确认即失败。

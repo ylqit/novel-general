@@ -51,7 +51,7 @@ def seed_formal_pair(tmp_path: Path):
         if run_id == "codex-baseline-3":
             run_file = root / "70_runtime" / "benchmarks" / run_id / "run.json"
             run_payload = json.loads(run_file.read_text(encoding="utf-8"))
-            run_payload["engine_version"] = "0.4.4"
+            run_payload["engine_version"] = "0.5.0"
             run_file.write_text(json.dumps(run_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         source_dir = tmp_path / run_id
         source_dir.mkdir()
@@ -110,7 +110,7 @@ def add_literary_scope_pair(
         if run_id == baseline_id:
             run_file = root / "70_runtime" / "benchmarks" / run_id / "run.json"
             run_payload = json.loads(run_file.read_text(encoding="utf-8"))
-            run_payload["engine_version"] = "0.4.4"
+            run_payload["engine_version"] = "0.5.0"
             run_file.write_text(json.dumps(run_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         source_dir = tmp_path / f"source-{run_id}"
         source_dir.mkdir()

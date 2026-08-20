@@ -194,6 +194,7 @@ def validate_readme() -> list[str]:
         "只生成提示",
         "多个 JSON 字段",
         "V0_5_0_RELEASE_CHECKLIST.md",
+        "V0_6_0_RELEASE_CHECKLIST.md",
     )
     for term in required:
         if term.lower() not in readme.lower():
