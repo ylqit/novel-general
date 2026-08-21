@@ -21,8 +21,19 @@ def quality_status(config: ConfigDocument) -> dict[str, Any]:
     protocol = check_agent_data_pipeline_readiness()
     author_ready, author_blockers, chapters = author_acceptance_status(root)
     literary_ready, literary_blockers = literary_evidence_status(root)
+    from longform_engine.publication import publication_preflight_status
+
+    platform_preflights = {
+        target: publication_preflight_status(config, target=target)
+        for target in ("qidian_male", "fanqie_free")
+    }
+    revision_coverage = {
+        "complete": bool(chapters) and all(item.get("human_revision_current") for item in chapters),
+        "covered_chapters": [item["chapter_number"] for item in chapters if item.get("human_revision_current")],
+        "missing_chapters": [item["chapter_number"] for item in chapters if not item.get("human_revision_current")],
+    }
     return {
-        "schema": "quality_status_v1",
+        "schema": "quality_status_v2",
         "protocol_ready": bool(protocol.get("protocol_ready")),
         "author_acceptance_ready": author_ready,
         "literary_evidence_ready": literary_ready,
@@ -31,6 +42,8 @@ def quality_status(config: ConfigDocument) -> dict[str, Any]:
             "chapters": chapters,
             "blockers": author_blockers,
         },
+        "human_author_revision_coverage": revision_coverage,
+        "platform_preflights": platform_preflights,
         "protocol_blockers": list(protocol.get("blocking_reasons") or []),
         "literary_evidence_blockers": literary_blockers,
         "claim_boundaries": {
@@ -46,7 +59,11 @@ def quality_status(config: ConfigDocument) -> dict[str, Any]:
 
 
 def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str, Any]]]:
-    from longform_engine.human_story_review import CHECK_FIELDS, EVIDENCE_KINDS, SCHEMA
+    from longform_engine.human_story_review import (
+        CHECK_FIELDS,
+        EVIDENCE_KINDS,
+        SCHEMA,
+    )
 
     finalized = list_finalized_chapter_files(root)
     if not finalized:
@@ -57,36 +74,84 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
         chapter_errors: list[str] = []
         finalization_path = final_path.with_suffix(".finalization.json")
         finalization = _read_json(finalization_path)
-        binding = (
-            finalization.get("human_story_review")
-            if isinstance(finalization, dict) and isinstance(finalization.get("human_story_review"), dict)
-            else {}
-        )
+        binding: dict[str, Any] = {}
+        revision_binding: dict[str, Any] = {}
+        if isinstance(finalization, dict):
+            binding_value = finalization.get("human_story_review")
+            revision_value = finalization.get("human_author_revision")
+            if isinstance(binding_value, dict):
+                binding = binding_value
+            if isinstance(revision_value, dict):
+                revision_binding = revision_value
         decision_path = _decision_path(root, chapter_number, binding)
         decision = _read_json(decision_path) if decision_path is not None else None
+        if not isinstance(decision, dict) and binding.get("schema") == "human_story_review_finalization_binding_v1":
+            decision = {
+                "schema": SCHEMA,
+                "chapter_number": chapter_number,
+                "decision": binding.get("decision"),
+                "approved_by": binding.get("approved_by"),
+                "dimension_coverage": binding.get("dimension_coverage"),
+                "evidence_spans": binding.get("evidence_spans"),
+                "annotations": binding.get("annotations"),
+                "finding_resolutions": binding.get("finding_resolutions"),
+                **{
+                    field: binding.get(field)
+                    for field in (
+                        "candidate_sha256",
+                        "chapter_contract_sha256",
+                        "reader_promise_ledger_sha256",
+                        "arc_causal_simulation_sha256",
+                        "review_bundle_sha256",
+                        "human_author_revision_sha256",
+                    )
+                },
+            }
+        revision_file = _project_file(root, str(revision_binding.get("validation_file") or ""))
+        revision_current = bool(
+            revision_binding.get("schema") == "human_author_revision_finalization_binding_v1"
+            and str(revision_binding.get("validation_sha256") or "")
+            and revision_file is not None
+            and (
+                not revision_file.is_file()
+                or revision_binding.get("validation_sha256") == sha256(revision_file.read_bytes()).hexdigest()
+            )
+        )
+        if not revision_current:
+            chapter_errors.append("human_author_revision_binding_missing_or_stale")
         if not isinstance(finalization, dict) or finalization.get("chapter_number") != chapter_number:
             chapter_errors.append("finalization_missing_or_invalid")
         if not isinstance(decision, dict):
             chapter_errors.append("human_accept_decision_missing")
         else:
             if decision.get("schema") != SCHEMA:
-                chapter_errors.append("human_accept_schema_not_v3")
+                chapter_errors.append("human_accept_schema_not_v4")
             if decision.get("chapter_number") != chapter_number:
                 chapter_errors.append("human_accept_chapter_mismatch")
             if decision.get("decision") != "accept" or decision.get("approved_by") != "human":
                 chapter_errors.append("human_accept_not_accepted")
-            checks = decision.get("checks")
-            if not isinstance(checks, dict) or set(checks) != CHECK_FIELDS or any(
-                not isinstance(checks.get(field), dict) or checks[field].get("passed") is not True
+            coverage = decision.get("dimension_coverage")
+            accepted_statuses = {"confirmed", "covered", "accepted_p2"}
+            if not isinstance(coverage, dict) or set(coverage) != CHECK_FIELDS or any(
+                not isinstance(coverage.get(field), dict)
+                or coverage[field].get("status") not in accepted_statuses
                 for field in CHECK_FIELDS
             ):
-                chapter_errors.append("human_accept_ten_checks_incomplete")
+                chapter_errors.append("human_accept_dimension_coverage_incomplete")
             annotations = decision.get("annotations")
             if not isinstance(annotations, list) or any(
                 isinstance(item, dict) and item.get("severity") in {"P0", "P1"}
                 for item in annotations or []
             ):
                 chapter_errors.append("human_accept_has_P0_or_P1")
+            resolutions = decision.get("finding_resolutions")
+            if not isinstance(resolutions, list) or any(
+                not isinstance(item, dict)
+                or item.get("severity") != "P2"
+                or item.get("disposition") != "accept_p2"
+                for item in resolutions or []
+            ):
+                chapter_errors.append("human_accept_finding_resolution_invalid")
             final_text = final_path.read_text(encoding="utf-8")
             evidence_kinds: set[str] = set()
             for span in decision.get("evidence_spans") or []:
@@ -113,6 +178,7 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
             "reader_promise_ledger_sha256",
             "arc_causal_simulation_sha256",
             "review_bundle_sha256",
+            "human_author_revision_sha256",
         )
         if not binding or binding.get("schema") != "human_story_review_finalization_binding_v1":
             chapter_errors.append("human_accept_finalization_binding_missing")
@@ -121,10 +187,15 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
             or str(binding.get(field)) != str(decision.get(field) or "")
             for field in required_hashes
         ):
-            chapter_errors.append("human_accept_five_hash_binding_mismatch")
+            chapter_errors.append("human_accept_six_hash_binding_mismatch")
+        if isinstance(decision, dict) and revision_current and (
+            decision.get("human_author_revision_sha256") != revision_binding.get("validation_sha256")
+        ):
+            chapter_errors.append("human_accept_revision_hash_mismatch")
         record = {
             "chapter_number": chapter_number,
             "accepted": not chapter_errors,
+            "human_revision_current": revision_current,
             "final_file": final_path.resolve().relative_to(root.resolve()).as_posix(),
             "decision_file": (
                 decision_path.resolve().relative_to(root.resolve()).as_posix()
@@ -136,6 +207,17 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
         chapters.append(record)
         blockers.extend(f"ch{chapter_number:03d}:{error}" for error in chapter_errors)
     return not blockers, blockers, chapters
+
+
+def _project_file(root: Path, relative: str) -> Path | None:
+    if not relative:
+        return None
+    path = (root / relative).resolve()
+    try:
+        path.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return path
 
 
 def _decision_path(root: Path, chapter_number: int, binding: dict[str, Any]) -> Path | None:

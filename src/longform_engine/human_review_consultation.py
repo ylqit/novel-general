@@ -92,24 +92,26 @@ def create_human_review_consult_task(
     draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     if not draft.is_file():
         raise HumanReviewConsultError("current chapter draft is missing")
-    draft_text = draft.read_text(encoding="utf-8")
+    candidate = _current_consult_candidate(root, chapter_number)
+    candidate_text = candidate.read_text(encoding="utf-8")
     if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start:
         raise HumanReviewConsultError("selected span must satisfy 0 <= start < end")
-    if end > len(draft_text):
-        raise HumanReviewConsultError("selected span exceeds the current draft")
+    if end > len(candidate_text):
+        raise HumanReviewConsultError("selected span exceeds the current consultation candidate")
     normalized_question = str(question or "").strip()
     if not normalized_question:
         raise HumanReviewConsultError("consultation question must not be empty")
 
-    candidate_hash = _file_hash(draft)
+    candidate_hash = _file_hash(candidate)
     mark_stale_human_consultations(root, chapter_number=chapter_number)
     binding = human_review_bundle_binding(config, chapter_number=chapter_number, freeze=False)
     if not binding.get("frozen"):
         raise HumanReviewConsultError(
             "human consultation requires the immutable review bundle created by human-review-task"
         )
-    if str(binding.get("candidate_sha256") or "") != candidate_hash:
-        raise HumanReviewConsultError("frozen review bundle is stale for the current candidate")
+    source_hash = _file_hash(draft)
+    if str(binding.get("candidate_sha256") or "") != source_hash:
+        raise HumanReviewConsultError("frozen review bundle is stale for the current revision source")
 
     story_brief = root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.md"
     if not story_brief.is_file():
@@ -161,7 +163,7 @@ def create_human_review_consult_task(
         "selection": {
             "start": start,
             "end": end,
-            "text": draft_text[start:end],
+            "text": candidate_text[start:end],
         },
         "question": normalized_question,
         "created_at": _utc_now(),
@@ -180,7 +182,7 @@ def create_human_review_consult_task(
             chapter_number=chapter_number,
             turn_number=turn_number,
             candidate_hash=candidate_hash,
-            draft=relative_path(root, draft),
+            draft=relative_path(root, candidate),
             story_brief=relative_path(root, story_brief),
             bundle=relative_path(root, bundle),
             request=relative_path(root, request_file),
@@ -192,7 +194,7 @@ def create_human_review_consult_task(
         root,
         task_type="human_review_consult",
         chapter_number=chapter_number,
-        input_files=(task_file, draft, story_brief, bundle, request_file, history_file),
+        input_files=(task_file, candidate, story_brief, bundle, request_file, history_file),
         allowed_output_paths=(response_file,),
         output_schema="design_document_v1",
         validate_command=(
@@ -210,7 +212,7 @@ def create_human_review_consult_task(
         canonical_targets=(),
         requires_human_apply=False,
         context_policy={
-            "required_files": (task_file, draft, story_brief, bundle, request_file, history_file),
+            "required_files": (task_file, candidate, story_brief, bundle, request_file, history_file),
             "compiled_brief": task_file,
             "selection_report": request_file,
             "quality_focus": ("scene_causality", "character_agency"),
@@ -415,7 +417,7 @@ def record_human_review_consultation(
         turn_number=turn_number,
         record_file=relative_path(root, record),
         response_sha256=response_hash,
-        next_command="convert selected advice to a human_story_review_v3 annotation in the review desk",
+        next_command="convert selected advice to a human_story_review_v4 annotation in the review desk",
     )
 
 
@@ -620,8 +622,29 @@ def _require_session_candidate(session: dict[str, Any], candidate_hash: str) -> 
 
 
 def _current_candidate_hash(root: Path, chapter_number: int) -> str:
+    candidate = _current_consult_candidate(root, chapter_number)
+    return _file_hash(candidate) if candidate.is_file() else ""
+
+
+def _current_consult_candidate(root: Path, chapter_number: int) -> Path:
     draft = manuscript_chapter_path(root, chapter_number, lane="draft")
-    return _file_hash(draft) if draft.is_file() else ""
+    if not draft.is_file():
+        return draft
+    digest = _file_hash(draft)
+    task_file = (
+        root
+        / "50_workbench"
+        / "human_author_revisions"
+        / f"ch{chapter_number:03d}"
+        / f"{digest[:12]}.task.json"
+    )
+    task = _load_json(task_file, default={})
+    candidate = root / str(task.get("candidate_file") or "") if isinstance(task, dict) else Path()
+    try:
+        candidate.resolve().relative_to((root / "50_workbench" / "human_author_revisions").resolve())
+    except ValueError:
+        return draft
+    return candidate if candidate.is_file() and candidate.read_text(encoding="utf-8").strip() else draft
 
 
 def _resolve_inside(root: Path, file_path: str | Path) -> Path:

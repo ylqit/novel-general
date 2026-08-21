@@ -17,7 +17,7 @@ from longform_engine.storage import apply_transaction, atomic_write_text, resolv
 from longform_engine.storage.layout import manuscript_chapter_path
 
 
-SCHEMA = "human_story_review_v3"
+SCHEMA = "human_story_review_v4"
 DECISIONS = {"accept", "repair", "redirect"}
 ANNOTATION_ACTIONS = {
     "preserve",
@@ -42,6 +42,15 @@ CHECK_FIELDS = {
     "exit_state_and_emotional_aftereffect",
 }
 EVIDENCE_KINDS = {"key_turn", "character_choice_or_emotion", "reader_gain"}
+COVERAGE_STATUSES = {"confirmed", "covered", "accepted_p2", "repair", "redirect"}
+COVERAGE_SOURCES = {"human_core", "independent_review", "human_resolution"}
+FINDING_DISPOSITIONS = {"accept_p2", "repair", "redirect"}
+CORE_CHECK_EVIDENCE = {
+    "scene_causality_and_key_turn_dramatized": "key_turn",
+    "protagonist_agency_voice_and_emotion": "character_choice_or_emotion",
+    "reader_gain_and_promise_progress": "reader_gain",
+    "exit_state_and_emotional_aftereffect": "reader_gain",
+}
 
 
 class HumanStoryReviewError(ValueError):
@@ -59,6 +68,7 @@ class HumanStoryReviewTaskResult:
     arc_causal_simulation_sha256: str
     review_bundle_file: str
     review_bundle_sha256: str
+    human_author_revision_sha256: str
     next_command: str
 
 
@@ -87,6 +97,18 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
     if not draft.is_file():
         return {"required": True, "status": "pending", "reason": "current draft is missing"}
     candidate_hash = sha256(draft.read_bytes()).hexdigest()
+    from longform_engine.human_author_revision import human_author_revision_status
+
+    revision = human_author_revision_status(config, chapter_number=chapter_number)
+    if revision.get("status") != "complete":
+        return {
+            "required": True,
+            "status": "pending",
+            "reason": "current candidate has no validated human_author_revision_v1 binding",
+            "candidate_sha256": candidate_hash,
+            "human_author_revision_status": revision.get("status") or "pending",
+        }
+    revision_hash = str(revision.get("validation_sha256") or "")
     try:
         _contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
     except ValueError as exc:
@@ -120,11 +142,13 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
             "reader_promise_ledger_sha256": promise_hash,
             "arc_causal_simulation_sha256": simulation_hash,
             "review_bundle_sha256": review_bundle_hash,
+            "human_author_revision_sha256": revision_hash,
         }
     decision_path = resolve_decision_pointer(root, chapter_number, latest)
     decision_record = load_json(decision_path) if decision_path is not None else None
     if (
-        not isinstance(decision_record, dict)
+        decision_path is None
+        or not isinstance(decision_record, dict)
         or sha256(decision_path.read_bytes()).hexdigest() != str(latest.get("decision_sha256") or "")
         or decision_record.get("schema") != SCHEMA
         or decision_record.get("chapter_number") != chapter_number
@@ -148,6 +172,8 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
         or str(decision_record.get("arc_causal_simulation_sha256") or "") != simulation_hash
         or str(latest.get("review_bundle_sha256") or "") != review_bundle_hash
         or str(decision_record.get("review_bundle_sha256") or "") != review_bundle_hash
+        or str(latest.get("human_author_revision_sha256") or "") != revision_hash
+        or str(decision_record.get("human_author_revision_sha256") or "") != revision_hash
         or not bundle_binding.get("frozen")
     ):
         return {
@@ -158,6 +184,7 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
             "reader_promise_ledger_sha256": promise_hash,
             "arc_causal_simulation_sha256": simulation_hash,
             "review_bundle_sha256": review_bundle_hash,
+            "human_author_revision_sha256": revision_hash,
             "decision_file": relative_path(root, decision_path),
         }
     decision = str(decision_record.get("decision") or "")
@@ -170,19 +197,31 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
         "reader_promise_ledger_sha256": promise_hash,
         "arc_causal_simulation_sha256": simulation_hash,
         "review_bundle_sha256": review_bundle_hash,
+        "human_author_revision_sha256": revision_hash,
         "decision_file": relative_path(root, decision_path),
         "decision_sha256": sha256(decision_path.read_bytes()).hexdigest(),
         "approved_by": "human",
-        "checks": decision_record.get("checks") if isinstance(decision_record.get("checks"), dict) else {},
+        "dimension_coverage": (
+            decision_record.get("dimension_coverage")
+            if isinstance(decision_record.get("dimension_coverage"), dict)
+            else {}
+        ),
         "evidence_spans": (
             decision_record.get("evidence_spans")
             if isinstance(decision_record.get("evidence_spans"), list)
             else []
         ),
         "redirect_scope": str(decision_record.get("redirect_scope") or ""),
+        "reader_gain_note": str(decision_record.get("reader_gain_note") or ""),
+        "reason": str(decision_record.get("reason") or ""),
         "annotations": (
             decision_record.get("annotations")
             if isinstance(decision_record.get("annotations"), list)
+            else []
+        ),
+        "finding_resolutions": (
+            decision_record.get("finding_resolutions")
+            if isinstance(decision_record.get("finding_resolutions"), list)
             else []
         ),
     }
@@ -197,6 +236,16 @@ def create_human_story_review_task(
     draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     if not draft.is_file():
         raise HumanStoryReviewError("current chapter draft is missing")
+    from longform_engine.human_author_revision import (
+        HumanAuthorRevisionError,
+        require_current_human_author_revision,
+    )
+
+    try:
+        revision = require_current_human_author_revision(config, chapter_number=chapter_number)
+    except HumanAuthorRevisionError as exc:
+        raise HumanStoryReviewError(str(exc)) from exc
+    revision_hash = str(revision["validation_sha256"])
     from longform_engine.repair_coordination import review_barrier_status
 
     barrier = review_barrier_status(config, chapter_number=chapter_number)
@@ -232,9 +281,11 @@ def create_human_story_review_task(
         f"- 冻结审稿包：`{bundle_binding['review_bundle']}`",
         f"- 审稿包 SHA-256：`{review_bundle_hash}`",
         "",
-        "逐项审查十个维度：合同保护、欲望/阻力/戏剧问题、场景因果/转折、主角主体性/声音/情绪、",
-        "配角/关系、读者收益/承诺、连续性/世界规则/能力边界、节奏/信息/载体、文字自然度、离场状态/余波。",
-        "accept 必须十项全过，并标注 key_turn、character_choice_or_emotion、reader_gain 三类精确正文证据。",
+        f"- 人工作者修订 SHA-256：`{revision_hash}`",
+        "",
+        "三组核心证据必须由人填写：故事因果/关键转折、人物选择/情绪、读者收益/离场状态。",
+        "其余维度可引用冻结审稿包中的独立审稿覆盖；有 finding 时必须明确接受 P2、repair 或 redirect。",
+        "不得自动生成或复用‘人工逐项确认通过’理由；accept 不允许遗留 P0/P1。",
         "repair 至少提供一个非 preserve 结构化批注；redirect 必须选择 direction 或 outline_revision。",
         "",
         f"填写：`{relative_path(root, template_path)}`",
@@ -249,13 +300,12 @@ def create_human_story_review_task(
         "reader_promise_ledger_sha256": promise_hash,
         "arc_causal_simulation_sha256": simulation_hash,
         "review_bundle_sha256": review_bundle_hash,
-        "checks": {
-            field: {"passed": False, "reason": ""}
-            for field in sorted(CHECK_FIELDS)
-        },
+        "human_author_revision_sha256": revision_hash,
+        "dimension_coverage": default_dimension_coverage(bundle_binding["payload"]),
         "decision": "repair",
         "evidence_spans": [],
         "reader_gain_note": "",
+        "finding_resolutions": default_finding_resolutions(bundle_binding["payload"]),
         "annotations": [],
         "redirect_scope": "direction",
         "reason": "",
@@ -272,6 +322,7 @@ def create_human_story_review_task(
         arc_causal_simulation_sha256=simulation_hash,
         review_bundle_file=str(bundle_binding["review_bundle"]),
         review_bundle_sha256=review_bundle_hash,
+        human_author_revision_sha256=revision_hash,
         next_command=(
             f"longform-engine chapter human-review-validate project.yaml --chapter {chapter_number} "
             f"--file {relative_path(root, template_path)}"
@@ -300,7 +351,7 @@ def validate_human_story_review(
     decision = str(payload.get("decision") or "") if isinstance(payload, dict) else ""
     report_path = path.with_suffix(".validation.json")
     report = {
-        "schema": "human_story_review_validation_v3",
+        "schema": "human_story_review_validation_v4",
         "chapter_number": chapter_number,
         "candidate_file": relative_path(root, path),
         "ok": not errors,
@@ -356,13 +407,14 @@ def apply_human_story_review(
     record = {**payload, "approved_by": approved_by, "source_file": relative_path(root, path)}
     record_text = json.dumps(record, ensure_ascii=False, indent=2) + "\n"
     latest = {
-        "schema": "human_story_review_latest_v3",
+        "schema": "human_story_review_latest_v4",
         "chapter_number": chapter_number,
         "candidate_sha256": candidate_hash,
         "chapter_contract_sha256": payload["chapter_contract_sha256"],
         "reader_promise_ledger_sha256": payload["reader_promise_ledger_sha256"],
         "arc_causal_simulation_sha256": payload["arc_causal_simulation_sha256"],
         "review_bundle_sha256": payload["review_bundle_sha256"],
+        "human_author_revision_sha256": payload["human_author_revision_sha256"],
         "decision_file": relative_path(root, decision_path),
         "decision_sha256": sha256(record_text.encode("utf-8")).hexdigest(),
     }
@@ -470,11 +522,16 @@ def human_story_review_errors(
     required = {
         "schema", "chapter_number", "candidate_sha256", "chapter_contract_sha256",
         "reader_promise_ledger_sha256", "arc_causal_simulation_sha256",
-        "review_bundle_sha256", "checks", "decision", "evidence_spans", "reader_gain_note", "annotations",
-        "redirect_scope", "reason",
+        "review_bundle_sha256", "human_author_revision_sha256", "dimension_coverage",
+        "decision", "evidence_spans", "reader_gain_note", "finding_resolutions",
+        "annotations", "redirect_scope", "reason",
     }
+    if isinstance(payload, dict) and payload.get("schema") == "human_story_review_v3":
+        return [
+            "human_story_review_v3 is rejected in v0.7; create a new v0.7 project and import authoritative material manually"
+        ]
     if not isinstance(payload, dict) or set(payload) != required:
-        return ["review must contain exactly the human_story_review_v3 fields"]
+        return ["review must contain exactly the human_story_review_v4 fields"]
     if payload.get("schema") != SCHEMA:
         errors.append(f"schema must be {SCHEMA}")
     if payload.get("chapter_number") != chapter_number:
@@ -502,6 +559,14 @@ def human_story_review_errors(
         simulation_hash = ""
     if payload.get("arc_causal_simulation_sha256") != simulation_hash:
         errors.append("arc_causal_simulation_sha256 is stale")
+    from longform_engine.human_author_revision import human_author_revision_status
+
+    revision = human_author_revision_status(config, chapter_number=chapter_number)
+    if revision.get("status") != "complete":
+        errors.append("current candidate has no validated human_author_revision_v1 binding")
+    elif payload.get("human_author_revision_sha256") != revision.get("validation_sha256"):
+        errors.append("human_author_revision_sha256 is stale")
+    bundle_payload: dict[str, Any] = {}
     try:
         from longform_engine.repair_coordination import human_review_bundle_binding
 
@@ -515,22 +580,33 @@ def human_story_review_errors(
             or bundle_binding.get("actual_sha256") != bundle_binding["review_bundle_sha256"]
         ):
             errors.append("review_bundle_sha256 is stale")
+        payload_value = bundle_binding.get("payload")
+        if isinstance(payload_value, dict):
+            bundle_payload = payload_value
     except ValueError as exc:
         errors.append(str(exc))
-    checks = payload.get("checks")
-    if not isinstance(checks, dict) or set(checks) != CHECK_FIELDS:
-        errors.append("checks must contain exactly ten reasoned story judgments")
-        checks = {}
+    coverage = payload.get("dimension_coverage")
+    if not isinstance(coverage, dict) or set(coverage) != CHECK_FIELDS:
+        errors.append("dimension_coverage must contain exactly the ten story dimensions")
+        coverage = {}
     for field in CHECK_FIELDS:
-        check = checks.get(field) if isinstance(checks, dict) else None
-        if (
-            not isinstance(check, dict)
-            or set(check) != {"passed", "reason"}
-            or not isinstance(check.get("passed"), bool)
-            or not isinstance(check.get("reason"), str)
-            or not check["reason"].strip()
+        item = coverage.get(field) if isinstance(coverage, dict) else None
+        if not isinstance(item, dict) or set(item) != {"status", "coverage_source", "reason", "evidence_refs"}:
+            errors.append(f"dimension_coverage.{field} has invalid fields")
+            continue
+        if item.get("status") not in COVERAGE_STATUSES:
+            errors.append(f"dimension_coverage.{field}.status is unsupported")
+        if item.get("coverage_source") not in COVERAGE_SOURCES:
+            errors.append(f"dimension_coverage.{field}.coverage_source is unsupported")
+        refs = item.get("evidence_refs")
+        if not isinstance(refs, list) or not refs or any(not isinstance(ref, str) or not ref.strip() for ref in refs):
+            errors.append(f"dimension_coverage.{field}.evidence_refs must contain explicit evidence")
+        if item.get("coverage_source") in {"human_core", "human_resolution"} and (
+            not isinstance(item.get("reason"), str) or not item["reason"].strip()
         ):
-            errors.append(f"checks.{field} must contain passed and a non-empty reason")
+            errors.append(f"dimension_coverage.{field} requires a human-written reason")
+        if field in CORE_CHECK_EVIDENCE and item.get("coverage_source") != "human_core":
+            errors.append(f"dimension_coverage.{field} must be confirmed as human_core evidence")
     decision = str(payload.get("decision") or "")
     if decision not in DECISIONS:
         errors.append("decision must be accept, repair, or redirect")
@@ -554,6 +630,45 @@ def human_story_review_errors(
             evidence_kinds.add(str(item["kind"]))
         if not isinstance(item.get("note"), str) or not item["note"].strip():
             errors.append(f"evidence_spans[{index}].note must be non-empty")
+    finding_resolutions = payload.get("finding_resolutions")
+    if not isinstance(finding_resolutions, list):
+        errors.append("finding_resolutions must be a list")
+        finding_resolutions = []
+    findings = [
+        item
+        for item in bundle_payload.get("findings") or []
+        if isinstance(item, dict) and str(item.get("finding_id") or "")
+    ]
+    findings_by_id = {str(item["finding_id"]): item for item in findings}
+    resolution_ids: set[str] = set()
+    for index, item in enumerate(finding_resolutions):
+        fields = {"finding_id", "severity", "disposition", "reason", "must_preserve"}
+        if not isinstance(item, dict) or set(item) != fields:
+            errors.append(f"finding_resolutions[{index}] has invalid fields")
+            continue
+        finding_id = str(item.get("finding_id") or "")
+        if finding_id not in findings_by_id or finding_id in resolution_ids:
+            errors.append(f"finding_resolutions[{index}].finding_id is unknown or duplicated")
+            continue
+        resolution_ids.add(finding_id)
+        finding = findings_by_id[finding_id]
+        severity = str(item.get("severity") or "")
+        if severity != str(finding.get("severity") or ""):
+            errors.append(f"finding_resolutions[{index}].severity does not match the frozen bundle")
+        disposition = str(item.get("disposition") or "")
+        if disposition not in FINDING_DISPOSITIONS:
+            errors.append(f"finding_resolutions[{index}].disposition is unsupported")
+        if disposition == "accept_p2" and severity != "P2":
+            errors.append(f"finding_resolutions[{index}] may accept only P2")
+        if not isinstance(item.get("reason"), str) or not item["reason"].strip():
+            errors.append(f"finding_resolutions[{index}].reason must be human-written")
+        preserve = item.get("must_preserve")
+        if not isinstance(preserve, list) or any(
+            not isinstance(value, str) or not value.strip() for value in preserve
+        ):
+            errors.append(f"finding_resolutions[{index}].must_preserve must be a string list")
+    if set(findings_by_id) != resolution_ids:
+        errors.append("every finding in the frozen review bundle requires an explicit human disposition")
     annotations = payload.get("annotations")
     if not isinstance(annotations, list):
         errors.append("annotations must be a list")
@@ -595,13 +710,27 @@ def human_story_review_errors(
             errors.append(f"annotations[{index}].must_preserve must be a list of non-empty strings")
         if not isinstance(item.get("note"), str) or not item["note"].strip():
             errors.append(f"annotations[{index}].note must be non-empty")
-    if decision == "accept" and (
-        not isinstance(checks, dict)
-        or any(not isinstance(checks.get(field), dict) or checks[field].get("passed") is not True for field in CHECK_FIELDS)
+    core_evidence_required = decision in {"accept", "repair"}
+    if core_evidence_required and EVIDENCE_KINDS - evidence_kinds:
+        errors.append("accept/repair requires human key_turn, character_choice_or_emotion, and reader_gain spans")
+    if core_evidence_required:
+        for field, kind in CORE_CHECK_EVIDENCE.items():
+            item = coverage.get(field) if isinstance(coverage, dict) else None
+            refs = item.get("evidence_refs") if isinstance(item, dict) else []
+            if not any(str(ref).startswith(f"candidate:{kind}:") for ref in refs or []):
+                errors.append(f"dimension_coverage.{field} must reference candidate:{kind}: evidence")
+    acceptable = {"confirmed", "covered", "accepted_p2"}
+    if decision == "accept" and any(
+        not isinstance(coverage.get(field), dict)
+        or coverage[field].get("status") not in acceptable
+        for field in CHECK_FIELDS
     ):
-        errors.append("accept requires all ten story checks to pass")
-    if decision == "accept" and EVIDENCE_KINDS - evidence_kinds:
-        errors.append("accept requires key_turn, character_choice_or_emotion, and reader_gain evidence spans")
+        errors.append("accept requires all ten dimensions to be confirmed, covered, or explicitly accepted as P2")
+    if decision == "accept" and any(
+        isinstance(item, dict) and item.get("disposition") != "accept_p2"
+        for item in finding_resolutions
+    ):
+        errors.append("accept requires every frozen finding to be an explicit P2 acceptance")
     if decision == "accept" and not str(payload.get("reader_gain_note") or "").strip():
         errors.append("accept requires a non-empty reader_gain_note")
     if decision == "accept" and any(
@@ -616,11 +745,73 @@ def human_story_review_errors(
         isinstance(item, dict) and item.get("action") != "preserve" for item in annotations
     ):
         errors.append("repair requires at least one non-preserve annotation")
+    if decision == "repair" and not any(
+        isinstance(item, dict) and item.get("disposition") == "repair"
+        for item in finding_resolutions
+    ) and not any(
+        isinstance(item, dict) and item.get("status") == "repair"
+        for item in coverage.values()
+    ):
+        errors.append("repair must identify a repair disposition in finding or dimension coverage")
     if payload.get("redirect_scope") not in {"direction", "outline_revision"}:
         errors.append("redirect_scope must be direction or outline_revision")
     if decision == "redirect" and not str(payload.get("reason") or "").strip():
         errors.append("redirect requires a non-empty reason")
+    if decision == "redirect" and not any(
+        isinstance(item, dict) and item.get("disposition") == "redirect"
+        for item in finding_resolutions
+    ) and not any(
+        isinstance(item, dict) and item.get("status") == "redirect"
+        for item in coverage.values()
+    ):
+        errors.append("redirect must identify the redirected finding or story dimension")
     return errors
+
+
+def default_dimension_coverage(bundle: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Pre-populate only machine-verifiable review coverage, never human pass reasons."""
+
+    stage_refs = {
+        "story_contract_preserved": "review_bundle#review_stages/semantic",
+        "desire_opposition_and_question_clear": "review_bundle#review_stages/editorial",
+        "supporting_cast_and_relationship_logic": "review_bundle#review_stages/editorial",
+        "continuity_world_rules_and_ability_bounds": "review_bundle#review_stages/semantic",
+        "pacing_information_and_carrier_effective": "review_bundle#review_stages/pacing",
+        "prose_natural_and_readable": "review_bundle#review_stages/editorial",
+    }
+    coverage: dict[str, dict[str, Any]] = {}
+    for field in sorted(CHECK_FIELDS):
+        if field in CORE_CHECK_EVIDENCE:
+            kind = CORE_CHECK_EVIDENCE[field]
+            coverage[field] = {
+                "status": "repair",
+                "coverage_source": "human_core",
+                "reason": "",
+                "evidence_refs": [f"candidate:{kind}:ADD_SPAN_ID"],
+            }
+            continue
+        ref = stage_refs.get(field, "review_bundle#review_stages/editorial")
+        coverage[field] = {
+            "status": "covered",
+            "coverage_source": "independent_review",
+            "reason": "",
+            "evidence_refs": [ref],
+        }
+    return coverage
+
+
+def default_finding_resolutions(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "finding_id": str(item.get("finding_id") or ""),
+            "severity": str(item.get("severity") or ""),
+            "disposition": "accept_p2" if item.get("severity") == "P2" else "repair",
+            "reason": "",
+            "must_preserve": [],
+        }
+        for item in bundle.get("findings") or []
+        if isinstance(item, dict) and str(item.get("finding_id") or "")
+    ]
 
 
 def review_root(root: Path) -> Path:
@@ -631,12 +822,12 @@ def resolve_decision_pointer(root: Path, chapter_number: int, latest: dict[str, 
     expected = {
         "schema", "chapter_number", "candidate_sha256", "chapter_contract_sha256",
         "reader_promise_ledger_sha256", "arc_causal_simulation_sha256",
-        "review_bundle_sha256",
+        "review_bundle_sha256", "human_author_revision_sha256",
         "decision_file", "decision_sha256",
     }
     if (
         set(latest) != expected
-        or latest.get("schema") != "human_story_review_latest_v3"
+        or latest.get("schema") != "human_story_review_latest_v4"
         or latest.get("chapter_number") != chapter_number
     ):
         return None

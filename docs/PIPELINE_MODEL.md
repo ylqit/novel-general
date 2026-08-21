@@ -23,10 +23,12 @@ story_engine_contract_v1
 -> chapter_direction_selection_v1 / approve / semantic compile
 -> chapter_contract_v3 / chapter_story_brief_v2
 -> draft
--> span-backed scene review + risk editors
--> immutable review bundle
--> human_story_review_v3 ten-dimension accept / repair / redirect
--> optional non-canonical consultation / complete human repair candidate
+-> deterministic signals + mandatory scene_prose_editor / anti_ai_editor
+-> P0/P1 repair when required; otherwise freeze pre-revision bundle
+-> human_author_revision_v1 complete candidate + prose_revision_semantic_review
+-> draft submit --agent human / full gate and independent review rerun
+-> human_story_review_v4 risk-layered accept / repair / redirect
+-> optional non-canonical consultation bound to the current human candidate
 -> finalize / semantic apply (promise materialization) / close
 -> blind_review_pack_v3 evidence outside ordinary chapter production
 ```

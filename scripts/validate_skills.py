@@ -130,7 +130,8 @@ def validate_skill(name: str, platform: str, forbidden_platform: str) -> list[st
         "research_canon.jsonl",
         "fanfiction canon-task",
         "fanfiction design-task",
-        "Humanizer v4",
+        "human_author_revision_v1",
+        "prose_revision_semantic_review",
         "character_expression_packet_v1",
         "reader_payoff_review",
         "rights status",
@@ -182,8 +183,8 @@ def validate_readme() -> list[str]:
         "fanfiction design-task",
         "publication report",
         "publication export",
-        "Humanizer v4",
-        "Humanizer v4",
+        "human_author_revision_v1",
+        "prose_revision_semantic_review",
         "design_document_v1",
         "canonical_delta_v1",
         "content_characters_v1",
@@ -195,6 +196,7 @@ def validate_readme() -> list[str]:
         "多个 JSON 字段",
         "V0_5_0_RELEASE_CHECKLIST.md",
         "V0_6_0_RELEASE_CHECKLIST.md",
+        "V0_7_0_RELEASE_CHECKLIST.md",
     )
     for term in required:
         if term.lower() not in readme.lower():

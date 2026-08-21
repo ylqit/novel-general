@@ -2051,7 +2051,15 @@ def check_style_and_humanizer(config: ConfigDocument, text: str) -> tuple[list[d
     failures: list[dict[str, Any]] = []
     warnings: list[str] = list(humanizer_warnings)
 
-    failures.extend(humanizer_issues)
+    for issue in humanizer_issues:
+        severity = str(issue.get("severity") or "P2").upper()
+        if severity in {"P0", "P1"}:
+            failures.append(issue)
+            continue
+        warnings.append(
+            f"{issue.get('code', 'humanizer_signal')}: "
+            f"{issue.get('message', 'review the located prose signal')}"
+        )
     if humanize["meta_pollution_hits"]:
         failures.append(
             {
@@ -2265,18 +2273,11 @@ def check_active_style_drift(config: ConfigDocument, metrics: dict[str, Any], te
     if not strong and not moderate:
         return [], []
 
-    severity = "P1" if len(strong) >= 2 or "avg_sentence_chars" in strong else "P2"
     message = "style drift from active sample profile: " + "; ".join(comparisons[:6])
-    failure = {
-        "code": "style_drift",
-        "severity": severity,
-        "message": message,
-        "repair_action": "align sentence/paragraph rhythm, dialogue density, and POV with current_style_profile.json",
-    }
-    warnings = [f"active style profile source: {active.get('source', '')}"]
-    if severity == "P2":
-        warnings.append(message)
-    return [failure], warnings
+    return [], [
+        f"active style profile source: {active.get('source', '')}",
+        f"style_drift [P2]: {message}",
+    ]
 
 
 def load_active_style_profile(root: Path) -> dict[str, Any]:

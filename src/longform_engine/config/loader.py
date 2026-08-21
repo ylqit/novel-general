@@ -456,20 +456,9 @@ def validate_config(data: dict[str, Any]) -> None:
     ):
         raise ConfigError("quality.repair.selected_p2_codes must be a unique list of non-empty strings")
     humanizer = _require_mapping(quality, "humanizer", "quality")
-    warning_ratio = _require_ratio(humanizer, "changed_character_warning_ratio", "quality.humanizer")
-    human_ratio = _require_ratio(humanizer, "changed_character_human_ratio", "quality.humanizer")
-    semantic_ratio = _require_ratio(humanizer, "semantic_review_change_ratio", "quality.humanizer")
     semantic_mode = str(humanizer.get("semantic_review_mode") or "").strip()
     if semantic_mode not in {"risk_based", "always"}:
         raise ConfigError("quality.humanizer.semantic_review_mode must be one of: risk_based, always")
-    if warning_ratio >= human_ratio:
-        raise ConfigError(
-            "quality.humanizer.changed_character_warning_ratio must be lower than changed_character_human_ratio"
-        )
-    if semantic_ratio >= human_ratio:
-        raise ConfigError(
-            "quality.humanizer.semantic_review_change_ratio must be lower than changed_character_human_ratio"
-        )
     semantic_pacing = _require_mapping(quality, "semantic_pacing", "quality")
     pacing_review_mode = str(semantic_pacing.get("review_mode") or "").strip()
     if pacing_review_mode not in {"off", "risk_based", "required"}:

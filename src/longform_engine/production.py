@@ -51,6 +51,7 @@ from longform_engine.gates import (
     semantic_pacing_validate,
     semantic_review_validate,
 )
+from longform_engine.human_author_revision import validate_human_author_revision_semantic_result
 from longform_engine.intelligence import (
     assess_chapter_direction,
     assess_project_readiness,
@@ -102,7 +103,7 @@ TASK_WAITING_FOR = {
     "repair_plan_synthesis": "repair_plan_markdown",
     "repair": "repair_candidate",
     "humanize": "humanized_candidate",
-    "humanize_semantic_review": "humanizer_semantic_review_json",
+    "prose_revision_semantic_review": "prose_revision_semantic_review_json",
     "reader_payoff_review": "reader_payoff_review_json",
     "content_expand": "expanded_candidate",
     "editorial_review": "editorial_role_json",
@@ -127,7 +128,7 @@ TASK_PRIORITY = {
     "repair_plan_synthesis": 19,
     "repair": 20,
     "humanize": 21,
-    "humanize_semantic_review": 22,
+    "prose_revision_semantic_review": 22,
     "content_expand": 23,
     "semantic_review": 29,
     "pacing_review": 30,
@@ -616,7 +617,7 @@ LOOP_OUTPUT_VALIDATORS = {
     "chapter_write": "draft_submit_existing_agent_output",
     "repair": "draft_submit_existing_agent_output",
     "humanize": "humanize_check",
-    "humanize_semantic_review": "humanize_semantic_validate",
+    "prose_revision_semantic_review": "prose_revision_semantic_validate",
     "reader_payoff_review": "reader_payoff_validate",
     "content_expand": "expand_check",
     "chapter_semantic": "chapter_semantic_validate",
@@ -699,15 +700,24 @@ def execute_loop_decision(
         )
     if command == "humanize_check":
         return serialize_loop_result(root, humanize_check(config, chapter_number=chapter_number, file_path=require_loop_output_path(output_path)))
-    if command == "humanize_semantic_validate":
-        return serialize_loop_result(
-            root,
-            humanize_semantic_validate(
+    if command == "prose_revision_semantic_validate":
+        source = require_loop_output_path(output_path)
+        humanizer_root = (root / "50_workbench" / "humanizer_tasks").resolve()
+        try:
+            Path(source).resolve().relative_to(humanizer_root)
+        except ValueError:
+            result = validate_human_author_revision_semantic_result(
                 config,
                 chapter_number=chapter_number,
-                file_path=require_loop_output_path(output_path),
-            ),
-        )
+                semantic_output=source,
+            )
+        else:
+            result = humanize_semantic_validate(
+                config,
+                chapter_number=chapter_number,
+                file_path=source,
+            )
+        return serialize_loop_result(root, result)
     if command == "reader_payoff_validate":
         return serialize_loop_result(
             root,
@@ -861,7 +871,7 @@ def chapter_board_row(root: Path, chapter_number: int) -> dict[str, Any]:
             root,
             chapter_number,
             tasks,
-            ("humanize_semantic_review",),
+            ("prose_revision_semantic_review",),
             (
                 "50_workbench/humanizer_tasks/ch{chapter}.semantic_review.json",
                 "50_workbench/humanizer_tasks/ch{chapter}.semantic_review.validation.json",
@@ -1672,7 +1682,7 @@ def agent_task_action(root: Path, task: dict[str, Any]) -> dict[str, Any]:
         action["contract_errors"] = list(validation.errors)
         return action
     next_command = command_for_task_status(manifest, status)
-    if task_type == "humanize_semantic_review" and status == "invalid":
+    if task_type == "prose_revision_semantic_review" and status == "invalid":
         validation = read_json(
             root
             / "50_workbench"
@@ -1813,6 +1823,37 @@ def chapter_workflow_action(config: ConfigDocument, root: Path) -> dict[str, Any
             )
         if stage_name == "editorial_pending":
             return editorial_review_action(config, root)
+        if stage_name == "human_author_revision_pending":
+            command = f"longform-engine chapter human-revision-task project.yaml --chapter {chapter_number}"
+            return base_action(
+                status="awaiting_human_author_revision",
+                chapter_number=chapter_number,
+                blocked_by="mandatory_human_author_revision",
+                waiting_for="human_revision",
+                task_type="human_author_revision",
+                next_command=command,
+                failure_next_command=command,
+                human_summary=(
+                    f"ch{chapter_number:03d} completed the AI candidate review and now requires a complete human author revision."
+                ),
+                sources=as_string_list(stage.get("sources")),
+            )
+        if stage_name == "human_author_revision_submit":
+            command = str(stage.get("next_command") or "")
+            return base_action(
+                status="human_author_revision_validated",
+                chapter_number=chapter_number,
+                blocked_by="human_revision_not_submitted",
+                waiting_for="human_submit",
+                task_type="human_author_revision",
+                next_command=command,
+                apply_command=command,
+                failure_next_command=command,
+                human_summary=(
+                    f"ch{chapter_number:03d} human revision is validated and must replace the current draft before full re-review."
+                ),
+                sources=as_string_list(stage.get("sources")),
+            )
         if stage_name == "human_story_review_pending":
             command = f"longform-engine chapter human-review-task project.yaml --chapter {chapter_number}"
             return base_action(
@@ -1958,7 +1999,7 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
     pre_gate_reviews = active_chapter_tasks(
         root,
         chapter_number,
-        {"humanize_semantic_review"},
+        {"prose_revision_semantic_review"},
     )
     if pre_gate_reviews:
         return {
@@ -1988,6 +2029,20 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
                 return {"stage": stage_name, "sources": [relative_path(root, gate_path)]}
         barrier_status = str(barrier.get("status") or "reviews_pending")
         if barrier_status == "awaiting_human_story_review":
+            from longform_engine.human_author_revision import human_author_revision_status
+
+            revision = human_author_revision_status(config, chapter_number=chapter_number)
+            if revision.get("status") == "validated_for_submit":
+                return {
+                    "stage": "human_author_revision_submit",
+                    "sources": [str(revision.get("validation_file") or relative_path(root, gate_path))],
+                    "next_command": str(revision.get("next_command") or ""),
+                }
+            if revision.get("status") != "complete":
+                return {
+                    "stage": "human_author_revision_pending",
+                    "sources": [relative_path(root, gate_path)],
+                }
             return {
                 "stage": "human_story_review_pending",
                 "sources": [relative_path(root, gate_path)],
@@ -2096,7 +2151,7 @@ def chapter_stage_task_types(stage: str) -> set[str]:
 
     return {
         "writing_pending": {"chapter_direction", "chapter_write"},
-        "pre_gate_candidate_review": {"humanize_semantic_review"},
+        "pre_gate_candidate_review": {"prose_revision_semantic_review"},
         "gate_pending": set(),
         "reviews_pending": set(),
         "review_need_human": set(),
@@ -2105,7 +2160,7 @@ def chapter_stage_task_types(stage: str) -> set[str]:
         "repair_lifecycle_reconciliation_required": set(),
         "repair_candidate_pending": {"repair"},
         "repair_budget_exhausted": set(),
-        "repair_pending": {"repair", "humanize", "content_expand", "humanize_semantic_review"},
+        "repair_pending": {"repair", "humanize", "content_expand", "prose_revision_semantic_review"},
         "semantic_review_pending": {"semantic_review"},
         "payoff_pending": {"reader_payoff_review"},
         "pacing_pending": {"pacing_review"},
@@ -2148,6 +2203,23 @@ def chapter_semantic_lifecycle_action(root: Path) -> dict[str, Any] | None:
                 sources=[relative_path(root, final_file)],
             )
         if not closure_file.exists():
+            from longform_engine.author_voice import author_voice_chapter_status
+
+            voice = author_voice_chapter_status(root, chapter_number)
+            if voice.get("required") and voice.get("status") != "complete":
+                command = str(voice.get("next_command") or "")
+                return base_action(
+                    status="awaiting_author_voice_approval",
+                    chapter_number=chapter_number,
+                    blocked_by="author_voice_edit_pair_required",
+                    waiting_for="human_voice_approval",
+                    next_command=command,
+                    failure_next_command=command,
+                    human_summary=(
+                        f"ch{chapter_number:03d} is one of the first three chapters and needs one approved edit pair from the real human revision."
+                    ),
+                    sources=[relative_path(root, final_file)],
+                )
             command = f"longform-engine chapter close project.yaml --chapter {chapter_number} --approved-by human"
             return base_action(
                 status="awaiting_chapter_close",

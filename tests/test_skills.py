@@ -107,7 +107,7 @@ def test_current_release_checklist_and_management_docs_are_linked():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     install = (ROOT / "docs" / "SKILL_INSTALLATION.md").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_6_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_7_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
 
     for document in (
         "ARCHITECTURE.md",
@@ -115,18 +115,20 @@ def test_current_release_checklist_and_management_docs_are_linked():
         "V0_4_4_RELEASE_CHECKLIST.md",
         "V0_5_0_RELEASE_CHECKLIST.md",
         "V0_6_0_RELEASE_CHECKLIST.md",
+        "V0_7_0_RELEASE_CHECKLIST.md",
     ):
         assert document in readme
-    assert "V0_6_0_RELEASE_CHECKLIST.md" in agents
+    assert "V0_7_0_RELEASE_CHECKLIST.md" in agents
     assert "V0_4_4_RELEASE_CHECKLIST.md" in install
     assert "V0_5_0_RELEASE_CHECKLIST.md" in install
     assert "V0_6_0_RELEASE_CHECKLIST.md" in install
+    assert "V0_7_0_RELEASE_CHECKLIST.md" in install
     for section in (
-        "市场证据与质量合同",
-        "人工深审 v3",
-        "本地可视化审稿台",
-        "本地验证证据",
-        "远程发布证据",
+        "协议与状态机",
+        "去低质与作者声音",
+        "审稿台与咨询",
+        "平台政策与发布证据",
+        "发布授权与不可变边界",
     ):
         assert section in checklist
 
@@ -145,7 +147,8 @@ def test_shared_protocols_keep_chapter_and_editorial_contracts():
         "protected outcomes",
         "required production closed loop",
         "human-review-task",
-        "five-hash-bound v3 human accept",
+        "six-hash-bound v4 acceptance",
+        "human_author_revision_v1",
         "planning_chief_editor",
         "anti_ai_editor",
         "scene_prose_editor",

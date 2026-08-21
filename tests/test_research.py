@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 
 import pytest
 
@@ -13,6 +14,80 @@ from tests.project_fixtures import (
     mark_project_ready,
     refresh_arc_simulation_fixture,
 )
+
+
+def close_seed_research_chapters(root, config) -> None:
+    for chapter_number in range(1, 5):
+        refresh_arc_simulation_fixture(root)
+        if chapter_number <= 3:
+            seed_manual_human_revision_binding(root, chapter_number)
+        complete_unified_semantic_lifecycle(root, config, chapter_number)
+
+
+def seed_manual_human_revision_binding(root, chapter_number: int) -> None:
+    final = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
+    final_text = final.read_text(encoding="utf-8")
+    after_text = "抵达"
+    before_text = "走到"
+    after_start = final_text.index(after_text)
+    source_text = final_text[:after_start] + before_text + final_text[after_start + len(after_text):]
+    before_start = source_text.index(before_text)
+    evidence_dir = root / "50_workbench" / "human_author_revisions" / f"ch{chapter_number:03d}"
+    source = evidence_dir / "manual-source.md"
+    record = evidence_dir / "manual-record.json"
+    validation = evidence_dir / "manual-validation.json"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(source_text, encoding="utf-8")
+    record.write_text(
+        json.dumps(
+            {
+                "changes": [
+                    {
+                        "before": {
+                            "start": before_start,
+                            "end": before_start + len(before_text),
+                            "text": before_text,
+                        },
+                        "after": {
+                            "start": after_start,
+                            "end": after_start + len(after_text),
+                            "text": after_text,
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    validation.write_text(
+        json.dumps(
+            {
+                "source_file": source.relative_to(root).as_posix(),
+                "record_file": record.relative_to(root).as_posix(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    final.with_suffix(".finalization.json").write_text(
+        json.dumps(
+            {
+                "human_author_revision": {
+                    "validation_file": validation.relative_to(root).as_posix(),
+                    "validation_sha256": sha256(validation.read_bytes()).hexdigest(),
+                }
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_research_add_only_writes_inbox_and_does_not_pollute_rag(tmp_path):
@@ -40,10 +115,10 @@ def test_research_add_only_writes_inbox_and_does_not_pollute_rag(tmp_path):
     assert rag_result.hits == ()
 
     mark_project_ready(root, project_config, preserve_existing_characters=True)
-    complete_unified_semantic_lifecycle(root, project_config, 1)
+    close_seed_research_chapters(root, project_config)
     refresh_arc_simulation_fixture(root)
-    continue_write(project_config, chapter_number=2)
-    task = (root / "50_workbench" / "writing_tasks" / "ch002.md").read_text(encoding="utf-8")
+    continue_write(project_config, chapter_number=5)
+    task = (root / "50_workbench" / "writing_tasks" / "ch005.md").read_text(encoding="utf-8")
     assert "INBOX_ONLY_MARKER" not in task
 
 
@@ -131,10 +206,10 @@ def test_research_impact_promote_syncs_canon_rag_graph_and_sqlite(tmp_path):
     assert any(row["id"] == f"research:{item.item_id}" for row in events)
 
     mark_project_ready(root, project_config, preserve_existing_characters=True)
-    complete_unified_semantic_lifecycle(root, project_config, 1)
+    close_seed_research_chapters(root, project_config)
     refresh_arc_simulation_fixture(root)
-    continue_write(project_config, chapter_number=2)
-    task_file = root / "50_workbench" / "writing_tasks" / "ch002.json"
+    continue_write(project_config, chapter_number=5)
+    task_file = root / "50_workbench" / "writing_tasks" / "ch005.json"
     task = json.loads(task_file.read_text(encoding="utf-8"))
     task_markdown = task_file.with_suffix(".md").read_text(encoding="utf-8")
     inventory = (root / task["internal_fact_inventory"]["path"]).read_text(encoding="utf-8")
@@ -195,12 +270,13 @@ def seed_research_project(tmp_path):
         ),
         encoding="utf-8",
     )
-    (root / "40_manuscript" / "final" / "ch001.md").write_text(
-        "# 第一章 云门\n\n林迟抵达云门，旧钟声打开第一层秘密。\n",
-        encoding="utf-8",
-    )
-    (root / "40_manuscript" / "summaries" / "ch001.md").write_text(
-        "林迟抵达云门，准备接触外部贸易线索。\n",
-        encoding="utf-8",
-    )
+    for chapter_number in range(1, 5):
+        (root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md").write_text(
+            f"# 第{chapter_number}章 云门\n\n林迟抵达云门，旧钟声打开第{chapter_number}层秘密。\n",
+            encoding="utf-8",
+        )
+        (root / "40_manuscript" / "summaries" / f"ch{chapter_number:03d}.md").write_text(
+            f"林迟抵达云门，准备接触第{chapter_number}条外部贸易线索。\n",
+            encoding="utf-8",
+        )
     return load_project_config(project.project_config)

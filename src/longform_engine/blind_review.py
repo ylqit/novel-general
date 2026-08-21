@@ -10,6 +10,7 @@ import re
 from statistics import median
 from typing import Any, Iterable
 
+from longform_engine import __version__
 from longform_engine.benchmark import (
     BENCHMARK_SCHEMA,
     FANFICTION_SCORE_METRICS,
@@ -45,6 +46,7 @@ LONG_TERM_FAILURE_CODES = {
     "AGENCY_EROSION",
     "PAYOFF_DEFERRAL",
 }
+LITERARY_BASELINE_VERSION = "0.6.0"
 
 
 @dataclass(frozen=True)
@@ -464,10 +466,22 @@ def aggregate_blind_reviews(
                 )
         records_by_run[run_id] = records
 
-    candidate_runs = [run_id for run_id in run_ids if str(read_valid_run(root, run_id).get("engine_version")) == "0.6.0"]
-    baseline_runs = [run_id for run_id in run_ids if str(read_valid_run(root, run_id).get("engine_version")) == "0.5.0"]
+    candidate_runs = [
+        run_id
+        for run_id in run_ids
+        if str(read_valid_run(root, run_id).get("engine_version")) == __version__
+    ]
+    baseline_runs = [
+        run_id
+        for run_id in run_ids
+        if str(read_valid_run(root, run_id).get("engine_version"))
+        == LITERARY_BASELINE_VERSION
+    ]
     if len(candidate_runs) != 1 or len(baseline_runs) != 1:
-        raise ValueError("Literary evidence requires exactly one v0.6.0 run and one v0.5.0 run.")
+        raise ValueError(
+            "Literary evidence requires exactly one "
+            f"v{__version__} run and one v{LITERARY_BASELINE_VERSION} run."
+        )
     candidate_run, baseline_run = candidate_runs[0], baseline_runs[0]
     by_judge = {
         str(submission["judge_id"]): submission_entries(submission)

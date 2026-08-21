@@ -36,11 +36,11 @@ open-book
 -> CLI compiles canonical constraints and retrieval evidence into the internal fact inventory and author Story Brief
 -> author reads only chapter_story_brief_v2, never control-plane packets or the task JSON
 -> Agent writes 50_workbench/agent_drafts/chNNN.codex.md or chNNN.claude.md
--> Agent runs Humanizer v4 two-pass self-check
+-> Agent runs a bounded natural-prose self-check without detector tricks or word quotas
 -> draft submit
 -> gate-check
 -> complete semantic / payoff / pacing / editorial reviews for the same candidate hash
--> scene_prose_editor is mandatory; risk roles are additive
+-> scene_prose_editor and anti_ai_editor are mandatory; risk roles are additive
 -> repair synthesis-task when the CLI review barrier freezes blocking findings
 -> Agent repair coordinator writes and validates one immutable rNN plan
 -> creative humanize-task / humanize-check when prose cleanup is needed
@@ -49,11 +49,13 @@ open-book
 -> repair candidate-task --agent codex when the repair plan is validated
 -> submit the immutable rNN replacement and rerun the complete review barrier
 -> quality payoff-task / payoff-validate after gate pass when required
--> freeze immutable review bundle
--> optional review consult-task / validate / record; advice remains non-canonical
--> chapter human-review-task / validate / apply for ten-dimension accept, repair, or redirect
--> optional full human repair candidate submitted as agent=human, followed by full re-review
--> chapter finalize only after a current five-hash-bound v3 human accept
+-> freeze the pre-revision review bundle
+-> chapter human-revision-task / validate with exact before-after spans and independent semantic review
+-> submit the complete human candidate as agent=human, invalidating old review evidence
+-> rerun the complete gate and independent-review barrier
+-> optional review consult-task / validate / record; advice remains non-canonical and candidate-bound
+-> chapter human-review-task / validate / apply for risk-layered v4 accept, repair, or redirect
+-> chapter finalize only after current six-hash-bound v4 acceptance
 -> reward_ledger v2 / structure_history written only inside finalize
 -> chapter semantic-task: Agent reads final once and writes canonical_delta_v1
 -> chapter semantic-validate / explicit semantic-apply
@@ -131,7 +133,7 @@ creative brief --init/--validate
 ```text
 editorial review
 -> planning_chief_editor / scene_prose_editor / character_editor / anti_ai_editor / reader_experience_editor / canon_fidelity_reviewer task files
--> scene_prose_editor on every chapter; other roles are additive
+-> scene_prose_editor and anti_ai_editor on every chapter; other roles are additive
 -> canon_fidelity_reviewer task for fanfiction
 -> record severity_counts, review_round, unresolved_items, conditional_pass_streak, need_human_reasons
 -> editorial batch-review every configured range

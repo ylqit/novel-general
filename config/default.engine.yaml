@@ -81,10 +81,7 @@ quality:
   repair:
     selected_p2_codes: []
   humanizer:
-    changed_character_warning_ratio: 0.35
-    changed_character_human_ratio: 0.60
     semantic_review_mode: "risk_based"
-    semantic_review_change_ratio: 0.15
   semantic_pacing:
     review_mode: "off"
 

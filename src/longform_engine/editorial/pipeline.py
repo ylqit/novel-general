@@ -1555,6 +1555,22 @@ def validate_editorial_result_payload(
         if code not in contract.finding_codes:
             errors.append(f"findings[{index}].code is outside {role_id} scope.")
         evidence_ids = [str(item) for item in finding.get("evidence_ids") or []]
+        if role_id == "anti_ai_editor" and finding.get("severity") == "P1":
+            if len(set(evidence_ids)) < 2:
+                errors.append(
+                    f"findings[{index}] anti_ai_editor P1 requires at least two distinct exact spans."
+                )
+            if not str(finding.get("diagnosis") or "").strip() or not str(
+                finding.get("reader_impact") or ""
+            ).strip():
+                errors.append(
+                    f"findings[{index}] anti_ai_editor P1 must explain the repeated function and reader harm."
+                )
+            preserve = finding.get("preserve")
+            if not isinstance(preserve, list) or not any(str(item).strip() for item in preserve):
+                errors.append(
+                    f"findings[{index}] anti_ai_editor P1 must declare at least one protected element."
+                )
         items.append(
             {
                 "code": code or f"item_{index + 1}",
@@ -1893,7 +1909,7 @@ def editorial_team(
     """Select only roles justified by current chapter risk."""
 
     configured = configured_editorial_roles(config)
-    selected: set[str] = {"scene_prose_editor", *configured}
+    selected: set[str] = {"scene_prose_editor", "anti_ai_editor", *configured}
     payoff_file = (
         root
         / "50_workbench"
@@ -1944,7 +1960,7 @@ def editorial_review_required_reasons(
     if not isinstance(editorial_config, dict):
         editorial_config = {}
     review_mode = str(editorial_config.get("review_mode") or "risk_based")
-    reasons: list[str] = ["mandatory_scene_prose_review"]
+    reasons: list[str] = ["mandatory_scene_prose_review", "mandatory_anti_ai_review"]
     quality = config.data.get("quality")
     if not isinstance(quality, dict):
         quality = {}
@@ -2000,7 +2016,7 @@ def expected_editorial_roles(
     configured = configured_editorial_roles(config)
     return [
         role_definition(role)["id"]
-        for role in dedupe(["scene_prose_editor", *configured])
+        for role in dedupe(["scene_prose_editor", "anti_ai_editor", *configured])
     ]
 
 

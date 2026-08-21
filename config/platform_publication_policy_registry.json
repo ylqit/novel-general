@@ -1,0 +1,87 @@
+{
+  "schema": "platform_publication_policy_registry_v1",
+  "snapshot_verified_at": "2026-08-21",
+  "records": [
+    {
+      "record_id": "fanqie_2026_07_low_quality_governance",
+      "platform": "fanqie_free",
+      "claim": "番茄公开治理 AI 粗制滥造、格式混乱、结构失常、空洞水文及高频量产等低质内容。",
+      "unknown_items": [
+        "平台内部识别模型、阈值与处置算法未公开",
+        "该公告不能推导为禁止全部 AI 辅助创作"
+      ],
+      "source_type": "official_writer_notice",
+      "publisher": "番茄小说作家专区",
+      "source_url": "https://fanqienovel.com/writer/zone/article/7672294500500258840",
+      "effective_at": "2026-07",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "scope": ["publication_preflight", "low_quality_governance"]
+    },
+    {
+      "record_id": "fanqie_2026_05_low_quality_governance",
+      "platform": "fanqie_free",
+      "claim": "番茄公开治理批量、低质、缺乏有效故事内容的生成式投稿。",
+      "unknown_items": ["具体机器判定方法与申诉阈值未公开"],
+      "source_type": "official_writer_notice",
+      "publisher": "番茄小说作家专区",
+      "source_url": "https://fanqienovel.com/writer/zone/article/7642544663915675672",
+      "effective_at": "2026-05",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "scope": ["publication_preflight", "low_quality_governance"]
+    },
+    {
+      "record_id": "fanqie_content_publication_standard",
+      "platform": "fanqie_free",
+      "claim": "投稿正文应满足公开内容发布规范；预检只能提示，不替代平台审核。",
+      "unknown_items": ["后续规则变更与平台内部执行口径需人工复核"],
+      "source_type": "official_publication_standard",
+      "publisher": "番茄小说作家专区",
+      "source_url": "https://fanqienovel.com/writer/zone/article/7237084151751376957",
+      "effective_at": "2023-05",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "scope": ["publication_preflight", "content_standard"]
+    },
+    {
+      "record_id": "yuewen_writer_assistant_public_tools",
+      "platform": "qidian_male",
+      "claim": "阅文公开提供作家资料查询等辅助工具；该资料不能证明平台禁止全部 AI 辅助作品。",
+      "unknown_items": ["未发现可核验的公开全面 AI 禁令", "平台内部识别和审核算法未知"],
+      "source_type": "official_product_page",
+      "publisher": "阅文集团",
+      "source_url": "https://www.yuewen.com/app/?type=appzj",
+      "effective_at": "unknown",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "scope": ["publication_preflight", "public_tooling"]
+    },
+    {
+      "record_id": "qidian_new_book_originality_guidance",
+      "platform": "qidian_male",
+      "claim": "起点公开新书运营资料强调原创程度与正常作品结构。",
+      "unknown_items": ["未公开全面 AI 禁令", "未公开 AI 检测标准或推荐算法"],
+      "source_type": "official_writer_help",
+      "publisher": "阅文作家帮助中心",
+      "source_url": "https://help.yuewen.com/helpcenter/pc/writerMenu?_noheader=1&cateId=undefined&qId=1031528236163530752&siteId=1000",
+      "effective_at": "unknown",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "scope": ["publication_preflight", "originality"]
+    },
+    {
+      "record_id": "china_generated_content_labeling_2025",
+      "platform": "all",
+      "claim": "生成合成内容标识要求应进入投稿前人工核验提示；引擎不自动插入、删除或规避标识。",
+      "unknown_items": ["具体平台投稿界面的披露操作需在投稿时人工核验"],
+      "source_type": "government_policy_explanation",
+      "publisher": "国家互联网信息办公室",
+      "source_url": "https://www.cac.gov.cn/2025-03/14/c_1743654685896173.htm",
+      "effective_at": "2025-09-01",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "scope": ["publication_preflight", "disclosure_reminder"]
+    }
+  ]
+}

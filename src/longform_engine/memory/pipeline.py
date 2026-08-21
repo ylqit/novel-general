@@ -860,8 +860,8 @@ def style_drift_finding(baseline: dict[str, Any], current: dict[str, Any]) -> di
     if ratio >= 3.0 or ratio <= 0.33:
         return {
             "code": "semantic_style_voice_drift",
-            "severity": "P1",
-            "message": "style/voice drift from canonical Style Memory",
+            "severity": "P2",
+            "message": "possible style/voice drift from canonical Style Memory",
             "evidence_span": f"avg_sentence_chars baseline={base_sentence:.2f} current={current_sentence:.2f}",
         }
     if ratio >= 2.0 or ratio <= 0.5 or dialogue_delta > 0.08:

@@ -111,6 +111,7 @@ SUBDIRECTORIES = [
     "50_workbench/editorial_reviews",
     "50_workbench/editorial_patterns",
     "50_workbench/human_story_reviews",
+    "50_workbench/human_author_revisions",
     "50_workbench/gate_artifacts",
     "50_workbench/graph_updates",
     "50_workbench/graph_reports",
@@ -173,6 +174,12 @@ INITIAL_TEXT_FILES = {
 }
 
 INITIAL_JSON_FILES = {
+    "10_bible/style_profiles/author_voice_edit_pairs.json": {
+        "schema": "author_voice_edit_pair_bank_v1",
+        "max_active_pairs": 12,
+        "pairs": [],
+        "updated_at": "initialized",
+    },
     "30_state/reader_promise_ledger.json": {
         "schema": "reader_promise_ledger_v1",
         "items": [],

@@ -10,11 +10,6 @@ from longform_engine.agent_tasks import list_manifests, load_manifest, validate_
 from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_aggregate, editorial_review, editorial_submit_review
-from longform_engine.human_story_review import (
-    apply_human_story_review,
-    create_human_story_review_task,
-    validate_human_story_review,
-)
 from longform_engine.production import editorial_task_is_current, production_next
 from longform_engine.quality import (
     editorial_patterns_for_task,
@@ -148,49 +143,6 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
         )
         + "\n",
         encoding="utf-8",
-    )
-    human_task = create_human_story_review_task(config, chapter_number=1)
-    human_file = root / human_task.template_file
-    human_payload = json.loads(human_file.read_text(encoding="utf-8"))
-    human_payload["checks"] = {
-        field: {
-            "passed": field not in {
-                "scene_causality_and_key_turn_dramatized",
-                "protagonist_agency_voice_and_emotion",
-            },
-            "reason": "The current draft and independent finding require one bounded repair.",
-        }
-        for field in human_payload["checks"]
-    }
-    human_payload["decision"] = "repair"
-    human_payload["annotations"] = [
-        {
-            "annotation_id": "agency-speaker-repair",
-            "start": 0,
-            "end": len(draft.read_text(encoding="utf-8")),
-            "text": draft.read_text(encoding="utf-8"),
-            "check_id": "protagonist_agency_voice_and_emotion",
-            "severity": "P1",
-            "action": "expand_scene",
-            "intent": "Repair the admitted agency and speaker-ownership problem in this candidate.",
-            "must_preserve": [],
-            "note": "Repair the admitted agency and speaker-ownership problem in this candidate.",
-        }
-    ]
-    human_file.write_text(
-        json.dumps(human_payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    assert validate_human_story_review(
-        config,
-        chapter_number=1,
-        file_path=human_file,
-    ).ok
-    apply_human_story_review(
-        config,
-        chapter_number=1,
-        file_path=human_file,
-        approved_by="human",
     )
     barrier = review_barrier_status(config, chapter_number=1)
     next_action = production_next(config)
@@ -391,6 +343,72 @@ def test_editorial_v2_requires_exact_chapter_evidence_for_blocking_finding(tmp_p
     with pytest.raises(ValueError, match="control-plane|out of bounds"):
         editorial_submit_review(config, chapter_number=1, role=role_id, file_path=result_file)
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
+
+
+def test_anti_ai_p1_requires_two_exact_spans_reader_harm_and_protection(tmp_path):
+    config, root = seed_project(tmp_path)
+    draft = root / "40_manuscript" / "draft" / "ch001.md"
+    text = (
+        "# Chapter 1\n\n"
+        "Ari explains that the choice matters instead of making it. "
+        "Mira later explains that the choice matters instead of reacting.\n"
+    )
+    draft.write_text(text, encoding="utf-8")
+    review = editorial_review(config, chapter_number=1)
+    assert {"scene_prose_editor", "anti_ai_editor"} <= set(review.selected_roles)
+    role_id = "anti_ai_editor"
+    first_start = text.index("Ari explains")
+    second_start = text.index("Mira later")
+    finding = {
+        "code": "AI_SUMMARY_LOOP",
+        "severity": "P1",
+        "certainty": "confirmed",
+        "diagnosis": "Both spans repeat explanation in place of a character-owned choice or emotional consequence.",
+        "evidence_ids": [f"ch001.md@{first_start}:{first_start + 20}"],
+        "reader_impact": "The repeated function removes a new action and leaves the relationship unchanged.",
+        "repair_target": "Dramatize one choice and one distinct emotional response.",
+        "preserve": ["accepted scene outcome"],
+    }
+    result_file = root / "50_workbench" / "editorial_reviews" / "results" / "ch001.anti_ai_editor.json"
+    result_file.parent.mkdir(parents=True, exist_ok=True)
+    result_file.write_text(
+        json.dumps(editorial_payload(root, draft, role_id, findings=[finding]), ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    rejected = validate_production_agent_result(
+        root,
+        editorial_manifest(root, role_id),
+        result_file=result_file,
+    )
+    assert rejected.ok, rejected.normalization.errors
+    with pytest.raises(ValueError, match="at least two distinct exact spans"):
+        editorial_submit_review(
+            config,
+            chapter_number=1,
+            role=role_id,
+            file_path=result_file,
+        )
+
+    finding["evidence_ids"].append(f"ch001.md@{second_start}:{second_start + 20}")
+    result_file.write_text(
+        json.dumps(editorial_payload(root, draft, role_id, findings=[finding]), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    accepted = validate_production_agent_result(
+        root,
+        editorial_manifest(root, role_id),
+        result_file=result_file,
+    )
+    assert accepted.ok, accepted.normalization.errors
+    submitted = editorial_submit_review(
+        config,
+        chapter_number=1,
+        role=role_id,
+        file_path=result_file,
+    )
+    assert submitted.accepted is True
+    assert submitted.severity_counts["P1"] == 1
 
 
 def test_editorial_pattern_registry_ttl_recurrence_resolution_and_rollback(tmp_path):

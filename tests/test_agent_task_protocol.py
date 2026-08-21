@@ -20,7 +20,6 @@ from longform_engine.config import load_project_config
 from longform_engine.creative import expand_task, humanize_task
 from longform_engine.editorial import editorial_aggregate, editorial_review, editorial_submit_review
 from longform_engine.gates import GateError, gate_check, semantic_pacing_apply, semantic_pacing_task, semantic_pacing_validate
-from longform_engine.human_story_review import apply_human_story_review, create_human_story_review_task
 from longform_engine.orchestration import WorkflowError, continue_write, finalize_chapter, open_book, submit_agent_draft
 from longform_engine.production import production_next
 from longform_engine.repair_coordination import (
@@ -68,14 +67,17 @@ def test_no_key_agent_task_chapter_loop_and_manifest_index(tmp_path, monkeypatch
     assert any(item["task_type"] == "chapter_write" for item in indexed)
     assert summary["by_status"]["applied"] >= 1
     assert "status" not in json.loads(manifest.read_text(encoding="utf-8"))
-    assert next(item for item in indexed if item["task_type"] == "chapter_write")["status"] == "applied"
+    assert next(item for item in indexed if item["task_type"] == "chapter_write")["status"] == "superseded"
     events = event_payloads(root)
     assert [item["to_status"] for item in events if item["task_id"] == "chapter_write:ch001:v4"] == [
         "awaiting_agent",
         "submitted",
-        "applied",
+        "superseded",
     ]
-    assert events[-1]["command"] == "chapter finalize"
+    assert any(
+        item["task_type"] == "prose_revision_semantic_review" and item["status"] == "applied"
+        for item in indexed
+    )
     strict = validate_manifest_strict(root, json.loads(manifest.read_text(encoding="utf-8")))
     assert strict.ok, strict.errors
     assert not strict.warnings
@@ -118,7 +120,7 @@ def test_finalize_applies_submitted_candidate_and_supersedes_unused_repair(tmp_p
     finalize_chapter(config, chapter_number=1, approved_by="human")
 
     manifests = {item["task_id"]: item for item in list_manifests(root, chapter_number=1)}
-    assert manifests["chapter_write:ch001:v4"]["status"] == "applied"
+    assert manifests["chapter_write:ch001:v4"]["status"] == "superseded"
     assert manifests["repair:ch001:unused"]["status"] == "superseded"
     next_action = production_next(config)
     assert next_action["status"] == "ready_for_chapter_semantic_task"
@@ -237,8 +239,6 @@ def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_cand
     draft.write_text("# Chapter 1\n\n药水必须接触瓶口并耗时饮用，随后药瓶破碎却直接恢复生命。\n", encoding="utf-8")
     write_blocking_gate(root, draft, chapter_number=1)
     complete_editorial_reviews(root, config)
-    apply_human_repair_review(config, root, draft)
-
     first = create_repair_synthesis_task(config, chapter_number=1)
     first_bundle = json.loads((root / first["review_bundle"]).read_text(encoding="utf-8"))
     first_ids = first_bundle["blocking_finding_ids"]
@@ -281,7 +281,6 @@ def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_cand
     draft.write_text(first_candidate.read_text(encoding="utf-8") + "仍有一处确认的规则冲突。\n", encoding="utf-8")
     write_blocking_gate(root, draft, chapter_number=1)
     complete_editorial_reviews(root, config)
-    apply_human_repair_review(config, root, draft)
     second = create_repair_synthesis_task(config, chapter_number=1)
     second_bundle = json.loads((root / second["review_bundle"]).read_text(encoding="utf-8"))
     second_ids = second_bundle["blocking_finding_ids"]
@@ -785,41 +784,6 @@ def write_blocking_gate(root: Path, draft: Path, *, chapter_number: int) -> None
     )
 
 
-def apply_human_repair_review(config, root: Path, draft: Path) -> None:
-    review_task = create_human_story_review_task(config, chapter_number=1)
-    review_path = root / review_task.template_file
-    review = json.loads(review_path.read_text(encoding="utf-8"))
-    review["checks"] = {
-        key: {"passed": False, "reason": "The declared action chain remains contradictory."}
-        for key in review["checks"]
-    }
-    review["decision"] = "repair"
-    review["annotations"] = [
-        {
-            "annotation_id": "ability-rule-chain",
-            "start": 14,
-            "end": 28,
-            "text": draft.read_text(encoding="utf-8")[14:28],
-            "check_id": "continuity_world_rules_and_ability_bounds",
-            "severity": "P1",
-            "action": "expand_scene",
-            "intent": "Show the full contact, drinking, and delayed-effect action chain.",
-            "must_preserve": ["主角放弃追击并优先救人"],
-            "note": "Show the full contact, drinking, and delayed-effect action chain.",
-        }
-    ]
-    review_path.write_text(
-        json.dumps(review, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    apply_human_story_review(
-        config,
-        chapter_number=1,
-        file_path=review_path,
-        approved_by="human",
-    )
-
-
 def repair_plan_markdown(bundle: dict, finding_ids: str | list[str], *, conflict: bool = False) -> str:
     admitted = [finding_ids] if isinstance(finding_ids, str) else finding_ids
     round_token = f"r{int(bundle['repair_round']):02d}"
@@ -845,6 +809,8 @@ def repair_plan_markdown(bundle: dict, finding_ids: str | list[str], *, conflict
             "",
             "## 必须保留内容",
             "- 主角放弃追击并优先救人",
+            "- current chapter contract",
+            "- existing valid scene outcome",
             "",
             "## 允许改变内容",
             f"- {mutable}",

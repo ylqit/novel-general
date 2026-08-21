@@ -16,9 +16,10 @@ from longform_engine.repair_coordination import (
     review_barrier_status,
     validate_repair_plan,
 )
-from longform_engine.review_server import ReviewDeskService, ReviewHTTPServer
+from longform_engine.review_server import ReviewDeskService, ReviewHTTPServer, ReviewServerError
 from longform_engine.storage import acquire_project_lock
 from tests.test_agent_task_protocol import repair_plan_markdown
+from tests.project_fixtures import complete_human_author_revision
 from tests.test_story_architecture_v050 import seed_candidate, write_review
 
 
@@ -174,15 +175,18 @@ def test_manual_full_repair_submit_consumes_budget_and_stales_old_review_and_con
         expected_candidate_sha256=manual["candidate_sha256"],
         text=replacement,
     )
-    result = service.submit_manual_repair(
-        expected_draft_sha256=before_hash,
-        expected_candidate_sha256=saved["candidate_sha256"],
-    )
+    with pytest.raises(ReviewServerError, match="human_author_revision_v1"):
+        service.submit_manual_repair(
+            expected_draft_sha256=before_hash,
+            expected_candidate_sha256=saved["candidate_sha256"],
+        )
+    assert repair_attempt_status(config, chapter_number=1)["used"] == 0
 
-    assert result["chapter_number"] == 1
+    complete_human_author_revision(root, config, chapter_number=1)
+
     assert repair_attempt_status(config, chapter_number=1)["used"] == 1
     assert human_story_review_status(config, chapter_number=1)["status"] in {"pending", "stale"}
-    assert review_barrier_status(config, chapter_number=1)["status"] == "reviews_pending"
+    assert review_barrier_status(config, chapter_number=1)["status"] == "awaiting_human_story_review"
     assert consultation_status(config, chapter_number=1)["sessions"][0]["status"] == "stale"
     submission = json.loads(
         (root / "40_manuscript" / "draft" / "ch001.submission.json").read_text(encoding="utf-8")

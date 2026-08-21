@@ -45,6 +45,8 @@ ALLOW_FINAL_WRITES = {
     "src/longform_engine/semantic/pipeline.py",
     "src/longform_engine/storage/layout.py",
     "src/longform_engine/publication.py",
+    # Human revision tasks name final only as a forbidden Agent path.
+    "src/longform_engine/human_author_revision.py",
 }
 
 ALLOW_GRAPH_WRITES = {
@@ -201,8 +203,8 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "src/longform_engine/editorial/pipeline.py",
         (
-            'selected: set[str] = {"scene_prose_editor", *configured}',
-            'reasons: list[str] = ["mandatory_scene_prose_review"]',
+            'selected: set[str] = {"scene_prose_editor", "anti_ai_editor", *configured}',
+            'reasons: list[str] = ["mandatory_scene_prose_review", "mandatory_anti_ai_review"]',
             '"SERIAL_CARRIER_REPETITION"',
             '"THEME_DISPLACES_EVENT"',
             '"REPORT_SUBSTITUTES_EVENT"',
@@ -212,7 +214,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "src/longform_engine/human_story_review.py",
         (
-            'SCHEMA = "human_story_review_v3"',
+            'SCHEMA = "human_story_review_v4"',
             'DECISIONS = {"accept", "repair", "redirect"}',
             "CHECK_FIELDS",
             "EVIDENCE_KINDS",
@@ -221,6 +223,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
             "reader_promise_ledger_sha256",
             "arc_causal_simulation_sha256",
             "review_bundle_sha256",
+            "human_author_revision_sha256",
             "apply_transaction",
             "approved_by=human",
         ),
@@ -818,7 +821,7 @@ def check_removed_runtime_guards() -> list[str]:
     failures: list[str] = []
     retired_module = "leg" + "acy.py"
     if (SRC / retired_module).exists():
-        failures.append(f"{retired_module} must not ship in the v0.6.0 runtime")
+        failures.append(f"{retired_module} must not ship in the current runtime")
     combined = "\n".join(
         path.read_text(encoding="utf-8", errors="ignore")
         for path in (

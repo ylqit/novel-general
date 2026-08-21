@@ -27,6 +27,7 @@ from longform_engine.blind_review import (
     submit_blind_review,
 )
 from longform_engine.character_expression import approve_voice_samples
+from longform_engine.author_voice import approve_author_voice_edit_pair
 from longform_engine.cli_recovery import register_recovery_commands
 
 from longform_engine.agent_pipeline import validate_production_agent_result
@@ -93,6 +94,10 @@ from longform_engine.human_story_review import (
     apply_human_story_review,
     create_human_story_review_task,
     validate_human_story_review,
+)
+from longform_engine.human_author_revision import (
+    create_human_author_revision_task,
+    validate_human_author_revision,
 )
 from longform_engine.human_review_consultation import (
     consultation_status,
@@ -161,7 +166,12 @@ from longform_engine.orchestration import (
     submit_agent_draft,
 )
 from longform_engine.planning import revise_outline
-from longform_engine.publication import export_publication_bundle, publication_risk_report
+from longform_engine.publication import (
+    creation_provenance_manifest,
+    export_publication_bundle,
+    publication_preflight,
+    publication_risk_report,
+)
 from longform_engine.production import agent_task_brief, production_board, production_loop, production_next, production_status
 from longform_engine.prompting import validate_project_prompt_overlay
 from longform_engine.quality import (
@@ -874,11 +884,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     publication_report = publication_subparsers.add_parser(
         "report",
-        help="Write publication_risk_report_v1 without blocking export.",
+        help="Write publication_risk_report_v2 without blocking export.",
     )
     publication_report.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     publication_report.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     publication_report.set_defaults(func=cmd_publication_report)
+
+    publication_preflight_cmd = publication_subparsers.add_parser(
+        "preflight",
+        help="Write one non-blocking official-policy snapshot preflight.",
+    )
+    publication_preflight_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    publication_preflight_cmd.add_argument("--target", choices=["qidian_male", "fanqie_free"], required=True)
+    publication_preflight_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    publication_preflight_cmd.set_defaults(func=cmd_publication_preflight)
+
+    publication_provenance_cmd = publication_subparsers.add_parser(
+        "provenance",
+        help="Write a hash-only creation_provenance_manifest_v1 without prose or prompts.",
+    )
+    publication_provenance_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    publication_provenance_cmd.add_argument("--target", choices=["qidian_male", "fanqie_free"], required=True)
+    publication_provenance_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    publication_provenance_cmd.set_defaults(func=cmd_publication_provenance)
 
     publication_export = publication_subparsers.add_parser(
         "export",
@@ -970,6 +998,17 @@ def build_parser() -> argparse.ArgumentParser:
     style_extract_cmd.add_argument("--no-activate", action="store_true", help="Write the profile without making it current.")
     style_extract_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     style_extract_cmd.set_defaults(func=cmd_creative_style_extract)
+
+    author_voice_approve_cmd = creative_subparsers.add_parser(
+        "author-voice-approve",
+        help="Approve one bounded author voice edit pair derived from a real human revision.",
+    )
+    author_voice_approve_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    author_voice_approve_cmd.add_argument("--chapter", type=int, required=True, help="Finalized chapter number.")
+    author_voice_approve_cmd.add_argument("--record", required=True, help="author_voice_edit_pair_v1 JSON under 50_workbench/.")
+    author_voice_approve_cmd.add_argument("--approved-by", required=True, help="Must be the literal value 'human'.")
+    author_voice_approve_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    author_voice_approve_cmd.set_defaults(func=cmd_creative_author_voice_approve)
 
     humanize_task_cmd = creative_subparsers.add_parser("humanize-task", help="Generate a Humanizer v4 workbench task.")
     humanize_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
@@ -1351,9 +1390,29 @@ def build_parser() -> argparse.ArgumentParser:
     chapter_human_review_task.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     chapter_human_review_task.set_defaults(func=cmd_chapter_human_review_task)
 
+    chapter_human_revision_task = chapter_subparsers.add_parser(
+        "human-revision-task",
+        help="Freeze the reviewed AI candidate and create the mandatory human author revision workspace.",
+    )
+    chapter_human_revision_task.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    chapter_human_revision_task.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    chapter_human_revision_task.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    chapter_human_revision_task.set_defaults(func=cmd_chapter_human_revision_task)
+
+    chapter_human_revision_validate = chapter_subparsers.add_parser(
+        "human-revision-validate",
+        help="Validate the full human candidate, edit evidence, and independent dual-prose semantic review.",
+    )
+    chapter_human_revision_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    chapter_human_revision_validate.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
+    chapter_human_revision_validate.add_argument("--file", required=True, help="Complete human candidate under 50_workbench/.")
+    chapter_human_revision_validate.add_argument("--record", required=True, help="human_author_revision_v1 record JSON.")
+    chapter_human_revision_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    chapter_human_revision_validate.set_defaults(func=cmd_chapter_human_revision_validate)
+
     chapter_human_review_validate = chapter_subparsers.add_parser(
         "human-review-validate",
-        help="Validate a human_story_review_v3 decision against the frozen independent-review bundle.",
+        help="Validate a human_story_review_v4 decision against the human revision and frozen review bundle.",
     )
     chapter_human_review_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     chapter_human_review_validate.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
@@ -1705,6 +1764,7 @@ def build_parser() -> argparse.ArgumentParser:
         vector_rebuild_cmd,
         creative_brief,
         style_extract_cmd,
+        author_voice_approve_cmd,
         payoff_task_cmd,
         payoff_validate_cmd,
         review_consult_task,
@@ -1736,6 +1796,8 @@ def build_parser() -> argparse.ArgumentParser:
         auto_report,
         draft_submit,
         chapter_finalize,
+        chapter_human_revision_task,
+        chapter_human_revision_validate,
         chapter_human_review_task,
         chapter_human_review_validate,
         chapter_human_review_apply,
@@ -1800,6 +1862,8 @@ def build_parser() -> argparse.ArgumentParser:
         fanfiction_design_validate,
         fanfiction_design_apply,
         publication_report,
+        publication_preflight_cmd,
+        publication_provenance_cmd,
         publication_export,
         benchmark_init,
         benchmark_record,
@@ -3197,6 +3261,34 @@ def cmd_publication_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_publication_preflight(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result, payload = publication_preflight(config, target=args.target)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: advisory platform preflight written")
+        print(f"Target: {result.target}")
+        print(f"Status: {result.status}")
+        print(f"Blocking: {result.blocking}")
+        print(f"Report: {result.report_file}")
+    return 0
+
+
+def cmd_publication_provenance(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result, payload = creation_provenance_manifest(config, target=args.target)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: creation provenance manifest written")
+        print(f"Target: {result.target}")
+        print(f"Chapters: {result.chapter_count}")
+        print(f"Manifest: {result.manifest_file}")
+        print(f"Blocking: {result.blocking}")
+    return 0
+
+
 def cmd_publication_export(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
     result = export_publication_bundle(config, output=args.output)
@@ -3395,6 +3487,26 @@ def cmd_creative_style_extract(args: argparse.Namespace) -> int:
         print(f"Source project: {result.source_project}")
         print(f"Samples: {', '.join(result.sample_files) or 'library import'}")
         print(f"Activated: {result.activated}")
+    return 0
+
+
+def cmd_creative_author_voice_approve(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = approve_author_voice_edit_pair(
+        config,
+        chapter_number=args.chapter,
+        record_path=args.record,
+        approved_by=args.approved_by,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: author voice edit pair approved")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Pair: {result.pair_id}")
+        print(f"Active pairs: {result.active_pairs}")
+        print(f"Bank: {result.bank_file}")
+        print(f"Next command: {result.next_command}")
     return 0
 
 
@@ -4248,6 +4360,44 @@ def cmd_chapter_human_review_task(args: argparse.Namespace) -> int:
         print(f"Template: {result.template_file}")
         print(f"Next command: {result.next_command}")
     return 0
+
+
+def cmd_chapter_human_revision_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = create_human_author_revision_task(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: human author revision workspace written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Task: {result.task_file}")
+        print(f"Source: {result.source_file}")
+        print(f"Candidate: {result.candidate_file}")
+        print(f"Record: {result.record_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_chapter_human_revision_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = validate_human_author_revision(
+        config,
+        chapter_number=args.chapter,
+        file_path=args.file,
+        record_path=args.record,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: human author revision validated" if result.ok else "BLOCKED: human author revision is incomplete")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Stage: {result.stage}")
+        print(f"Validation: {result.validation_file}")
+        if result.semantic_task_file:
+            print(f"Semantic task: {result.semantic_task_file}")
+        print(f"Errors: {len(result.errors)}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.ok else 1
 
 
 def cmd_chapter_human_review_validate(args: argparse.Namespace) -> int:

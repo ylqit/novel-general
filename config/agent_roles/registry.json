@@ -66,7 +66,7 @@
     "fanfiction_canon": "fanfiction_canon_archivist",
     "fanfiction_design": "fanfiction_architect",
     "humanize": "humanizer",
-    "humanize_semantic_review": "humanizer_semantic_reviewer",
+    "prose_revision_semantic_review": "prose_revision_semantic_reviewer",
     "human_review_consult": "human_review_advisor",
     "outline_design": "longform_outline_architect",
     "outline_extension": "longform_outline_architect",
@@ -104,7 +104,7 @@
     "fanfiction_architect": "project_coordinator",
     "fanfiction_canon_archivist": "isolated_archival",
     "humanizer": "isolated_revision",
-    "humanizer_semantic_reviewer": "isolated_review",
+    "prose_revision_semantic_reviewer": "isolated_review",
     "human_review_advisor": "candidate_consultation",
     "longform_outline_architect": "project_coordinator",
     "planning_chief_editor": "isolated_review",
@@ -738,9 +738,9 @@
       "finding_codes": []
     },
     {
-      "role_id": "humanizer_semantic_reviewer",
-      "role_version": "3.0.0",
-      "prompt_path": "config/agent_roles/prompts/humanizer_semantic_reviewer.md",
+      "role_id": "prose_revision_semantic_reviewer",
+      "role_version": "4.0.0",
+      "prompt_path": "config/agent_roles/prompts/prose_revision_semantic_reviewer.md",
       "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
@@ -756,8 +756,8 @@
         "workflow"
       ],
       "trigger_sections": {
-        "humanize_semantic_review": "diagnostics",
-        "humanize_semantic_drift": "failure_modes"
+        "prose_revision_semantic_review": "diagnostics",
+        "prose_revision_semantic_drift": "failure_modes"
       },
       "required_playbook_ids": [
         "anti_ai_expression"
@@ -768,14 +768,20 @@
       ],
       "max_active_playbooks": 2,
       "review_dimensions": [
-        "meaning_preservation",
-        "voice_preservation",
-        "event_preservation"
+        "chapter_contract_preservation",
+        "knowledge_boundary_preservation",
+        "ability_cost_preservation",
+        "relationship_stage_preservation",
+        "protected_outcome_preservation",
+        "revision_goal_achievement"
       ],
       "finding_codes": [
-        "HUMANIZE_FACT_DRIFT",
-        "HUMANIZE_VOICE_LOSS",
-        "HUMANIZE_EVENT_CHANGE"
+        "PROSE_REVISION_FACT_DRIFT",
+        "PROSE_REVISION_KNOWLEDGE_DRIFT",
+        "PROSE_REVISION_ABILITY_COST_DRIFT",
+        "PROSE_REVISION_RELATIONSHIP_DRIFT",
+        "PROSE_REVISION_PROTECTED_OUTCOME_DRIFT",
+        "PROSE_REVISION_NOT_SUBSTANTIVE"
       ]
     },
     {

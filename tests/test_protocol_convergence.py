@@ -44,7 +44,13 @@ from longform_engine.repair_coordination import (
     validate_repair_plan,
 )
 from longform_engine.semantic import chapter_close, semantic_apply
-from tests.project_fixtures import approve_story_candidate, mark_project_ready, prepare_unified_semantic_bundle
+from tests.project_fixtures import (
+    approve_author_voice_fixture,
+    approve_story_candidate,
+    complete_editorial_reviews,
+    mark_project_ready,
+    prepare_unified_semantic_bundle,
+)
 from tests.test_agent_task_protocol import (
     passing_text,
     repair_plan_markdown,
@@ -109,6 +115,7 @@ def test_v042_dangling_parent_reconciles_then_chapter_closes(tmp_path):
     assert submitted.passed is True
     approve_story_candidate(root, config)
     finalize_chapter(config, chapter_number=1, approved_by="human")
+    approve_author_voice_fixture(root, config, chapter_number=1)
     output = prepare_unified_semantic_bundle(root, config, 1)
     semantic_apply(config, chapter_number=1, file_path=output)
     closed = chapter_close(config, chapter_number=1, approved_by="test-owner")
@@ -350,7 +357,7 @@ def prepare_repair_round(tmp_path):
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\n治疗规则与救援动作冲突。\n", encoding="utf-8")
     write_blocking_gate(root, draft, chapter_number=1)
-    approve_story_candidate(root, config, chapter_number=1)
+    complete_editorial_reviews(root, config, chapter_number=1)
     synthesis = create_repair_synthesis_task(config, chapter_number=1)
     bundle = read_json(root / synthesis["review_bundle"])
     finding_id = bundle["blocking_finding_ids"][0]
@@ -372,6 +379,7 @@ def prepare_finalized_semantic_project(tmp_path):
     assert submit_agent_draft(config, chapter_number=1, file_path=candidate, agent="codex").passed is True
     approve_story_candidate(root, config)
     finalize_chapter(config, chapter_number=1, approved_by="human")
+    approve_author_voice_fixture(root, config, chapter_number=1)
     return config, root, prepare_unified_semantic_bundle(root, config, 1)
 
 

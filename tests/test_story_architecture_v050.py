@@ -49,7 +49,11 @@ from longform_engine.reader_promises import (
 from longform_engine.repair_coordination import review_barrier_status
 from longform_engine.roles import load_role_registry
 from longform_engine.storage import init_project
-from tests.project_fixtures import mark_project_ready, write_arc_simulation_fixture
+from tests.project_fixtures import (
+    complete_human_author_revision,
+    mark_project_ready,
+    write_arc_simulation_fixture,
+)
 from tests.test_agent_task_protocol import submit_editorial_review, write_editorial_role_result
 from tests.test_quality_contract_and_creative_interaction import (
     prepare_design_delta,
@@ -110,7 +114,7 @@ def direction_errors(config, root: Path, payload: dict) -> list[str]:
     return errors
 
 
-def seed_candidate(tmp_path: Path):
+def seed_candidate(tmp_path: Path, *, complete_human: bool = True):
     template = load_project_config(template="qidian-longform")
     project = init_project(template, output=tmp_path / "novel")
     config = load_project_config(project.project_config)
@@ -138,18 +142,41 @@ def seed_candidate(tmp_path: Path):
             items=[],
         )
         submit_editorial_review(config, chapter_number=1, role=role, file_path=result_file)
+    if complete_human:
+        complete_human_author_revision(root, config, chapter_number=1)
     return config, root, task
 
 
 def write_review(root: Path, template_file: str, *, decision: str, span_actions=None, redirect_scope="direction") -> Path:
     path = root / template_file
     payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["checks"] = {
-        key: {"passed": decision == "accept", "reason": "Verified against the current candidate."}
-        for key in payload["checks"]
-    }
     payload["decision"] = decision
-    if decision == "accept":
+    core = {
+        "scene_causality_and_key_turn_dramatized": (
+            "key_turn",
+            "The counteraction forces an owned choice and changes the scene condition.",
+        ),
+        "protagonist_agency_voice_and_emotion": (
+            "character_choice_or_emotion",
+            "The character owns both the decision and its visible emotional consequence.",
+        ),
+        "reader_gain_and_promise_progress": (
+            "reader_gain",
+            "The reader receives a changed condition that advances the active promise.",
+        ),
+        "exit_state_and_emotional_aftereffect": (
+            "reader_gain",
+            "The exit carries a changed practical state and an emotional aftereffect.",
+        ),
+    }
+    for field, (kind, reason) in core.items():
+        payload["dimension_coverage"][field] = {
+            "status": "confirmed",
+            "coverage_source": "human_core",
+            "reason": reason,
+            "evidence_refs": [f"candidate:{kind}:fixture"],
+        }
+    if decision in {"accept", "repair"}:
         draft = (root / "40_manuscript" / "draft" / "ch001.md").read_text(encoding="utf-8")
         end = min(40, len(draft))
         payload["evidence_spans"] = [
@@ -167,11 +194,15 @@ def write_review(root: Path, template_file: str, *, decision: str, span_actions=
             "severity": "P1",
             "action": item["action"],
             "intent": item["note"],
-            "must_preserve": [],
+            "must_preserve": ["current chapter contract", "existing valid scene outcome"],
             "note": item["note"],
         }
         for index, item in enumerate(span_actions or [], start=1)
     ]
+    if decision == "repair":
+        payload["dimension_coverage"]["scene_causality_and_key_turn_dramatized"]["status"] = "repair"
+    if decision == "redirect":
+        payload["dimension_coverage"]["scene_causality_and_key_turn_dramatized"]["status"] = "redirect"
     payload["redirect_scope"] = redirect_scope
     payload["reason"] = "The carrier must change before another draft." if decision == "redirect" else ""
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -500,17 +531,18 @@ def test_human_accept_is_hash_bound_and_unlocks_review_barrier(tmp_path):
     assert human_story_review_status(config, chapter_number=1)["status"] == "stale"
 
 
-def test_human_review_v3_freezes_independent_bundle_and_exposes_ten_dimensions(tmp_path):
+def test_human_review_v4_freezes_revision_and_bundle_without_prefilled_human_reasons(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
 
     task = create_human_story_review_task(config, chapter_number=1)
     payload = json.loads((root / task.template_file).read_text(encoding="utf-8"))
 
-    assert payload["schema"] == "human_story_review_v3"
+    assert payload["schema"] == "human_story_review_v4"
     assert payload["review_bundle_sha256"] == task.review_bundle_sha256
+    assert payload["human_author_revision_sha256"] == task.human_author_revision_sha256
     assert (root / task.review_bundle_file).is_file()
-    assert len(payload["checks"]) == 10
-    assert set(payload["checks"]) == {
+    assert len(payload["dimension_coverage"]) == 10
+    assert set(payload["dimension_coverage"]) == {
         "story_contract_preserved",
         "desire_opposition_and_question_clear",
         "scene_causality_and_key_turn_dramatized",
@@ -522,47 +554,40 @@ def test_human_review_v3_freezes_independent_bundle_and_exposes_ten_dimensions(t
         "prose_natural_and_readable",
         "exit_state_and_emotional_aftereffect",
     }
+    assert all(
+        not item["reason"]
+        for item in payload["dimension_coverage"].values()
+    )
     assert payload["annotations"] == []
-    assert "span_actions" not in payload
+    assert "checks" not in payload
 
 
-def test_human_review_v3_rejects_v2_and_requires_three_accept_evidence_kinds(tmp_path):
+def test_human_review_v4_rejects_v3_and_requires_three_accept_evidence_kinds(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
     task = create_human_story_review_task(config, chapter_number=1)
     review = root / task.template_file
     payload = json.loads(review.read_text(encoding="utf-8"))
-    payload["schema"] = "human_story_review_v2"
+    payload["schema"] = "human_story_review_v3"
     review.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     rejected = validate_human_story_review(config, chapter_number=1, file_path=review)
     assert not rejected.ok
-    assert "schema must be human_story_review_v3" in rejected.errors
+    assert any("human_story_review_v3 is rejected in v0.7" in error for error in rejected.errors)
 
-    payload["schema"] = "human_story_review_v3"
-    payload["checks"] = {
-        key: {"passed": True, "reason": "Verified against current prose."}
-        for key in payload["checks"]
-    }
-    payload["decision"] = "accept"
-    draft = (root / "40_manuscript" / "draft" / "ch001.md").read_text(encoding="utf-8")
+    payload["schema"] = "human_story_review_v4"
+    review.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    review = write_review(root, task.template_file, decision="accept")
+    payload = json.loads(review.read_text(encoding="utf-8"))
     payload["evidence_spans"] = [
-        {
-            "start": 0,
-            "end": min(40, len(draft)),
-            "text": draft[: min(40, len(draft))],
-            "kind": kind,
-            "note": "Exact evidence in the accepted candidate.",
-        }
-        for kind in ("key_turn", "character_choice_or_emotion")
+        item for item in payload["evidence_spans"] if item["kind"] != "reader_gain"
     ]
-    payload["reader_gain_note"] = "A concrete gain changes the next choice."
     review.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     missing = validate_human_story_review(config, chapter_number=1, file_path=review)
     assert not missing.ok
-    assert "accept requires key_turn, character_choice_or_emotion, and reader_gain evidence spans" in missing.errors
+    assert "accept/repair requires human key_turn, character_choice_or_emotion, and reader_gain spans" in missing.errors
 
 
-def test_human_review_v3_rejects_review_bundle_hash_drift(tmp_path):
+def test_human_review_v4_rejects_review_bundle_hash_drift(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
     task = create_human_story_review_task(config, chapter_number=1)
     review = root / task.template_file
@@ -610,7 +635,7 @@ def test_human_accept_requires_story_spans_and_reader_gain_note(tmp_path):
 
     result = validate_human_story_review(config, chapter_number=1, file_path=review)
     assert not result.ok
-    assert "accept requires key_turn, character_choice_or_emotion, and reader_gain evidence spans" in result.errors
+    assert "accept/repair requires human key_turn, character_choice_or_emotion, and reader_gain spans" in result.errors
     assert "accept requires a non-empty reader_gain_note" in result.errors
 
 

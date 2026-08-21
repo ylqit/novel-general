@@ -116,7 +116,12 @@ def test_continue_write_blocks_missing_applied_creative_brief(tmp_path):
 
 def test_humanizer_task_and_check_stay_in_workbench(tmp_path):
     project_config = seed_project(tmp_path)
+    project_config.data["quality"]["semantic_review_milestones"] = []
+    project_config.data["quality"]["semantic_review_boundaries"] = False
+    project_config.data["quality"]["profile"]["strictness"] = "light"
     root = tmp_path / "novel"
+    mark_project_ready(root, project_config)
+    plan_chapter(project_config, chapter_number=1)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\nThis stands as a pivotal moment. TODO: keep prompt residue.\n", encoding="utf-8")
 
@@ -134,10 +139,10 @@ def test_humanizer_task_and_check_stay_in_workbench(tmp_path):
     manifest = load_manifest(root, "humanize:ch001:v4")
     strict = validate_manifest_strict(root, manifest)
     assert strict.ok, strict.errors
-    assert check.passed is False
-    assert status_summary(root, chapter_number=1)["by_status"]["invalid"] >= 1
+    assert check.passed is True
+    assert status_summary(root, chapter_number=1)["by_status"]["validated"] >= 1
     assert any(item["code"] == "generic_ai_diction" for item in check.issues)
-    assert "creative humanize-task" in check.next_command
+    assert all(item["severity"] == "P2" for item in check.issues)
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
 
@@ -168,7 +173,7 @@ def test_chinese_humanizer_detects_webnovel_ai_categories(tmp_path):
     assert "Pass 2: 中文网文质感增强" in task_text
     assert issues["humanizer_meta_residue"]["severity"] == "P0"
     assert issues["humanizer_inflated_significance"]["category"] == "意义膨胀"
-    assert issues["humanizer_summary_voice"]["severity"] == "P1"
+    assert issues["humanizer_summary_voice"]["severity"] == "P2"
     assert issues["humanizer_cliche_action"]["category"] == "套话动作"
     assert issues["humanizer_high_frequency_words"]["severity"] == "P2"
     assert issues["humanizer_weak_adverbs"]["category"] == "弱化副词"
@@ -212,7 +217,7 @@ def test_humanizer_v4_rejects_empty_text_and_counts_repeated_same_pattern(tmp_pa
     assert issue["evidence"][0]["count"] == 2
 
 
-def test_gate_uses_humanizer_report_for_chinese_p1_failures(tmp_path):
+def test_gate_keeps_isolated_significance_language_as_nonblocking_p2_signal(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
     plan_chapter(project_config, chapter_number=1)
@@ -224,8 +229,7 @@ def test_gate_uses_humanizer_report_for_chinese_p1_failures(tmp_path):
     artifact_dir = root / "50_workbench" / "gate_artifacts" / "ch001"
     humanize_report = (artifact_dir / "humanize_report.md").read_text(encoding="utf-8")
 
-    assert gate.passed is False
-    assert any(item["code"] == "humanizer_inflated_significance" and item["severity"] == "P1" for item in gate.failures)
+    assert not any(item["code"] == "humanizer_inflated_significance" for item in gate.failures)
     assert "意义膨胀" in humanize_report
     assert not (artifact_dir / "repair_plan.md").exists()
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
@@ -304,7 +308,7 @@ def test_style_extract_writes_sample_profile_and_continue_write_uses_it(tmp_path
     assert "current_style_profile.json" not in task_md
 
 
-def test_gate_detects_obvious_style_drift_from_active_sample_profile(tmp_path):
+def test_gate_reports_style_drift_from_active_sample_profile_as_p2_signal(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
     sample = tmp_path / "short_sample.md"
@@ -330,10 +334,15 @@ def test_gate_detects_obvious_style_drift_from_active_sample_profile(tmp_path):
     draft.write_text("# Chapter 1\n\n" + long_sentence * 12, encoding="utf-8")
 
     result = gate_check(project_config, chapter_number=1)
+    gate_payload = json.loads(
+        (root / "50_workbench" / "gate_artifacts" / "ch001" / "gate_result.json").read_text(
+            encoding="utf-8"
+        )
+    )
     style_review = (root / "50_workbench" / "gate_artifacts" / "ch001" / "style_review.md").read_text(encoding="utf-8")
 
-    assert result.passed is False
-    assert any(item["code"] == "style_drift" and item["severity"] == "P1" for item in result.failures)
+    assert not any(item["code"] == "style_drift" for item in result.failures)
+    assert any("style_drift [P2]" in warning for warning in gate_payload["warnings"])
     assert "Active Style Baseline" in style_review
     assert "style drift from active sample profile" in style_review
 
@@ -347,7 +356,8 @@ def test_semantic_reader_pacing_review_writes_reader_experience_artifact(tmp_pat
     result = pacing_review(project_config, chapter_number=1, semantic_reader=True)
 
     assert result.reader_experience_report.endswith("reader_experience_review.md")
-    assert any("ending hook" in issue for issue in result.issues)
+    assert not any("ending hook" in issue for issue in result.issues)
+    assert any("ending hook" in warning for warning in result.warnings)
     assert (root / "50_workbench" / "gate_artifacts" / "ch001" / "reader_experience_review.md").exists()
 
 
@@ -363,6 +373,7 @@ def test_semantic_reader_recognizes_chinese_deadline_as_concrete_tail_pressure(t
     result = pacing_review(project_config, chapter_number=1, semantic_reader=True)
 
     assert not any("ending hook" in issue for issue in result.issues)
+    assert not any("ending hook" in warning for warning in result.warnings)
 
 
 def test_gate_defers_repair_plan_until_review_barrier(tmp_path):

@@ -22,7 +22,7 @@ def test_template_config_loads_with_defaults():
     assert config.data["quality"]["profile"]["strictness"] == "balanced"
     assert config.data["quality"]["reader_payoff"]["review_mode"] == "risk_based"
     assert config.data["quality"]["humanizer"]["semantic_review_mode"] == "risk_based"
-    assert config.data["quality"]["humanizer"]["semantic_review_change_ratio"] == 0.15
+    assert "semantic_review_change_ratio" not in config.data["quality"]["humanizer"]
     assert config.data["semantic"]["vector_store"]["backend"] == "local_hnsw"
     assert config.data["semantic"]["vector_store"]["hnsw_threshold"] == 10000
     assert config.data["semantic"]["vector_store"]["hnsw_ef_search"] == 80

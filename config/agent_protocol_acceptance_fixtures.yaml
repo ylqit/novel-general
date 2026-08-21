@@ -195,7 +195,7 @@ professional_prompt_calibration:
       positive: "将抽象紧张改为角色反复确认门闩并缩短回答，同时保持线索和选择不变。"
       negative: "随机替换同义词、拆短句并新增戏剧性背叛。"
       boundary: "有意整齐或抒情的段落不是天然 AI 味，只有遮蔽人物与场景功能时才改。"
-    humanizer_semantic_reviewer:
+    prose_revision_semantic_reviewer:
       positive: "逐项核对双稿中的人物知识、关系结果、能力代价和受保护线索。"
       negative: "只因两稿主题相似就认定语义等价。"
       boundary: "等价走位和感官替换可接受，但改变谁看见证据会改变知识状态。"

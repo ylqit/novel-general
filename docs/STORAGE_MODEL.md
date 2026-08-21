@@ -1,6 +1,6 @@
 # Storage Model
 
-本文定义 v0.6.0 的项目落盘合同、事务恢复语义和派生数据边界。
+本文定义公开稳定版 v0.7.0 的项目落盘合同、事务恢复语义和派生数据边界。
 
 ## 1. 标准目录
 
@@ -17,9 +17,12 @@
 | `40_manuscript/final/` | canonical prose | chapter finalize | hash 审批与事务回滚 |
 | `50_workbench/` | non-canonical evidence | Agent + CLI | 可归档；不得被查询层当 canonical |
 | `50_workbench/human_story_reviews/bundles/` | immutable review evidence | CLI | 冻结当前候选的完整独立审稿；hash 漂移使决定失效 |
-| `50_workbench/human_story_reviews/` | five-hash-bound human evidence | CLI + human | v3 决定和十项证据按候选 hash 不可变保留；latest 仅指向当前决定 |
+| `50_workbench/human_author_revisions/` | pre-final human authorship evidence | CLI + human + isolated reviewer | 源候选、修订前 bundle、人工完整候选、冻结记录、双稿复核和 validation 均以 hash 绑定 |
+| `50_workbench/human_story_reviews/` | six-hash-bound human evidence | CLI + human | v4 风险分层决定按候选 hash 不可变保留；latest 仅指向当前决定 |
 | `50_workbench/human_story_reviews/consultations/` | non-canonical advisory records | CLI + human | 同候选复用会话；候选变化后全部 stale；永不写 final/canonical |
 | `50_workbench/intelligence_selections/` | hash-bound human selection | CLI + human | `chapter_direction_selection_v1` 与方向 Markdown 联合批准和编译 |
+| `10_bible/style_profiles/author_voice_edit_pairs.json` | human-approved style evidence | CLI + human | 只引用真实人工修改与 final 的重合 span；最多 12 个 active，不自动淘汰 |
+| `80_exports/platform/` | derived publication advisory | publication subsystem | 政策预检与 provenance 可重建；不保存正文、Prompt 或检测器结论 |
 | `50_workbench/editorial_patterns/registry.jsonl` | derived editorial diagnostics | editorial aggregate / explicit commands | 不承担门禁；损坏由 doctor 警告并显式 rebuild |
 | `60_rag/chunks/` | derived | RAG builder | 从 final/ledger 重建 |
 | `60_rag/metadata/embeddings.jsonl` | derived full snapshot | explicit full rebuild | 从 chunks/memory 重建 |
@@ -40,7 +43,7 @@
 
 Agent 只能写 manifest 中唯一声明的 `io.output.path`。它不能直接写 Bible、outline、state、final、RAG 或 runtime DB。CLI 在 validate 成功后才可通过 apply/finalize 将候选物化到 canonical 路径。
 
-网页审稿和咨询记录都属于 non-canonical evidence。人工正文修改也不能直接编辑 draft/final：它只允许写已验证 repair task 的完整候选输出，并以 `agent=human` 走正常 submit、hash 更新、修章额度、gate 和独立审稿生命周期。
+网页审稿和咨询记录都属于 non-canonical evidence。人工正文修改不能直接编辑 draft/final：普通修订与 repair 绑定修订都只能写 `50_workbench` 的完整候选，经 `human_author_revision_v1`、双稿语义复核和 `agent=human` 提交。普通修订不消耗 repair 额度；repair 绑定候选消费对应轮次。提交后旧 gate、bundle、咨询、接受和平台预检全部 stale，并重跑全量 gate 与独立审稿。
 
 `reader_promise_ledger_v1` 是作者向读者建立的期待窗口，不是实际读者行为；`arc_causal_simulation_v1` 是经人工批准的滚动规划约束，不是世界事实；`editorial_pattern_item_v1` 是无正文的编辑复发诊断，不是事实或作者提示。这三个层面禁止相互混写。因果模拟的角色状态 basis 直接哈希 semantic apply 维护的 `60_rag/memory/characters/`，不再读取旧的单文件 character-memory 投影。
 

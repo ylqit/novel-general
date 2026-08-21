@@ -846,8 +846,9 @@ def test_unverified_commercial_fanfiction_reaches_writing_and_export_without_rig
     editorial_roles = {item["id"] for item in review_payload["editorial_team"]}
     assert report.blocking is False
     assert exported.blocking is False
-    assert risk["unverified_rights_blocks_export"] is False
-    assert risk["commercial_intent_blocks_export"] is False
+    assert risk["schema"] == "publication_risk_report_v2"
+    assert risk["blocking"] is False
+    assert risk["engine_performed_legal_verification"] is False
     assert "Rights" not in (root / exported.bundle_file).read_text(encoding="utf-8")
     assert {"reader_experience_editor", "canon_fidelity_reviewer"} <= editorial_roles
     assert any(
@@ -969,7 +970,7 @@ def test_fanfiction_similarity_excludes_names_but_detects_continuous_source_pros
     assert any(item["code"] == "fanfiction_source_prose_reproduction" for item in failures)
 
 
-def test_humanizer_v4_escalates_fact_and_excessive_rewrite_drift(tmp_path):
+def test_humanizer_v4_blocks_fact_drift_without_rewrite_percentage(tmp_path):
     config, root, source_path = seed_fanfiction_project(tmp_path)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# 第一章\n\n林舟在第12层青铜门前握住星纹钥匙。\n", encoding="utf-8")
@@ -982,10 +983,8 @@ def test_humanizer_v4_escalates_fact_and_excessive_rewrite_drift(tmp_path):
     assert result.passed is False
     assert result.need_human is True
     assert report["schema"] == "humanizer_check_v3"
-    assert {item["code"] for item in result.issues} >= {
-        "humanizer_excessive_rewrite",
-        "humanizer_number_drift",
-    }
+    assert {item["code"] for item in result.issues} == {"humanizer_number_drift"}
+    assert "rewrite_ratio" not in json.dumps(report, ensure_ascii=False)
 
 
 def test_publication_export_rejects_output_outside_exports(tmp_path):

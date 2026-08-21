@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 import hashlib
@@ -66,7 +65,7 @@ CHINESE_HUMANIZER_CATALOG: tuple[dict[str, Any], ...] = (
     {
         "code": "humanizer_inflated_significance",
         "category": "意义膨胀",
-        "severity": "P1",
+        "severity": "P2",
         "patterns": ("意义深远", "深远意义", "不言而喻", "命运的齿轮", "历史性的时刻", "至关重要", "举足轻重"),
         "threshold": 1,
         "suggestion": "把抽象拔高改成角色能看见、付出或误判的具体后果。",
@@ -74,7 +73,7 @@ CHINESE_HUMANIZER_CATALOG: tuple[dict[str, Any], ...] = (
     {
         "code": "humanizer_summary_voice",
         "category": "总结腔",
-        "severity": "P1",
+        "severity": "P2",
         "patterns": ("总之", "由此可见", "可以看出", "这意味着", "接下来", "本章", "这一刻标志着"),
         "threshold": 2,
         "suggestion": "删掉作者总结，把信息压回动作、对白、选择或场景变化里。",
@@ -763,18 +762,17 @@ def writer_craft_brief(
             "give important speakers distinct rhythm and intent",
         ],
         "scene_texture": [
-            "open in a concrete place, body state, or action",
-            "anchor each major scene with one sensory detail",
-            "use action to carry psychology before direct explanation",
+            "enter through a concrete place, body state, action, or necessary aftermath when it changes perception or choice",
+            "use detail only when it affects perception, judgment, action, cost, or relationship",
+            "let action carry psychology when that is truer to the current character and scene",
         ],
-        "ending_hook": card.get("hook") or (beat_hooks[-1] if beat_hooks else "leave a concrete unanswered pressure"),
+        "ending_state": card.get("hook") or (beat_hooks[-1] if beat_hooks else "leave a changed situation or emotional aftereffect"),
         "forbidden_reveals": as_list(card.get("forbidden_reveals")),
-        "ai_voice_forbidden_zone": [
-            "generic importance language",
-            "summary-heavy plot recap",
-            "visible prompt labels",
-            "rule-of-three filler",
-            "same-length paragraphs and same speaker rhythm",
+        "natural_prose_priorities": [
+            "put the declared desire, resistance, choice, cost, gain, and protected outcome into the scene",
+            "preserve character-specific perception, strategy, emotion, and relationship pressure",
+            "remove task or prompt residue before submission",
+            "avoid repeating one narrative function when no new action, information, or consequence is added",
         ],
         "style_memory": style_context,
         "creative_brief_status": creative.get("status", "missing"),
@@ -795,10 +793,10 @@ def humanizer_rules() -> dict[str, Any]:
             ],
             "pass_2_strengthen_voice": [
                 "补具体动作：让角色用选择、手上动作、移动路线承担心理变化。",
-                "补感官细节：每个主要场景至少有声音、触感、气味、光线或身体代价之一。",
-                "调整句长节奏：紧张处短句切开，解释处合并，避免等长句排队。",
+                "只补会改变感知、判断、行动、关系或身体代价的有效细节，不设置感官配额。",
+                "句长跟随当前压力与人物意识，不把短句或整齐变化当作目标。",
                 "增强对白差异：每个说话人带不同目的、遮掩、身份压力或关系变化。",
-                "把章末落点改成具体发现、决定、威胁或误解，而不是抽象展望。",
+                "章末必须留下状态变化或情绪余波，但不强制悬崖、反转或强尾钩。",
                 "保留人物包声明的感知偏向、决策偏向、话语层级、社交面具和情绪泄漏。",
                 "强化场景中的相反欲望、隐藏议程、不可逆行动和情绪余波，但不得改动 canonical 事实。",
                 "不得用通用口头禅、强加方言、固定外貌段落或统一对白配额来伪造人物差异。",
@@ -819,6 +817,28 @@ def humanizer_rules() -> dict[str, Any]:
             "candidate must be submitted with draft submit",
             "candidate cannot write final/RAG/graph/memory/db directly",
             "platform guidance is not a sentence-length, dialogue-ratio, payoff, or cliffhanger quota",
+        ],
+    }
+
+
+def author_natural_prose_policy() -> dict[str, Any]:
+    """Return writer-facing principles without detector labels, codes, quotas, or word lists."""
+
+    return {
+        "before_submit": [
+            "remove all task instructions, placeholders, and out-of-world author notes",
+            "make the chapter's desire, resistance, choice, cost, gain, and changed exit state observable",
+            "preserve character-specific perception, decision strategy, emotional ownership, and relationship pressure",
+            "remove repeated explanation when it adds no action, information, choice, or emotional consequence",
+            "use detail only when it changes perception, judgment, action, cost, or relationship",
+            "follow the current scene and author preference; do not impose sentence, dialogue, sensory, pace, or cliffhanger quotas",
+        ],
+        "protected": [
+            "chapter contract",
+            "knowledge boundaries",
+            "ability costs",
+            "relationship stage",
+            "protected outcomes",
         ],
     }
 
@@ -1185,25 +1205,6 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
     issues, warnings = detect_humanizer_issues(text)
     source = humanizer_source_for_candidate(root, chapter_number, target)
     source_text = safe_read_text(source) if source is not None and source.exists() else ""
-    change_ratio = humanizer_change_ratio(source_text, text) if source_text else None
-    humanizer_config = config.data.get("quality", {}).get("humanizer", {})
-    warning_ratio = float(humanizer_config.get("changed_character_warning_ratio") or 0.35)
-    human_ratio = float(humanizer_config.get("changed_character_human_ratio") or 0.60)
-    if change_ratio is not None and change_ratio >= human_ratio:
-        issues.append(
-            {
-                "code": "humanizer_excessive_rewrite",
-                "severity": "P1",
-                "category": "过度改写",
-                "message": f"candidate changed-character ratio requires human review: {change_ratio:.3f} >= {human_ratio:.3f}",
-                "evidence": [],
-                "suggestion": "缩小改写范围，保留事实、场景结果和人物声音；或交由人工确认。",
-            }
-        )
-    elif change_ratio is not None and change_ratio >= warning_ratio:
-        warnings.append(
-            f"changed-character ratio is high: {change_ratio:.3f} >= warning threshold {warning_ratio:.3f}"
-        )
     fact_issues, fact_warnings = humanizer_fact_drift(root, source_text, text)
     issues.extend(fact_issues)
     warnings.extend(fact_warnings)
@@ -1211,13 +1212,12 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
     report_dir.mkdir(parents=True, exist_ok=True)
     report_file = report_dir / f"ch{chapter_number:03d}.humanize_check.json"
     md_file = report_dir / f"ch{chapter_number:03d}.humanize_check.md"
-    need_human = any(item.get("code") in {"humanizer_excessive_rewrite", "humanizer_number_drift", "humanizer_character_drift"} for item in issues)
+    need_human = any(item.get("code") in {"humanizer_number_drift", "humanizer_character_drift"} for item in issues)
     passed = not any(item.get("severity") in {"P0", "P1"} for item in issues)
     semantic_reasons = (
         humanize_semantic_review_reasons(
             config,
             chapter_number=chapter_number,
-            change_ratio=change_ratio,
         )
         if passed and source is not None
         else ()
@@ -1246,7 +1246,7 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
             semantic_task_file = semantic_task.task_file
             next_command = (
                 "longform-engine agent-task brief project.yaml "
-                f"--task-id humanize_semantic_review:ch{chapter_number:03d}:v4"
+                f"--task-id prose_revision_semantic_review:ch{chapter_number:03d}:humanizer:v4"
             )
     elif passed:
         next_command = submit_command
@@ -1254,7 +1254,7 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
         mark_tasks_for_chapter_type(
             root,
             chapter_number=chapter_number,
-            task_types=("humanize_semantic_review",),
+            task_types=("prose_revision_semantic_review",),
             to_status="superseded",
             command="creative humanize-check",
             artifact=target,
@@ -1274,7 +1274,6 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
         "source_file": relative_path(root, source) if source is not None else "",
         "source_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest() if source_text else "",
         "candidate_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-        "changed_character_ratio": round(change_ratio, 4) if change_ratio is not None else None,
         "passed": passed,
         "need_human": need_human,
         "semantic_review_required": semantic_required,
@@ -1305,7 +1304,6 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
                 f"- File: `{relative_path(root, target)}`",
                 f"- Passed: {passed}",
                 f"- Need human: {need_human}",
-                f"- Changed-character ratio: {change_ratio if change_ratio is not None else 'not available'}",
                 f"- Semantic review required: {semantic_required}",
                 f"- Semantic review reasons: {', '.join(semantic_reasons) or 'none'}",
                 f"- Next command: `{next_command}`",
@@ -1342,7 +1340,6 @@ def humanize_semantic_review_reasons(
     config: ConfigDocument,
     *,
     chapter_number: int,
-    change_ratio: float | None,
 ) -> tuple[str, ...]:
     """Return deterministic reasons that require an independent Humanizer semantic review."""
 
@@ -1351,7 +1348,7 @@ def humanize_semantic_review_reasons(
     profile = quality.get("profile") if isinstance(quality.get("profile"), dict) else {}
     assurance_mode = str(profile.get("strictness") or "balanced")
     review_mode = str(humanizer.get("semantic_review_mode") or "risk_based")
-    reasons: list[str] = []
+    reasons: list[str] = ["dual_prose_semantic_review"]
     if assurance_mode == "strict" or review_mode == "always":
         reasons.append("strict_or_always_mode")
     if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
@@ -1363,11 +1360,6 @@ def humanize_semantic_review_reasons(
     }
     if chapter_number in milestones:
         reasons.append("semantic_review_milestone")
-    threshold = float(humanizer.get("semantic_review_change_ratio") or 0.15)
-    if assurance_mode == "light":
-        threshold = max(threshold, 0.20)
-    if change_ratio is not None and change_ratio >= threshold:
-        reasons.append(f"change_ratio:{change_ratio:.4f}>={threshold:.4f}")
     if bool(quality.get("semantic_review_boundaries", True)) and humanizer_volume_boundary(config, chapter_number):
         reasons.append("volume_boundary")
     root = resolve_project_root(config)
@@ -1449,7 +1441,6 @@ def humanize_semantic_task(
     review_reasons = tuple(reasons or humanize_semantic_review_reasons(
         config,
         chapter_number=chapter_number,
-        change_ratio=humanizer_change_ratio(source_text, candidate_text),
     ))
     task_dir = root / "50_workbench" / "humanizer_tasks"
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -1510,7 +1501,7 @@ def humanize_semantic_task(
                 "",
                 "## Role And Objective",
                 "",
-                "You are the independent Humanizer semantic-preservation reviewer, not the rewriting Agent.",
+                "You are the independent prose-revision semantic reviewer, not the rewriting Agent.",
                 "Compare the source and candidate. Judge meaning preservation before prose polish.",
                 f"- Trigger reasons: {', '.join(review_reasons) or 'manual request'}",
                 "",
@@ -1522,15 +1513,20 @@ def humanize_semantic_task(
                 "",
                 "## Review Dimensions",
                 "",
-                *[f"- `{dimension}`" for dimension in HUMANIZER_FACT_DIMENSIONS],
+                "- `chapter_contract_preservation`",
+                "- `knowledge_boundary_preservation`",
+                "- `ability_cost_preservation`",
+                "- `relationship_stage_preservation`",
+                "- `protected_outcome_preservation`",
+                "- `revision_goal_achievement`",
                 "- Preserve chapter duty, reader gain, cost, forbidden reveals, and each declared character voice.",
                 "- Report P0/P1 AI-taste or semantic findings even when the prose sounds smoother.",
                 "",
                 "## Output Contract",
                 "",
                 f"- Write one `{EVIDENCE_REVIEW_SCHEMA}` JSON: `{relative_path(root, output_file)}`",
-                "- coverage: meaning_preservation, voice_preservation, event_preservation；每项写 status、1-2 个正文 evidence_ids 和 canonical_refs。",
-                "- codes: HUMANIZE_FACT_DRIFT, HUMANIZE_VOICE_LOSS, HUMANIZE_EVENT_CHANGE.",
+                "- coverage 必须精确包含六项双稿保护维度；每项写 status、1-2 个正文 evidence_ids 和 canonical_refs。",
+                "- finding codes 只使用 PROSE_REVISION_* 注册项。",
                 "- evidence_ids may cite source or candidate as path/filename@start:end; CLI supplies hashes and scope.",
                 f"- Validate: `{validate_command}`",
                 f"- Apply after a pass: `{apply_command}`",
@@ -1546,14 +1542,15 @@ def humanize_semantic_task(
     optional_inputs = inputs[len(required_inputs):]
     manifest = build_manifest(
         root,
-        task_type="humanize_semantic_review",
+        task_type="prose_revision_semantic_review",
         chapter_number=chapter_number,
         input_files=inputs,
         allowed_output_paths=[output_file],
-        output_schema=output_protocol_for_task("humanize_semantic_review"),
+        output_schema=output_protocol_for_task("prose_revision_semantic_review"),
         validate_command=validate_command,
         apply_command=apply_command,
         failure_next_command=failure_command,
+        task_id=f"prose_revision_semantic_review:ch{chapter_number:03d}:humanizer:v4",
         context_policy={
             "required_files": required_inputs,
             "optional_files": optional_inputs,
@@ -1606,7 +1603,7 @@ def humanize_semantic_validate(
     _task, control_errors = validate_current_task_result(
         root,
         chapter_number=chapter_number,
-        task_type="humanize_semantic_review",
+        task_type="prose_revision_semantic_review",
         output_path=target,
         allowed_statuses=("submitted", "validated"),
     )
@@ -1614,8 +1611,22 @@ def humanize_semantic_validate(
     if not isinstance(payload, dict):
         payload = {}
         errors.append("semantic review result must be a JSON object.")
-    expected_dimensions = {"meaning_preservation", "voice_preservation", "event_preservation"}
-    allowed_codes = {"HUMANIZE_FACT_DRIFT", "HUMANIZE_VOICE_LOSS", "HUMANIZE_EVENT_CHANGE"}
+    expected_dimensions = {
+        "chapter_contract_preservation",
+        "knowledge_boundary_preservation",
+        "ability_cost_preservation",
+        "relationship_stage_preservation",
+        "protected_outcome_preservation",
+        "revision_goal_achievement",
+    }
+    allowed_codes = {
+        "PROSE_REVISION_FACT_DRIFT",
+        "PROSE_REVISION_KNOWLEDGE_DRIFT",
+        "PROSE_REVISION_ABILITY_COST_DRIFT",
+        "PROSE_REVISION_RELATIONSHIP_DRIFT",
+        "PROSE_REVISION_PROTECTED_OUTCOME_DRIFT",
+        "PROSE_REVISION_NOT_SUBSTANTIVE",
+    }
     errors.extend(
         validate_evidence_review(
             payload,
@@ -1632,7 +1643,7 @@ def humanize_semantic_validate(
     if not candidate.exists():
         errors.append("Humanizer candidate is missing.")
     manifest = load_json(task_dir / f"ch{chapter_number:03d}.semantic_review.agent_task.json", default={})
-    if not isinstance(manifest, dict) or manifest.get("task_type") != "humanize_semantic_review":
+    if not isinstance(manifest, dict) or manifest.get("task_type") != "prose_revision_semantic_review":
         errors.append("Humanizer semantic Agent task manifest is missing or invalid.")
         manifest = {}
     source_key = relative_path(root, source) if source is not None else ""
@@ -1643,7 +1654,7 @@ def humanize_semantic_validate(
     )
     errors.extend(evidence_errors)
     if set((payload.get("coverage") or {}).keys()) != expected_dimensions:
-        errors.append("coverage must contain exactly meaning_preservation, voice_preservation, event_preservation.")
+        errors.append("coverage must contain exactly the six prose revision semantic dimensions.")
     findings = payload.get("findings") if isinstance(payload.get("findings"), list) else []
     for index, finding in enumerate(findings):
         if not isinstance(finding, dict):
@@ -1746,7 +1757,6 @@ def humanize_semantic_submission_status(
     reasons = humanize_semantic_review_reasons(
         config,
         chapter_number=chapter_number,
-        change_ratio=humanizer_change_ratio(source_text, candidate_text),
     )
     if not reasons:
         return {"required": False, "passed": True, "reason": "not_required", "reasons": []}
@@ -2115,27 +2125,31 @@ def detect_humanizer_issues(text: str) -> tuple[list[dict[str, Any]], list[str]]
 
     ai_markers = ("pivotal", "crucial", "significant", "tapestry", "showcase", "stands as", "serves as", "not only")
     marker_hits = [marker for marker in ai_markers if marker in lower]
-    if len(marker_hits) >= 3:
+    if marker_hits:
         issues.append(
             {
                 "code": "generic_ai_diction",
-                "severity": "P1",
-                "category": "英文通用 AI 词",
-                "message": f"generic AI diction remains: {', '.join(marker_hits[:5])}",
+                "severity": "P2",
+                "category": "英文抽象表达定位信号",
+                "message": f"abstract diction signal: {', '.join(marker_hits[:5])}",
                 "evidence": [{"pattern": marker, "count": lower.count(marker), "snippet": evidence_span(text, marker)} for marker in marker_hits[:5]],
                 "suggestion": "replace generic AI diction with specific scene consequence or plain verbs",
             }
         )
 
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", text) if part.strip()]
-    if duplicate_ratio(paragraphs) >= 0.25 and len(paragraphs) >= 4:
+    duplicate_blocks = exact_duplicate_paragraph_blocks(paragraphs)
+    if duplicate_blocks:
         issues.append(
             {
                 "code": "duplicate_paragraphs",
                 "severity": "P1",
                 "category": "重复段落",
                 "message": "paragraph duplication remains high",
-                "evidence": [{"pattern": "duplicate_paragraph_ratio", "count": len(paragraphs), "snippet": paragraphs[0][:80] if paragraphs else ""}],
+                "evidence": [
+                    {"pattern": "exact_duplicate_paragraph", "count": count, "snippet": paragraph[:120]}
+                    for paragraph, count in duplicate_blocks[:3]
+                ],
                 "suggestion": "rewrite repeated paragraphs into distinct scene beats with changed pressure",
             }
         )
@@ -2156,12 +2170,22 @@ def detect_humanizer_issues(text: str) -> tuple[list[dict[str, Any]], list[str]]
             }
         )
 
-    dialogue_marks = text.count('"') + text.count("'") + text.count("\u201c") + text.count("\u201d") + text.count("\u300c") + text.count("\u300d")
-    if dialogue_marks == 0 and len(re.sub(r"\s+", "", text)) > 800:
-        warnings.append("no visible dialogue; verify scene dramatization")
-    if not strong_tail_hook(text):
-        warnings.append("tail hook is weak or abstract")
     return issues, warnings
+
+
+def exact_duplicate_paragraph_blocks(paragraphs: list[str]) -> list[tuple[str, int]]:
+    """Return only large exact duplicate prose blocks that are directly provable."""
+
+    counts: dict[str, int] = {}
+    for paragraph in paragraphs:
+        normalized = paragraph.strip()
+        if len(re.sub(r"\s+", "", normalized)) < 80:
+            continue
+        counts[normalized] = counts.get(normalized, 0) + 1
+    return sorted(
+        ((paragraph, count) for paragraph, count in counts.items() if count >= 2),
+        key=lambda item: (-item[1], -len(item[0])),
+    )
 
 
 def pattern_hits(text: str, patterns: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -2234,11 +2258,11 @@ def reader_experience_review(
         warnings.append("reader payoff is weak or implicit")
     tail = text[-500:]
     if not any(marker in tail.lower() for marker in hook_markers):
-        issues.append("ending hook is weak; chapter ends without a concrete next pressure")
+        warnings.append("ending hook is weak; chapter ends without a concrete next pressure")
     if repeated_scene_fatigue(text):
         warnings.append("repeated scene shape may cause reader fatigue")
     if emotion_turn_without_evidence(text):
-        issues.append("emotion turn appears without visible evidence or action")
+        warnings.append("emotion turn appears without visible evidence or action")
 
     report_file = artifact_dir / "reader_experience_review.md"
     atomic_write_text(
@@ -2346,14 +2370,6 @@ def humanizer_source_for_candidate(root: Path, chapter_number: int, candidate: P
                 return path
     draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     return draft if draft.exists() else None
-
-
-def humanizer_change_ratio(source: str, candidate: str) -> float:
-    source_compact = re.sub(r"\s+", "", source)
-    candidate_compact = re.sub(r"\s+", "", candidate)
-    if not source_compact and not candidate_compact:
-        return 0.0
-    return 1.0 - SequenceMatcher(None, source_compact, candidate_compact, autojunk=False).ratio()
 
 
 def humanizer_fact_drift(

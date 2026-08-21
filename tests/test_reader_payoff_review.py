@@ -152,20 +152,24 @@ def test_payoff_finalize_records_observed_reward_and_structure_atomically(tmp_pa
     approve_story_candidate(root, config)
     result = finalize_chapter(config, chapter_number=1, approved_by="human")
 
+    current_payload = read_json(
+        root / "50_workbench" / "quality_reviews" / "ch001.reader_payoff.json"
+    )
+    current_draft = root / "40_manuscript" / "draft" / "ch001.md"
     rewards = read_jsonl(root / "30_state" / "reward_ledger.jsonl")
     structures = read_jsonl(root / "30_state" / "quality" / "structure_history.jsonl")
     assert Path(result.final_file).exists()
     assert len(rewards) == 1
     assert rewards[0]["schema"] == "reader_reward_entry_v2"
     assert rewards[0]["chapter_number"] == 1
-    assert rewards[0]["observed_gain"] == positive_diagnosis(payload, "PAYOFF_DELIVERED")
+    assert rewards[0]["observed_gain"] == positive_diagnosis(current_payload, "PAYOFF_DELIVERED")
     assert rewards[0]["duty_fulfilled"] is True
     assert rewards[0]["observation_status"] == "semantic_reviewed"
     assert rewards[0]["finalized"] is True
     card = read_json(root / "20_outline" / "chapter_cards" / "ch001.json")
     assert rewards[0]["planned_gain"] == card["reader_gain"]
-    assert rewards[0]["observed_cost"] == positive_diagnosis(payload, "COST_VISIBLE")
-    assert rewards[0]["evidence_source_hash"] == hashlib.sha256((text + "\n").encode("utf-8")).hexdigest()
+    assert rewards[0]["observed_cost"] == positive_diagnosis(current_payload, "COST_VISIBLE")
+    assert rewards[0]["evidence_source_hash"] == hashlib.sha256(current_draft.read_bytes()).hexdigest()
     assert structures[0]["schema"] == "structure_observation_v2"
     assert structures[0]["chapter_number"] == 1
     assert structures[0]["opening_mode"] == "discovery"
@@ -343,6 +347,7 @@ def seed_payoff_project(tmp_path, *, chapter_number=1):
     config.data["quality"]["semantic_review_milestones"] = []
     config.data["quality"]["semantic_review_boundaries"] = False
     config.data.setdefault("editorial", {})["review_mode"] = "off"
+    config.data["length"]["chapter"]["hard_min"] = 20
     plan_chapter(config, chapter_number=chapter_number)
     text = (
         f"# 第{chapter_number}章 旧账的新缺口\n\n"

@@ -167,7 +167,10 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "scope_kinds": ("chapter",),
         "schemas": (output_protocol_for_task("repair"),),
         "output_prefixes": ("50_workbench/repair_candidates/",),
-        "validate_prefixes": ("longform-engine draft submit ",),
+        "validate_prefixes": (
+            "longform-engine draft submit ",
+            "longform-engine chapter human-revision-task ",
+        ),
         "apply_prefixes": ("longform-engine chapter finalize ",),
         "failure_prefixes": (
             "longform-engine agent-task brief ",
@@ -202,14 +205,21 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "apply_prefixes": ("longform-engine draft submit ",),
         "failure_prefixes": ("longform-engine creative humanize-task ",),
     },
-    "humanize_semantic_review": {
+    "prose_revision_semantic_review": {
         "scope_kinds": ("chapter",),
-        "schemas": (output_protocol_for_task("humanize_semantic_review"),),
-        "output_prefixes": ("50_workbench/humanizer_tasks/",),
-        "validate_prefixes": ("longform-engine creative humanize-semantic-validate ",),
+        "schemas": (output_protocol_for_task("prose_revision_semantic_review"),),
+        "output_prefixes": (
+            "50_workbench/humanizer_tasks/",
+            "50_workbench/human_author_revisions/",
+        ),
+        "validate_prefixes": (
+            "longform-engine creative humanize-semantic-validate ",
+            "longform-engine chapter human-revision-validate ",
+        ),
         "apply_prefixes": ("longform-engine draft submit ",),
         "failure_prefixes": (
             "longform-engine creative humanize-task ",
+            "longform-engine chapter human-revision-validate ",
             "longform-engine editorial need-human ",
         ),
     },

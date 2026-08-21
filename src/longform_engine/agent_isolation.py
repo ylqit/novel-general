@@ -68,7 +68,7 @@ TASK_OBJECTIVES: dict[str, str] = {
     "fanfiction_canon": "转述 canon 事实、时间线、人物声音和来源证据，不复制连续原文。",
     "fanfiction_design": "设计分歧链、后果、原创贡献和人物还原边界。",
     "humanize": "不改变故事事实，用具身行动和可辨人物声音替换模板化表达。",
-    "humanize_semantic_review": "核验润色前后事实、合同、结果和人物知识是否保持一致。",
+    "prose_revision_semantic_review": "核验任意双稿修订前后的事实、合同、结果和人物知识是否保持一致。",
     "human_review_consult": "只基于当前候选、Story Brief、冻结审稿包和选中 span 回答人工审稿问题，不执行修改。",
     "outline_design": "分配全书故事弧与卷预算，只细化当前滚动章节窗口。",
     "outline_extension": "只延伸一个受控滚动窗口，不重写已批准历史。",

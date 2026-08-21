@@ -563,22 +563,270 @@ def complete_editorial_reviews(root: Path, config, *, chapter_number: int = 1) -
             )
 
 
+def complete_human_author_revision(root: Path, config, *, chapter_number: int = 1) -> None:
+    """Create a substantive human revision, validate its pair review, and resubmit it."""
+
+    from longform_engine.agent_pipeline import validate_production_agent_result
+    from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
+    from longform_engine.agent_tasks import load_manifest
+    from longform_engine.human_author_revision import (
+        SEMANTIC_DIMENSIONS,
+        create_human_author_revision_task,
+        validate_human_author_revision,
+    )
+    from longform_engine.orchestration import submit_agent_draft
+
+    task = create_human_author_revision_task(config, chapter_number=chapter_number)
+    source = root / task.source_file
+    source_text = source.read_text(encoding="utf-8")
+    first_addition = "他没有照着最省事的路走，而是先让同伴看清这一步会付出什么。"
+    second_addition = "那一瞬的迟疑没有消失；它留在他的声音里，也改变了两人下一次开口的距离。"
+    candidate_text = source_text.strip() + f"\n\n{first_addition}{second_addition}\n"
+    candidate = root / task.candidate_file
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    candidate.write_text(candidate_text, encoding="utf-8", newline="\n")
+
+    first_source_start = next(
+        (index for index, character in enumerate(source_text) if not character.isspace()),
+        0,
+    )
+    first_source_end = min(len(source_text), first_source_start + 24)
+    second_source_start = min(first_source_end, max(len(source_text) - 24, 0))
+    second_source_end = min(len(source_text), second_source_start + 24)
+    record_path = root / task.record_file
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    first_after_start = candidate_text.index(first_addition)
+    second_after_start = candidate_text.index(second_addition)
+    record.update(
+        {
+            "revision_candidate_sha256": sha256(candidate.read_bytes()).hexdigest(),
+            "impact_dimensions": ["scene_causality", "character_voice_or_emotion"],
+            "changes": [
+                {
+                    "change_id": "human-scene-choice",
+                    "dimension": "scene_causality",
+                    "before": {
+                        "start": first_source_start,
+                        "end": first_source_end,
+                        "text": source_text[first_source_start:first_source_end],
+                    },
+                    "after": {
+                        "start": first_after_start,
+                        "end": first_after_start + len(first_addition),
+                        "text": first_addition,
+                    },
+                    "intent": "把人物为行动承担代价的选择落到场内，而不是留作概括。",
+                    "must_preserve": ["章节合同", "既定离场结果"],
+                },
+                {
+                    "change_id": "human-voice-aftereffect",
+                    "dimension": "character_voice_or_emotion",
+                    "before": {
+                        "start": second_source_start,
+                        "end": second_source_end,
+                        "text": source_text[second_source_start:second_source_end],
+                    },
+                    "after": {
+                        "start": second_after_start,
+                        "end": second_after_start + len(second_addition),
+                        "text": second_addition,
+                    },
+                    "intent": "让犹疑归属于人物声音，并留下可感的关系余波。",
+                    "must_preserve": ["人物知识边界", "关系阶段"],
+                },
+            ],
+            "protected_confirmations": {
+                key: {"preserved": True, "note": f"人工对照确认未改变 {key}。"}
+                for key in record["protected_confirmations"]
+            },
+            "human_confirmation": {
+                "confirmed_by": "human",
+                "statement": "我完成并核对了这份完整章节修订及其保护项。",
+            },
+        }
+    )
+    write_json(record_path, record)
+    pending = validate_human_author_revision(
+        config,
+        chapter_number=chapter_number,
+        file_path=candidate,
+        record_path=record_path,
+    )
+    if pending.stage != "semantic_review_pending":
+        raise AssertionError((pending.stage, pending.errors))
+
+    task_record = json.loads((root / task.task_record_file).read_text(encoding="utf-8"))
+    semantic_output = root / task_record["semantic_output_file"]
+    source_key = source.relative_to(root).as_posix()
+    candidate_key = candidate.relative_to(root).as_posix()
+    source_end = min(max(len(source_text), 1), 48)
+    candidate_end = min(max(len(candidate_text), 1), 48)
+    write_json(
+        semantic_output,
+        {
+            "schema": EVIDENCE_REVIEW_SCHEMA,
+            "verdict": "pass",
+            "coverage": {
+                dimension: {
+                    "status": "checked",
+                    "evidence_ids": [
+                        f"{source_key}@0:{source_end}",
+                        f"{candidate_key}@0:{candidate_end}",
+                    ],
+                    "canonical_refs": [],
+                }
+                for dimension in SEMANTIC_DIMENSIONS
+            },
+            "findings": [],
+        },
+    )
+    manifest = load_manifest(
+        root,
+        f"prose_revision_semantic_review:ch{chapter_number:03d}:human_author_revision:{task.source_sha256[:12]}:v4",
+    )
+    control = validate_production_agent_result(root, manifest, result_file=semantic_output)
+    if not control.ok:
+        raise AssertionError(control.normalization.errors)
+    record["semantic_review_sha256"] = sha256(semantic_output.read_bytes()).hexdigest()
+    write_json(record_path, record)
+    validated = validate_human_author_revision(
+        config,
+        chapter_number=chapter_number,
+        file_path=candidate,
+        record_path=record_path,
+    )
+    if not validated.ok:
+        raise AssertionError(validated.errors)
+    submitted = submit_agent_draft(
+        config,
+        chapter_number=chapter_number,
+        file_path=candidate,
+        agent="human",
+        overwrite=True,
+    )
+    if not submitted.passed:
+        raise AssertionError(submitted)
+    complete_editorial_reviews(root, config, chapter_number=chapter_number)
+
+
 def approve_story_candidate(root: Path, config, *, chapter_number: int = 1) -> None:
     """Complete mandatory independent editorial review and hash-bound human acceptance."""
 
+    from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
+    from longform_engine.gates import semantic_pacing_apply, semantic_pacing_task, semantic_pacing_validate
     from longform_engine.human_story_review import (
         apply_human_story_review,
         create_human_story_review_task,
     )
+    from longform_engine.quality import reader_payoff_task, reader_payoff_validate
+    from longform_engine.repair_coordination import independent_review_status
 
     complete_editorial_reviews(root, config, chapter_number=chapter_number)
+    complete_human_author_revision(root, config, chapter_number=chapter_number)
+    review_state = independent_review_status(config, chapter_number=chapter_number)
+    payoff = (review_state.get("stages") or {}).get("payoff") or {}
+    if payoff.get("required") and not payoff.get("complete"):
+        payoff_task = reader_payoff_task(config, chapter_number=chapter_number)
+        payoff_output = Path(payoff_task.output_file)
+        source = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+        source_text = source.read_text(encoding="utf-8")
+        evidence_end = min(max(len(source_text), 1), 48)
+        evidence_id = f"{source.relative_to(root).as_posix()}@0:{evidence_end}"
+        write_json(
+            payoff_output,
+            {
+                "schema": EVIDENCE_REVIEW_SCHEMA,
+                "verdict": "pass",
+                "coverage": checked_review_coverage(
+                    root,
+                    source,
+                    ("reader_gain", "cost", "promise_progress"),
+                    canonical_dimensions=("reader_gain", "cost", "promise_progress"),
+                    canonical_ref=f"20_outline/chapter_cards/ch{chapter_number:03d}.json",
+                ),
+                "findings": [
+                    {
+                        "code": code,
+                        "severity": "P3",
+                        "certainty": "confirmed",
+                        "diagnosis": diagnosis,
+                        "evidence_ids": [evidence_id],
+                        "reader_impact": impact,
+                        "repair_target": "No repair is required for this fixture evidence.",
+                        "preserve": ["current human revision", "chapter contract"],
+                    }
+                    for code, diagnosis, impact in (
+                        (
+                            "PAYOFF_DELIVERED",
+                            "The current human revision gives the reader a concrete changed condition.",
+                            "The chapter advances through an observable result rather than a restated plan.",
+                        ),
+                        (
+                            "COST_VISIBLE",
+                            "The current human revision preserves a visible cost for the chosen action.",
+                            "The gain does not erase pressure or consequence.",
+                        ),
+                        (
+                            "PROMISE_ADVANCED",
+                            "The current human revision turns the active promise into a next action.",
+                            "The promise progresses without being prematurely closed.",
+                        ),
+                    )
+                ],
+            },
+        )
+        control = validate_production_agent_result(
+            root,
+            load_manifest(root, payoff_task.manifest_file),
+            result_file=payoff_output,
+        )
+        if not control.ok:
+            raise AssertionError(control.normalization.errors)
+        payoff_validation = reader_payoff_validate(
+            config,
+            chapter_number=chapter_number,
+            file_path=payoff_output,
+        )
+        if not payoff_validation.passed:
+            raise AssertionError(payoff_validation.errors)
+        review_state = independent_review_status(config, chapter_number=chapter_number)
+    pacing = (review_state.get("stages") or {}).get("pacing") or {}
+    if pacing.get("required") and not pacing.get("complete"):
+        pacing_task = semantic_pacing_task(config, chapter_number=chapter_number)
+        pacing_output = Path(pacing_task.output_file)
+        payload = json.loads(Path(pacing_task.task_json).read_text(encoding="utf-8"))["output_schema"]
+        source = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+        payload.update(
+            {
+                "verdict": "pass",
+                "coverage": checked_review_coverage(
+                    root,
+                    source,
+                    ("pressure_release", "beat_change", "aftermath"),
+                    canonical_ref=f"20_outline/chapter_cards/ch{chapter_number:03d}.json",
+                ),
+                "findings": [],
+            }
+        )
+        write_json(pacing_output, payload)
+        control = validate_production_agent_result(
+            root,
+            load_manifest(root, pacing_task.manifest_file),
+            result_file=pacing_output,
+        )
+        if not control.ok:
+            raise AssertionError(control.normalization.errors)
+        validation = semantic_pacing_validate(
+            config,
+            chapter_number=chapter_number,
+            file_path=pacing_output,
+        )
+        if not validation.ok:
+            raise AssertionError(validation.errors)
+        semantic_pacing_apply(config, chapter_number=chapter_number, file_path=pacing_output)
     task = create_human_story_review_task(config, chapter_number=chapter_number)
     decision_path = root / task.template_file
     decision = json.loads(decision_path.read_text(encoding="utf-8"))
-    decision["checks"] = {
-        key: {"passed": True, "reason": "Verified against the current candidate."}
-        for key in decision["checks"]
-    }
     decision["decision"] = "accept"
     draft_text = (root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md").read_text(encoding="utf-8")
     evidence_end = min(40, len(draft_text))
@@ -592,6 +840,31 @@ def approve_story_candidate(root: Path, config, *, chapter_number: int = 1) -> N
         }
         for kind in ("key_turn", "character_choice_or_emotion", "reader_gain")
     ]
+    core_reasons = {
+        "scene_causality_and_key_turn_dramatized": (
+            "关键行动受到反制后由人物作出承担代价的选择，场景状态随之改变。",
+            "key_turn",
+        ),
+        "protagonist_agency_voice_and_emotion": (
+            "人物犹疑和选择均有明确归属，声音与情绪后果由正文承担。",
+            "character_choice_or_emotion",
+        ),
+        "reader_gain_and_promise_progress": (
+            "本章提供可见的新条件，并推动当前读者承诺。",
+            "reader_gain",
+        ),
+        "exit_state_and_emotional_aftereffect": (
+            "离场时行动条件与关系余波都已发生变化。",
+            "reader_gain",
+        ),
+    }
+    for field, (reason, kind) in core_reasons.items():
+        decision["dimension_coverage"][field] = {
+            "status": "confirmed",
+            "coverage_source": "human_core",
+            "reason": reason,
+            "evidence_refs": [f"candidate:{kind}:fixture"],
+        }
     decision["reader_gain_note"] = "The chapter delivers a concrete changed condition and emotional ownership."
     decision["annotations"] = []
     decision["reason"] = ""
@@ -827,4 +1100,44 @@ def complete_unified_semantic_lifecycle(root: Path, config, chapter_number: int,
     gate = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
     if not gate.exists():
         write_json(gate, {"chapter_number": chapter_number, "passed": True, "severity_counts": {"P0": 0, "P1": 0}})
+    if 1 <= chapter_number <= 3:
+        approve_author_voice_fixture(root, config, chapter_number=chapter_number)
     chapter_close(config, chapter_number=chapter_number, approved_by=approved_by)
+
+
+def approve_author_voice_fixture(root: Path, config, *, chapter_number: int) -> None:
+    """Approve one final/revision-overlapping edit pair for early-chapter fixtures."""
+
+    from longform_engine.author_voice import approve_author_voice_edit_pair
+
+    final = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
+    finalization = json.loads(final.with_suffix(".finalization.json").read_text(encoding="utf-8"))
+    binding = finalization["human_author_revision"]
+    validation_file = root / binding["validation_file"]
+    validation = json.loads(validation_file.read_text(encoding="utf-8"))
+    revision_record = json.loads((root / validation["record_file"]).read_text(encoding="utf-8"))
+    change = revision_record["changes"][0]
+    pair_file = validation_file.with_name(f"ch{chapter_number:03d}.voice_pair.json")
+    write_json(
+        pair_file,
+        {
+            "schema": "author_voice_edit_pair_v1",
+            "chapter_number": chapter_number,
+            "pair_id": f"fixture-ch{chapter_number:03d}-voice",
+            "purpose": "Preserve the human-authored way this scene makes choice and cost concrete.",
+            "abstract_principle": "Let a character-owned hesitation alter the next available action.",
+            "pov_character_id": "",
+            "scene_kind": "",
+            "before": change["before"],
+            "after": change["after"],
+            "final_sha256": sha256(final.read_bytes()).hexdigest(),
+            "human_author_revision_sha256": sha256(validation_file.read_bytes()).hexdigest(),
+            "replace_pair_id": "",
+        },
+    )
+    approve_author_voice_edit_pair(
+        config,
+        chapter_number=chapter_number,
+        record_path=pair_file,
+        approved_by="human",
+    )

@@ -317,10 +317,10 @@ def review_barrier_status(config: ConfigDocument, *, chapter_number: int) -> dic
         status = "need_human"
     elif human_story.get("status") == "redirect":
         status = "redirect_required"
-    elif human_story.get("status") not in {"accept", "repair"}:
-        status = "awaiting_human_story_review"
     elif blocking or human_story.get("status") == "repair":
         status = "review_bundle_ready"
+    elif human_story.get("status") not in {"accept", "repair"}:
+        status = "awaiting_human_story_review"
     else:
         status = "ready_to_finalize"
     return _barrier_result(
@@ -695,14 +695,23 @@ def create_repair_candidate_task(
                 "依据已批准的修复计划写一份完整替代稿。",
                 "只改计划允许的最小范围，保留 preservation ledger 中已经通过的内容。",
                 "不得新增计划外剧情、改写 canonical 事实或用解释性段落掩盖机制冲突。",
+                *(
+                    ["人工完成全文后必须建立 human_author_revision_v1 记录并通过双稿语义复核；不得直接提交。"]
+                    if safe_agent == "human"
+                    else []
+                ),
                 f"输出：`{relative_path(root, candidate_file)}`",
             ]
         )
         + "\n",
     )
     submit_command = (
-        f"longform-engine draft submit project.yaml --chapter {chapter_number} "
-        f"--file {relative_path(root, candidate_file)} --agent {safe_agent} --overwrite"
+        f"longform-engine chapter human-revision-task project.yaml --chapter {chapter_number}"
+        if safe_agent == "human"
+        else (
+            f"longform-engine draft submit project.yaml --chapter {chapter_number} "
+            f"--file {relative_path(root, candidate_file)} --agent {safe_agent} --overwrite"
+        )
     )
     manifest = build_manifest(
         root,
@@ -890,16 +899,19 @@ def _validate_repair_plan_lineage(
     task_file = plan_dir / f"{round_token}.repair_task.md"
     bundle_file = plan_dir / f"{round_token}.review_bundle.json"
     report_file = plan_dir / f"{round_token}.validation.json"
-    bundle = load_json(bundle_file, default={})
-    report = load_json(report_file, default={})
-    provenance = report.get("provenance") if isinstance(report, dict) and isinstance(report.get("provenance"), dict) else {}
-    snapshot_text = str(bundle.get("candidate_snapshot") or "") if isinstance(bundle, dict) else ""
+    loaded_bundle = load_json(bundle_file, default={})
+    bundle: dict[str, Any] = loaded_bundle if isinstance(loaded_bundle, dict) else {}
+    loaded_report = load_json(report_file, default={})
+    report: dict[str, Any] = loaded_report if isinstance(loaded_report, dict) else {}
+    loaded_provenance = report.get("provenance")
+    provenance: dict[str, Any] = loaded_provenance if isinstance(loaded_provenance, dict) else {}
+    snapshot_text = str(bundle.get("candidate_snapshot") or "")
     snapshot = root / snapshot_text
     candidate_sha256 = str(provenance.get("candidate_sha256") or "")
     errors: list[str] = []
     if str(synthesis.get("task_id") or "") != f"repair_plan_synthesis:ch{chapter_number:03d}:{round_token}:v4":
         errors.append("repair parent task id does not match chapter and round")
-    if not isinstance(report, dict) or report.get("ok") is not True:
+    if report.get("ok") is not True:
         errors.append("repair plan validation report is missing or unsuccessful")
     if int(provenance.get("chapter_number") or 0) != chapter_number or int(provenance.get("repair_round") or 0) != round_number:
         errors.append("repair plan validation provenance does not match chapter and round")
@@ -907,7 +919,7 @@ def _validate_repair_plan_lineage(
         errors.append("repair plan hash does not match its validation report")
     if not bundle_file.is_file() or str(provenance.get("review_bundle_sha256") or "") != _file_hash(bundle_file):
         errors.append("repair review bundle hash does not match its validation report")
-    if not isinstance(bundle, dict) or bundle.get("schema") != REVIEW_BUNDLE_SCHEMA:
+    if bundle.get("schema") != REVIEW_BUNDLE_SCHEMA:
         errors.append("repair review bundle schema is invalid")
     elif (
         int(bundle.get("chapter_number") or 0) != chapter_number
@@ -1086,13 +1098,14 @@ def repair_plan_status(config: ConfigDocument, *, chapter_number: int) -> dict[s
         / f"ch{chapter_number:03d}"
         / f"r{round_number:02d}.validation.json"
     )
-    report = load_json(report_file, default={})
-    provenance = report.get("provenance") if isinstance(report, dict) and isinstance(report.get("provenance"), dict) else {}
+    loaded_report = load_json(report_file, default={})
+    report: dict[str, Any] = loaded_report if isinstance(loaded_report, dict) else {}
+    loaded_provenance = report.get("provenance")
+    provenance: dict[str, Any] = loaded_provenance if isinstance(loaded_provenance, dict) else {}
     draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     current_hash = _file_hash(draft) if draft.is_file() else ""
     report_current = bool(
-        isinstance(provenance, dict)
-        and current_hash
+        current_hash
         and str(provenance.get("candidate_sha256") or "") == current_hash
     )
     return {
@@ -1102,7 +1115,7 @@ def repair_plan_status(config: ConfigDocument, *, chapter_number: int) -> dict[s
         "need_human": bool(report_current and provenance.get("need_human")),
         "report_current": report_current,
         "report_file": relative_path(root, report_file) if report_file.is_file() else "",
-        "next_command": str(report.get("next_command") or "") if isinstance(report, dict) else "",
+        "next_command": str(report.get("next_command") or ""),
     }
 
 
@@ -1131,15 +1144,17 @@ def ensure_candidate_snapshot(root: Path, *, chapter_number: int) -> Path:
 
 
 def _semantic_stage(root: Path, chapter: int, candidate_hash: str, gate: dict[str, Any]) -> dict[str, Any]:
-    state = gate.get("agent_semantic_review") if isinstance(gate.get("agent_semantic_review"), dict) else {}
+    loaded_state = gate.get("agent_semantic_review")
+    state: dict[str, Any] = loaded_state if isinstance(loaded_state, dict) else {}
     required = bool(state.get("required"))
     if not required:
         return {"required": False, "complete": True, "need_human": False, "reason": "not_required"}
-    application = load_json(
+    loaded_application = load_json(
         root / "50_workbench" / "gate_artifacts" / f"ch{chapter:03d}" / "semantic_review_application.json",
         default={},
     )
-    payload = application.get("payload") if isinstance(application, dict) else None
+    application: dict[str, Any] = loaded_application if isinstance(loaded_application, dict) else {}
+    payload = application.get("payload")
     complete = bool(
         isinstance(payload, dict)
         and application.get("schema") == "semantic_review_application_v1"
@@ -1160,8 +1175,10 @@ def _payoff_stage(config: ConfigDocument, root: Path, chapter: int, candidate_ha
     if not required:
         return {"required": False, "complete": True, "need_human": False, "reason": "not_required"}
     status = reader_payoff_review_status(config, chapter_number=chapter)
-    report = load_json(root / str(status.get("report_file") or ""), default={})
-    provenance = report.get("provenance") if isinstance(report, dict) and isinstance(report.get("provenance"), dict) else {}
+    loaded_report = load_json(root / str(status.get("report_file") or ""), default={})
+    report: dict[str, Any] = loaded_report if isinstance(loaded_report, dict) else {}
+    loaded_provenance = report.get("provenance")
+    provenance: dict[str, Any] = loaded_provenance if isinstance(loaded_provenance, dict) else {}
     complete = bool(
         report.get("schema") == "validation_report_v1"
         and report.get("ok") is True
@@ -1182,13 +1199,13 @@ def _pacing_stage(config: ConfigDocument, root: Path, chapter: int, candidate_ha
     status = semantic_pacing_review_status(config, chapter_number=chapter)
     if not status.get("required"):
         return {"required": False, "complete": True, "need_human": False, "reason": "not_required"}
-    gate = load_json(root / str(status.get("gate_result") or ""), default={})
-    applied = gate.get("semantic_pacing") if isinstance(gate, dict) and isinstance(gate.get("semantic_pacing"), dict) else {}
-    result = root / str(status.get("result_file") or "")
+    loaded_gate = load_json(root / str(status.get("gate_result") or ""), default={})
+    gate: dict[str, Any] = loaded_gate if isinstance(loaded_gate, dict) else {}
+    loaded_applied = gate.get("semantic_pacing")
+    applied: dict[str, Any] = loaded_applied if isinstance(loaded_applied, dict) else {}
     complete = bool(
-        result.is_file()
+        status.get("complete")
         and str(applied.get("source_sha256") or "") == candidate_hash
-        and str(applied.get("result_sha256") or "") == _file_hash(result)
     )
     verdict = str(applied.get("verdict") or "")
     return {
@@ -1267,6 +1284,10 @@ def _collect_findings(
                 rows.append(_admit_finding("editorial", finding, candidate_hash, fallback_evidence=f"editorial#/unresolved_items/{index}", selected_p2=selected_p2))
     unique: dict[str, dict[str, Any]] = {}
     for row in rows:
+        # P3 entries are positive observations used by the review stages as
+        # coverage evidence. They are not risks requiring a human disposition.
+        if row.get("severity") == "P3":
+            continue
         unique.setdefault(str(row["finding_id"]), row)
     return sorted(unique.values(), key=lambda item: (str(item["severity"]), str(item["finding_id"])))
 
@@ -1431,8 +1452,10 @@ def _barrier_result(
 
 
 def _selected_p2_codes(config: ConfigDocument) -> set[str]:
-    quality = config.data.get("quality") if isinstance(config.data.get("quality"), dict) else {}
-    repair = quality.get("repair") if isinstance(quality.get("repair"), dict) else {}
+    loaded_quality = config.data.get("quality")
+    quality: dict[str, Any] = loaded_quality if isinstance(loaded_quality, dict) else {}
+    loaded_repair = quality.get("repair")
+    repair: dict[str, Any] = loaded_repair if isinstance(loaded_repair, dict) else {}
     return {str(item).strip() for item in repair.get("selected_p2_codes") or [] if str(item).strip()}
 
 

@@ -1156,6 +1156,12 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
             archive_files=archives,
             next_command=f"longform-engine continue-write project.yaml --chapter {chapter_number + 1}",
         )
+    from longform_engine.author_voice import AuthorVoiceError, require_author_voice_pair_for_close
+
+    try:
+        require_author_voice_pair_for_close(root, chapter_number)
+    except AuthorVoiceError as exc:
+        raise ValueError(str(exc)) from exc
     gate = read_json(root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json", {})
     if not isinstance(gate, dict) or not (gate.get("passed") is True or gate.get("waived") is True or gate.get("waiver")):
         raise ValueError(f"Cannot close ch{chapter_number:03d}: deterministic gate is not passed.")

@@ -1,6 +1,7 @@
 """Creative operator layer for Agent-Skill writing workflows."""
 
 from .pipeline import (
+    author_natural_prose_policy,
     CreativeBriefResult,
     ExpandCheckResult,
     ExpandTaskResult,
@@ -30,6 +31,7 @@ from .pipeline import (
 )
 
 __all__ = [
+    "author_natural_prose_policy",
     "CreativeBriefResult",
     "ExpandCheckResult",
     "ExpandTaskResult",

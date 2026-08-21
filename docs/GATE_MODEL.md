@@ -22,9 +22,9 @@ longform-engine review serve project.yaml --chapter 12 --port 8765
 
 `gate-check` 在通过时返回 0；失败时仍会完整落盘产物，但 CLI 返回 1，方便 Agent 和 CI 判断阻断状态。
 
-gate 的 P0/P1 只是一类已验证 finding，不会跳过其他独立审稿。全部必审角色完成且绑定同一候选 hash 后，CLI 才冻结 review bundle；`repair synthesis-task` 让修复主编编排根因、依赖、最小修改半径与保护项，验证通过后再使用 `repair candidate-task` 创建完整替代稿任务。
+gate 的 P0/P1 只是一类已验证 finding，不会跳过其他独立审稿。`scene_prose_editor` 与 `anti_ai_editor` 每章必审；全部审稿绑定同一候选后，任何 P0/P1 直接进入不可变 repair bundle。`repair synthesis-task` 编排根因、依赖、最小修改半径与保护项，验证后再创建完整替代稿任务。
 
-冻结后必须完成 `human_story_review_v3` 十项深审。accept 需要关键转折、人物选择/情绪和读者收益三类精确 span；repair 需要结构化批注；redirect 必须选择回到章节方向或改纲。任何五类绑定 hash 漂移都使决定失效，未完成深审绝不能 finalize。
+无 P0/P1 时冻结人工修订前 bundle。每章必须完成人类完整修订、独立双稿语义复核、`agent=human` 提交和全量复审，之后才能创建 `human_story_review_v4`。accept 需要关键转折、人物选择/情绪和读者收益三类精确 span，并处置所有 finding；repair 需要结构化批注；redirect 必须选择回到章节方向或改纲。任何六类绑定 hash 漂移都使决定失效，未完成修订和深审绝不能 finalize。
 
 ## 3. 产物契约
 

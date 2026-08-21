@@ -9,7 +9,7 @@
 ```powershell
 git status --short
 git log -1 --oneline
-git tag --list "v0.6.*"
+git tag --list "v0.7.*"
 longform-engine --version
 longform-engine skills status --tool codex --json
 python scripts/check_agent_data_pipeline_readiness.py
@@ -25,7 +25,7 @@ python scripts/check_agent_data_pipeline_readiness.py
 
 ## 2. 当前发布状态
 
-- 当前稳定版为不兼容旧人工审稿协议的 `v0.6.0`。它在故事引擎基础上增加方向选择 sidecar、五类 hash 绑定的十项人工深审、非 canonical 咨询、本地审稿台与三态质量状态。
+- 当前稳定版为不兼容 v0.6 人工审稿协议的 `v0.7.0`。它要求证据化的人类作者完整修订，以六类 hash 绑定风险分层深审，保存真实作者声音 edit pair，并提供非阻断平台发布预检。
 - 协议与生产合同 readiness 以 `scripts/check_agent_data_pipeline_readiness.py` 的输出为准。
 - `literary_evidence_ready` 保持 `false`，直到真实章节与独立盲评证据完整。
 - 不要把任一本地小说运行、全局 Skill 状态或历史阶段文档当作源码事实源。
@@ -169,8 +169,10 @@ story engine and rolling carrier plan
 -> draft submit and deterministic gate
 -> independent review barrier
 -> immutable review bundle
--> mandatory human_story_review_v3 ten-dimension accept / repair / redirect
--> optional non-canonical consultation or full human repair candidate
+-> mandatory human_author_revision_v1 and independent semantic preservation review
+-> human candidate submit / complete gate and independent review rerun
+-> mandatory human_story_review_v4 risk-based accept / repair / redirect
+-> optional non-canonical consultation
 -> conditional repair plan and replacement candidate
 -> explicit chapter finalize
 -> chapter semantic task
@@ -252,7 +254,7 @@ CLI freezes complete review_bundle
 
 修复主编只归并根因、依赖顺序、最小修改半径、保护项和回归维度。它不能删除、降级或投票否决有效 P0/P1，也不能写正文。只有有效替代稿提交才消耗一次修复额度；两轮后仍有 P0/P1 必须进入 `repair_budget_exhausted`。
 
-冻结 bundle 后，`human_story_review_v3` 必须完成十项检查；accept 需要关键转折、人物选择/情绪、读者收益三类精确 span，并绑定候选、章节合同、承诺账本、因果模拟和 bundle 五类 hash。人工改稿只能发生在已验证 repair task 的完整候选中，以 `agent=human` 提交后重跑 gate 和全部独立审稿。本地网页与咨询不得直接 apply、finalize 或写 canonical。
+冻结人工修订前 bundle 后，每章必须提交 `human_author_revision_v1`：至少两个真实影响维度，其中至少一个属于场景因果或人物声音/情绪，并绑定精确前后 span、修改意图和保护项。独立 `prose_revision_semantic_reviewer` 通过后才能以 `agent=human` 提交；新 hash 会使旧 gate、bundle、咨询、接受和平台预检全部 stale，并重跑完整门禁与独立审稿。最终 `human_story_review_v4` 绑定候选、章节合同、承诺账本、因果模拟、bundle 和人工修订六类 hash，人工强制确认关键转折、人物选择/情绪与读者收益三组证据，并显式处置其余 finding。本地网页与咨询不得直接 apply、finalize 或写 canonical。
 
 ## 10. 生命周期、事务与无污染
 
@@ -299,8 +301,9 @@ task event/index 记录：
 - 生产状态机：`production.py`、`orchestration/pipeline.py`
 - 章节合同：`chapter_contract.py`
 - 门禁与审稿：`gates/pipeline.py`、`editorial/pipeline.py`
-- repair 与人工深审：`repair_coordination.py`、`human_story_review.py`
+- repair、人工修订与深审：`repair_coordination.py`、`human_author_revision.py`、`human_story_review.py`
 - 人工咨询与本地审稿台：`human_review_consultation.py`、`review_server.py`
+- 作者声音与发布预检：`author_voice.py`、`publication.py`
 - 三态质量状态：`quality/status.py`
 - 章节语义：`semantic/pipeline.py`
 - RAG 与向量：`rag/pipeline.py`、`vectorstore/pipeline.py`、`vector_backends.py`
@@ -324,7 +327,7 @@ task event/index 记录：
 1. `README.md`
 2. `docs/ARCHITECTURE.md`
 3. `docs/STORAGE_MODEL.md`
-4. `docs/V0_6_0_RELEASE_CHECKLIST.md`
+4. `docs/V0_7_0_RELEASE_CHECKLIST.md`
 5. `docs/GATE_MODEL.md`
 6. `docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`
 7. `docs/CONFIGURATION.md`
@@ -341,7 +344,7 @@ task event/index 记录：
 
 ```powershell
 python -m ruff check src tests
-python -m mypy src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/storage/recovery.py
+python -m mypy --follow-imports=skip src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/storage/recovery.py src/longform_engine/human_author_revision.py src/longform_engine/human_story_review.py src/longform_engine/author_voice.py src/longform_engine/publication.py
 python -m pytest --cov=longform_engine --cov-report=term-missing
 python scripts/validate_skills.py
 python scripts/sync_skill_references.py --check

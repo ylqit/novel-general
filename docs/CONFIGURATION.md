@@ -150,6 +150,15 @@ writing:
 
 `config/quality_profiles/market_evidence_registry.yaml` 使用 `market_evidence_registry_v2`，是起点、番茄画像观察的唯一证据索引。每条证据必须声明具体 `claims`、`source_type`、`publisher`、发布日期、`verified_at`、`applicability`、证据等级与执行级别。跨平台共同叙事核心仍由 `chapter_contract_v3` 约束；`qidian_male` 是主合同，`fanqie_free` 只提供 P2 非阻断兼容观察。禁止从公开经验推断推荐算法、留存或真实读者行为。
 
+官方发布治理使用独立的 `config/platform_publication_policy_registry.json`（`platform_publication_policy_registry_v1`），不读取项目 YAML 覆盖，也不把市场启发式升级为违规规则。每条记录包含 claim、未知项、发布者、适用范围、核验日和 `next_review_at`；到期后 `publication preflight` 返回 `policy_verification_required`。所有平台预检固定非阻断。
+
+人工作者修订、v4 深审和作者声音没有可跳过配置：
+
+- 每章 final 前必须有当前 `human_author_revision_v1` 与独立双稿语义复核。
+- `scene_prose_editor` 和 `anti_ai_editor` 固定每章必审；`editorial.review_mode=off` 只关闭附加风险角色。
+- 词语、句长、对白率、感官密度、慢章和尾钩不提供 P1 配额配置。
+- 作者声音 bank 最多 12 个 active pair；第一至第三章关闭前每章必须人工批准一个真实修改 pair，替换由人显式选择。
+
 本地审稿台没有远程监听配置。`review serve` 固定绑定 `127.0.0.1`，使用一次性 token、Host/Origin/CSRF/CSP 和预期 hash；网页不能直接写 canonical、批准章节或 finalize。`quality status --json` 分开报告 `protocol_ready`、`author_acceptance_ready` 与 `literary_evidence_ready`。
 
 ## 创作模式与同人
@@ -183,7 +192,7 @@ fanfiction:
 - `quality.profile.strictness` 使用 `light|balanced|strict`，控制风险型语义审稿。
 - `quality.semantic_pacing.review_mode` 使用 `off|risk_based|required`；`pacing.default_mode` 使用 `balanced|fast|measured`。
 - `gates.forbidden_reveals` 和 `gates.mainline_reveal_warning_hits` 分别定义项目级禁揭示词与主线揭示密度警告阈值。
-- `editorial.review_mode=off` 只关闭附加风险策略，不会跳过每章必需的 `scene_prose_editor`；开篇三章、重大兑现、同人事件与载体重复仍会追加对应审稿角色。
+- `editorial.review_mode=off` 只关闭附加风险策略，不会跳过每章必需的 `scene_prose_editor` 与 `anti_ai_editor`；开篇三章、重大兑现、同人事件与载体重复仍会追加对应审稿角色。
 - 人工批准风格样本通过 quality baseline CLI 管理，不在项目 YAML 中维护重复章节列表。
 - repair 正文候选固定最多两轮，研究提升固定要求显式批准，这些安全边界不可配置。
 
@@ -200,4 +209,4 @@ python -m longform_engine.cli init-project --template qidian-longform --output n
 python -m longform_engine.cli quality story-profile novels/demo/project.yaml --json
 ```
 
-当前 v0.6.0 稳定配置与发布验收记录见 [`V0_6_0_RELEASE_CHECKLIST.md`](V0_6_0_RELEASE_CHECKLIST.md)。
+当前公开稳定配置是 v0.7.0，验收记录见 [`V0_7_0_RELEASE_CHECKLIST.md`](V0_7_0_RELEASE_CHECKLIST.md)；v0.6.0 仅保留为历史发布事实。

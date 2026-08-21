@@ -202,7 +202,7 @@ def test_db_rebuild_recovers_agent_skill_state(tmp_path):
     assert stats.entities >= 1
     assert stats.events >= 1
     assert any(row["chapter_number"] == 1 and row["status"] == "final" for row in chapters)
-    assert submissions[0]["agent"] == "codex"
+    assert submissions[0]["agent"] == "human"
     assert submissions[0]["draft_file"] == "40_manuscript/draft/ch001.md"
     assert gates[0]["passed"] == 1
     assert all(str(row["source_path"]).startswith("40_manuscript/final/") for row in chunks)

@@ -34,10 +34,12 @@
 | `/工程滚动扩纲` | `longform-engine intelligence task project.yaml --task-type outline_extension --from-chapter A --to-chapter B` | 已批准且完整覆盖同一范围的因果模拟 | workbench 候选 | 直接 CLI 与 `production next` 都会拒绝缺失、过期或不覆盖的模拟；扩纲上下文实际携带其因果义务。 |
 | `/工程章节方向` | `longform-engine intelligence task project.yaml --task-type chapter_direction --chapter N` | `--chapter N` | workbench 候选 | 每个尚未应用方向的章节都生成 2–3 个带稳定 option ID、因果不同且有代价的方向。 |
 | `/工程选择方向` | `longform-engine intelligence direction-select project.yaml --chapter N --option OPTION_ID` | 章节、option ID；可选调整/载体理由 | `50_workbench/intelligence_selections/` | 写入绑定 Markdown hash 的 `chapter_direction_selection_v1`；批准和语义编译必须同时消费 sidecar。 |
-| `/工程故事深审任务` | `longform-engine chapter human-review-task project.yaml --chapter N` | `--chapter N` | `50_workbench/human_story_reviews/` | 全部独立审稿完成后冻结 review bundle，生成绑定五类 hash 的十项人工深审。 |
-| `/工程故事深审校验` | `longform-engine chapter human-review-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation 报告 | 校验十项检查、三类精确 span、结构化批注和 accept/repair/redirect。 |
+| `/工程人工修订任务` | `longform-engine chapter human-revision-task project.yaml --chapter N` | `--chapter N` | `50_workbench/human_author_revisions/` | 冻结 AI 源稿与修订前 bundle，建立人工完整候选和记录。 |
+| `/工程人工修订校验` | `longform-engine chapter human-revision-validate project.yaml --chapter N --file ... --record ...` | 章节、候选、记录 | validation 与双稿语义工单 | 校验真实影响维度、精确前后 span、保护项及独立语义复核。 |
+| `/工程故事深审任务` | `longform-engine chapter human-review-task project.yaml --chapter N` | `--chapter N` | `50_workbench/human_story_reviews/` | 人工候选全量复审后冻结 bundle，生成绑定六类 hash 的 v4 风险分层深审。 |
+| `/工程故事深审校验` | `longform-engine chapter human-review-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation 报告 | 校验三组人工核心证据、独立覆盖、finding 处置及 accept/repair/redirect。 |
 | `/工程故事深审应用` | `longform-engine chapter human-review-apply project.yaml --chapter N --file ... --approved-by human` | `--chapter N`、`--file`、人工确认 | 决定工件；redirect 使用 transaction v3 | accept 解锁 finalize；repair 进入两轮修章预算；redirect 返回方向或人工改纲。 |
-| `/工程审稿台` | `longform-engine review serve project.yaml --chapter N --port 8765` | 章节；可选 `--no-open` | loopback 本地 UI / non-canonical 工件 | 三栏展示合同、正文、diff、finding、平台观察、十项表单与咨询；网页不能直接 finalize 或写 canonical。 |
+| `/工程审稿台` | `longform-engine review serve project.yaml --chapter N --port 8765` | 章节；可选 `--no-open` | loopback 本地 UI / non-canonical 工件 | 展示 AI 源稿、人工完整稿、diff、风险分层深审与咨询；不代填理由，不能直接 finalize 或写 canonical。 |
 | `/工程审稿咨询` | `longform-engine review consult-task project.yaml --chapter N --question ...` | 章节、问题；可选选中 span | non-canonical Agent task | 依次使用 `consult-validate`、`consult-record`；建议只能由人工转换为批注。 |
 | `/工程人物设计` | `longform-engine character design-task project.yaml` | `project.yaml` | workbench 候选 | 生成 `character_expression_profile_v1` 工单；旧 Book Design v1 会在写第一章前进入此补全步骤。 |
 | `/工程人物设计校验` | `longform-engine character design-validate project.yaml --file ...` | `--file` | validation 报告 | 校验叙事表达画像、人物覆盖、声音/行为/身体/面具/反差合同，不写 Bible。 |
@@ -46,7 +48,7 @@
 | `/工程人物审稿校验` | `longform-engine character audit-validate project.yaml --file ...` | `--file` | validation 报告 | 每章和每个被审人物都必须有当前 hash/span 证据，pass 也不能空审。 |
 | `/工程人物样本批准` | `longform-engine character samples-approve project.yaml --file ... --approved-by human` | 定稿 span、人工确认 | `10_bible/character_expression.json` | 只允许把 final 精确片段批准为有界正/反例；不复制整章，不由 Agent 自批。 |
 | `/工程质量合同` | `longform-engine quality contract project.yaml --chapter N --explain` | `--chapter N`；可选 `--compare-market fanqie_free` | 只读 | 编译起点主合同、题材、全局/平台阶段、人工批准基线和项目覆盖；番茄比较始终非阻断。 |
-| `/工程质量状态` | `longform-engine quality status project.yaml --json` | `project.yaml` | 只读 | 分开报告协议就绪、作者接受和独立文学证据；三者不得互相替代。 |
+| `/工程质量状态` | `longform-engine quality status project.yaml --json` | `project.yaml` | 只读 | 分开报告协议、作者接受、文学证据、人工修订覆盖与平台预检状态。 |
 | `/工程批准风格基线` | `longform-engine quality baseline-approve project.yaml --chapter N --approved-by NAME` | 已定稿章节、批准者 | `10_bible/style_profiles/approved_style_baseline.json` | 只保存 prose-free 结构指纹；不会自动扩充。 |
 
 生产体验入口规则：
@@ -67,7 +69,9 @@
 | `/工程同人设计校验` | `longform-engine fanfiction design-validate project.yaml --file ...` | `--file` | 校验报告 | 校验角色引用、分歧因果、原创贡献和跨来源规则。 |
 | `/工程同人设计应用` | `longform-engine fanfiction design-apply project.yaml --file ... --approved-by human` | `--file`、人工确认 | `10_bible/fanfiction/` 与受控 Bible | 事务应用同人设计，不修改来源文件。 |
 | `/工程同人状态` | `longform-engine fanfiction status project.yaml` | `project.yaml` | 只读 | 查看 canon/design 状态与非阻断权利提示。 |
-| `/工程发布风险` | `longform-engine publication report project.yaml` | `project.yaml` | `80_exports/publication_reports/`、provenance | 生成 `publication_risk_report_v1`；所有提醒均为 advisory。 |
+| `/工程平台预检` | `longform-engine publication preflight project.yaml --target qidian_male --json` | `--target` | `80_exports/platform/` | 使用随版本发布的官方政策快照；固定非阻断，不输出检测通过。 |
+| `/工程创作来源` | `longform-engine publication provenance project.yaml --target qidian_male --json` | `--target` | `80_exports/platform/` | 汇总方向、人工修订、声音、final 与审稿 hash，不保存完整 Prompt 或人类占比。 |
+| `/工程发布风险` | `longform-engine publication report project.yaml` | `project.yaml` | `80_exports/publication_reports/`、provenance | 生成 `publication_risk_report_v2`；所有提醒均为 advisory。 |
 | `/工程发布导出` | `longform-engine publication export project.yaml` | `project.yaml` | `80_exports/` | 导出 final 正文并生成风险报告；不向正文插入声明。 |
 
 同人模式允许使用声明来源的角色名、关系、世界观、力量体系、时间线、续写、前传、AU、分歧和 crossover。`rights_status` 与 `commercial_intent` 只记录和提示，不阻断 Agent task、validate、finalize 或 export。整段来源正文、跨 JSON 字段重构和章节拼接仍必须失败。

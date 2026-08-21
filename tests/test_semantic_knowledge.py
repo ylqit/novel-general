@@ -13,11 +13,16 @@ from longform_engine.agent_tasks import load_manifest
 from longform_engine.config import load_project_config
 from longform_engine.graph import validate_graph
 from longform_engine.memory import build_tcs, validate_tcs
-from longform_engine.orchestration import open_book
+from longform_engine.orchestration import continue_write, finalize_chapter, open_book, submit_agent_draft
 from longform_engine.rag import query
 from longform_engine.semantic import chapter_close, semantic_apply, semantic_rebuild, semantic_task, semantic_validate
 from longform_engine.storage import init_project
-from tests.project_fixtures import mark_project_ready, refresh_arc_simulation_fixture
+from tests.project_fixtures import (
+    approve_author_voice_fixture,
+    approve_story_candidate,
+    mark_project_ready,
+    refresh_arc_simulation_fixture,
+)
 
 
 def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
@@ -62,16 +67,30 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
         [
             {
                 "id": "thread_old_badge",
-                "name": "旧木牌来历",
-                "plant_chapter": 1,
-                "payoff_window": [2, 3],
+                "description": "旧木牌的真正来历尚未解释。",
+                "plant": {"arc_id": "arc_01", "progress_window": [0.0, 0.2]},
+                "payoff": {"arc_id": "arc_04", "progress_window": [0.8, 1.0]},
+                "completion_required": True,
+                "status": "planned",
             }
         ],
     )
+    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card["foreshadow_refs"] = ["thread_old_badge"]
+    write_json(card_path, card)
     refresh_arc_simulation_fixture(root)
-    final = root / "40_manuscript" / "final" / "ch001.md"
-    text = "# 第一章\n\n沈阙把旧木牌交给何简，何简点头。\n"
-    final.write_text(text, encoding="utf-8")
+    continue_write(config, chapter_number=1)
+    candidate = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
+    sentence = "沈阙把旧木牌交给何简，何简点头；这次交付让两人承担新的追查风险，也留下尚未解释的来路？"
+    candidate.write_text("# 第一章\n\n" + sentence * 90 + "\n", encoding="utf-8")
+    submitted = submit_agent_draft(config, chapter_number=1, file_path=candidate, agent="codex")
+    assert submitted.passed is True
+    approve_story_candidate(root, config, chapter_number=1)
+    finalized = finalize_chapter(config, chapter_number=1, approved_by="human")
+    approve_author_voice_fixture(root, config, chapter_number=1)
+    final = Path(finalized.final_file)
+    text = final.read_text(encoding="utf-8")
     start = text.index("沈阙")
     end = text.index("。", start) + 1
     evidence = {"start": start, "end": end, "excerpt": text[start:end]}

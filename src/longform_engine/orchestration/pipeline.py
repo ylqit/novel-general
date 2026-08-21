@@ -37,8 +37,8 @@ from longform_engine.chapter_contract import (
 from longform_engine.completion import fast_completion_marker
 from longform_engine.config import ConfigDocument
 from longform_engine.creative import (
+    author_natural_prose_policy,
     humanize_candidate_submission_guard,
-    humanizer_rules,
     init_creative_brief,
     validate_creative_brief,
     writer_craft_brief,
@@ -47,6 +47,11 @@ from longform_engine.db import sync_database
 from longform_engine.editorial import editorial_finalization_blockers
 from longform_engine.gates import gate_check, semantic_pacing_review_status
 from longform_engine.graph import validate_graph
+from longform_engine.human_author_revision import (
+    HumanAuthorRevisionError,
+    require_current_human_author_revision,
+    require_validated_human_revision_submission,
+)
 from longform_engine.human_story_review import HumanStoryReviewError, require_human_story_accept
 from longform_engine.intelligence import assess_chapter_direction, assess_project_readiness
 from longform_engine.lengths import compile_length_forecast
@@ -1055,20 +1060,44 @@ def submit_agent_draft(
     text = safe_read_text(source_path).strip()
     if not text:
         raise WorkflowError("Agent draft is empty.")
-    try:
-        candidate_task = resolve_candidate_task(
-            root,
-            chapter_number=chapter_number,
-            output_path=source_path,
+    human_revision_binding: dict[str, Any] | None = None
+    candidate_task: dict[str, Any] | None = None
+    if agent == "human":
+        try:
+            human_revision_binding = require_validated_human_revision_submission(
+                config,
+                chapter_number=chapter_number,
+                candidate_file=source_path,
+            )
+        except HumanAuthorRevisionError as exc:
+            raise WorkflowError(str(exc)) from exc
+        try:
+            candidate_task = resolve_candidate_task(
+                root,
+                chapter_number=chapter_number,
+                output_path=source_path,
+            )
+        except AgentTaskContractError:
+            candidate_task = None
+        if candidate_task is not None and str(candidate_task.get("task_type") or "") != "repair":
+            raise WorkflowError("human revision candidate may overlap only a validated repair task")
+        candidate_task_id = (
+            str(candidate_task.get("task_id") or "")
+            if candidate_task is not None
+            else f"human_author_revision:ch{chapter_number:03d}:{human_revision_binding['validation_sha256'][:12]}"
         )
-    except AgentTaskContractError as exc:
-        raise WorkflowError(str(exc)) from exc
-    candidate_task_id = str(candidate_task.get("task_id") or "")
-    candidate_task_type = str(candidate_task.get("task_type") or "")
-    if agent == "human" and candidate_task_type != "repair":
-        raise WorkflowError(
-            "agent=human may submit only the full output file owned by a validated repair task"
-        )
+        candidate_task_type = "repair" if candidate_task is not None else "human_author_revision"
+    else:
+        try:
+            candidate_task = resolve_candidate_task(
+                root,
+                chapter_number=chapter_number,
+                output_path=source_path,
+            )
+        except AgentTaskContractError as exc:
+            raise WorkflowError(str(exc)) from exc
+        candidate_task_id = str(candidate_task.get("task_id") or "")
+        candidate_task_type = str(candidate_task.get("task_type") or "")
     if candidate_task_type == "repair":
         try:
             preflight_repair_submission(
@@ -1127,16 +1156,19 @@ def submit_agent_draft(
         "word_count": content_character_count(text),
         "submitted_at": submitted_at,
     }
+    if human_revision_binding is not None:
+        submission["human_author_revision"] = human_revision_binding
     write_json(submission_path, submission)
 
-    update_task_status(
-        root,
-        candidate_task_id,
-        to_status="submitted",
-        command="draft submit",
-        artifact=source_path,
-        result=draft_path,
-    )
+    if candidate_task is not None:
+        update_task_status(
+            root,
+            candidate_task_id,
+            to_status="submitted",
+            command="draft submit",
+            artifact=source_path,
+            result=draft_path,
+        )
     supersede_other_candidate_tasks(
         root,
         chapter_number=chapter_number,
@@ -1179,13 +1211,33 @@ def submit_agent_draft(
         mark_tasks_for_chapter_type(
             root,
             chapter_number=chapter_number,
-            task_types=("humanize", "humanize_semantic_review"),
+            task_types=("humanize", "prose_revision_semantic_review"),
             to_status="applied",
             command="draft submit",
             artifact=source_path,
             result=submission_path,
             from_statuses=("submitted", "validated"),
         )
+    if human_revision_binding is not None:
+        revision_validation = load_json(
+            root / str(human_revision_binding["validation_file"]),
+            default={},
+        )
+        semantic_review_file = (
+            root / str(revision_validation.get("semantic_review_file") or "")
+            if isinstance(revision_validation, dict)
+            else None
+        )
+        if semantic_review_file is not None and semantic_review_file.is_file():
+            mark_tasks_for_output(
+                root,
+                chapter_number=chapter_number,
+                output_path=semantic_review_file,
+                to_status="applied",
+                command="draft submit",
+                result=submission_path,
+                from_statuses=("submitted", "validated"),
+            )
 
     upsert_chapter_meta(
         root,
@@ -1254,14 +1306,15 @@ def submit_agent_draft(
         "created_at": utc_now(),
     }
     write_json(run_report, report)
-    update_task_status(
-        root,
-        candidate_task_id,
-        to_status="submitted",
-        command="gate-check",
-        artifact=source_path,
-        result=gate_path,
-    )
+    if candidate_task is not None:
+        update_task_status(
+            root,
+            candidate_task_id,
+            to_status="submitted",
+            command="gate-check",
+            artifact=source_path,
+            result=gate_path,
+        )
     submission["candidate_status"] = "submitted"
     submission["updated_at"] = utc_now()
     write_json(submission_path, submission)
@@ -1334,6 +1387,13 @@ def finalize_chapter(
             f"({', '.join(editorial_blockers)})."
         )
     try:
+        human_revision = require_current_human_author_revision(
+            config,
+            chapter_number=chapter_number,
+        )
+    except HumanAuthorRevisionError as exc:
+        raise WorkflowError(str(exc)) from exc
+    try:
         human_accept = require_human_story_accept(config, chapter_number=chapter_number)
     except HumanStoryReviewError as exc:
         raise WorkflowError(str(exc)) from exc
@@ -1380,6 +1440,7 @@ def finalize_chapter(
         source_paths=[
             draft_path,
             gate_path,
+            root / str(human_revision["validation_file"]),
             root / str(human_accept["decision_file"]),
             *([payoff_output, payoff_report] if payoff_output is not None and payoff_report is not None else []),
             *(
@@ -1436,6 +1497,27 @@ def finalize_chapter(
                 "reader_promise_ledger_sha256": str(human_accept["reader_promise_ledger_sha256"]),
                 "arc_causal_simulation_sha256": str(human_accept["arc_causal_simulation_sha256"]),
                 "review_bundle_sha256": str(human_accept["review_bundle_sha256"]),
+                "human_author_revision_sha256": str(
+                    human_accept["human_author_revision_sha256"]
+                ),
+                "decision": "accept",
+                "approved_by": "human",
+                "dimension_coverage": human_accept["dimension_coverage"],
+                "evidence_spans": human_accept["evidence_spans"],
+                "annotations": human_accept["annotations"],
+                "finding_resolutions": human_accept["finding_resolutions"],
+                "reader_gain_note": human_accept["reader_gain_note"],
+            },
+            "human_author_revision": {
+                "schema": "human_author_revision_finalization_binding_v1",
+                "validation_file": str(human_revision["validation_file"]),
+                "validation_sha256": str(human_revision["validation_sha256"]),
+                "record_file": str(human_revision["record_file"]),
+                "record_sha256": str(human_revision["record_sha256"]),
+                "source_candidate_sha256": str(human_revision["source_candidate_sha256"]),
+                "review_bundle_sha256": str(human_revision["review_bundle_sha256"]),
+                "revision_candidate_sha256": str(human_revision["revision_candidate_sha256"]),
+                "semantic_review_sha256": str(human_revision["semantic_review_sha256"]),
             },
             "draft_sha256": sha256_text(final_text),
             "final_sha256": sha256_text(final_text),
@@ -1710,7 +1792,11 @@ def write_writing_task(
     context_text = context_file.read_text(encoding="utf-8") if context_file.exists() else ""
     graph_summary = summarize_story_graph(story_graph)
     canon_research = load_recent_research_canon(root)
-    style_context = load_style_context(root)
+    style_context = load_style_context(
+        root,
+        chapter_number=chapter_number,
+        card=card if isinstance(card, dict) else {},
+    )
     tcs_path = root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json"
     tcs_payload = load_json(tcs_path, default={})
     if not isinstance(tcs_payload, dict):
@@ -1788,7 +1874,7 @@ def write_writing_task(
         fanfiction_contract=fanfiction_contract,
         resolved_contract_refs=resolved_contract_refs,
         core_context_coverage=core_context_coverage,
-        humanizer_policy=humanizer_rules().get("two_pass_workflow", {}),
+        humanizer_policy=author_natural_prose_policy(),
     )
     next_command = draft_submit_command(root, chapter_number, recommended_draft, default_agent)
     payload = {
@@ -2766,6 +2852,7 @@ def agent_submission_dirs(root: Path, config: ConfigDocument) -> tuple[Path, ...
     return (
         agent_draft_dir(root, config),
         root / "50_workbench" / "repair_candidates",
+        root / "50_workbench" / "human_author_revisions",
     )
 
 
@@ -3416,7 +3503,7 @@ def build_chapter_fact_inventory(
         "methods.humanizer_self_check",
         "methods",
         humanizer_policy,
-        source="config/humanizer_rules",
+        source="compiled_author_natural_prose_policy",
         priority="method",
         reason="final expression self-check without changing story facts",
     )
@@ -3868,16 +3955,6 @@ def load_fanfiction_writing_contract(
     }
 
 
-def compact_style_context(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    return {
-        "source": value.get("source", ""),
-        "notes": trim_text(str(value.get("notes") or ""), 240),
-        "fingerprint": value.get("fingerprint") if isinstance(value.get("fingerprint"), dict) else {},
-    }
-
-
 def current_outline_anchor(root: Path, chapter_number: int) -> dict[str, Any]:
     anchors = normalize_records(load_json(root / "20_outline" / "outline_anchors.json", default=[]))
     selected: dict[str, Any] = {}
@@ -3928,7 +4005,13 @@ def summarize_graph_constraints(root: Path, chapter_number: int) -> dict[str, An
     }
 
 
-def load_style_context(root: Path) -> dict[str, Any]:
+def load_style_context(
+    root: Path,
+    *,
+    chapter_number: int = 0,
+    card: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {}
     active_profile = root / "10_bible" / "style_profiles" / "current_style_profile.json"
     if active_profile.exists():
         payload = load_json(active_profile, default={})
@@ -3936,7 +4019,7 @@ def load_style_context(root: Path) -> dict[str, Any]:
             profile = payload.get("profile") if isinstance(payload.get("profile"), dict) else payload
             fingerprint = profile.get("fingerprint") if isinstance(profile.get("fingerprint"), dict) else profile
             notes = str(profile.get("summary") or json.dumps(profile, ensure_ascii=False))[:400]
-            return {
+            context = {
                 "source": relative_path(root, active_profile),
                 "notes": notes,
                 "fingerprint": fingerprint,
@@ -3947,27 +4030,42 @@ def load_style_context(root: Path) -> dict[str, Any]:
                 "library_source": payload.get("library_source", ""),
             }
     canonical = root / "60_rag" / "memory" / "style" / "style_fingerprint.json"
-    if canonical.exists():
+    if not context and canonical.exists():
         payload = load_json(canonical, default={})
         if isinstance(payload, dict):
-            return {
+            context = {
                 "source": relative_path(root, canonical),
                 "notes": str(payload.get("notes") or "")[:400],
                 "fingerprint": payload.get("fingerprint") if isinstance(payload.get("fingerprint"), dict) else {},
                 "canonical": True,
             }
-    candidates = [
-        root / "10_bible" / "style_bible.md",
-        root / "10_bible" / "style.md",
-        root / "00_governance" / "reader_contract.md",
-    ]
-    source = next((path for path in candidates if path.exists()), None)
-    text = safe_read_text(source) if source else ""
-    return {
-        "source": relative_path(root, source) if source else "",
-        "notes": text[:400],
-        "fingerprint": simple_style_fingerprint(text),
-    }
+    if not context:
+        candidates = [
+            root / "10_bible" / "style_bible.md",
+            root / "10_bible" / "style.md",
+            root / "00_governance" / "reader_contract.md",
+        ]
+        source = next((path for path in candidates if path.exists()), None)
+        text = safe_read_text(source) if source else ""
+        context = {
+            "source": relative_path(root, source) if source else "",
+            "notes": text[:400],
+            "fingerprint": simple_style_fingerprint(text),
+        }
+    if chapter_number > 1:
+        from longform_engine.author_voice import relevant_author_voice_examples
+
+        card = card if isinstance(card, dict) else {}
+        scene_carriers = card.get("scene_carriers") if isinstance(card.get("scene_carriers"), list) else []
+        context["approved_human_edit_examples"] = relevant_author_voice_examples(
+            root,
+            pov_character_id=str(card.get("pov_character_id") or card.get("pov") or ""),
+            scene_kind=str(card.get("primary_scene_carrier") or (scene_carriers[0] if scene_carriers else "")),
+            limit=2,
+        )
+    else:
+        context["approved_human_edit_examples"] = []
+    return context
 
 
 def load_gate_history(root: Path, *, limit: int) -> list[dict[str, Any]]:

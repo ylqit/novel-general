@@ -40,7 +40,7 @@ Before prose is written, the author Agent reads only `50_workbench/writing_tasks
 - Story boundaries: preserve protected outcomes, obey prohibited drift, deliver the declared reader gain, emotional aftereffect and relationship change.
 - Carrier variation: use the recent-five-chapter carrier warning to change pressure, character ownership or dramatic method when needed; an approved repetition reason is authority, not a quota exemption invented by the author.
 - Ending condition: land on the declared changed state and chapter pressure without forcing a universal cliffhanger.
-- Failure repair path: follow `production next` until semantic, payoff, pacing and editorial reviews all bind to the same candidate hash. `scene_prose_editor` is mandatory. Freeze the review bundle, then run `human_story_review_v3`: all ten checks and three exact evidence-span kinds are required for accept; repair requires structured annotations; redirect returns to direction or outline revision.
+- Failure repair path: follow `production next` until semantic, payoff, pacing and editorial reviews all bind to the same candidate hash. `scene_prose_editor` and `anti_ai_editor` are mandatory; P0/P1 enters immutable repair before author acceptance. With no blockers, complete `human_author_revision_v1`, independent dual-prose semantic review, human submit and full re-review. Then run `human_story_review_v4`: three human core evidence kinds and explicit finding dispositions are required; repair needs structured annotations; redirect returns to direction or outline revision.
 
 Required production closed loop:
 

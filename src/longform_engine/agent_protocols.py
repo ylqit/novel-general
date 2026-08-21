@@ -58,7 +58,7 @@ DESIGN_TASK_TYPES = frozenset(
 )
 EVIDENCE_REVIEW_TASK_TYPES = frozenset(
     {
-        "humanize_semantic_review",
+        "prose_revision_semantic_review",
         "reader_payoff_review",
         "editorial_review",
         "pacing_review",
