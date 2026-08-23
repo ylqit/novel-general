@@ -32,6 +32,11 @@ from longform_engine.agent_tasks import (
     write_manifest,
 )
 from longform_engine.config import ConfigDocument
+from longform_engine.fanfiction_sources import (
+    FanfictionSourceError,
+    library_item_texts,
+    source_fact_records,
+)
 from longform_engine.character_expression import character_expression_diagnostics
 from longform_engine.creative import detect_prose_naturalness_issues, reader_experience_review
 from longform_engine.db import database_path, sync_database
@@ -2044,27 +2049,32 @@ def check_fanfiction_source_reproduction(
     for source in canon.get("sources") or []:
         if not isinstance(source, dict):
             continue
-        for source_file in source.get("source_files") or []:
-            path = root / str(source_file)
-            if not path.is_file():
+        for binding in source.get("item_bindings") or []:
+            if not isinstance(binding, dict):
                 continue
-            source_text = normalize_fanfiction_similarity(safe_read_text(path), protected_terms)
-            for part in candidate_parts:
-                candidate = normalize_fanfiction_similarity(part, protected_terms)
-                overlap = ngram_overlap_ratio(candidate, source_text, size=10)
-                if candidate in source_text or overlap >= 0.62:
-                    return [
-                        {
-                            "code": "fanfiction_source_prose_reproduction",
-                            "severity": "P1",
-                            "message": (
-                                "continuous prose is too similar to a declared source after excluding names, "
-                                "abilities, and world terminology"
-                            ),
-                            "source_path": str(source_file),
-                            "overlap_ratio": round(overlap, 4),
-                        }
-                    ], []
+            item_id = str(binding.get("item_id") or "")
+            try:
+                source_texts = library_item_texts(item_id)
+            except FanfictionSourceError:
+                continue
+            for content_file, raw_source_text in source_texts.items():
+                source_text = normalize_fanfiction_similarity(raw_source_text, protected_terms)
+                for part in candidate_parts:
+                    candidate = normalize_fanfiction_similarity(part, protected_terms)
+                    overlap = ngram_overlap_ratio(candidate, source_text, size=10)
+                    if candidate in source_text or overlap >= 0.62:
+                        return [
+                            {
+                                "code": "fanfiction_source_prose_reproduction",
+                                "severity": "P1",
+                                "message": (
+                                    "continuous prose is too similar to a declared source after excluding names, "
+                                    "abilities, and world terminology"
+                                ),
+                                "source_path": f"source-library://{item_id}/{content_file}",
+                                "overlap_ratio": round(overlap, 4),
+                            }
+                        ], []
     return [], []
 
 
@@ -2073,13 +2083,10 @@ def fanfiction_protected_terms(canon: dict[str, Any]) -> tuple[str, ...]:
     for source in canon.get("sources") or []:
         if not isinstance(source, dict):
             continue
-        for field in ("characters", "abilities", "terminology"):
-            for item in source.get(field) or []:
-                if not isinstance(item, dict):
-                    continue
-                name = str(item.get("name") or "").strip()
-                if name:
-                    terms.add(name)
+        for item in source_fact_records(source, "character", "ability", "terminology"):
+            name = str(item.get("name") or "").strip()
+            if name:
+                terms.add(name)
     return tuple(sorted(terms, key=len, reverse=True))
 
 
@@ -2729,14 +2736,11 @@ def semantic_review_known_entities(root: Path) -> set[str]:
         for source in canon.get("sources") or []:
             if not isinstance(source, dict):
                 continue
-            for field in ("characters", "abilities", "terminology", "world_rules"):
-                for item in source.get(field) or []:
-                    if not isinstance(item, dict):
-                        continue
-                    for key in ("id", "name"):
-                        value = str(item.get(key) or "").strip()
-                        if value:
-                            ids.add(value)
+            for item in source_fact_records(source, "character", "ability", "terminology", "world_rule"):
+                for key in ("id", "name"):
+                    value = str(item.get(key) or "").strip()
+                    if value:
+                        ids.add(value)
     return ids
 
 

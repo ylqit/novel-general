@@ -84,6 +84,48 @@ class KnowledgeGapResult:
 WebFetcher = Callable[[str, int, int], list[dict[str, Any]]]
 
 
+def search_web_candidates(
+    config: ConfigDocument,
+    query: str,
+    *,
+    limit: int | None = None,
+    fetcher: WebFetcher | None = None,
+) -> dict[str, Any]:
+    """Return bounded web-search candidates without writing a project inbox item."""
+
+    cleaned_query = query.strip()
+    if not cleaned_query:
+        raise ResearchError("Research search query cannot be empty.")
+    research_config = config.data.get("research", {})
+    if research_config.get("web_search_enabled") is False:
+        raise ResearchError("research.web_search_enabled is false.")
+    resolved_limit = limit or int(research_config.get("search_limit") or 5)
+    timeout = int(research_config.get("network_timeout_seconds") or 8)
+    fetch = select_web_fetcher(config, fetcher)
+    network_status = "ok"
+    try:
+        sources = fetch(cleaned_query, resolved_limit, timeout)
+    except (OSError, URLError, TimeoutError, ValueError) as exc:
+        network_status = f"fallback:{exc.__class__.__name__}"
+        sources = []
+    if not sources:
+        sources = [
+            {
+                "type": "web_search_fallback",
+                "title": cleaned_query,
+                "url": f"https://www.google.com/search?q={quote(cleaned_query)}",
+                "summary": "Network search did not return parseable results; review the query manually.",
+                "credibility": "unverified",
+            }
+        ]
+    return {
+        "query": cleaned_query,
+        "network_status": network_status,
+        "provider": search_provider_name(config, fetcher),
+        "sources": sources,
+    }
+
+
 def add_research(
     config: ConfigDocument,
     *,
@@ -138,33 +180,10 @@ def search_research(
 ) -> ResearchItemResult:
     """Search the web and place summarized results in the research inbox."""
 
-    cleaned_query = query.strip()
-    if not cleaned_query:
-        raise ResearchError("Research search query cannot be empty.")
-    research_config = config.data.get("research", {})
-    if research_config.get("web_search_enabled") is False:
-        raise ResearchError("research.web_search_enabled is false.")
-
-    limit = limit or int(research_config.get("search_limit") or 5)
-    timeout = int(research_config.get("network_timeout_seconds") or 8)
-    fetch = select_web_fetcher(config, fetcher)
-    network_status = "ok"
-    try:
-        sources = fetch(cleaned_query, limit, timeout)
-    except (OSError, URLError, TimeoutError, ValueError) as exc:
-        network_status = f"fallback:{exc.__class__.__name__}"
-        sources = []
-
-    if not sources:
-        sources = [
-            {
-                "type": "web_search_fallback",
-                "title": cleaned_query,
-                "url": f"https://www.google.com/search?q={quote(cleaned_query)}",
-                "summary": "Network search did not return parseable results; review the query manually before promotion.",
-                "credibility": "unverified",
-            }
-        ]
+    search = search_web_candidates(config, query, limit=limit, fetcher=fetcher)
+    cleaned_query = str(search["query"])
+    network_status = str(search["network_status"])
+    sources = list(search["sources"])
 
     content = format_search_content(cleaned_query, sources, network_status)
     payload = make_inbox_payload(
@@ -179,7 +198,7 @@ def search_research(
     )
     payload["query"] = cleaned_query
     payload["network_status"] = network_status
-    payload["provider"] = search_provider_name(config, fetcher)
+    payload["provider"] = search["provider"]
     item_json, item_md = write_inbox_item(config, payload, content)
     return ResearchItemResult(
         item_id=payload["id"],
@@ -253,6 +272,12 @@ def promote_research(
     item = read_json(item_path, default={})
     if not isinstance(item, dict) or not item.get("id"):
         raise ResearchError(f"Invalid research item: {research_item}")
+    if item.get("external_work_request_id"):
+        raise ResearchError(
+            "external-work research is non-canonical; convert only an approved abstract technique or "
+            "general-fact finding into a planning/canon proposal, or switch to creation.mode=fanfiction "
+            "before using original characters, worlds, or events"
+        )
 
     impact = impact_analyze(config, research_item=str(item["id"]))
     text = research_text(root, item)

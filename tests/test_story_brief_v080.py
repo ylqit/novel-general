@@ -7,7 +7,6 @@ from longform_engine.agent_tasks import load_manifest, update_task_status
 from longform_engine.chapter_contract import (
     ChapterContractError,
     load_verified_chapter_contract,
-    stamp_chapter_contract,
 )
 from longform_engine.config import load_project_config
 from longform_engine.human_review_consultation import (
@@ -28,7 +27,7 @@ from longform_engine.story_brief import (
     story_brief_paths,
     story_brief_status,
 )
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import mark_project_ready, update_chapter_contract_fixture
 from tests.test_story_architecture_v050 import seed_candidate, write_review
 
 
@@ -54,15 +53,13 @@ def write_json(path: Path, payload: dict) -> None:
     )
 
 
-def test_contract_v4_obligation_changes_contract_and_story_brief_basis(tmp_path: Path):
+def test_contract_v5_obligation_changes_contract_and_story_brief_basis(tmp_path: Path):
     config, root = seed_story_brief(tmp_path)
     before = load_current_story_brief_binding(root, 1)
-    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card = read_json(card_path)
-
-    card["emotional_aftereffect"] = "胜利感被失去退路的愧疚压住。"
-    stamp_chapter_contract(card)
-    write_json(card_path, card)
+    current_contract = read_json(root / "20_outline" / "chapter_contracts" / "ch001.json")
+    aftermath = dict(current_contract["aftermath"])
+    aftermath["description"] = "胜利感被失去退路的愧疚压住。"
+    contract = update_chapter_contract_fixture(root, 1, aftermath=aftermath)
 
     stale = story_brief_status(root, 1)
     assert stale["status"] == "stale"
@@ -71,7 +68,7 @@ def test_contract_v4_obligation_changes_contract_and_story_brief_basis(tmp_path:
 
     intent_path = root / "20_outline" / "chapter_intents" / "ch001.json"
     intent = read_json(intent_path)
-    intent["chapter_contract_sha256"] = card["chapter_contract_hash"]
+    intent["chapter_contract_sha256"] = contract["chapter_contract_hash"]
     intent["approved_at"] = "fixture-reapproved-after-contract-change"
     write_json(intent_path, intent)
 
@@ -129,20 +126,17 @@ def test_superseded_writer_manifest_is_rebuilt_instead_of_reused(tmp_path: Path)
     assert story_brief_status(root, 1)["status"] == "current"
 
 
-def test_v07_chapter_card_is_explicitly_rejected(tmp_path: Path):
+def test_pre_v5_chapter_contract_is_explicitly_rejected(tmp_path: Path):
     _config, root = seed_story_brief(tmp_path)
-    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card = read_json(card_path)
-    card["chapter_contract_schema"] = "chapter_contract_v3"
-    write_json(card_path, card)
+    contract_path = root / "20_outline" / "chapter_contracts" / "ch001.json"
+    contract = read_json(contract_path)
+    contract["schema"] = "chapter_contract_v3"
+    write_json(contract_path, contract)
 
     with pytest.raises(ChapterContractError) as exc_info:
         load_verified_chapter_contract(root, 1)
 
-    message = str(exc_info.value)
-    assert "v0.7" in message
-    assert "v0.8" in message
-    assert "manually import" in message
+    assert "schema must be chapter_contract_v5" in str(exc_info.value)
 
 
 def test_basis_only_drift_stales_acceptance_and_consultation(tmp_path: Path):

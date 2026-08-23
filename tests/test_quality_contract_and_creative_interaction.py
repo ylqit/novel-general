@@ -22,7 +22,7 @@ from longform_engine.intelligence import (
     validate_intelligence_candidate,
 )
 from longform_engine.orchestration import open_book
-from longform_engine.production import agent_task_brief, production_loop, production_next
+from longform_engine.production import agent_task_brief, production_next
 from longform_engine.quality import approve_style_baseline, compile_effective_quality_contract
 from longform_engine.storage import init_project
 from tests.project_fixtures import mark_project_ready
@@ -252,6 +252,7 @@ def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str
         {
             "promise_id": "story_engine:opening_three" if chapter_number <= 3 else "story_engine:early_serial",
             "action": "setup" if chapter_number in {1, 4} else "escalate",
+            "stage_id": None,
             "intended_reader_gain": selected["reader_gain"],
             "evidence_requirement": "Show a concrete changed condition in the final prose.",
             "defer_reason": "",
@@ -474,31 +475,25 @@ def test_book_ideation_invalid_selection_does_not_pollute_bible_or_state(tmp_pat
     assert brief["manifest_validation"]["ok"] is True
 
 
-def test_production_next_keeps_active_project_intelligence_ahead_of_chapter_work(tmp_path):
+def test_production_next_keeps_current_planning_ahead_of_legacy_intelligence(tmp_path):
     config, _ = seed_project(tmp_path)
     task = create_intelligence_task(config, task_type="book_ideation")
 
     action = production_next(config)
 
-    assert action["status"] == "agent_task_awaiting_agent"
-    assert action["task_id"] == task.task_id
-    assert action["task_type"] == "book_ideation"
-    assert action["next_command"] == f"longform-engine agent-task brief project.yaml {task.task_id}"
-    assert action["protocol_validate_command"].startswith("longform-engine agent-task result-validate ")
+    assert task.task_id
+    assert action["status"] == "planning_refresh_required"
+    assert action["task_type"] == "planning_semantic_review"
+    assert action["next_command"].startswith("longform-engine planning structural-validate ")
 
 
 def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
     config, root = seed_project(tmp_path)
     mark_project_ready(root, config, direction_applied=False)
 
-    next_action = production_next(config)
-    assert next_action["task_type"] == "chapter_direction"
-    loop = production_loop(config, max_steps=1)
-    assert loop["steps"][0]["action"] == "intelligence_task"
-    assert loop["next_action"]["status"] == "agent_task_awaiting_agent"
-
-    task_id = loop["next_action"]["task_id"]
-    manifest = load_manifest(root, task_id)
+    assessment = assess_chapter_direction(config, 1)
+    task = create_intelligence_task(config, task_type="chapter_direction", chapter_number=1)
+    manifest = load_manifest(root, task.task_id)
     assert validate_manifest_strict(root, manifest).ok
     assert manifest["scope"] == {"kind": "chapter", "chapter_number": 1}
     assert manifest["policy"]["context"]["budget_profile"] == "standard"
@@ -509,7 +504,7 @@ def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
     plan = root / "20_outline" / "chapter_plan.json"
     before = {"card": card.read_bytes(), "plan": plan.read_bytes()}
 
-    valid = valid_direction_candidate(root, 1, next_action["trigger_reasons"])
+    valid = valid_direction_candidate(root, 1, assessment["reasons"])
     write_design_candidate(candidate, "chapter_direction", valid)
     delta = prepare_design_delta(config, root, "chapter_direction", candidate, valid)
     valid_delta_bytes = delta.read_bytes()
@@ -579,8 +574,8 @@ def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
     assert applied_card["reader_gain"] == valid["selected_direction"]["reader_gain"]
     assert assess_chapter_direction(config, 1)["required"] is False
     next_after_direction = production_next(config)
-    assert next_after_direction["status"] == "awaiting_human_chapter_intent"
-    assert next_after_direction["task_type"] == "human_chapter_intent"
+    assert next_after_direction["status"] == "planning_refresh_required"
+    assert next_after_direction["task_type"] == "planning_semantic_review"
 
 
 def test_chapter_direction_selection_sidecar_binds_document_option_and_compile_inputs(tmp_path):

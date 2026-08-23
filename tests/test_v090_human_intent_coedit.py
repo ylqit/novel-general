@@ -14,7 +14,6 @@ from longform_engine.chapter_coedit import (
     validate_chapter_coedit_response,
 )
 from longform_engine.review_server import review_page_html
-from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.human_chapter_intent import (
     apply_human_chapter_intent,
@@ -23,7 +22,7 @@ from longform_engine.human_chapter_intent import (
 )
 from longform_engine.orchestration import continue_write, open_book
 from longform_engine.storage import init_project
-from tests.project_fixtures import mark_project_ready
+from tests.project_fixtures import mark_project_ready, update_chapter_contract_fixture
 
 
 def seed_project(tmp_path: Path):
@@ -96,15 +95,14 @@ def test_human_intent_form_is_blank_and_stale_contract_rebuilds_it(tmp_path: Pat
     )
     assert (root / applied.intent_file).is_file()
 
-    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card = read_json(card_path)
-    card["emotional_aftereffect"] = "交出路图后，胜利感被失控的羞耻压住。"
-    stamp_chapter_contract(card)
-    write_json(card_path, card)
+    current = read_json(root / "20_outline" / "chapter_contracts" / "ch001.json")
+    aftermath = dict(current["aftermath"])
+    aftermath["description"] = "交出路图后，胜利感被失控的羞耻压住。"
+    contract = update_chapter_contract_fixture(root, 1, aftermath=aftermath)
 
     rebuilt = create_human_chapter_intent_task(config, chapter_number=1)
     rebuilt_payload = read_json(root / rebuilt.candidate_file)
-    assert rebuilt_payload["chapter_contract_sha256"] == card["chapter_contract_hash"]
+    assert rebuilt_payload["chapter_contract_sha256"] == contract["chapter_contract_hash"]
     assert rebuilt_payload["story_intent"] == ""
     assert rebuilt_payload["completed_by"] == ""
 

@@ -49,7 +49,7 @@ from longform_engine.human_author_revision import (
 )
 from longform_engine.orchestration.pipeline import submit_agent_draft
 from longform_engine.quality import compile_effective_quality_contract
-from longform_engine.reader_promises import load_reader_promise_ledger
+from longform_engine.reader_promises_v2 import load_reader_promise_ledger
 from longform_engine.repair_coordination import (
     create_repair_candidate_task,
     repair_attempt_status,

@@ -16,7 +16,7 @@ from longform_engine.db import database_path, sync_database
 from longform_engine.memory import mark_memory_stale
 from longform_engine.quality import truncate_editorial_pattern_registry, truncate_quality_history
 from longform_engine.arc_simulation import SIMULATION_DIR, mark_overlapping_arc_simulations_stale
-from longform_engine.reader_promises import LEDGER_PATH, truncate_reader_promise_ledger
+from longform_engine.reader_promises_v2 import LEDGER_PATH, truncate_reader_promise_ledger
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import (
     existing_manuscript_chapter_path,

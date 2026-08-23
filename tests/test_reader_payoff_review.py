@@ -62,7 +62,7 @@ def test_production_schedules_strict_bounded_reader_payoff_task(tmp_path):
     assert context["selection"]["related_promise_limit"] == 8
     assert Path(result.context_file).read_text(encoding="utf-8").strip()
     assert context["schema"] == "reader_payoff_context_v2"
-    assert context["chapter_contract"]["platform_promise"]
+    assert context["chapter_contract"]["reader_value"]
     assert context["quality_guidance"]["primary_market"] == "qidian_male"
     assert len(context["quality_guidance"]["compatibility_observations"]) <= 3
     assert all(

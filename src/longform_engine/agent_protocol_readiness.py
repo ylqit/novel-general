@@ -77,6 +77,7 @@ PROTOCOL_SURFACE_FILES = (
     "src/longform_engine/blind_review.py",
     "src/longform_engine/chapter_contract.py",
     "src/longform_engine/canon_changes.py",
+    "src/longform_engine/fanfiction_sources.py",
     "src/longform_engine/graph/pipeline.py",
     "src/longform_engine/human_story_review.py",
     "src/longform_engine/human_author_revision.py",

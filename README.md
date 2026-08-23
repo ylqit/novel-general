@@ -7,9 +7,9 @@
 - 本地文件是事实源；SQLite、RAG 和图谱是受控或可重建派生状态。
 - Agent 只能写 manifest 声明的 workbench 候选，不能直接写 canonical。
 
-> 当前公开稳定版为 `v0.10.0`。这是不兼容 v0.9 项目的协议升级；发布不等于文学质量、平台接受或 AI 检测规避证明。
+> 当前公开稳定版为 `v0.11.0`。它在 v0.10 生产协议上新增动态同人原著资料库；发布不等于文学质量、平台接受或 AI 检测规避证明。
 
-v0.10 明确拒绝 v0.9 及更早项目，不做双读、自动迁移或字段别名。请新建 v0.10 项目，再人工导入经确认的 Bible、纲要和必要资料。
+v0.11 延续 v0.10 对 v0.9 及更早项目的拒绝策略；同人来源只接受 `fanfiction_source_canon_v2`，不迁移或双读 v1。
 
 ## 产品边界
 
@@ -26,8 +26,9 @@ v0.10 明确拒绝 v0.9 及更早项目，不做双读、自动迁移或字段�
 | 对话共编 | `chapter_coedit_session_v2` 的方案、选择和完整候选只写 workbench |
 | 独立审稿 | `scene_prose_editor`、`anti_template_editor` 每章必审，风险角色按需增加 |
 | 人工终稿 | `human_author_revision_v4` 绑定最终锁、真实改动及双稿语义保真 |
-| 人工深审 | `human_story_review_v7` 绑定 v0.10 当前证据后才允许 finalize |
+| 人工深审 | `human_story_review_v7` 绑定当前协议证据后才允许 finalize |
 | 发布预检 | 起点、番茄政策快照只提示风险，不输出“检测通过” |
+| 同人资料 | 用户级中文原著资料库、项目固定哈希绑定、全作截至截止点覆盖门禁与项目独立 Canon |
 | 恢复 | canonical 写入使用事务、锁、证据和显式恢复命令 |
 
 ## 两套 Skill
@@ -49,7 +50,7 @@ Windows：
 py -3 -m pip install --user pipx
 py -3 -m pipx ensurepath
 py -3 -m pipx install --force `
-  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.10.0'
+  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.11.0'
 longform-engine skills install --tool codex --force
 longform-engine doctor --tool codex
 ```
@@ -60,7 +61,7 @@ macOS / Linux：
 python3 -m pip install --user pipx
 python3 -m pipx ensurepath
 python3 -m pipx install --force \
-  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.10.0'
+  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.11.0'
 longform-engine skills install --tool codex --force
 longform-engine doctor --tool codex
 ```
@@ -95,6 +96,25 @@ longform-engine intelligence apply project.yaml --task-type book_ideation --cand
 ```
 
 继续按 `production next` 完成 Book Design、纲要、人物表达和因果模拟。设计输出不会直接写 Bible；CLI 先验证，再原子物化 canonical 视图。
+
+### 同人项目资料启动
+
+同人模式不会把原著全文复制进小说项目。完整原件只进入当前用户的共享 `原著资料库/`；项目内的 `50_workbench/同人原著资料/` 只保存固定 ID/hash、批准提取、短证据和覆盖计划。每部 crossover 原著都必须独立通过“指定版本截至截止点”的覆盖门禁，之后才能创建 `fanfiction_source_canon_v2` 和同人设计。
+
+```bash
+longform-engine source-library init
+longform-engine source-library work-register --name 作品名 --creator 作者 --version 版本 --approved-by human
+longform-engine source-library item-import --work-id WORK_ID --name 资料名 --source-type 小说卷册 --version 版本 --unit-range 范围 --source-method 用户本地导入 --rights-status user_claimed_authorized --retention-mode full_text --file FILE --approved-by human
+longform-engine source-library extraction-template --item-id ITEM_ID
+longform-engine source-library extraction-approve --item-id ITEM_ID --file EXTRACTION.json --approved-by human
+longform-engine fanfiction pack-init project.yaml
+longform-engine fanfiction item-bind project.yaml --source-id SOURCE --item-id ITEM_ID --approved-by human
+longform-engine fanfiction coverage-apply project.yaml --source-id SOURCE --file 全作覆盖计划.yaml --approved-by human
+longform-engine fanfiction canon-task project.yaml
+```
+
+原创、灵感原创或改编研究仅提及作品名时，只能先创建 `research external-request`；人工批准前不会联网，也不会写入全局资料库。实际使用原著人物、世界或事件会要求把项目改为同人模式。普通网页不得被搜索结果拼接为小说、字幕或剧本全文。
+写作时若 `chapter_contract_v5` 引用了尚未进入项目 Canon 的原著 ID，`continue-write` 会先创建 `fanfiction_incremental_source_request_v1`（`network_performed=false`）并阻断。本次缺口必须依次人工批准、逐项搜索/导入、项目绑定和人工核销；模型记忆不能替代证据。
 
 ## 一章的完整闭环
 
@@ -204,7 +224,7 @@ AI 候选不能直接定稿。共编中的圈选、方案与选择只产生完�
 
 ## 人工深审
 
-`human_story_review_v7` 必须绑定当前 v0.10 证据：
+`human_story_review_v7` 必须绑定当前协议证据：
 
 1. 候选正文；
 2. `chapter_contract_v5`；
@@ -279,21 +299,21 @@ longform-engine quality status project.yaml --json
 
 源码开发、单进程测试、资源清单、构建、分发审计和隔离安装命令集中在 [Release Runbook](docs/RELEASE_RUNBOOK.md)。
 
-v0.10.0 的发布清单明确记录最终接线后未运行测试或 smoke；先前 415 passed 仅是第一阶段历史证据。tag 发布工作流只构建和上传制品，不把 CI 或 smoke 结果解释为发布质量证明。
+v0.11.0 发布包含动态原著资料库、全作覆盖门禁、项目独立 Canon、升级提案与中文操作入口；tag 工作流构建 wheel、sdist 和 `SHA256SUMS`。
 
 活动发布面必须通过版本与 schema 守卫；历史 release checklist 保留原文，不批量改写。
 
 ## 文档
 
 - [Operator Guide](docs/OPERATOR_GUIDE.md)
-- [v0.10 实施中的语义规划与版本化回溯](docs/V0_10_0_IMPLEMENTATION.md)
+- [v0.11 动态同人原著资料库](docs/V0_11_0_IMPLEMENTATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Storage Model](docs/STORAGE_MODEL.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [Quality Benchmark Runbook](docs/QUALITY_BENCHMARK_RUNBOOK.md)
 - [Release Runbook](docs/RELEASE_RUNBOOK.md)
 - [Release History](docs/RELEASE_HISTORY.md)
-- [v0.10.0 发布 Checklist](docs/V0_10_0_RELEASE_CHECKLIST.md)
+- [v0.11.0 发布 Checklist](docs/V0_11_0_RELEASE_CHECKLIST.md)
 
 ## License
 

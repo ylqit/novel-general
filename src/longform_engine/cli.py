@@ -98,6 +98,29 @@ from longform_engine.gates import (
     semantic_review_task,
     semantic_review_validate,
 )
+from longform_engine.fanfiction_sources import (
+    apply_coverage_plan,
+    apply_source_upgrade,
+    apply_version_conflict_decisions,
+    approve_incremental_source_request,
+    approve_external_work_request,
+    approve_source_extraction,
+    bind_library_item,
+    coverage_gaps,
+    create_external_work_request,
+    create_incremental_source_request,
+    create_source_extraction_template,
+    create_source_upgrade_proposal,
+    import_source_item,
+    initialize_project_source_packs,
+    initialize_source_library,
+    register_source_work,
+    resolve_incremental_source_request,
+    search_approved_external_work,
+    search_source_gap,
+    source_library_status,
+    source_upgrade_status,
+)
 from longform_engine.human_story_review import (
     apply_human_story_review,
     create_human_story_review_task,
@@ -860,8 +883,197 @@ def build_parser() -> argparse.ArgumentParser:
     character_samples_approve.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     character_samples_approve.set_defaults(func=cmd_character_samples_approve)
 
+    source_library = subparsers.add_parser(
+        "source-library",
+        help="Manage the current user's non-canonical original-work source library.",
+    )
+    source_library_subparsers = source_library.add_subparsers(dest="source_library_command", required=True)
+
+    source_library_init = source_library_subparsers.add_parser("init", help="Initialize the Chinese user-level library.")
+    source_library_init.add_argument("--json", action="store_true")
+    source_library_init.set_defaults(func=cmd_source_library_init)
+
+    source_library_status_cmd = source_library_subparsers.add_parser("status", help="Inspect the user-level library.")
+    source_library_status_cmd.add_argument("--json", action="store_true")
+    source_library_status_cmd.set_defaults(func=cmd_source_library_status)
+
+    source_library_work_register = source_library_subparsers.add_parser(
+        "work-register", help="Register one stable original-work identity after human approval."
+    )
+    source_library_work_register.add_argument("--name", required=True)
+    source_library_work_register.add_argument("--creator", required=True)
+    source_library_work_register.add_argument("--alias", action="append", default=[])
+    source_library_work_register.add_argument("--version", action="append", default=[])
+    source_library_work_register.add_argument("--approved-by", required=True, choices=["human"])
+    source_library_work_register.add_argument("--json", action="store_true")
+    source_library_work_register.set_defaults(func=cmd_source_library_work_register)
+
+    source_library_item_import = source_library_subparsers.add_parser(
+        "item-import", help="Import an approved immutable source item into the user-level library."
+    )
+    source_library_item_import.add_argument("--work-id", required=True)
+    source_library_item_import.add_argument("--name", required=True)
+    source_library_item_import.add_argument("--source-type", required=True)
+    source_library_item_import.add_argument("--version", required=True)
+    source_library_item_import.add_argument("--unit-range", required=True)
+    source_library_item_import.add_argument("--source-method", required=True)
+    source_library_item_import.add_argument(
+        "--rights-status",
+        required=True,
+        choices=["user_claimed_authorized", "public_domain_claimed", "platform_permitted_claimed", "unverified"],
+    )
+    source_library_item_import.add_argument(
+        "--retention-mode", required=True, choices=["full_text", "short_evidence", "metadata_only"]
+    )
+    source_library_item_import.add_argument("--file")
+    source_library_item_import.add_argument("--source-locator", default="")
+    source_library_item_import.add_argument("--supersedes-item-id", default="")
+    source_library_item_import.add_argument("--approved-by", required=True, choices=["human"])
+    source_library_item_import.add_argument("--json", action="store_true")
+    source_library_item_import.set_defaults(func=cmd_source_library_item_import)
+
+    source_library_extraction_template = source_library_subparsers.add_parser(
+        "extraction-template",
+        help="Create a non-canonical extraction candidate template without overwriting an existing candidate.",
+    )
+    source_library_extraction_template.add_argument("--item-id", required=True)
+    source_library_extraction_template.add_argument("--json", action="store_true")
+    source_library_extraction_template.set_defaults(func=cmd_source_library_extraction_template)
+
+    source_library_extraction_approve = source_library_subparsers.add_parser(
+        "extraction-approve", help="Validate and approve a non-canonical source extraction candidate."
+    )
+    source_library_extraction_approve.add_argument("--item-id", required=True)
+    source_library_extraction_approve.add_argument("--file", required=True)
+    source_library_extraction_approve.add_argument("--approved-by", required=True, choices=["human"])
+    source_library_extraction_approve.add_argument("--json", action="store_true")
+    source_library_extraction_approve.set_defaults(func=cmd_source_library_extraction_approve)
+
     fanfiction = subparsers.add_parser("fanfiction", help="Manage first-class canon-aware fanfiction workflows.")
     fanfiction_subparsers = fanfiction.add_subparsers(dest="fanfiction_command", required=True)
+
+    fanfiction_pack_init = fanfiction_subparsers.add_parser(
+        "pack-init", help="Create minimal Chinese project source packs without media-specific empty directories."
+    )
+    fanfiction_pack_init.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_pack_init.add_argument("--source-id")
+    fanfiction_pack_init.add_argument("--json", action="store_true")
+    fanfiction_pack_init.set_defaults(func=cmd_fanfiction_pack_init)
+
+    fanfiction_coverage_apply = fanfiction_subparsers.add_parser(
+        "coverage-apply", help="Apply a human-approved whole-work-to-cutoff coverage plan."
+    )
+    fanfiction_coverage_apply.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_coverage_apply.add_argument("--source-id", required=True)
+    fanfiction_coverage_apply.add_argument("--file", required=True)
+    fanfiction_coverage_apply.add_argument("--approved-by", required=True, choices=["human"])
+    fanfiction_coverage_apply.add_argument("--json", action="store_true")
+    fanfiction_coverage_apply.set_defaults(func=cmd_fanfiction_coverage_apply)
+
+    fanfiction_coverage_gaps = fanfiction_subparsers.add_parser(
+        "coverage-gaps", help="Show independent coverage gaps for every configured source work."
+    )
+    fanfiction_coverage_gaps.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_coverage_gaps.add_argument("--source-id")
+    fanfiction_coverage_gaps.add_argument("--json", action="store_true")
+    fanfiction_coverage_gaps.set_defaults(func=cmd_fanfiction_coverage_gaps)
+
+    fanfiction_conflict_apply = fanfiction_subparsers.add_parser(
+        "conflict-apply",
+        help="Apply one human decision for every dynamically discovered version conflict.",
+    )
+    fanfiction_conflict_apply.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_conflict_apply.add_argument("--source-id", required=True)
+    fanfiction_conflict_apply.add_argument("--file", required=True)
+    fanfiction_conflict_apply.add_argument("--approved-by", required=True, choices=["human"])
+    fanfiction_conflict_apply.add_argument("--json", action="store_true")
+    fanfiction_conflict_apply.set_defaults(func=cmd_fanfiction_conflict_apply)
+
+    fanfiction_upgrade_status = fanfiction_subparsers.add_parser(
+        "upgrade-status",
+        help="Compare pinned project hashes with newer user-library candidates without changing either layer.",
+    )
+    fanfiction_upgrade_status.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_upgrade_status.add_argument("--source-id")
+    fanfiction_upgrade_status.add_argument("--json", action="store_true")
+    fanfiction_upgrade_status.set_defaults(func=cmd_fanfiction_upgrade_status)
+
+    fanfiction_upgrade_propose = fanfiction_subparsers.add_parser(
+        "upgrade-propose",
+        help="Write a non-applying source upgrade proposal bound to current project hashes.",
+    )
+    fanfiction_upgrade_propose.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_upgrade_propose.add_argument("--source-id", required=True)
+    fanfiction_upgrade_propose.add_argument("--target-item-id", default="")
+    fanfiction_upgrade_propose.add_argument("--created-by", required=True, choices=["human"])
+    fanfiction_upgrade_propose.add_argument("--json", action="store_true")
+    fanfiction_upgrade_propose.set_defaults(func=cmd_fanfiction_upgrade_propose)
+
+    fanfiction_upgrade_apply = fanfiction_subparsers.add_parser(
+        "upgrade-apply",
+        help="Apply an independently reviewed human-approved upgrade or route historical impact to revision_branch_v2.",
+    )
+    fanfiction_upgrade_apply.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_upgrade_apply.add_argument("--proposal", required=True)
+    fanfiction_upgrade_apply.add_argument("--review", required=True)
+    fanfiction_upgrade_apply.add_argument("--decision", required=True)
+    fanfiction_upgrade_apply.add_argument("--json", action="store_true")
+    fanfiction_upgrade_apply.set_defaults(func=cmd_fanfiction_upgrade_apply)
+
+    fanfiction_item_bind = fanfiction_subparsers.add_parser(
+        "item-bind", help="Pin one approved global source item and extraction into this novel project."
+    )
+    fanfiction_item_bind.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_item_bind.add_argument("--source-id", required=True)
+    fanfiction_item_bind.add_argument("--item-id", required=True)
+    fanfiction_item_bind.add_argument("--approved-by", required=True, choices=["human"])
+    fanfiction_item_bind.add_argument("--json", action="store_true")
+    fanfiction_item_bind.set_defaults(func=cmd_fanfiction_item_bind)
+
+    fanfiction_source_search = fanfiction_subparsers.add_parser(
+        "source-search", help="Search candidates for one current approved coverage gap."
+    )
+    fanfiction_source_search.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_source_search.add_argument("--source-id", required=True)
+    fanfiction_source_search.add_argument("--gap", required=True)
+    fanfiction_source_search.add_argument("--query", required=True)
+    fanfiction_source_search.add_argument("--limit", type=positive_int_arg)
+    fanfiction_source_search.add_argument("--json", action="store_true")
+    fanfiction_source_search.set_defaults(func=cmd_fanfiction_source_search)
+
+    fanfiction_gap_request = fanfiction_subparsers.add_parser(
+        "gap-request",
+        help="Record a non-networked Canon gap discovered during design or chapter writing.",
+    )
+    fanfiction_gap_request.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_gap_request.add_argument("--source-id", required=True)
+    fanfiction_gap_request.add_argument("--chapter", type=positive_int_arg)
+    fanfiction_gap_request.add_argument("--need", required=True)
+    fanfiction_gap_request.add_argument("--reason", required=True)
+    fanfiction_gap_request.add_argument("--json", action="store_true")
+    fanfiction_gap_request.set_defaults(func=cmd_fanfiction_gap_request)
+
+    fanfiction_gap_approve = fanfiction_subparsers.add_parser(
+        "gap-approve",
+        help="Approve one incremental source request before any network search.",
+    )
+    fanfiction_gap_approve.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_gap_approve.add_argument("--request-id", required=True)
+    fanfiction_gap_approve.add_argument("--approved-by", required=True, choices=["human"])
+    fanfiction_gap_approve.add_argument("--json", action="store_true")
+    fanfiction_gap_approve.set_defaults(func=cmd_fanfiction_gap_approve)
+
+    fanfiction_gap_resolve = fanfiction_subparsers.add_parser(
+        "gap-resolve",
+        help="Resolve an incremental request with one currently bound approved item.",
+    )
+    fanfiction_gap_resolve.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_gap_resolve.add_argument("--request-id", required=True)
+    fanfiction_gap_resolve.add_argument("--item-id", required=True)
+    fanfiction_gap_resolve.add_argument("--reason", required=True)
+    fanfiction_gap_resolve.add_argument("--approved-by", required=True, choices=["human"])
+    fanfiction_gap_resolve.add_argument("--json", action="store_true")
+    fanfiction_gap_resolve.set_defaults(func=cmd_fanfiction_gap_resolve)
 
     fanfiction_canon_task = fanfiction_subparsers.add_parser(
         "canon-task",
@@ -872,8 +1084,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--input",
         dest="input_files",
         action="append",
-        required=True,
-        help="Declared source file under the project root; repeat as needed.",
+        default=[],
+        help="Optional additional approved extraction artifact under the Chinese project source pack.",
     )
     fanfiction_canon_task.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     fanfiction_canon_task.set_defaults(func=cmd_fanfiction_canon_task)
@@ -883,7 +1095,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate canon hashes, evidence spans, namespaces, and schema.",
     )
     fanfiction_canon_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    fanfiction_canon_validate.add_argument("--file", required=True, help="fanfiction_source_canon_v1 candidate JSON.")
+    fanfiction_canon_validate.add_argument("--file", required=True, help="fanfiction_source_canon_v2 candidate JSON.")
     fanfiction_canon_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     fanfiction_canon_validate.set_defaults(func=cmd_fanfiction_canon_validate)
 
@@ -1860,6 +2072,40 @@ def build_parser() -> argparse.ArgumentParser:
     research_search.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     research_search.set_defaults(func=cmd_research_search)
 
+    research_external_request = research_subparsers.add_parser(
+        "external-request",
+        help="Record a non-networked request after an original/adaptation project mentions another work.",
+    )
+    research_external_request.add_argument("config", nargs="?", default="project.yaml")
+    research_external_request.add_argument("--work-name", required=True)
+    research_external_request.add_argument(
+        "--purpose",
+        required=True,
+        choices=["factual_reference", "technique_analysis", "inspiration", "use_original_elements"],
+    )
+    research_external_request.add_argument("--reason", required=True)
+    research_external_request.add_argument("--json", action="store_true")
+    research_external_request.set_defaults(func=cmd_research_external_request)
+
+    research_external_approve = research_subparsers.add_parser(
+        "external-approve", help="Approve an external-work request without performing a network search."
+    )
+    research_external_approve.add_argument("config", nargs="?", default="project.yaml")
+    research_external_approve.add_argument("--request", required=True)
+    research_external_approve.add_argument("--approved-by", required=True, choices=["human"])
+    research_external_approve.add_argument("--json", action="store_true")
+    research_external_approve.set_defaults(func=cmd_research_external_approve)
+
+    research_external_search = research_subparsers.add_parser(
+        "external-search", help="Search only after the matching external-work request has human approval."
+    )
+    research_external_search.add_argument("config", nargs="?", default="project.yaml")
+    research_external_search.add_argument("--request", required=True)
+    research_external_search.add_argument("--query", required=True)
+    research_external_search.add_argument("--limit", type=positive_int_arg)
+    research_external_search.add_argument("--json", action="store_true")
+    research_external_search.set_defaults(func=cmd_research_external_search)
+
     research_gaps = research_subparsers.add_parser("gaps", help="Detect chapter/project knowledge gaps.")
     research_gaps.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     research_gaps.add_argument("--chapter", type=int, help="Target chapter number.")
@@ -2245,6 +2491,9 @@ def build_parser() -> argparse.ArgumentParser:
         repair_candidate_task_cmd,
         research_add,
         research_search,
+        research_external_request,
+        research_external_approve,
+        research_external_search,
         research_gaps,
         research_promote,
         impact,
@@ -2299,6 +2548,16 @@ def build_parser() -> argparse.ArgumentParser:
         fanfiction_design_task,
         fanfiction_design_validate,
         fanfiction_design_apply,
+        fanfiction_pack_init,
+        fanfiction_coverage_apply,
+        fanfiction_conflict_apply,
+        fanfiction_upgrade_propose,
+        fanfiction_upgrade_apply,
+        fanfiction_item_bind,
+        fanfiction_source_search,
+        fanfiction_gap_request,
+        fanfiction_gap_approve,
+        fanfiction_gap_resolve,
         publication_report,
         publication_preflight_cmd,
         publication_provenance_cmd,
@@ -3633,6 +3892,216 @@ def cmd_character_samples_approve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_source_library_init(args: argparse.Namespace) -> int:
+    payload = initialize_source_library()
+    _print_source_payload(payload, as_json=args.json, title="OK: user source library initialized")
+    return 0
+
+
+def cmd_source_library_status(args: argparse.Namespace) -> int:
+    payload = source_library_status()
+    _print_source_payload(payload, as_json=args.json, title="Source library status")
+    return 0
+
+
+def cmd_source_library_work_register(args: argparse.Namespace) -> int:
+    payload = register_source_work(
+        name=args.name,
+        creator=args.creator,
+        aliases=args.alias,
+        versions=args.version,
+        approved_by=args.approved_by,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: source work registered")
+    return 0
+
+
+def cmd_source_library_item_import(args: argparse.Namespace) -> int:
+    payload = import_source_item(
+        work_id=args.work_id,
+        name=args.name,
+        source_type=args.source_type,
+        version=args.version,
+        unit_range=args.unit_range,
+        source_method=args.source_method,
+        rights_status=args.rights_status,
+        retention_mode=args.retention_mode,
+        approved_by=args.approved_by,
+        file_path=args.file,
+        source_locator=args.source_locator,
+        supersedes_item_id=args.supersedes_item_id,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: source item imported")
+    return 0
+
+
+def cmd_source_library_extraction_template(args: argparse.Namespace) -> int:
+    payload = create_source_extraction_template(item_id=args.item_id)
+    _print_source_payload(payload, as_json=args.json, title="OK: source extraction candidate prepared")
+    return 0
+
+
+def cmd_source_library_extraction_approve(args: argparse.Namespace) -> int:
+    payload = approve_source_extraction(
+        item_id=args.item_id,
+        file_path=args.file,
+        approved_by=args.approved_by,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: source extraction approved")
+    return 0
+
+
+def cmd_fanfiction_pack_init(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = initialize_project_source_packs(config, source_id=args.source_id)
+    _print_source_payload(payload, as_json=args.json, title="OK: Chinese fanfiction source pack initialized")
+    return 0
+
+
+def cmd_fanfiction_coverage_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = apply_coverage_plan(
+        config,
+        source_id=args.source_id,
+        file_path=args.file,
+        approved_by=args.approved_by,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: source coverage plan applied")
+    return 0
+
+
+def cmd_fanfiction_coverage_gaps(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = coverage_gaps(config, source_id=args.source_id)
+    _print_source_payload(payload, as_json=args.json, title="Fanfiction source coverage")
+    return 0 if payload["complete"] else 1
+
+
+def cmd_fanfiction_conflict_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = apply_version_conflict_decisions(
+        config,
+        source_id=args.source_id,
+        file_path=args.file,
+        approved_by=args.approved_by,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: version conflicts resolved by human decision")
+    return 0
+
+
+def cmd_fanfiction_upgrade_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = source_upgrade_status(config, source_id=args.source_id)
+    _print_source_payload(payload, as_json=args.json, title="Fanfiction source upgrade status")
+    return 0
+
+
+def cmd_fanfiction_upgrade_propose(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = create_source_upgrade_proposal(
+        config,
+        source_id=args.source_id,
+        target_item_id=args.target_item_id,
+        created_by=args.created_by,
+    )
+    _print_source_payload(
+        payload,
+        as_json=args.json,
+        title="OK: source upgrade proposal written; project binding and Canon are unchanged",
+    )
+    return 0
+
+
+def cmd_fanfiction_upgrade_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = apply_source_upgrade(
+        config,
+        proposal_path=args.proposal,
+        review_path=args.review,
+        decision_path=args.decision,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: source upgrade decision applied")
+    return 0
+
+
+def cmd_fanfiction_item_bind(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = bind_library_item(
+        config,
+        source_id=args.source_id,
+        item_id=args.item_id,
+        approved_by=args.approved_by,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: source item pinned to project")
+    return 0
+
+
+def cmd_fanfiction_source_search(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = search_source_gap(
+        config,
+        source_id=args.source_id,
+        gap=args.gap,
+        query=args.query,
+        limit=args.limit,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: source candidates recorded for human selection")
+    return 0
+
+
+def cmd_fanfiction_gap_request(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = create_incremental_source_request(
+        config,
+        source_id=args.source_id,
+        chapter_number=args.chapter,
+        need=args.need,
+        reason=args.reason,
+    )
+    _print_source_payload(
+        payload,
+        as_json=args.json,
+        title="OK: incremental source request recorded without network access",
+    )
+    return 0
+
+
+def cmd_fanfiction_gap_approve(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = approve_incremental_source_request(
+        config,
+        request_id=args.request_id,
+        approved_by=args.approved_by,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: incremental source search approved")
+    return 0
+
+
+def cmd_fanfiction_gap_resolve(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = resolve_incremental_source_request(
+        config,
+        request_id=args.request_id,
+        item_id=args.item_id,
+        reason=args.reason,
+        approved_by=args.approved_by,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: incremental source request resolved")
+    return 0
+
+
+def _print_source_payload(payload: dict[str, Any], *, as_json: bool, title: str) -> None:
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    print(title)
+    for key, value in payload.items():
+        if isinstance(value, (dict, list)):
+            print(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+        else:
+            print(f"{key}: {value}")
+
+
 def cmd_fanfiction_canon_task(args: argparse.Namespace) -> int:
     args.task_type = "fanfiction_canon"
     args.from_chapter = None
@@ -3681,6 +4150,9 @@ def cmd_fanfiction_status(args: argparse.Namespace) -> int:
         print(f"Sources: {payload['source_count']}")
         print(f"Canon: {payload['canon_status']}")
         print(f"Design: {payload['design_status']}")
+        print(f"Source coverage: {payload['source_coverage_ready']}")
+        for error in payload["source_coverage_errors"]:
+            print(f"- {error}")
         print(f"Ready: {payload['ready']}")
         print("Rights status is advisory only and never blocks creation or export.")
     return 0
@@ -5516,6 +5988,48 @@ def cmd_research_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_research_external_request(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = create_external_work_request(
+        config,
+        work_name=args.work_name,
+        purpose=args.purpose,
+        reason=args.reason,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: external-work request awaits human approval")
+    return 0
+
+
+def cmd_research_external_approve(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = approve_external_work_request(
+        config,
+        request=args.request,
+        approved_by=args.approved_by,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: external-work request reviewed")
+    return 0
+
+
+def cmd_research_external_search(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = search_approved_external_work(
+        config,
+        request=args.request,
+        query=args.query,
+        limit=args.limit,
+    )
+    payload = asdict(result)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: approved external-work search recorded in research inbox")
+        print(f"Item: {result.item_file}")
+        print(f"Content: {result.content_file}")
+        print("Status: inbox")
+    return 0
+
+
 def cmd_research_gaps(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
     result = detect_knowledge_gaps(config, chapter_number=args.chapter)
@@ -6165,6 +6679,7 @@ def _command_label(args: argparse.Namespace) -> str:
         "skills_command",
         "benchmark_command",
         "intelligence_command",
+        "source_library_command",
         "fanfiction_command",
         "publication_command",
         "db_command",

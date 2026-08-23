@@ -56,6 +56,8 @@ REQUIRED_SUFFIXES = (
     "docs/V0_8_0_RELEASE_CHECKLIST.md",
     "docs/V0_9_0_RELEASE_CHECKLIST.md",
     "docs/V0_10_0_RELEASE_CHECKLIST.md",
+    "docs/V0_11_0_IMPLEMENTATION.md",
+    "docs/V0_11_0_RELEASE_CHECKLIST.md",
     "docs/releases/v0.4.0.md",
     "docs/releases/v0.4.1.md",
     "docs/releases/v0.4.2.md",
@@ -66,6 +68,7 @@ REQUIRED_SUFFIXES = (
     "docs/releases/v0.7.0.md",
     "docs/releases/v0.9.0.md",
     "docs/releases/v0.10.0.md",
+    "docs/releases/v0.11.0.md",
     "longform-novel-codex/SKILL.md",
     "longform-novel-codex/references/command_protocol.md",
     "longform-novel-claude/SKILL.md",
@@ -84,6 +87,7 @@ REQUIRED_SUFFIXES = (
     "src/longform_engine/blind_review.py",
     "src/longform_engine/chapter_contract.py",
     "src/longform_engine/chapter_coedit.py",
+    "src/longform_engine/fanfiction_sources.py",
     "src/longform_engine/canon_changes.py",
     "src/longform_engine/narrative_events.py",
     "src/longform_engine/planning/contracts.py",
@@ -122,6 +126,7 @@ REQUIRED_SUFFIXES = (
     "tests/test_v010_planning.py",
     "tests/test_v010_reader_promises.py",
     "tests/test_v010_revision_branch.py",
+    "tests/test_fanfiction_source_library.py",
 )
 
 

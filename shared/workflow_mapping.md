@@ -72,10 +72,16 @@ open-book
 ```text
 creation.mode = fanfiction
 -> open-book
--> fanfiction canon-task with explicitly declared source files
+-> source-library register/import/extraction approval (user-level, non-Canon)
+-> fanfiction pack-init (one dynamic Chinese pack per configured work)
+-> human selects authoritative version, explicit cutoff, and complete unit inventory
+-> bind approved item IDs/content hashes/extraction hashes into this project
+-> coverage-apply; every work independently passes unit + semantic-dimension coverage
+-> fanfiction canon-task with automatically declared approved project-pack inputs
 -> agent-task brief
--> Agent writes fanfiction_source_canon_v1
+-> Agent writes dynamic facts and approved evidence keys
 -> canon-validate
+-> CLI hydrates fanfiction_source_canon_v2 with pinned bindings and exact global evidence spans
 -> canon-apply --approved-by human
 -> book_ideation rounds with explicit human selection
 -> fanfiction design-task
@@ -87,6 +93,8 @@ creation.mode = fanfiction
 ```
 
 Rights status and commercial intent are advisory only. Names, relationships, worlds, abilities, and timelines are allowed; continuous source prose and cross-field reconstruction are not. AU and canon-divergent work is reviewed against its declared divergence and causal consequences, not against literal canon sameness.
+
+Global library updates never alter a project silently. `upgrade-status -> upgrade-propose -> independent semantic review -> human decision -> upgrade-apply` either marks explicit future dependencies stale or routes historical impact to `revision_branch_v2`. In non-fanfiction modes, a detected work name only creates `external_work_research_request_v1`; no network call occurs before human approval, and using original characters/world/events requires a mode change to fanfiction.
 
 ## Productized Agent App Flow
 

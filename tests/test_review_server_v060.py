@@ -178,7 +178,7 @@ def test_manual_full_repair_submit_consumes_budget_and_stales_old_review_and_con
         expected_candidate_sha256=manual["candidate_sha256"],
         text=replacement,
     )
-    with pytest.raises(ReviewServerError, match="human_author_revision_v3"):
+    with pytest.raises(ReviewServerError, match="human_author_revision_v4"):
         service.submit_manual_repair(
             expected_draft_sha256=before_hash,
             expected_candidate_sha256=saved["candidate_sha256"],

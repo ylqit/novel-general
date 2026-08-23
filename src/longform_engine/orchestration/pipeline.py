@@ -28,16 +28,19 @@ from longform_engine.agent_tasks import (
     validate_manifest_strict,
     write_manifest,
 )
-from longform_engine.arc_simulation import ArcSimulationError, load_active_arc_simulation
 from longform_engine.character_expression import build_character_expression_packet, character_expression_diagnostics
 from longform_engine.chapter_contract import (
     ChapterContractError,
     load_verified_chapter_contract,
     resolve_chapter_contract_refs,
-    stamp_chapter_contract,
 )
 from longform_engine.completion import fast_completion_marker
 from longform_engine.config import ConfigDocument
+from longform_engine.fanfiction_sources import (
+    create_incremental_source_request,
+    initialize_project_source_packs,
+    source_fact_records,
+)
 from longform_engine.creative import (
     author_prose_naturalness_policy,
     prose_naturalness_candidate_submission_guard,
@@ -59,7 +62,6 @@ from longform_engine.human_chapter_intent import (
     require_current_human_chapter_intent,
 )
 from longform_engine.human_story_review import HumanStoryReviewError, require_human_story_accept
-from longform_engine.intelligence import assess_chapter_direction, assess_project_readiness
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.memory import build_tcs
 from longform_engine.models import semantic_enabled
@@ -216,6 +218,8 @@ def open_book(config: ConfigDocument, confirmations: dict[str, Any] | None = Non
     """Confirm the five opening items and write first project governance files."""
 
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "") == "fanfiction":
+        initialize_project_source_packs(config)
     confirmations = confirmations or {}
     resolved = resolve_confirmations(config, confirmations)
 
@@ -1862,6 +1866,53 @@ def write_writing_task(
         raise WorkflowError("chapter writing requires chapter_contract_v5; v0.9 chapter cards are incompatible")
     if not isinstance(beat, dict) or beat.get("schema") != "plot_node_table_v1":
         raise WorkflowError("chapter writing requires the current approved plot_node_table_v1")
+    if str(config.data.get("creation", {}).get("mode") or "") == "fanfiction":
+        source_ids = {
+            str(item.get("source_id") or "")
+            for item in config.data.get("fanfiction", {}).get("sources") or []
+            if isinstance(item, dict) and item.get("source_id")
+        }
+        canon = load_json(root / "10_bible" / "fanfiction" / "source_canon.json", default={})
+        known_ids = {
+            str(fact.get("id") or "")
+            for source in (canon.get("sources") or [] if isinstance(canon, dict) else [])
+            if isinstance(source, dict)
+            for fact in source.get("facts") or []
+            if isinstance(fact, dict) and fact.get("id")
+        }
+        explicit_refs = dedupe_strings(
+            [
+                str(ref)
+                for field in (
+                    "featured_character_ids",
+                    "canon_refs",
+                    "voice_refs",
+                    "world_rule_refs",
+                    "ability_refs",
+                )
+                for ref in card.get(field) or []
+            ]
+        )
+        unknown_by_source: dict[str, list[str]] = {}
+        for ref in explicit_refs:
+            prefix = ref.split(":", 1)[0]
+            if prefix in source_ids and ref not in known_ids:
+                unknown_by_source.setdefault(prefix, []).append(ref)
+        if unknown_by_source:
+            source_id, unknown_refs = next(iter(sorted(unknown_by_source.items())))
+            request = create_incremental_source_request(
+                config,
+                source_id=source_id,
+                chapter_number=chapter_number,
+                need="确认本章尚未覆盖的原著引用：" + "、".join(sorted(unknown_refs)),
+                reason="chapter_contract_v5 准备使用未进入项目同人 Canon 的原著事实",
+            )
+            raise WorkflowError(
+                "fanfiction Canon coverage gap blocks chapter writing; "
+                f"request {request['request_id']} was recorded without network access; run "
+                "longform-engine fanfiction gap-approve project.yaml "
+                f"--request-id {request['request_id']} --approved-by human"
+            )
     obligation_file = root / "30_state" / "semantic_obligations.json"
     obligation_ledger = load_json(obligation_file, default={})
     obligations_by_id = {
@@ -4382,9 +4433,8 @@ def load_fanfiction_writing_contract(
         for source in canon.get("sources") or []:
             if not isinstance(source, dict):
                 continue
-            for character in source.get("characters") or []:
-                if not isinstance(character, dict):
-                    continue
+            characters = source_fact_records(source, "character")
+            for character in characters:
                 character_id = str(character.get("id") or "")
                 names = [
                     part.strip().casefold()
@@ -4400,13 +4450,12 @@ def load_fanfiction_writing_contract(
                     "canon_cutoff": source.get("canon_cutoff"),
                     "character_ids": [
                         item.get("id")
-                        for item in source.get("characters") or []
-                        if isinstance(item, dict) and item.get("id")
+                        for item in characters
+                        if item.get("id")
                     ][:12],
                     "unresolved_questions": [
                         trim_text(str(item.get("summary") or ""), 120)
-                        for item in source.get("unresolved_questions") or []
-                        if isinstance(item, dict)
+                        for item in source_fact_records(source, "unresolved_question")
                     ][:5],
                 }
             )
@@ -4788,7 +4837,7 @@ def write_chapter_card_artifacts(root: Path, card: dict[str, Any]) -> None:
     chapter_number = int(card["chapter_number"])
     direction = card.get("direction_selection")
     if isinstance(direction, dict) and direction.get("status") == "applied":
-        stamp_chapter_contract(card)
+        card.pop("chapter_contract_status", None)
     else:
         card.pop("chapter_contract_hash", None)
         card["chapter_contract_status"] = "pending_direction"

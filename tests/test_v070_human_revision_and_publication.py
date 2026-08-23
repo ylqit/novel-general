@@ -25,7 +25,11 @@ from longform_engine.publication import (
 from longform_engine.quality.status import quality_status
 from longform_engine.review_server import review_page_html
 from longform_engine.semantic import chapter_close, semantic_apply
-from tests.project_fixtures import approve_author_voice_fixture, prepare_unified_semantic_bundle
+from tests.project_fixtures import (
+    approve_author_voice_fixture,
+    complete_unified_semantic_lifecycle,
+    prepare_unified_semantic_bundle,
+)
 from tests.test_humanizer_semantic_review import (
     validate_prose_naturalness_output,
     write_semantic_result,
@@ -101,7 +105,7 @@ def test_human_revision_rejects_punctuation_only_changes_and_cannot_submit(tmp_p
             agent="human",
             overwrite=True,
         )
-    with pytest.raises(HumanStoryReviewError, match="human_author_revision_v3"):
+    with pytest.raises(HumanStoryReviewError, match="human_author_revision_v4"):
         create_human_story_review_task(config, chapter_number=1)
 
 
@@ -233,7 +237,7 @@ def test_agent_change_after_human_revision_requires_a_new_human_phase(tmp_path):
 
     assert submitted.passed
     assert human_author_revision_status(config, chapter_number=1)["status"] == "pending"
-    with pytest.raises(HumanStoryReviewError, match="human_author_revision_v3"):
+    with pytest.raises(HumanStoryReviewError, match="human_author_revision_v4"):
         create_human_story_review_task(config, chapter_number=1)
 
 
@@ -251,7 +255,13 @@ def test_early_chapter_voice_pair_requires_real_edit_and_explicit_limit_replacem
     semantic_output = prepare_unified_semantic_bundle(root, config, 1)
     semantic_apply(config, chapter_number=1, file_path=semantic_output)
     with pytest.raises(ValueError, match="opening_chapter requires one approved"):
-        chapter_close(config, chapter_number=1, approved_by="human")
+        complete_unified_semantic_lifecycle(
+            root,
+            config,
+            1,
+            approved_by="human",
+            approve_voice=False,
+        )
 
     approve_author_voice_fixture(root, config, chapter_number=1)
     final = root / finalized.final_file

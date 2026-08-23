@@ -36,6 +36,7 @@ from longform_engine.arc_simulation import (
     load_covering_arc_simulation,
 )
 from longform_engine.config import ConfigDocument
+from longform_engine.fanfiction_sources import fanfiction_source_readiness
 from longform_engine.completion import fast_completion_marker
 from longform_engine.creative import (
     expand_check,
@@ -1486,6 +1487,29 @@ def project_readiness_action(config: ConfigDocument, root: Path) -> dict[str, An
                 + "; ".join(readiness.errors[:3])
             ),
         )
+    if readiness.stage == "fanfiction_sources":
+        source_readiness = fanfiction_source_readiness(config)
+        return base_action(
+            status="need_human",
+            chapter_number=0,
+            blocked_by="fanfiction_source_coverage",
+            waiting_for="human",
+            next_command=str(source_readiness["next_command"]),
+            human_summary=(
+                "Complete the user-level source binding and the human-approved whole-work coverage plan "
+                "for every configured source before canon extraction or fanfiction design: "
+                + "; ".join(readiness.errors[:3])
+            ),
+        )
+    if readiness.stage == "fanfiction_canon_incompatible":
+        return base_action(
+            status="need_human",
+            chapter_number=0,
+            blocked_by="incompatible_fanfiction_canon",
+            waiting_for="human",
+            next_command="longform-engine fanfiction pack-init project.yaml",
+            human_summary="; ".join(readiness.errors),
+        )
     task_type = readiness.required_task_type
     active_statuses = {"awaiting_agent", "submitted", "validated", "invalid"}
     active_tasks = [
@@ -1511,7 +1535,7 @@ def project_readiness_action(config: ConfigDocument, root: Path) -> dict[str, An
 
 def project_intelligence_task_command(task_type: str) -> str:
     if task_type == "fanfiction_canon":
-        return "longform-engine fanfiction canon-task project.yaml --input 50_workbench/fanfiction_sources/<source-file>"
+        return "longform-engine fanfiction canon-task project.yaml"
     if task_type == "fanfiction_design":
         return "longform-engine fanfiction design-task project.yaml"
     if task_type == "character_expression_design":

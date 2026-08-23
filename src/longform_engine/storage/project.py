@@ -330,7 +330,10 @@ def init_project(
     created_dirs: list[Path] = []
     created_files: list[Path] = []
 
-    for directory in [*BASE_DIRECTORIES, *SUBDIRECTORIES]:
+    directories = [*BASE_DIRECTORIES, *SUBDIRECTORIES]
+    if str(config.data.get("creation", {}).get("mode") or "") == "fanfiction":
+        directories.append("50_workbench/同人原著资料")
+    for directory in directories:
         path = root / directory
         if not path.exists():
             path.mkdir(parents=True, exist_ok=True)

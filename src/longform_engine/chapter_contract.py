@@ -88,7 +88,13 @@ def validate_chapter_contract(
     if not isinstance(actions, list):
         errors.append("reader_promise_actions must be a list")
     elif promise_ledger is not None:
-        errors.extend(validate_promise_actions_v2(actions, promise_ledger))
+        errors.extend(
+            validate_promise_actions_v2(
+                actions,
+                promise_ledger,
+                chapter_number=chapter if isinstance(chapter, int) else None,
+            )
+        )
     return errors
 
 

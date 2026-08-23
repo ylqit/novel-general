@@ -60,16 +60,26 @@ from longform_engine.character_expression import (
 )
 from longform_engine.config import ConfigDocument
 from longform_engine.db import sync_database
+from longform_engine.fanfiction_sources import (
+    CANON_SCHEMA as FANFICTION_CANON_SCHEMA,
+    FanfictionSourceError,
+    fanfiction_canon_input_files,
+    fanfiction_source_readiness,
+    library_item,
+    library_item_texts,
+    project_source_contract,
+    source_fact_records,
+    source_upgrade_status,
+)
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.quality import truncate_editorial_pattern_registry
-from longform_engine.reader_promises import (
+from longform_engine.reader_promises_v2 import (
     LEDGER_PATH,
     apply_planning_deferrals,
     load_reader_promise_ledger,
-    merge_planned_reader_promises,
     promise_deadline_status,
-    validate_promise_actions,
+    validate_promise_actions_v2,
     validate_planning_deferrals,
     write_reader_promise_ledger,
 )
@@ -134,7 +144,7 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
         ),
     },
     "fanfiction_canon": {
-        "schema": "fanfiction_source_canon_v1",
+        "schema": FANFICTION_CANON_SCHEMA,
         "scope": "project",
         "human": True,
         "targets": (
@@ -427,10 +437,24 @@ def create_intelligence_task(
         from longform_engine.orchestration.pipeline import plan_chapter
 
         plan_chapter(config, chapter_number=int(scope["chapter_number"]))
+    provided_inputs = tuple(input_files)
+    requested_inputs: Iterable[str | Path] = provided_inputs
+    if task_type == "fanfiction_canon" and not provided_inputs:
+        requested_inputs = fanfiction_canon_input_files(config)
     inputs = normalize_inputs(
         root,
-        input_files or intelligence_default_inputs(root, task_type, spec, scope),
+        requested_inputs or intelligence_default_inputs(root, task_type, spec, scope),
     )
+    if task_type == "fanfiction_canon":
+        allowed_root = (root / "50_workbench" / "同人原著资料").resolve()
+        for path in inputs:
+            try:
+                path.resolve().relative_to(allowed_root)
+            except ValueError as exc:
+                raise ValueError(
+                    "fanfiction_canon inputs must be approved extraction artifacts under "
+                    "50_workbench/同人原著资料/"
+                ) from exc
     if task_type == "fanfiction_design":
         inputs = [write_fanfiction_design_context(config, root)]
     if task_type == "outline_extension":
@@ -1129,7 +1153,6 @@ def apply_compiled_design(
         )
         write_targets(config, root, task_type, domain_payload, scope=scope)
         if task_type == "chapter_direction" and selection:
-            from longform_engine.chapter_contract import stamp_chapter_contract
             from longform_engine.orchestration.pipeline import upsert_chapter_plan, write_chapter_card_artifacts
 
             chapter_number = int(scope.get("chapter_number") or 0)
@@ -1141,7 +1164,6 @@ def apply_compiled_design(
             direction_selection["selection_file"] = str(selection["selection_file"])
             direction_selection["selection_sha256"] = str(selection["selection_sha256"])
             direction_selection["document_sha256"] = sha256(document.read_bytes()).hexdigest()
-            stamp_chapter_contract(card)
             write_chapter_card_artifacts(root, card)
             upsert_chapter_plan(root, card)
         mark_tasks_for_chapter_type(
@@ -1531,6 +1553,25 @@ def assess_project_readiness(config: ConfigDocument) -> ProjectReadinessResult:
     markers = state.get("project_intelligence") if isinstance(state, dict) and isinstance(state.get("project_intelligence"), dict) else {}
     creation_mode = str(config.data.get("creation", {}).get("mode") or "original")
     if creation_mode == "fanfiction":
+        existing_canon = read_json(root / "10_bible" / "fanfiction" / "source_canon.json", {})
+        if isinstance(existing_canon, dict) and existing_canon.get("schema") == "fanfiction_source_canon_v1":
+            return ProjectReadinessResult(
+                False,
+                "fanfiction_canon_incompatible",
+                "",
+                (
+                    "fanfiction_source_canon_v1 is incompatible; rebuild the project source pack and apply "
+                    f"{FANFICTION_CANON_SCHEMA}. No migration or dual-read path is available.",
+                ),
+            )
+        source_readiness = fanfiction_source_readiness(config)
+        if not source_readiness["ready"]:
+            return ProjectReadinessResult(
+                False,
+                "fanfiction_sources",
+                "",
+                tuple(source_readiness["errors"]),
+            )
         canon_marker = markers.get("fanfiction_canon") if isinstance(markers.get("fanfiction_canon"), dict) else {}
         if canon_marker.get("status") != "applied":
             return ProjectReadinessResult(
@@ -1728,7 +1769,7 @@ def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
     decisions_path = root / "10_bible" / "creative_decisions.json"
     canon = read_json(canon_path, {})
     decisions = read_json(decisions_path, {})
-    if not isinstance(canon, dict) or canon.get("schema") != "fanfiction_source_canon_v1":
+    if not isinstance(canon, dict) or canon.get("schema") != FANFICTION_CANON_SCHEMA:
         raise ValueError("fanfiction_design requires an applied fanfiction source canon.")
     if not isinstance(decisions, dict) or decisions.get("schema") != "book_ideation_decisions_v1":
         decisions = {"decisions": {}}
@@ -1764,30 +1805,32 @@ def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
         source_id = str(source.get("source_id") or "")
         character_limit = max(1, min(remaining_characters, 12))
         characters, omitted_characters = rows(
-            source.get("characters"),
-            (("id", 96), ("name", 80), ("summary", 180), ("motivation", 140), ("voice_traits", 80)),
+            source_fact_records(source, "character"),
+            (("id", 96), ("name", 80), ("summary", 180), ("attributes", 180)),
             character_limit,
         )
         remaining_characters = max(0, remaining_characters - len(characters))
         relationships, omitted_relationships = rows(
-            source.get("relationships"),
-            (("id", 96), ("source_character_id", 96), ("target_character_id", 96), ("stage", 80), ("summary", 160)),
+            source_fact_records(source, "relationship"),
+            (("id", 96), ("name", 80), ("summary", 160), ("attributes", 180)),
             16,
         )
-        world_rules, omitted_rules = rows(source.get("world_rules"), (("id", 96), ("summary", 180)), 16)
+        world_rules, omitted_rules = rows(
+            source_fact_records(source, "world_rule"), (("id", 96), ("name", 80), ("summary", 180)), 16
+        )
         abilities, omitted_abilities = rows(
-            source.get("abilities"),
-            (("id", 96), ("name", 80), ("summary", 160), ("limits", 80)),
+            source_fact_records(source, "ability"),
+            (("id", 96), ("name", 80), ("summary", 160), ("attributes", 160)),
             12,
         )
         timeline, omitted_timeline = rows(
-            source.get("timeline"), (("id", 96), ("order", 0), ("summary", 160)), 16
+            source_fact_records(source, "timeline"), (("id", 96), ("name", 80), ("summary", 160)), 16
         )
         events, omitted_events = rows(
-            source.get("canon_events"), (("id", 96), ("order", 0), ("summary", 160)), 16
+            source_fact_records(source, "event"), (("id", 96), ("name", 80), ("summary", 160)), 16
         )
         unresolved, omitted_unresolved = rows(
-            source.get("unresolved_questions"), (("id", 96), ("summary", 160)), 12
+            source_fact_records(source, "unresolved_question"), (("id", 96), ("name", 80), ("summary", 160)), 12
         )
         for label, count in (
             ("characters", omitted_characters),
@@ -2479,86 +2522,94 @@ def hydrate_fanfiction_canon_delta(
     sources = payload.get("sources")
     if not isinstance(sources, list) or not sources:
         raise AgentProtocolError("fanfiction canon changes.sources must be a non-empty list")
-    evidence_map = delta.get("evidence") if isinstance(delta.get("evidence"), dict) else {}
     hydrated_sources: list[dict[str, Any]] = []
-    fact_collections = (
-        "characters",
-        "relationships",
-        "world_rules",
-        "abilities",
-        "timeline",
-        "terminology",
-        "canon_events",
-        "unresolved_questions",
-    )
     for source_index, raw_source in enumerate(sources):
         if not isinstance(raw_source, dict):
             raise AgentProtocolError(f"fanfiction canon sources[{source_index}] must be an object")
-        forbidden = {"title", "creator", "canon_cutoff", "source_files", "source_hashes", "evidence"}
-        repeated = sorted(forbidden & set(raw_source))
-        if repeated:
+        if set(raw_source) != {"source_id", "facts"}:
             raise AgentProtocolError(
-                "fanfiction canon changes must not repeat CLI-owned fields: " + ", ".join(repeated)
+                f"fanfiction canon sources[{source_index}] must contain source_id and facts only"
             )
         source_id = str(raw_source.get("source_id") or "")
         source_config = configured_sources.get(source_id)
         if not isinstance(source_config, dict):
             raise AgentProtocolError(f"fanfiction canon source_id is not configured: {source_id}")
-        source_pointer = f"/changes/sources/{source_index}"
-        raw_refs = sorted(
-            {
-                ref
-                for pointer, refs in evidence_map.items()
-                if pointer == source_pointer or pointer.startswith(source_pointer + "/")
-                for ref in refs
-            }
-        )
-        if not raw_refs:
-            raise AgentProtocolError(f"fanfiction canon sources[{source_index}] has no evidence")
-        resolved = [resolve_delta_evidence(root, ref, manifest) for ref in raw_refs]
+        contract = project_source_contract(config, source_id)
+        available_evidence = contract["evidence"]
+        raw_facts = raw_source.get("facts")
+        if not isinstance(raw_facts, list) or not raw_facts:
+            raise AgentProtocolError(f"fanfiction canon sources[{source_index}].facts must be non-empty")
+        evidence_keys: list[str] = []
+        for fact_index, fact in enumerate(raw_facts):
+            if not isinstance(fact, dict):
+                raise AgentProtocolError(f"fanfiction canon fact {source_index}:{fact_index} must be an object")
+            expected = {"id", "type", "name", "summary", "attributes", "evidence_keys"}
+            if set(fact) != expected:
+                raise AgentProtocolError(
+                    f"fanfiction canon fact {source_index}:{fact_index} must contain exactly {sorted(expected)}"
+                )
+            keys = fact.get("evidence_keys")
+            if not isinstance(keys, list) or not keys:
+                raise AgentProtocolError(f"fanfiction canon fact {source_index}:{fact_index} has no evidence_keys")
+            for key in keys:
+                normalized = str(key)
+                if normalized not in available_evidence:
+                    raise AgentProtocolError(
+                        f"fanfiction canon fact {source_index}:{fact_index} references unknown evidence key {normalized}"
+                    )
+                if normalized not in evidence_keys:
+                    evidence_keys.append(normalized)
         evidence_ids = {
-            item["ref"]: f"{source_id}:e{index:03d}"
-            for index, item in enumerate(resolved, start=1)
+            key: f"{source_id}:e{index:03d}"
+            for index, key in enumerate(evidence_keys, start=1)
         }
-        hydrated = dict(raw_source)
-        hydrated.update(
+        hydrated_facts = []
+        for fact in raw_facts:
+            keys = [str(key) for key in fact["evidence_keys"]]
+            hydrated_facts.append(
+                {
+                    key: value
+                    for key, value in fact.items()
+                    if key != "evidence_keys"
+                }
+                | {"evidence_refs": [evidence_ids[key] for key in keys]}
+            )
+        binding = contract["binding"]
+        hydrated_sources.append(
             {
+                "source_id": source_id,
+                "work_id": str(contract["setting"].get("作品ID") or ""),
                 "title": str(source_config.get("title") or ""),
                 "creator": str(source_config.get("creator") or ""),
                 "canon_cutoff": str(source_config.get("canon_cutoff") or ""),
-                "source_files": sorted({item["path"] for item in resolved}),
-                "source_hashes": {
-                    path: next(item["sha256"] for item in resolved if item["path"] == path)
-                    for path in sorted({item["path"] for item in resolved})
-                },
+                "binding_sha256": contract["binding_sha256"],
+                "coverage_plan_sha256": contract["coverage_sha256"],
+                "item_bindings": [
+                    {
+                        "item_id": str(item.get("item_id") or ""),
+                        "content_sha256": str(item.get("content_sha256") or ""),
+                        "extraction_sha256": str(item.get("extraction_sha256") or ""),
+                    }
+                    for item in binding.get("items") or []
+                    if isinstance(item, dict)
+                ],
+                "facts": hydrated_facts,
                 "evidence": [
                     {
-                        "evidence_id": evidence_ids[item["ref"]],
-                        "source_path": item["path"],
-                        "source_hash": item["sha256"],
-                        "evidence_span": {"start": item["start"], "end": item["end"]},
+                        "evidence_id": evidence_ids[key],
+                        "item_id": available_evidence[key]["item_id"],
+                        "content_sha256": available_evidence[key]["content_sha256"],
+                        "content_file": available_evidence[key]["content_file"],
+                        "evidence_span": {
+                            "start": available_evidence[key]["start"],
+                            "end": available_evidence[key]["end"],
+                        },
+                        "excerpt": available_evidence[key]["excerpt"],
                     }
-                    for item in resolved
+                    for key in evidence_keys
                 ],
             }
         )
-        for collection in fact_collections:
-            records = hydrated.get(collection)
-            if not isinstance(records, list):
-                continue
-            for record_index, record in enumerate(records):
-                if not isinstance(record, dict):
-                    continue
-                if "evidence_refs" in record:
-                    raise AgentProtocolError(
-                        f"fanfiction canon {collection}[{record_index}] repeats evidence_refs"
-                    )
-                pointer = f"{source_pointer}/{collection}/{record_index}"
-                refs = delta_refs_for_pointer(evidence_map, pointer)
-                if not refs:
-                    raise AgentProtocolError(f"fanfiction canon `{pointer}` has no evidence mapping")
-                record["evidence_refs"] = [evidence_ids[ref] for ref in refs]
-        hydrated_sources.append(hydrated)
     return {
         **payload,
         "continuity_mode": str(configured.get("continuity_mode") or ""),
@@ -2942,7 +2993,7 @@ def validate_chapter_direction(
     ledger = load_reader_promise_ledger(root)
     errors.extend(
         f"selected_direction.{item}"
-        for item in validate_promise_actions(direction.get("reader_promise_actions"), ledger)
+        for item in validate_promise_actions_v2(direction.get("reader_promise_actions"), ledger)
     )
     try:
         simulation, simulation_path, simulation_hash = load_active_arc_simulation(
@@ -3577,6 +3628,10 @@ def validate_adaptation_analysis(payload: dict[str, Any], errors: list[str]) -> 
 def validate_fanfiction_canon(config: ConfigDocument, payload: dict[str, Any], errors: list[str]) -> None:
     required = {"schema", "continuity_mode", "sources"}
     require_keys(payload, required, required, errors)
+    if payload.get("schema") != FANFICTION_CANON_SCHEMA:
+        errors.append(
+            f"schema must be {FANFICTION_CANON_SCHEMA}; fanfiction_source_canon_v1 is incompatible and is not migrated"
+        )
     configured = config.data.get("fanfiction", {}) if isinstance(config.data.get("fanfiction"), dict) else {}
     continuity_mode = str(configured.get("continuity_mode") or "")
     if payload.get("continuity_mode") != continuity_mode:
@@ -3595,11 +3650,12 @@ def validate_fanfiction_canon(config: ConfigDocument, payload: dict[str, Any], e
         for item in sources
         if isinstance(item, dict) and item.get("source_id")
     }
-    if payload_ids != set(configured_sources):
+    if payload_ids != set(configured_sources) or len(sources) != len(configured_sources):
         errors.append("sources must contain exactly the source_id values declared in project.yaml.")
     all_entity_ids: set[str] = set()
     for index, source in enumerate(sources):
         validate_fanfiction_canon_source(
+            config,
             source,
             index=index,
             configured=configured_sources.get(str(source.get("source_id"))) if isinstance(source, dict) else None,
@@ -3609,6 +3665,7 @@ def validate_fanfiction_canon(config: ConfigDocument, payload: dict[str, Any], e
 
 
 def validate_fanfiction_canon_source(
+    config: ConfigDocument,
     source: Any,
     *,
     index: int,
@@ -3619,19 +3676,14 @@ def validate_fanfiction_canon_source(
     prefix = f"sources[{index}]"
     required = {
         "source_id",
+        "work_id",
         "title",
         "creator",
         "canon_cutoff",
-        "source_files",
-        "source_hashes",
-        "characters",
-        "relationships",
-        "world_rules",
-        "abilities",
-        "timeline",
-        "terminology",
-        "canon_events",
-        "unresolved_questions",
+        "binding_sha256",
+        "coverage_plan_sha256",
+        "item_bindings",
+        "facts",
         "evidence",
     }
     if not isinstance(source, dict):
@@ -3648,10 +3700,47 @@ def validate_fanfiction_canon_source(
         for field in ("title", "creator", "canon_cutoff"):
             if source.get(field) != configured.get(field):
                 errors.append(f"{prefix}.{field} must match project.yaml.")
-    if not isinstance(source.get("source_files"), list) or not source.get("source_files"):
-        errors.append(f"{prefix}.source_files must be a non-empty list.")
-    if not isinstance(source.get("source_hashes"), dict):
-        errors.append(f"{prefix}.source_hashes must be an object.")
+    try:
+        contract = project_source_contract(config, source_id)
+    except (FanfictionSourceError, OSError, KeyError) as exc:
+        errors.append(f"{prefix} project source contract is unavailable: {exc}")
+        return
+    if source.get("work_id") != contract["setting"].get("作品ID"):
+        errors.append(f"{prefix}.work_id must match the approved project source pack.")
+    if source.get("binding_sha256") != contract["binding_sha256"]:
+        errors.append(f"{prefix}.binding_sha256 is stale.")
+    if source.get("coverage_plan_sha256") != contract["coverage_sha256"]:
+        errors.append(f"{prefix}.coverage_plan_sha256 is stale.")
+    expected_bindings = {
+        (
+            str(item.get("item_id") or ""),
+            str(item.get("content_sha256") or ""),
+            str(item.get("extraction_sha256") or ""),
+        )
+        for item in contract["binding"].get("items") or []
+        if isinstance(item, dict)
+    }
+    actual_bindings = {
+        (
+            str(item.get("item_id") or ""),
+            str(item.get("content_sha256") or ""),
+            str(item.get("extraction_sha256") or ""),
+        )
+        for item in source.get("item_bindings") or []
+        if isinstance(item, dict)
+        and set(item) == {"item_id", "content_sha256", "extraction_sha256"}
+    }
+    raw_bindings = source.get("item_bindings")
+    if (
+        not isinstance(raw_bindings, list)
+        or len(raw_bindings) != len(expected_bindings)
+        or actual_bindings != expected_bindings
+    ):
+        errors.append(f"{prefix}.item_bindings must exactly match the approved pinned project binding.")
+    pinned_content_hashes = {
+        item_id: content_sha256
+        for item_id, content_sha256, _extraction_sha256 in expected_bindings
+    }
     evidence_ids: set[str] = set()
     evidence = source.get("evidence")
     if not isinstance(evidence, list) or not evidence:
@@ -3659,15 +3748,20 @@ def validate_fanfiction_canon_source(
         evidence = []
     for evidence_index, item in enumerate(evidence):
         evidence_prefix = f"{prefix}.evidence[{evidence_index}]"
-        fields = {"evidence_id", "source_path", "source_hash", "evidence_span"}
+        fields = {"evidence_id", "item_id", "content_sha256", "content_file", "evidence_span", "excerpt"}
         if not isinstance(item, dict) or set(item) != fields:
-            errors.append(f"{evidence_prefix} must contain evidence_id, source_path, source_hash, evidence_span only.")
+            errors.append(f"{evidence_prefix} must contain exactly: {', '.join(sorted(fields))}.")
             continue
         evidence_id = stable_id(item.get("evidence_id"))
         if not evidence_id or evidence_id in evidence_ids:
             errors.append(f"{evidence_prefix}.evidence_id must be stable and unique.")
         else:
             evidence_ids.add(evidence_id)
+        item_id = str(item.get("item_id") or "")
+        if pinned_content_hashes.get(item_id) != item.get("content_sha256"):
+            errors.append(
+                f"{evidence_prefix} must reference an item and content hash from this source's pinned project binding."
+            )
         span = item.get("evidence_span")
         if (
             not isinstance(span, dict)
@@ -3678,54 +3772,40 @@ def validate_fanfiction_canon_source(
             or span["end"] <= span["start"]
         ):
             errors.append(f"{evidence_prefix}.evidence_span must be a valid start/end character range.")
-    characters = source.get("characters")
-    character_ids: set[str] = set()
-    if not isinstance(characters, list) or not characters:
-        errors.append(f"{prefix}.characters must be a non-empty list.")
-        characters = []
-    for item_index, item in enumerate(characters):
-        item_prefix = f"{prefix}.characters[{item_index}]"
-        fields = {"id", "name", "summary", "motivation", "voice_traits", "evidence_refs"}
-        validate_fanfiction_fact(item, item_prefix, fields, source_id, evidence_ids, all_entity_ids, errors)
-        if isinstance(item, dict) and stable_id(item.get("id")):
-            character_ids.add(str(item["id"]))
-        if isinstance(item, dict) and not isinstance(item.get("voice_traits"), list):
-            errors.append(f"{item_prefix}.voice_traits must be a list.")
-    relationships = source.get("relationships")
-    if not isinstance(relationships, list):
-        errors.append(f"{prefix}.relationships must be a list.")
-        relationships = []
-    for item_index, item in enumerate(relationships):
-        item_prefix = f"{prefix}.relationships[{item_index}]"
-        fields = {"id", "source_character_id", "target_character_id", "stage", "summary", "evidence_refs"}
-        validate_fanfiction_fact(item, item_prefix, fields, source_id, evidence_ids, all_entity_ids, errors)
-        if isinstance(item, dict):
-            for field in ("source_character_id", "target_character_id"):
-                if str(item.get(field) or "") not in character_ids:
-                    errors.append(f"{item_prefix}.{field} must reference a character in the same source namespace.")
-    fact_specs = {
-        "world_rules": {"id", "summary", "evidence_refs"},
-        "abilities": {"id", "name", "summary", "limits", "evidence_refs"},
-        "timeline": {"id", "order", "summary", "evidence_refs"},
-        "terminology": {"id", "name", "summary", "evidence_refs"},
-        "canon_events": {"id", "order", "summary", "evidence_refs"},
-        "unresolved_questions": {"id", "summary", "evidence_refs"},
-    }
-    for field, fields in fact_specs.items():
-        records = source.get(field)
-        if not isinstance(records, list):
-            errors.append(f"{prefix}.{field} must be a list.")
+        try:
+            library = library_item(str(item.get("item_id") or ""))
+            texts = library_item_texts(str(item.get("item_id") or ""))
+        except FanfictionSourceError as exc:
+            errors.append(f"{evidence_prefix} source item is unavailable: {exc}")
             continue
-        for item_index, item in enumerate(records):
-            validate_fanfiction_fact(
-                item,
-                f"{prefix}.{field}[{item_index}]",
-                fields,
-                source_id,
-                evidence_ids,
-                all_entity_ids,
-                errors,
-            )
+        if item.get("content_sha256") != library.get("content_sha256"):
+            errors.append(f"{evidence_prefix}.content_sha256 does not match the user library item.")
+        content_file = str(item.get("content_file") or "")
+        text = texts.get(content_file)
+        if text is None:
+            errors.append(f"{evidence_prefix}.content_file is not part of the pinned library item.")
+        elif isinstance(span, dict) and isinstance(span.get("start"), int) and isinstance(span.get("end"), int):
+            start, end = span["start"], span["end"]
+            if not 0 <= start < end <= len(text):
+                errors.append(f"{evidence_prefix}.evidence_span is outside source content.")
+            elif text[start:end] != item.get("excerpt"):
+                errors.append(f"{evidence_prefix}.excerpt does not match the original source span.")
+        if len(str(item.get("excerpt") or "")) > 400:
+            errors.append(f"{evidence_prefix}.excerpt exceeds the bounded evidence limit.")
+
+    facts = source.get("facts")
+    if not isinstance(facts, list) or not facts:
+        errors.append(f"{prefix}.facts must be a non-empty list.")
+        facts = []
+    for fact_index, fact in enumerate(facts):
+        fact_prefix = f"{prefix}.facts[{fact_index}]"
+        fields = {"id", "type", "name", "summary", "attributes", "evidence_refs"}
+        validate_fanfiction_fact(fact, fact_prefix, fields, source_id, evidence_ids, all_entity_ids, errors)
+        if isinstance(fact, dict):
+            if not str(fact.get("type") or "").strip():
+                errors.append(f"{fact_prefix}.type must be a non-empty semantic type.")
+            if not isinstance(fact.get("attributes"), dict):
+                errors.append(f"{fact_prefix}.attributes must be an object.")
 
 
 def validate_fanfiction_fact(
@@ -3747,6 +3827,8 @@ def validate_fanfiction_fact(
         all_entity_ids.add(item_id)
     if not isinstance(item.get("summary"), str) or not item["summary"].strip():
         errors.append(f"{prefix}.summary must be a non-empty paraphrased fact.")
+    if not isinstance(item.get("name"), str) or not item["name"].strip():
+        errors.append(f"{prefix}.name must be a non-empty display name.")
     refs = item.get("evidence_refs")
     if not isinstance(refs, list) or not refs:
         errors.append(f"{prefix}.evidence_refs must be a non-empty list.")
@@ -3804,7 +3886,7 @@ def validate_fanfiction_design(
     known_characters = {
         str(character.get("id"))
         for source in canon.get("sources", []) if isinstance(canon, dict) and isinstance(source, dict)
-        for character in source.get("characters", []) if isinstance(character, dict) and character.get("id")
+        for character in source_fact_records(source, "character") if character.get("id")
     }
     contracts = payload.get("character_voice_contracts")
     if not isinstance(contracts, list) or not contracts:
@@ -3885,8 +3967,13 @@ def validate_sources(
     *,
     require_hashes: bool,
 ) -> None:
+    if payload.get("schema") == FANFICTION_CANON_SCHEMA:
+        validate_fanfiction_v2_prose_originality(payload, errors)
+        return
     if payload.get("schema") == "fanfiction_source_canon_v1":
-        validate_fanfiction_source_evidence(root, payload, manifest, errors)
+        errors.append(
+            f"fanfiction_source_canon_v1 is incompatible; create {FANFICTION_CANON_SCHEMA} from approved source packs"
+        )
         return
     sources = payload.get("source_files")
     if not isinstance(sources, list) or not sources:
@@ -3933,135 +4020,48 @@ def validate_sources(
         validate_adaptation_similarity(root, payload, errors)
 
 
-def validate_fanfiction_source_evidence(
-    root: Path,
-    payload: dict[str, Any],
-    manifest: dict[str, Any] | None,
-    errors: list[str],
-) -> None:
-    declared = set(manifest_input_paths(manifest or {}))
+def validate_fanfiction_v2_prose_originality(payload: dict[str, Any], errors: list[str]) -> None:
+    """Reject cross-field reconstruction while allowing protected names and terms."""
+
     for source_index, source in enumerate(payload.get("sources") or []):
         if not isinstance(source, dict):
             continue
-        source_files = source.get("source_files") if isinstance(source.get("source_files"), list) else []
-        source_hashes = source.get("source_hashes") if isinstance(source.get("source_hashes"), dict) else {}
         source_texts: list[str] = []
-        for file_index, source_path in enumerate(source_files):
-            source_path = str(source_path)
-            if source_path not in declared:
-                errors.append(
-                    f"sources[{source_index}].source_files[{file_index}] is not declared in manifest input_files."
-                )
+        for binding in source.get("item_bindings") or []:
+            if not isinstance(binding, dict):
                 continue
-            path = root / source_path
-            if not path.is_file():
-                errors.append(f"sources[{source_index}].source_files[{file_index}] does not exist.")
+            try:
+                source_texts.extend(library_item_texts(str(binding.get("item_id") or "")).values())
+            except FanfictionSourceError:
                 continue
-            expected_hash = sha256(path.read_bytes()).hexdigest()
-            if source_hashes.get(source_path) != expected_hash:
-                errors.append(f"sources[{source_index}].source_hashes[{source_path}] does not match current content.")
-            source_texts.append(path.read_text(encoding="utf-8").lstrip("\ufeff"))
-        for evidence_index, evidence in enumerate(source.get("evidence") or []):
-            if not isinstance(evidence, dict):
-                continue
-            source_path = str(evidence.get("source_path") or "")
-            if source_path not in source_files:
-                errors.append(
-                    f"sources[{source_index}].evidence[{evidence_index}].source_path must reference source_files."
-                )
-                continue
-            path = root / source_path
-            if not path.is_file():
-                continue
-            expected_hash = sha256(path.read_bytes()).hexdigest()
-            if evidence.get("source_hash") != expected_hash:
-                errors.append(
-                    f"sources[{source_index}].evidence[{evidence_index}].source_hash does not match current content."
-                )
-            span = evidence.get("evidence_span")
-            if not isinstance(span, dict):
-                continue
-            text = path.read_text(encoding="utf-8").lstrip("\ufeff")
-            start, end = span.get("start"), span.get("end")
-            if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end > len(text) or end <= start:
-                errors.append(
-                    f"sources[{source_index}].evidence[{evidence_index}].evidence_span is outside source content."
-                )
-        validate_fanfiction_canon_prose_originality(
-            source,
-            source_texts=source_texts,
-            source_index=source_index,
-            errors=errors,
-        )
-
-
-def validate_fanfiction_canon_prose_originality(
-    source: dict[str, Any],
-    *,
-    source_texts: list[str],
-    source_index: int,
-    errors: list[str],
-) -> None:
-    protected_terms = {
-        str(source.get("title") or ""),
-        str(source.get("creator") or ""),
-    }
-    for field in ("characters", "abilities", "terminology"):
-        for item in source.get(field) or []:
-            if isinstance(item, dict) and item.get("name"):
-                protected_terms.add(str(item["name"]))
-    parts = [
-        normalize_fanfiction_canon_text(value, protected_terms)
-        for value in fanfiction_canon_prose_fields(source)
-    ]
-    parts = [part for part in parts if len(part) >= 8]
-    if not parts:
-        return
-    candidate_grams = {
-        part[index:index + 8]
-        for part in parts
-        for index in range(len(part) - 7)
-    }
-    for source_text in source_texts:
-        normalized_source = normalize_fanfiction_canon_text(source_text, protected_terms)
-        if any(
-            len(part) >= 36
-            and (
-                part in normalized_source
-                or ngram_overlap_ratio(part, normalized_source, size=8) >= 0.80
-            )
+        protected_terms = {str(source.get("title") or ""), str(source.get("creator") or "")}
+        for fact in source.get("facts") or []:
+            if isinstance(fact, dict) and fact.get("name"):
+                protected_terms.add(str(fact["name"]))
+        parts = [
+            normalize_fanfiction_canon_text(value, protected_terms)
+            for fact in source.get("facts") or []
+            if isinstance(fact, dict)
+            for value in walk_strings({"summary": fact.get("summary"), "attributes": fact.get("attributes")})
+        ]
+        parts = [part for part in parts if len(part) >= 8]
+        candidate_grams = {
+            part[index:index + 8]
             for part in parts
-        ) or has_reconstructed_source_run(normalized_source, candidate_grams, size=8):
-            errors.append(
-                f"sources[{source_index}] reconstructs source prose in canon fields; "
-                "store paraphrased facts and evidence locations only."
-            )
-            return
-
-
-def fanfiction_canon_prose_fields(source: dict[str, Any]) -> Iterable[str]:
-    scalar_fields = ("summary", "motivation", "stage")
-    list_fields = ("voice_traits", "limits")
-    for collection in (
-        "characters",
-        "relationships",
-        "world_rules",
-        "abilities",
-        "timeline",
-        "terminology",
-        "canon_events",
-        "unresolved_questions",
-    ):
-        for item in source.get(collection) or []:
-            if not isinstance(item, dict):
-                continue
-            for field in scalar_fields:
-                if isinstance(item.get(field), str):
-                    yield item[field]
-            for field in list_fields:
-                for value in item.get(field) or []:
-                    if isinstance(value, str):
-                        yield value
+            for index in range(len(part) - 7)
+        }
+        for source_text in source_texts:
+            normalized_source = normalize_fanfiction_canon_text(source_text, protected_terms)
+            if any(
+                len(part) >= 36
+                and (part in normalized_source or ngram_overlap_ratio(part, normalized_source, size=8) >= 0.80)
+                for part in parts
+            ) or has_reconstructed_source_run(normalized_source, candidate_grams, size=8):
+                errors.append(
+                    f"sources[{source_index}] reconstructs source prose in canon facts; "
+                    "store paraphrased facts and bounded evidence only."
+                )
+                break
 
 
 def normalize_fanfiction_canon_text(value: str, protected_terms: set[str]) -> str:
@@ -4699,17 +4699,6 @@ def write_targets(
             config, payload["foreshadowing_ledger"], payload["story_arcs"]
         )
         write_json(root / "20_outline" / "foreshadowing_ledger.json", materialized_threads)
-        creative_brief = read_json(root / "10_bible" / "creative_brief.json", {})
-        story_engine = creative_brief.get("story_engine_contract") if isinstance(creative_brief, dict) else {}
-        write_reader_promise_ledger(
-            root,
-            merge_planned_reader_promises(
-                root,
-                story_engine_contract=story_engine if isinstance(story_engine, dict) else {},
-                foreshadowing_ledger=materialized_threads,
-                estimated_chapters=compile_length_forecast(config.data["length"]).estimated_chapters,
-            ),
-        )
         mark_project_intelligence_applied(root, "outline_design", payload)
         stale_causal_simulations_if_basis_changed(root, basis_before)
         return
@@ -4735,17 +4724,6 @@ def write_targets(
             merged_threads[str(item["id"])] = item
         merged_thread_rows = list(merged_threads.values())
         write_json(root / "20_outline" / "foreshadowing_ledger.json", merged_thread_rows)
-        creative_brief = read_json(root / "10_bible" / "creative_brief.json", {})
-        story_engine = creative_brief.get("story_engine_contract") if isinstance(creative_brief, dict) else {}
-        write_reader_promise_ledger(
-            root,
-            merge_planned_reader_promises(
-                root,
-                story_engine_contract=story_engine if isinstance(story_engine, dict) else {},
-                foreshadowing_ledger=merged_thread_rows,
-                estimated_chapters=compile_length_forecast(config.data["length"]).estimated_chapters,
-            ),
-        )
         stale_causal_simulations_if_basis_changed(root, basis_before)
         return
     if task_type == "chapter_direction":
@@ -4772,23 +4750,15 @@ def write_targets(
                 root / "20_outline" / "foreshadowing_ledger.json",
                 materialize_foreshadowing_ledger(config, replacements["foreshadowing_ledger"], arcs),
             )
-        materialized_threads = read_json(root / "20_outline" / "foreshadowing_ledger.json", [])
-        creative_brief = read_json(root / "10_bible" / "creative_brief.json", {})
-        story_engine = creative_brief.get("story_engine_contract") if isinstance(creative_brief, dict) else {}
-        merged_promises = merge_planned_reader_promises(
-            root,
-            story_engine_contract=story_engine if isinstance(story_engine, dict) else {},
-            foreshadowing_ledger=materialized_threads if isinstance(materialized_threads, list) else [],
-            estimated_chapters=compile_length_forecast(config.data["length"]).estimated_chapters,
-        )
+        promise_ledger = load_reader_promise_ledger(root)
         if "reader_promise_deferrals" in replacements:
             apply_planning_deferrals(
-                merged_promises,
+                promise_ledger,
                 values=replacements["reader_promise_deferrals"],
                 chapter_number=int(payload["from_chapter"]),
                 approved_by="human",
             )
-        write_reader_promise_ledger(root, merged_promises)
+        write_reader_promise_ledger(root, promise_ledger)
         basis_changed = current_basis_hashes(root) != basis_before
         mark_overlapping_arc_simulations_stale(
             root,
@@ -5063,7 +5033,6 @@ def write_book_ideation_decision(root: Path, payload: dict[str, Any]) -> None:
 
 
 def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
-    from longform_engine.chapter_contract import stamp_chapter_contract
     from longform_engine.orchestration.pipeline import upsert_chapter_plan, write_chapter_card_artifacts
 
     chapter_number = int(payload["chapter_number"])
@@ -5144,7 +5113,6 @@ def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
         if field in resolved:
             card[field] = resolved[field]
     card.pop("chapter_contract_status", None)
-    stamp_chapter_contract(card)
     write_chapter_card_artifacts(root, card)
     upsert_chapter_plan(root, card)
 
@@ -5164,8 +5132,9 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "记录用户明确决定，不替用户默选，也不顺带决定其他维度。"
         ),
         "fanfiction_canon": (
-            "用来源命名空间 ID 和可回读 span 转述 canon 事实，覆盖人物、关系、规则、能力、术语、"
-            "时间线与未解决问题；不保存连续原文，不自行判断授权状态。"
+            "只读取已绑定、已提取且完成全作覆盖的中文资料包；按动态中文或稳定英文语义类型输出 facts，"
+            "每条事实使用 `item_id:evidence_id` 形式的 evidence_keys。人物、关系、规则、能力、事件、"
+            "时间线和自定义类型按实际作品出现；不保存连续原文，不自行扩大资料范围。"
         ),
         "fanfiction_design": (
             "建立同人形态、分歧因果、人物声音、原创主线、原创贡献和保护揭露。已声明且有因果支持的"
@@ -5304,8 +5273,10 @@ def fanfiction_status(config: ConfigDocument) -> dict[str, Any]:
         if isinstance(source, dict)
     ]
     readiness = assess_project_readiness(config)
+    source_readiness = fanfiction_source_readiness(config)
+    upgrade_status = source_upgrade_status(config)
     return {
-        "schema": "fanfiction_status_v1",
+        "schema": "fanfiction_status_v2",
         "creation_mode": str(config.data.get("creation", {}).get("mode") or "original"),
         "continuity_mode": str(config.data.get("fanfiction", {}).get("continuity_mode") or ""),
         "source_count": len(sources),
@@ -5313,6 +5284,11 @@ def fanfiction_status(config: ConfigDocument) -> dict[str, Any]:
         "design_status": str((markers.get("fanfiction_design") or {}).get("status") or "not_applied"),
         "rights_advisory_only": True,
         "rights_warnings": rights_warnings,
+        "source_coverage_ready": source_readiness["ready"],
+        "source_coverage_errors": source_readiness["errors"],
+        "source_coverage_next_command": source_readiness["next_command"],
+        "source_upgrade_available": upgrade_status["upgrade_available"],
+        "source_upgrades": upgrade_status["works"],
         "ready": readiness.ready,
         "next_task_type": readiness.required_task_type,
     }

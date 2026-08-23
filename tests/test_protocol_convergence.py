@@ -24,8 +24,6 @@ from longform_engine.agent_tasks import (
 from longform_engine.artifacts import compact_artifacts, verify_artifacts
 from longform_engine.chapter_contract import (
     ChapterContractError,
-    load_verified_chapter_contract,
-    resolve_chapter_contract_refs,
     stamp_chapter_contract,
 )
 from longform_engine.orchestration import (
@@ -43,11 +41,12 @@ from longform_engine.repair_coordination import (
     record_repair_submission,
     validate_repair_plan,
 )
-from longform_engine.semantic import chapter_close, semantic_apply
+from longform_engine.semantic import semantic_apply
 from tests.project_fixtures import (
     approve_author_voice_fixture,
     approve_story_candidate,
     complete_editorial_reviews,
+    complete_unified_semantic_lifecycle,
     mark_project_ready,
     prepare_unified_semantic_bundle,
 )
@@ -118,8 +117,8 @@ def test_v042_dangling_parent_reconciles_then_chapter_closes(tmp_path):
     approve_author_voice_fixture(root, config, chapter_number=1)
     output = prepare_unified_semantic_bundle(root, config, 1)
     semantic_apply(config, chapter_number=1, file_path=output)
-    closed = chapter_close(config, chapter_number=1, approved_by="test-owner")
-    assert Path(closed.closure_file).is_file()
+    complete_unified_semantic_lifecycle(root, config, 1, approved_by="test-owner")
+    assert (root / "30_state" / "chapter_closures" / "ch001.json").is_file()
 
 
 def test_repair_reconciliation_rejects_wrong_lineage_without_pollution(tmp_path):
@@ -167,7 +166,7 @@ def test_semantic_rag_materialization_and_vector_failure_rollback(tmp_path, monk
     assert applied.fallback_active is False
     context = root / "60_rag" / "context" / "next_plot_context.md"
     assert "- Semantic mode: enabled" in context.read_text(encoding="utf-8")
-    chapter_close(config, chapter_number=1, approved_by="test-owner")
+    complete_unified_semantic_lifecycle(root, config, 1, approved_by="test-owner")
     build_context(config, chapter_number=2, semantic=True)
     next_context = context.read_text(encoding="utf-8")
     assert "- Semantic mode: enabled" in next_context
@@ -212,21 +211,17 @@ def test_review_pass_requires_positive_coverage_evidence():
     assert any("requires at least one canonical ref" in item for item in errors)
 
 
-def test_core_contract_ref_rejects_depth_limited_content(tmp_path):
+def test_current_contract_rejects_freeform_path_refs(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
     open_book(config)
     mark_project_ready(root, config)
-    source = root / "10_bible" / "core_rule.md"
-    source.write_text("# Core rule\n\n[depth-limited]\n", encoding="utf-8")
-    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card = json.loads(card_path.read_text(encoding="utf-8"))
-    card["canon_refs"] = ["10_bible/core_rule.md"]
-    stamp_chapter_contract(card)
-    card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    contract, _digest = load_verified_chapter_contract(root, 1)
-    with pytest.raises(ChapterContractError, match="context_evidence_incomplete:depth_limited"):
-        resolve_chapter_contract_refs(root, contract)
+    contract_path = root / "20_outline" / "chapter_contracts" / "ch001.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract.pop("chapter_contract_hash")
+    contract["canon_refs"] = ["10_bible/core_rule.md"]
+    with pytest.raises(ChapterContractError, match="v0.9 chapter cards are incompatible"):
+        stamp_chapter_contract(contract)
 
 
 def test_chapter_contract_rejects_removed_alias_instead_of_normalizing_it(tmp_path):
@@ -234,12 +229,13 @@ def test_chapter_contract_rejects_removed_alias_instead_of_normalizing_it(tmp_pa
     root = tmp_path / "novel"
     open_book(config)
     mark_project_ready(root, config)
-    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card = json.loads(card_path.read_text(encoding="utf-8"))
-    card["duty"] = card["chapter_duty"]
+    contract_path = root / "20_outline" / "chapter_contracts" / "ch001.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract.pop("chapter_contract_hash")
+    contract["duty"] = contract["chapter_duty"]
 
-    with pytest.raises(ChapterContractError, match="chapter_contract_inconsistent:removed_alias_present:duty"):
-        stamp_chapter_contract(card)
+    with pytest.raises(ChapterContractError, match="v0.9 chapter cards are incompatible"):
+        stamp_chapter_contract(contract)
 
 
 def test_parent_child_consumption_is_generic_and_hash_bound(tmp_path):

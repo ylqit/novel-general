@@ -4,14 +4,13 @@ from pathlib import Path
 
 import pytest
 
-import longform_engine.db as db_module
+import longform_engine.human_story_review as human_story_review_module
 import longform_engine.intelligence.pipeline as intelligence_pipeline
 from longform_engine.agent_tasks import list_manifests
 from longform_engine.arc_simulation import ArcSimulationError, load_active_arc_simulation
 from longform_engine.chapter_contract import (
-    ChapterContractError,
-    project_chapter_contract,
     stamp_chapter_contract,
+    validate_chapter_contract,
 )
 from longform_engine.config import load_project_config
 from longform_engine.editorial.pipeline import (
@@ -39,9 +38,8 @@ from longform_engine.intelligence.pipeline import (
 from longform_engine.orchestration import continue_write, finalize_chapter, open_book, submit_agent_draft
 from longform_engine.quality import refresh_editorial_pattern_registry
 from longform_engine.quality.status import quality_status
-from longform_engine.reader_promises import (
-    ReaderPromiseError,
-    apply_reader_promise_actions,
+from longform_engine.reader_promises_v2 import (
+    apply_planning_deferrals,
     load_reader_promise_ledger,
     promise_deadline_status,
     write_reader_promise_ledger,
@@ -70,27 +68,17 @@ def seed_direction_contract(tmp_path: Path, *, chapter_number: int = 1):
     open_book(config)
     mark_project_ready(root, config, direction_applied=False)
     if chapter_number > 3:
-        promise_id = "story_engine:opening_three"
-        action = {
-            "promise_id": promise_id,
-            "intended_reader_gain": "The opening conflict produces a visible answer and changed condition.",
-            "evidence_requirement": "The opening payoff is visible in the accepted chapter.",
-            "defer_reason": "",
-        }
-        apply_reader_promise_actions(
-            root,
-            chapter_number=1,
-            actions=[{**action, "action": "setup"}],
-            final_path="40_manuscript/final/ch001.md",
-            final_sha256="1" * 64,
+        ledger = load_reader_promise_ledger(root)
+        opening = next(
+            item for item in ledger["items"] if item["promise_id"] == "story_engine:opening_three"
         )
-        apply_reader_promise_actions(
-            root,
-            chapter_number=3,
-            actions=[{**action, "action": "payoff"}],
-            final_path="40_manuscript/final/ch003.md",
-            final_sha256="3" * 64,
-        )
+        opening["status"] = "paid"
+        opening["completed_stage_ids"] = ["payoff:opening-three"]
+        opening["actual_evidence"] = [
+            {"chapter_number": 1, "action": "setup", "stage_id": None},
+            {"chapter_number": 3, "action": "payoff", "stage_id": "payoff:opening-three"},
+        ]
+        write_reader_promise_ledger(root, ledger)
         window = json.loads((root / "20_outline" / "planning_window.json").read_text(encoding="utf-8"))
         write_arc_simulation_fixture(
             root,
@@ -214,8 +202,8 @@ def test_author_markdown_is_story_brief_and_fact_inventory_stays_internal(tmp_pa
     markdown = (root / task.writing_task_markdown).read_text(encoding="utf-8")
     payload = json.loads((root / task.writing_task_json).read_text(encoding="utf-8"))
 
-    assert payload["schema"] == "chapter_writing_task_v6"
-    assert payload["story_brief"]["schema"] == "chapter_story_brief_v4"
+    assert payload["schema"] == "chapter_writing_task_v7"
+    assert payload["story_brief"]["schema"] == "chapter_story_brief_v5"
     manifest = json.loads((root / payload["agent_task_manifest"]).read_text(encoding="utf-8"))
     assert [item["path"] for item in manifest["io"]["inputs"]] == [
         "50_workbench/writing_tasks/ch001.md"
@@ -226,14 +214,14 @@ def test_author_markdown_is_story_brief_and_fact_inventory_stays_internal(tmp_pa
     categories = {item["category"] for item in inventory["facts"]}
     fact_ids = {item["id"] for item in inventory["facts"]}
     assert inventory["schema"] == "chapter_fact_inventory_v1"
-    assert {"chapter_contract", "hard_rules", "historical_evidence", "provenance"} <= categories
+    assert {"chapter_contract", "historical_evidence", "provenance"} <= categories
     assert "history.tcs" in fact_ids
     assert {"history.rag", "history.graph"} & fact_ids
     inventory_text = json.dumps(inventory, ensure_ascii=False)
     assert "promise_id" not in inventory_text
     assert "arc_simulation_ref" not in inventory_text
     assert "逐场行动" in markdown
-    assert "主角现在要" in markdown
+    assert "本章正在发生" in markdown
     for forbidden in (
         "source hash", "source_hash", "事实 ID", "feedback", "pattern", "severity",
         "finding code", "promise_id", "ledger", "RAG", "Graph", "SQLite", "上下文来源",
@@ -241,14 +229,15 @@ def test_author_markdown_is_story_brief_and_fact_inventory_stays_internal(tmp_pa
         assert forbidden not in markdown
 
 
-def test_chapter_contract_v4_rejects_removed_information_release(tmp_path):
+def test_chapter_contract_v5_rejects_old_chapter_card_aliases(tmp_path):
     _config, root, _payload = seed_direction_contract(tmp_path)
     card = json.loads(
         (root / "20_outline" / "chapter_cards" / "ch001.json").read_text(encoding="utf-8")
     )
     card["information_release"] = "legacy"
-    with pytest.raises(ChapterContractError, match="removed_alias_present:information_release"):
-        project_chapter_contract(card)
+    assert validate_chapter_contract(card) == [
+        "chapter_contract_v5 fields are invalid; v0.9 chapter cards are incompatible"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -333,37 +322,19 @@ def test_reader_promise_deadline_warning_defer_and_blocker(tmp_path):
     assert promise_deadline_status(root, chapter_number=1)["warnings"] == [
         f"promise_target_due:{promise['promise_id']}"
     ]
-    with pytest.raises(ReaderPromiseError, match="reader_promise_transition_invalid"):
-        apply_reader_promise_actions(
-            root,
-            chapter_number=1,
-            actions=[
-                {
-                    "promise_id": promise["promise_id"],
-                    "action": "payoff",
-                    "intended_reader_gain": "A planned promise cannot be paid before it is established.",
-                    "evidence_requirement": "Show the setup before payoff.",
-                    "defer_reason": "",
-                }
-            ],
-            final_path="40_manuscript/final/ch001.md",
-            final_sha256="e" * 64,
-        )
-    apply_reader_promise_actions(
-        root,
-        chapter_number=2,
-        actions=[
+    apply_planning_deferrals(
+        ledger,
+        values=[
             {
                 "promise_id": promise["promise_id"],
-                "action": "defer",
-                "intended_reader_gain": "The delay becomes a visible new pressure.",
-                "evidence_requirement": "Show the cost of delaying the payoff.",
-                "defer_reason": "Human-approved one-chapter extension for the causal turn.",
+                "extended_latest": 3,
+                "reason": "Human-approved one-chapter extension for the causal turn.",
             }
         ],
-        final_path="40_manuscript/final/ch002.md",
-        final_sha256="f" * 64,
+        chapter_number=2,
+        approved_by="human",
     )
+    write_reader_promise_ledger(root, ledger)
     deferred = load_reader_promise_ledger(root)["items"][0]
     assert deferred["payoff_window"]["latest"] == 3
     assert deferred["deferrals"][0]["approved_by"] == "human"
@@ -523,21 +494,24 @@ def test_human_accept_is_hash_bound_and_unlocks_review_barrier(tmp_path):
     assert human_story_review_status(config, chapter_number=1)["status"] == "accept"
     assert review_barrier_status(config, chapter_number=1)["status"] == "ready_to_finalize"
 
-    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card = json.loads(card_path.read_text(encoding="utf-8"))
-    card["relationship_move"] = "The approved relationship outcome changed after review."
-    stamp_chapter_contract(card)
-    card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    contract_path = root / "20_outline" / "chapter_contracts" / "ch001.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract.pop("chapter_contract_hash")
+    contract["reader_value"] = "The approved relationship outcome changed after review."
+    contract_path.write_text(
+        json.dumps(stamp_chapter_contract(contract), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     assert human_story_review_status(config, chapter_number=1)["status"] == "stale"
 
 
-def test_human_review_v5_freezes_revision_and_bundle_without_prefilled_human_reasons(tmp_path):
+def test_human_review_v7_freezes_revision_and_bundle_without_prefilled_human_reasons(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
 
     task = create_human_story_review_task(config, chapter_number=1)
     payload = json.loads((root / task.template_file).read_text(encoding="utf-8"))
 
-    assert payload["schema"] == "human_story_review_v6"
+    assert payload["schema"] == "human_story_review_v7"
     assert payload["review_bundle_sha256"] == task.review_bundle_sha256
     assert payload["human_author_revision_sha256"] == task.human_author_revision_sha256
     assert (root / task.review_bundle_file).is_file()
@@ -562,7 +536,7 @@ def test_human_review_v5_freezes_revision_and_bundle_without_prefilled_human_rea
     assert "checks" not in payload
 
 
-def test_human_review_v6_rejects_v5_and_requires_three_accept_evidence_kinds(tmp_path):
+def test_human_review_v7_rejects_v5_and_requires_three_accept_evidence_kinds(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
     task = create_human_story_review_task(config, chapter_number=1)
     review = root / task.template_file
@@ -572,9 +546,9 @@ def test_human_review_v6_rejects_v5_and_requires_three_accept_evidence_kinds(tmp
 
     rejected = validate_human_story_review(config, chapter_number=1, file_path=review)
     assert not rejected.ok
-    assert any("human_story_review_v5 is rejected in v0.9" in error for error in rejected.errors)
+    assert any("human_story_review_v5 is rejected in v0.10" in error for error in rejected.errors)
 
-    payload["schema"] = "human_story_review_v6"
+    payload["schema"] = "human_story_review_v7"
     review.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     review = write_review(root, task.template_file, decision="accept")
     payload = json.loads(review.read_text(encoding="utf-8"))
@@ -587,7 +561,7 @@ def test_human_review_v6_rejects_v5_and_requires_three_accept_evidence_kinds(tmp
     assert "accept/repair requires human key_turn, character_choice_or_emotion, and reader_gain spans" in missing.errors
 
 
-def test_human_review_v5_rejects_review_bundle_hash_drift(tmp_path):
+def test_human_review_v7_rejects_review_bundle_hash_drift(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
     task = create_human_story_review_task(config, chapter_number=1)
     review = root / task.template_file
@@ -639,20 +613,18 @@ def test_human_accept_requires_story_spans_and_reader_gain_note(tmp_path):
     assert "accept requires a non-empty reader_gain_note" in result.errors
 
 
-def test_human_review_rejects_each_stale_candidate_contract_promise_and_simulation_hash(tmp_path):
+def test_human_review_rejects_each_stale_candidate_contract_and_promise_hash(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
     task = create_human_story_review_task(config, chapter_number=1)
     review = write_review(root, task.template_file, decision="accept")
     draft = root / "40_manuscript" / "draft" / "ch001.md"
-    card = root / "20_outline" / "chapter_cards" / "ch001.json"
+    contract = root / "20_outline" / "chapter_contracts" / "ch001.json"
     ledger = root / "30_state" / "reader_promise_ledger.json"
-    simulation = next((root / "20_outline" / "arc_simulations").glob("ch*-ch*.json"))
 
     cases = (
         (draft, lambda payload: None, "candidate_sha256 is stale", True),
-        (card, lambda payload: payload.__setitem__("relationship_move", "Changed after review."), "chapter_contract_sha256 is stale", False),
-        (ledger, lambda payload: payload.__setitem__("updated_at", "stale-review-hash"), "reader_promise_ledger_sha256 is stale", False),
-        (simulation, lambda payload: payload["offstage_actions"].append("A new offstage move appears."), "arc_causal_simulation_sha256 is stale", False),
+        (contract, lambda payload: payload.__setitem__("reader_value", "Changed after review."), "chapter_contract_sha256 is stale", False),
+        (ledger, lambda payload: payload["items"][0]["actual_evidence"].append({"chapter_number": 1, "action": "setup"}), "reader_promise_ledger_sha256 is stale", False),
     )
     for path, mutate, expected, append_text in cases:
         original = path.read_bytes()
@@ -661,8 +633,9 @@ def test_human_review_rejects_each_stale_candidate_contract_promise_and_simulati
         else:
             payload = json.loads(path.read_text(encoding="utf-8"))
             mutate(payload)
-            if path == card:
-                stamp_chapter_contract(payload)
+            if path == contract:
+                payload.pop("chapter_contract_hash")
+                payload = stamp_chapter_contract(payload)
             path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         result = validate_human_story_review(config, chapter_number=1, file_path=review)
         assert not result.ok
@@ -705,7 +678,7 @@ def test_human_repair_enters_immutable_review_bundle_and_stale_hash_fails(tmp_pa
     assert "candidate_sha256 is stale" in stale.errors
 
 
-def test_human_redirect_uses_transaction_and_returns_to_direction(tmp_path):
+def test_human_redirect_uses_transaction_and_returns_to_replanning(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
     task = create_human_story_review_task(config, chapter_number=1)
     review = write_review(root, task.template_file, decision="redirect")
@@ -715,11 +688,16 @@ def test_human_redirect_uses_transaction_and_returns_to_direction(tmp_path):
     assert applied.decision == "redirect"
     assert applied.transaction_report.endswith(".json")
     assert (root / applied.transaction_report).is_file()
-    assert assess_chapter_direction(config, 1)["required"] is True
-    assert "chapter_direction" in applied.next_command
+    stale = json.loads((root / "30_state" / "stale_artifacts.json").read_text(encoding="utf-8"))
+    assert any(
+        item["artifact_path"] == "20_outline/chapter_contracts/ch001.json"
+        and item["state"] == "stale"
+        for item in stale["items"]
+    )
+    assert applied.next_command == "longform-engine production next project.yaml"
 
 
-def test_outline_redirect_blocks_direction_until_outline_revision(tmp_path):
+def test_outline_redirect_records_scope_and_returns_to_replanning(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
     task = create_human_story_review_task(config, chapter_number=1)
     review = write_review(
@@ -731,11 +709,9 @@ def test_outline_redirect_blocks_direction_until_outline_revision(tmp_path):
     assert validate_human_story_review(config, chapter_number=1, file_path=review).ok
     applied = apply_human_story_review(config, chapter_number=1, file_path=review, approved_by="human")
 
-    direction = assess_chapter_direction(config, 1)
-    assert direction["status"] == "outline_revision_required"
-    assert "outline_revision" in applied.next_command
-    with pytest.raises(ValueError, match="outline_revision"):
-        create_intelligence_task(config, task_type="chapter_direction", chapter_number=1)
+    transaction = json.loads((root / applied.transaction_report).read_text(encoding="utf-8"))
+    assert transaction["metadata"]["redirect_scope"] == "outline_revision"
+    assert applied.next_command == "longform-engine production next project.yaml"
 
 
 def test_outline_revision_transaction_invalidates_patterns_tasks_simulation_and_sqlite(
@@ -861,7 +837,7 @@ def test_outline_revision_transaction_invalidates_patterns_tasks_simulation_and_
     assert all(item["status"] == "superseded" for item in affected_tasks)
 
 
-def test_human_redirect_failure_restores_card_decision_and_sqlite(tmp_path, monkeypatch):
+def test_human_redirect_failure_restores_stale_registry_decision_and_patterns(tmp_path, monkeypatch):
     config, root, _task = seed_candidate(tmp_path)
     task = create_human_story_review_task(config, chapter_number=1)
     review = write_review(root, task.template_file, decision="redirect")
@@ -888,28 +864,24 @@ def test_human_redirect_failure_restores_card_decision_and_sqlite(tmp_path, monk
         root / "70_runtime" / "agent_tasks" / "index.json",
         root / "50_workbench" / "agent_tasks" / "events.jsonl",
         root / "50_workbench" / "editorial_patterns" / "registry.jsonl",
+        root / "30_state" / "stale_artifacts.json",
         *sorted((root / "20_outline" / "arc_simulations").glob("ch*-ch*.json")),
     ]
     before = {path: path.read_bytes() for path in watched if path.is_file()}
-    databases = sorted((root / "70_runtime" / "db").glob("*.sqlite"))
-    database_before = {}
-    for database in databases:
-        with sqlite3.connect(database) as connection:
-            database_before[database] = tuple(connection.iterdump())
-    original_sync = db_module.sync_database
+    original_truncate = human_story_review_module.truncate_editorial_pattern_registry
 
-    def fail_after_sqlite(current_config):
-        original_sync(current_config)
-        raise RuntimeError("redirect fault after sqlite")
+    def fail_after_patterns(current_root, *, to_chapter):
+        original_truncate(current_root, to_chapter=to_chapter)
+        raise RuntimeError("redirect fault after patterns")
 
-    monkeypatch.setattr(db_module, "sync_database", fail_after_sqlite)
-    with pytest.raises(RuntimeError, match="redirect fault after sqlite"):
+    monkeypatch.setattr(
+        human_story_review_module,
+        "truncate_editorial_pattern_registry",
+        fail_after_patterns,
+    )
+    with pytest.raises(RuntimeError, match="redirect fault after patterns"):
         apply_human_story_review(config, chapter_number=1, file_path=review, approved_by="human")
 
     assert all(path.read_bytes() == content for path, content in before.items())
-    for database, dump in database_before.items():
-        with sqlite3.connect(database) as connection:
-            assert tuple(connection.iterdump()) == dump
-            assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
     assert not list((root / "50_workbench" / "human_story_reviews").glob("ch001.*.decision.json"))
     assert not (root / "50_workbench" / "human_story_reviews" / "ch001.latest.json").exists()

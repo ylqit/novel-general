@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from longform_engine.reader_promises import LEDGER_PATH, reader_promise_planning_hash
+from longform_engine.reader_promises_v2 import LEDGER_PATH, reader_promise_planning_hash
 from longform_engine.storage import atomic_write_text
 
 

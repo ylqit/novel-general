@@ -142,8 +142,8 @@
     },
     {
       "path": "config/agent_roles/prompts/fanfiction_canon_archivist.md",
-      "sha256": "a3041812c980c37ca336ec5e92e85fe1679c2c5d9eefc929ed9eac3427c25392",
-      "size": 4157
+      "sha256": "d083dd3bfb50ba48dd51415d83bc78f20fbd9f86afbb7d2203fead4854464650",
+      "size": 4281
     },
     {
       "path": "config/agent_roles/prompts/human_author_advisor.md",
@@ -282,7 +282,7 @@
     },
     {
       "path": "config/release-channel.json",
-      "sha256": "d71e39f9e50776bfb936d98506ae377115fd5cc85d6670fba1bee0dc749912ac",
+      "sha256": "f54ffb3406f06d9eb70f15cac7c0bfcc229f7720ff853ffb9ed26fd76cea1b9d",
       "size": 302
     },
     {
@@ -332,8 +332,8 @@
     },
     {
       "path": "longform-novel-claude/references/command_protocol.md",
-      "sha256": "42988a6a41193b02bb9df904239e783c5dc9bb646b77db6536be0d67b317ae6a",
-      "size": 37453
+      "sha256": "4c809db29c56ec6a7662b1060c9ba17c0d77999a748b8540bbd9bb4b7b195c9f",
+      "size": 43025
     },
     {
       "path": "longform-novel-claude/references/creative_operator_protocol.md",
@@ -342,18 +342,18 @@
     },
     {
       "path": "longform-novel-claude/references/iron_laws.md",
-      "sha256": "be88486c4aafcd153456470d148de4ab63305e23357efd2e0781b7908ad1568f",
-      "size": 12082
+      "sha256": "21874d0b54e5dd3f664013d336f4595d9b54552a6dccf08b3c49031de7735b89",
+      "size": 12447
     },
     {
       "path": "longform-novel-claude/references/workflow_mapping.md",
-      "sha256": "bddb2a48bc5e965068f1ff63dfcdfab815b8380b52c86ec4e4ae61d900bf22e8",
-      "size": 8964
+      "sha256": "823da2be7b3b88b87fb6c9f84de0644cb699ed9f17ed0c4e597aab9d0a77029e",
+      "size": 9972
     },
     {
       "path": "longform-novel-claude/SKILL.md",
-      "sha256": "afeca6e5f9dadfa895b81bb74fd37258e4675d228aebb4bd96bddd5b83435a6a",
-      "size": 6969
+      "sha256": "633f0a4f52b08c4ac8131a4c3ad9745cbe6ea67f9d012fabbdb4c5a171771bf7",
+      "size": 7571
     },
     {
       "path": "longform-novel-codex/agents/openai.yaml",
@@ -367,8 +367,8 @@
     },
     {
       "path": "longform-novel-codex/references/command_protocol.md",
-      "sha256": "42988a6a41193b02bb9df904239e783c5dc9bb646b77db6536be0d67b317ae6a",
-      "size": 37453
+      "sha256": "4c809db29c56ec6a7662b1060c9ba17c0d77999a748b8540bbd9bb4b7b195c9f",
+      "size": 43025
     },
     {
       "path": "longform-novel-codex/references/creative_operator_protocol.md",
@@ -377,22 +377,22 @@
     },
     {
       "path": "longform-novel-codex/references/iron_laws.md",
-      "sha256": "be88486c4aafcd153456470d148de4ab63305e23357efd2e0781b7908ad1568f",
-      "size": 12082
+      "sha256": "21874d0b54e5dd3f664013d336f4595d9b54552a6dccf08b3c49031de7735b89",
+      "size": 12447
     },
     {
       "path": "longform-novel-codex/references/workflow_mapping.md",
-      "sha256": "bddb2a48bc5e965068f1ff63dfcdfab815b8380b52c86ec4e4ae61d900bf22e8",
-      "size": 8964
+      "sha256": "823da2be7b3b88b87fb6c9f84de0644cb699ed9f17ed0c4e597aab9d0a77029e",
+      "size": 9972
     },
     {
       "path": "longform-novel-codex/SKILL.md",
-      "sha256": "efd9d1914f5ee654196ed4f63eb6f8ac88999ed795a83c6faf39c5ba33a9679c",
-      "size": 6963
+      "sha256": "89a9f25fbd0d1f913e34c71e049680c9f9f8c84fa1bc7d41b6292f3dc2a8a4d6",
+      "size": 7565
     },
     {
       "path": "pyproject.toml",
-      "sha256": "60c6d71a93e2612d2d20026a095aad0e5b58d8dbacf5e0d3fd83208f743da5d2",
+      "sha256": "72ee50d5502112d78ce70904db63edaa3e86797a00e0c8edaf1b306f318c2deb",
       "size": 2662
     },
     {
@@ -402,8 +402,8 @@
     },
     {
       "path": "shared/command_protocol.md",
-      "sha256": "42988a6a41193b02bb9df904239e783c5dc9bb646b77db6536be0d67b317ae6a",
-      "size": 37453
+      "sha256": "4c809db29c56ec6a7662b1060c9ba17c0d77999a748b8540bbd9bb4b7b195c9f",
+      "size": 43025
     },
     {
       "path": "shared/creative_operator_protocol.md",
@@ -412,13 +412,13 @@
     },
     {
       "path": "shared/iron_laws.md",
-      "sha256": "be88486c4aafcd153456470d148de4ab63305e23357efd2e0781b7908ad1568f",
-      "size": 12082
+      "sha256": "21874d0b54e5dd3f664013d336f4595d9b54552a6dccf08b3c49031de7735b89",
+      "size": 12447
     },
     {
       "path": "shared/workflow_mapping.md",
-      "sha256": "bddb2a48bc5e965068f1ff63dfcdfab815b8380b52c86ec4e4ae61d900bf22e8",
-      "size": 8964
+      "sha256": "823da2be7b3b88b87fb6c9f84de0644cb699ed9f17ed0c4e597aab9d0a77029e",
+      "size": 9972
     },
     {
       "path": "templates/qidian-longform/project.yaml",
@@ -426,7 +426,7 @@
       "size": 780
     }
   ],
-  "engine_version": "0.10.0",
+  "engine_version": "0.11.0",
   "hash_policy": "text-lf-v1",
   "schema": "longform_resource_manifest_v1"
 }

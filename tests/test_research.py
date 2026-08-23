@@ -22,6 +22,13 @@ def close_seed_research_chapters(root, config) -> None:
         if chapter_number <= 3:
             seed_manual_human_revision_binding(root, chapter_number)
         complete_unified_semantic_lifecycle(root, config, chapter_number)
+    rolling_path = root / "20_outline" / "rolling_window.json"
+    rolling = json.loads(rolling_path.read_text(encoding="utf-8"))
+    rolling["tiers"]["firm"] = [5, 7]
+    rolling_path.write_text(
+        json.dumps(rolling, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def seed_manual_human_revision_binding(root, chapter_number: int) -> None:

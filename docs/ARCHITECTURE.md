@@ -1,6 +1,6 @@
 # Architecture
 
-本文描述 `longform-novel-engine` v0.10.0 的活动架构。v0.10 是破坏性协议，不读取或迁移 v0.9 项目。
+本文描述 `longform-novel-engine` v0.11.0 的活动架构。v0.11 延续 v0.10 的章节与规划协议，并将动态同人原著资料库设为正式发布能力。
 
 ## 1. 系统定位
 
@@ -26,6 +26,20 @@ Host Agent
 5. RAG、向量、SQLite 和缓存等可重建视图。
 
 摘要、关键词命中、平台启发式或 Agent 推断不能覆盖高层事实。
+
+### 2.1 同人来源的三级归属
+
+```text
+当前用户级原著资料库（非 Canon）
+-> 具体小说的固定资料绑定与全作覆盖计划（workbench）
+-> 该小说人工批准的 fanfiction_source_canon_v2（project Canon）
+```
+
+用户级资料库使用稳定 `source_library_work_v1`、`source_library_item_v1` 和按内容 hash 缓存的 `source_extraction_candidate_v1`。目录名可改，引用只认作品 ID、资料项 ID、内容 hash 与提取 hash。全局候选永不自动进入任何项目的 Bible、RAG、Graph 或 SQLite。
+
+项目在 `50_workbench/同人原著资料/<作品名>/` 保存 `fanfiction_work_binding_v1` 与 `fanfiction_coverage_plan_v1`。原件仍位于用户库；项目只复制批准提取与短证据索引。每部作品的版本、截止点和目录单元由人工确定，不预建小说、动画、人物等空目录。`fanfiction_source_canon_v1` 直接不兼容。
+
+全局资料修正不会改变已固定项目。系统只报告升级候选并生成 `fanfiction_source_upgrade_proposal_v1`；独立语义审查不得降级由稳定事实 ID/显式引用得到的 `must_stale`。未来升级使项目 Canon 和明确依赖产物 stale；影响定稿章节时只创建 `revision_branch_v2`，不改当前绑定或正文。
 
 ## 3. 语义规划与分卷滚动
 

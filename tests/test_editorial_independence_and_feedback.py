@@ -7,7 +7,6 @@ import pytest
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
 from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
-from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_aggregate, editorial_review, editorial_submit_review
 from longform_engine.production import editorial_task_is_current, production_next
@@ -24,7 +23,12 @@ from longform_engine.distribution import doctor_payload
 from longform_engine.repair_coordination import create_repair_synthesis_task, review_barrier_status
 from longform_engine.roles import load_role_registry
 from longform_engine.storage import init_project
-from tests.project_fixtures import checked_review_coverage, mark_project_ready
+from tests.project_fixtures import (
+    checked_review_coverage,
+    mark_project_ready,
+    rebind_human_intent_fixture,
+    update_chapter_contract_fixture,
+)
 
 
 def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_blocker(tmp_path):
@@ -168,8 +172,14 @@ def test_risk_selected_editorial_v2_recognizes_chinese_payoff_and_access_gain(tm
             "ending_mode": "question",
         }
     )
-    stamp_chapter_contract(card_payload)
     card.write_text(json.dumps(card_payload, ensure_ascii=False), encoding="utf-8")
+    contract = update_chapter_contract_fixture(
+        root,
+        1,
+        chapter_duty="完成军粮失踪案第一层闭环",
+        reader_value="追回军粮并取得三日旧账册调查权限",
+    )
+    rebind_human_intent_fixture(root, 1, contract)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text(
         "# 第一章\n\n沈阙追回军粮，也拿到了三日旧账册调查权限。\n",

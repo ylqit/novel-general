@@ -189,7 +189,7 @@ def validate_readme() -> list[str]:
         "canonical_delta_v1",
         "OPERATOR_GUIDE.md",
         "RELEASE_HISTORY.md",
-        "V0_10_0_RELEASE_CHECKLIST.md",
+        "V0_11_0_RELEASE_CHECKLIST.md",
     )
     for term in required:
         if term.lower() not in readme.lower():

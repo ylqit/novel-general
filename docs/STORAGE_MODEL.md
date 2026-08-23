@@ -1,6 +1,6 @@
 # Storage Model
 
-本文定义 v0.10.0 的落盘合同。v0.9 文件不能作为当前协议证据。
+本文定义 v0.11.0 的落盘合同。v0.9 文件及 `fanfiction_source_canon_v1` 不能作为当前协议证据。
 
 ## 1. canonical 与 workbench
 
@@ -25,8 +25,15 @@
 | `30_state/chapter_closures/chNNN.json` | `chapter_closure_v2` |
 | `40_manuscript/final/chNNN.md` | 唯一正文事实源 |
 | `50_workbench/` | 候选、任务、审稿、反馈与审批证据，非 canonical |
+| `50_workbench/同人原著资料/<作品名>/` | 项目级中文资料包、覆盖计划、固定绑定、批准提取和短证据；不含完整原件 |
 
 正式正文只接受 `ch{chapter:03d}.md`；四位及以上自然扩展。任何旧命名、`.txt` 或别名均不搜索、不迁移。
+
+## 1.1 用户级原著资料库
+
+默认根目录位于操作系统用户数据目录的 `longform-novel-engine/原著资料库/`；`LONGFORM_SOURCE_LIBRARY` 可指定绝对路径。其中文物理结构只有 `作品/<作品名>/资料项/<动态资料名>/`，不硬编码媒介目录。完整原件只允许用户合法导入、公版或明确许可；普通网页仅保留定位、结构化事实和必要短证据。
+
+用户资料库不进入 Git、出版包、项目审计包或 Skill。项目绑定固定 `作品ID + 资料项ID + 内容哈希 + 提取哈希`；全局文件更新只产生升级提案，不能静默改变项目。
 
 ## 2. 作者工作单
 

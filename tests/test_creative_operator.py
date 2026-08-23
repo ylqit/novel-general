@@ -1,9 +1,7 @@
 import json
 from pathlib import Path
-import pytest
 
 from longform_engine.agent_tasks import load_manifest, status_summary, validate_manifest_strict
-from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.creative import (
     detect_prose_naturalness_issues,
@@ -14,9 +12,14 @@ from longform_engine.creative import (
     style_extract,
 )
 from longform_engine.gates import gate_check, pacing_review
-from longform_engine.orchestration import WorkflowError, continue_write, open_book as engine_open_book, plan_chapter
+from longform_engine.orchestration import continue_write, open_book as engine_open_book, plan_chapter
 from longform_engine.storage import init_project
-from tests.project_fixtures import mark_project_ready, refresh_arc_simulation_fixture
+from tests.project_fixtures import (
+    mark_project_ready,
+    rebind_human_intent_fixture,
+    refresh_arc_simulation_fixture,
+    update_chapter_contract_fixture,
+)
 
 
 def open_book(config):
@@ -91,8 +94,18 @@ def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp
             "must_preserve_suspense": ["who controls the bell"],
         }
     )
-    stamp_chapter_contract(card)
     card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    contract = update_chapter_contract_fixture(
+        root,
+        1,
+        chapter_duty="plant the bell debt without solving it",
+        protected_invariants=[
+            "Dragon Crown remains unrevealed.",
+            "The ultimate patron remains unresolved.",
+            "Suspense over who controls the bell remains active.",
+        ],
+    )
+    rebind_human_intent_fixture(root, 1, contract)
     refresh_arc_simulation_fixture(root)
 
     continue_write(project_config, chapter_number=1)
@@ -108,16 +121,16 @@ def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp
     assert task_md.count("本章正在发生") == 1
 
 
-def test_continue_write_blocks_missing_applied_creative_brief(tmp_path):
+def test_continue_write_reinitializes_missing_creative_brief(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
     open_book(project_config)
     (root / "10_bible" / "creative_brief.json").unlink()
 
-    with pytest.raises(WorkflowError, match="Project is not ready for chapter writing"):
-        continue_write(project_config, chapter_number=1)
+    result = continue_write(project_config, chapter_number=1)
 
-    assert not (root / "10_bible" / "creative_brief.json").exists()
+    assert result.status == "task_ready"
+    assert (root / "10_bible" / "creative_brief.json").exists()
     assert not (root / "40_manuscript" / "draft" / "ch001.md").exists()
 
 

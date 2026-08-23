@@ -136,7 +136,6 @@ SUBDIRECTORIES = [
     "50_workbench/intelligence_candidates",
     "50_workbench/intelligence_selections",
     "50_workbench/intelligence_validations",
-    "50_workbench/fanfiction_sources",
     "50_workbench/research_inbox",
     "50_workbench/writing_tasks",
     "50_workbench/agent_drafts",

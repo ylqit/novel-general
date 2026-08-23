@@ -9,7 +9,7 @@
 ```powershell
 git status --short
 git log -1 --oneline
-git tag --list "v0.10.*"
+git tag --list "v0.11.*"
 longform-engine --version
 longform-engine skills status --tool codex --json
 python scripts/check_agent_data_pipeline_readiness.py
@@ -25,7 +25,7 @@ python scripts/check_agent_data_pipeline_readiness.py
 
 ## 2. 当前发布状态
 
-- 当前公开稳定版为 `v0.10.0`，并明确拒绝 v0.9 及更早项目。v0.10 使用语义规划、活动分卷、三章 firm 滚动窗口、逐节点人工审批、事件/承诺关闭证据和版本化设定回溯。
+- 当前公开稳定版为 `v0.11.0`。它延续 v0.10 的语义规划、活动分卷、三章 firm 滚动窗口、逐节点人工审批、事件/承诺关闭证据和版本化设定回溯，并正式加入动态同人原著资料库。
 - 协议与生产合同 readiness 以 `scripts/check_agent_data_pipeline_readiness.py` 的输出为准。
 - `literary_evidence_ready` 保持 `false`，直到真实章节与独立盲评证据完整。
 - 不要把任一本地小说运行、全局 Skill 状态或历史阶段文档当作源码事实源。
@@ -325,7 +325,7 @@ task event/index 记录：
 2. `docs/OPERATOR_GUIDE.md`
 3. `docs/ARCHITECTURE.md`
 4. `docs/STORAGE_MODEL.md`
-5. `docs/V0_10_0_RELEASE_CHECKLIST.md`
+5. `docs/V0_11_0_RELEASE_CHECKLIST.md`
 6. `docs/RELEASE_HISTORY.md`
 7. `docs/GATE_MODEL.md`
 8. `docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`

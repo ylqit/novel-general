@@ -6,7 +6,10 @@ from longform_engine.arc_simulation import current_basis_hashes, write_arc_causa
 from longform_engine.config import load_project_config
 from longform_engine.db import query_table, status as db_status
 from longform_engine.quality import refresh_editorial_pattern_registry
-from longform_engine.reader_promises import materialize_reader_promise_ledger, write_reader_promise_ledger
+from longform_engine.reader_promises_v2 import (
+    materialize_explicit_reader_promises,
+    write_reader_promise_ledger,
+)
 from longform_engine.revision import create_revision_branch, project_status, rollback, rollback_impact
 from longform_engine.revision import pipeline as revision_pipeline
 from longform_engine.storage import init_project
@@ -172,40 +175,41 @@ def seed_revision_project(tmp_path):
         encoding="utf-8",
     )
 
-    write_reader_promise_ledger(
-        root,
-        materialize_reader_promise_ledger(
-            [
-                {
-                    "promise_id": "test:route_control",
-                    "promise_type": "situation",
-                    "reader_expectation": "Control of the route must visibly change.",
-                    "owner_story_engine": "route_conflict",
-                    "setup_chapter": 2,
-                    "payoff_window": {"earliest": 2, "target": 3, "latest": 4},
-                    "staged_payoffs": [],
-                    "status": "paid",
-                    "actual_evidence": [
-                        {
-                            "chapter_number": 2,
-                            "action": "setup",
-                            "reader_gain": "The route becomes contested.",
-                            "source_path": "40_manuscript/final/ch002.md",
-                            "source_sha256": "d" * 64,
-                        },
-                        {
-                            "chapter_number": 3,
-                            "action": "payoff",
-                            "reader_gain": "Control of the route changes.",
-                            "source_path": "40_manuscript/final/ch003.md",
-                            "source_sha256": "e" * 64,
-                        },
-                    ],
-                    "deferrals": [],
-                }
-            ]
-        ),
+    promises = materialize_explicit_reader_promises(
+        [
+            {
+                "schema": "reader_promise_v2",
+                "promise_id": "test:route-control",
+                "reader_expectation": "Control of the route must visibly change.",
+                "owner_ref": "story-engine:route-conflict",
+                "payoff_window": {"earliest": 2, "target": 3, "latest": 4},
+                "staged_payoffs": [
+                    {
+                        "stage_id": "payoff:route-control",
+                        "description": "Control of the route changes.",
+                        "window": [2, 4],
+                    }
+                ],
+                "selected_by": None,
+            }
+        ],
+        approved_by="human",
     )
+    promises["items"][0].update(
+        {
+            "status": "paid",
+            "completed_stage_ids": ["payoff:route-control"],
+            "actual_evidence": [
+                {"chapter_number": 2, "action": "setup", "stage_id": None},
+                {
+                    "chapter_number": 3,
+                    "action": "payoff",
+                    "stage_id": "payoff:route-control",
+                },
+            ],
+        }
+    )
+    write_reader_promise_ledger(root, promises)
 
     refresh_editorial_pattern_registry(
         root,

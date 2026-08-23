@@ -16,8 +16,14 @@ from longform_engine.arc_simulation import (
 from longform_engine.semantic import chapter_close, semantic_apply, semantic_task
 from longform_engine.semantic.pipeline import active_planned_thread_ids, foreshadow_state_threads, planned_threads
 from longform_engine.lengths import compile_length_forecast
-from longform_engine.reader_promises import (
-    merge_planned_reader_promises,
+from longform_engine.narrative_events import (
+    apply_event_realization,
+    build_event_realization_application,
+)
+from longform_engine.reader_promises_v2 import (
+    apply_promise_evidence,
+    build_promise_evidence_application,
+    materialize_explicit_reader_promises,
     write_reader_promise_ledger,
 )
 from longform_engine.quality import compact_effective_quality_contract, compile_effective_quality_contract
@@ -39,6 +45,41 @@ def story_engine_contract() -> dict:
         "carrier_palette": ["pursuit", "rescue", "negotiation", "infiltration", "training", "relationship conflict"],
         "theme_carrier_limits": "Theme may explain consequences but records, notices, and meetings may not monopolize events.",
     }
+
+
+def explicit_reader_promise_candidates() -> list[dict]:
+    return [
+        {
+            "schema": "reader_promise_v2",
+            "promise_id": "story_engine:opening_three",
+            "reader_expectation": "The opening conflict produces a usable clue and changed alliance.",
+            "owner_ref": "story_engine:opening_three",
+            "payoff_window": {"earliest": 1, "target": 3, "latest": 3},
+            "staged_payoffs": [
+                {
+                    "stage_id": "payoff:opening-three",
+                    "description": "Resolve the opening clue into a changed condition.",
+                    "window": [1, 3],
+                }
+            ],
+            "selected_by": None,
+        },
+        {
+            "schema": "reader_promise_v2",
+            "promise_id": "story_engine:early_serial",
+            "reader_expectation": "The early serial investigation converts evidence into leverage.",
+            "owner_ref": "story_engine:early_serial",
+            "payoff_window": {"earliest": 4, "target": 7, "latest": 10},
+            "staged_payoffs": [
+                {
+                    "stage_id": "payoff:early-serial",
+                    "description": "Convert accumulated evidence into durable leverage.",
+                    "window": [4, 10],
+                }
+            ],
+            "selected_by": None,
+        },
+    ]
 
 
 def build_arc_simulation_candidate(
@@ -169,14 +210,36 @@ def refresh_arc_simulation_fixture(root: Path) -> Path:
         if selection.get("status") != "applied":
             continue
         card["arc_simulation_ref"] = simulation_ref
-        stamp_chapter_contract(card)
         write_json(card_path, card)
-        intent_path = root / "20_outline" / "chapter_intents" / f"ch{chapter_number:03d}.json"
-        if intent_path.is_file():
-            intent = json.loads(intent_path.read_text(encoding="utf-8"))
-            intent["chapter_contract_sha256"] = card["chapter_contract_hash"]
-            write_json(intent_path, intent)
     return simulation_path
+
+
+def update_chapter_contract_fixture(
+    root: Path,
+    chapter_number: int,
+    **updates,
+) -> dict:
+    """Update the formal v5 contract used by current workflow fixtures."""
+
+    contract_path = root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract.pop("chapter_contract_hash")
+    contract.update(updates)
+    stamped = stamp_chapter_contract(contract)
+    write_json(contract_path, stamped)
+    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    if card_path.is_file():
+        card = json.loads(card_path.read_text(encoding="utf-8"))
+        card["chapter_contract_hash"] = stamped["chapter_contract_hash"]
+        write_json(card_path, card)
+    return stamped
+
+
+def rebind_human_intent_fixture(root: Path, chapter_number: int, contract: dict) -> None:
+    intent_path = root / "20_outline" / "chapter_intents" / f"ch{chapter_number:03d}.json"
+    intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    intent["chapter_contract_sha256"] = contract["chapter_contract_hash"]
+    write_json(intent_path, intent)
 
 
 def mark_project_ready(
@@ -372,14 +435,50 @@ def mark_project_ready(
     write_json(root / "20_outline" / "volumes.json", volumes)
     write_json(root / "20_outline" / "chapter_plan.json", chapter_plan)
     write_json(root / "20_outline" / "planning_window.json", planning_window)
+    write_json(
+        root / "20_outline" / "rolling_window.json",
+        {
+            "schema": "rolling_window_v1",
+            "window_id": "window:fixture",
+            "start_chapter": int(planning_window["start_chapter"]),
+            "end_chapter": int(planning_window["end_chapter"]),
+            "tiers": {
+                "firm": [int(planning_window["start_chapter"]), int(planning_window["start_chapter"]) + 2],
+                "directional": [int(planning_window["start_chapter"]) + 3, min(int(planning_window["start_chapter"]) + 9, int(planning_window["end_chapter"]))],
+                "horizon": None,
+            },
+            "basis_refs": ["20_outline/chapter_plan.json"],
+            "basis_sha256": "b" * 64,
+        },
+    )
     write_json(root / "20_outline" / "foreshadowing_ledger.json", ledger)
+    write_json(
+        root / "30_state" / "semantic_obligations.json",
+        {
+            "schema": "semantic_obligation_ledger_v1",
+            "items": [
+                {
+                    "schema": "semantic_obligation_v1",
+                    "obligation_id": "obligation:trust-choice",
+                    "domain": "relationship",
+                    "subject_refs": [],
+                    "prior_state_refs": [],
+                    "preconditions": [],
+                    "intended_change": "Ari shares control of the only route copy.",
+                    "reader_value": "Trust changes who can act next.",
+                    "evidence_requirement": "The final prose must show the transfer and its cost.",
+                    "protected_invariants": ["The editor identity remains concealed."],
+                    "dependency_refs": [],
+                }
+            ],
+            "source_bundle_sha256": "c" * 64,
+        },
+    )
     write_reader_promise_ledger(
         root,
-        merge_planned_reader_promises(
-            root,
-            story_engine_contract=brief["story_engine_contract"],
-            foreshadowing_ledger=ledger,
-            estimated_chapters=forecast.estimated_chapters,
+        materialize_explicit_reader_promises(
+            explicit_reader_promise_candidates(),
+            approved_by="human",
         ),
     )
     horizon_start = int(planning_window["start_chapter"])
@@ -466,6 +565,7 @@ def mark_project_ready(
                             else "payoff" if chapter_number == 3
                             else "escalate"
                         ),
+                        "stage_id": "payoff:opening-three" if chapter_number == 3 else None,
                         "intended_reader_gain": row["reader_gain"],
                         "evidence_requirement": "The final chapter must show a concrete changed condition.",
                         "defer_reason": "",
@@ -507,15 +607,111 @@ def mark_project_ready(
                     "document_sha256": "a" * 64,
                 }
             )
-            stamp_chapter_contract(card)
+            candidate_hash = sha256(
+                f"fixture-plot-nodes:{chapter_number}".encode("utf-8")
+            ).hexdigest()
+            node_table = {
+                "schema": "plot_node_table_v1",
+                "table_id": f"node-table:ch{chapter_number:03d}",
+                "chapter_number": chapter_number,
+                "candidate_sha256": candidate_hash,
+                "nodes": [
+                    {
+                        "node_id": f"node:ch{chapter_number:03d}:choice",
+                        "node_kind": "state_change",
+                        "description": card["irreversible_choice"],
+                        "preconditions": [],
+                        "dependency_refs": ["obligation:trust-choice"],
+                        "expected_changes": [card["chapter_turn"]],
+                        "reader_effect": card["reader_gain"],
+                        "human_decision": {
+                            "node_id": f"node:ch{chapter_number:03d}:choice",
+                            "decision": "approve",
+                            "adjustments": {},
+                            "reason": "Fixture approval for the bounded chapter choice.",
+                            "decided_by": "human",
+                        },
+                    }
+                ],
+                "approval_sha256": "d" * 64,
+            }
+            node_path = root / "20_outline" / "plot_nodes" / f"ch{chapter_number:03d}.json"
+            write_json(node_path, node_table)
+            write_json(
+                root / "30_state" / "narrative_events" / f"ch{chapter_number:03d}.json",
+                {
+                    "schema": "narrative_event_ledger_v1",
+                    "chapter_number": chapter_number,
+                    "events": [
+                        {
+                            "schema": "narrative_event_v1",
+                            "event_id": f"event:node:ch{chapter_number:03d}:choice",
+                            "source_node_id": f"node:ch{chapter_number:03d}:choice",
+                            "chapter_number": chapter_number,
+                            "preconditions": [],
+                            "dependency_refs": ["obligation:trust-choice"],
+                            "expected_changes": [card["chapter_turn"]],
+                            "reader_effect": card["reader_gain"],
+                            "state": "planned_approved",
+                            "realization_evidence": None,
+                        }
+                    ],
+                    "source_plot_node_table_sha256": sha256(node_path.read_bytes()).hexdigest(),
+                },
+            )
+            contract = stamp_chapter_contract(
+                {
+                    "schema": "chapter_contract_v5",
+                    "contract_id": f"contract:ch{chapter_number:03d}",
+                    "chapter_number": chapter_number,
+                    "forecast_ref": f"forecast:ch{chapter_number:03d}",
+                    "topology": "relationship",
+                    "chapter_duty": card["chapter_duty"],
+                    "observable_change": card["chapter_turn"],
+                    "reader_value": card["reader_gain"],
+                    "failure": {
+                        "applicability": "required",
+                        "description": card["key_failure"],
+                        "reason": "The failed direct route forces the approved choice.",
+                    },
+                    "choice": {
+                        "applicability": "required",
+                        "description": card["irreversible_choice"],
+                        "reason": "The choice owns the chapter's state change.",
+                    },
+                    "cost": {
+                        "applicability": "required",
+                        "description": card["cost"],
+                        "reason": "The gain must narrow the next safe option.",
+                    },
+                    "aftermath": {
+                        "applicability": "optional",
+                        "description": card["emotional_aftereffect"],
+                        "reason": "The following chapter may carry further processing.",
+                    },
+                    "plot_node_table_ref": {
+                        "table_id": node_table["table_id"],
+                        "candidate_sha256": candidate_hash,
+                    },
+                    "semantic_obligation_refs": ["obligation:trust-choice"],
+                    "reader_promise_actions": card["reader_promise_actions"],
+                    "protected_invariants": ["The final editor identity remains concealed."],
+                    "prohibited_drift": card["prohibited_drift"],
+                }
+            )
+            contract_path = (
+                root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
+            )
+            write_json(contract_path, contract)
+            card["chapter_contract_hash"] = contract["chapter_contract_hash"]
             write_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", card)
             write_json(
                 root / "20_outline" / "chapter_intents" / f"ch{chapter_number:03d}.json",
                 {
-                    "schema": "human_chapter_intent_v1",
+                    "schema": "human_chapter_intent_v2",
                     "chapter_number": chapter_number,
-                    "chapter_contract_sha256": card["chapter_contract_hash"],
-                    "direction_selection_sha256": card["direction_selection"]["selection_sha256"],
+                    "chapter_contract_sha256": contract["chapter_contract_hash"],
+                    "plot_node_approval_sha256": sha256(node_path.read_bytes()).hexdigest(),
                     "story_intent": "Make the pursuit become a human choice with a visible cost.",
                     "key_character_choice": "Ari entrusts the only route copy to Mira instead of controlling it alone.",
                     "emotional_truth": "Trust feels like losing control before it feels like alliance.",
@@ -1174,7 +1370,14 @@ def prepare_unified_semantic_bundle(root: Path, config, chapter_number: int) -> 
     return output
 
 
-def complete_unified_semantic_lifecycle(root: Path, config, chapter_number: int, *, approved_by: str = "human") -> None:
+def complete_unified_semantic_lifecycle(
+    root: Path,
+    config,
+    chapter_number: int,
+    *,
+    approved_by: str = "human",
+    approve_voice: bool = True,
+) -> None:
     ledger = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
     if not ledger.exists():
         output = prepare_unified_semantic_bundle(root, config, chapter_number)
@@ -1182,7 +1385,93 @@ def complete_unified_semantic_lifecycle(root: Path, config, chapter_number: int,
     gate = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json"
     if not gate.exists():
         write_json(gate, {"chapter_number": chapter_number, "passed": True, "severity_counts": {"P0": 0, "P1": 0}})
-    if 1 <= chapter_number <= 3:
+    final = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
+    final_text = final.read_text(encoding="utf-8")
+    start = next((index for index, character in enumerate(final_text) if not character.isspace()), 0)
+    end = min(len(final_text), max(start + 1, start + 24))
+    excerpt = final_text[start:end]
+    event_file = root / "30_state" / "narrative_events" / f"ch{chapter_number:03d}.json"
+    events = json.loads(event_file.read_text(encoding="utf-8"))
+    pending_events = [
+        item
+        for item in events.get("events", [])
+        if isinstance(item, dict)
+        and item.get("state") not in {"realized", "deferred", "cancelled"}
+    ]
+    if pending_events:
+        application = build_event_realization_application(
+            root,
+            chapter_number=chapter_number,
+            observations=[
+                {
+                    "event_id": item["event_id"],
+                    "state": "realized",
+                    "evidence": {"start": start, "end": end, "excerpt": excerpt},
+                    "semantic_reason": "Fixture confirmation binds the approved event to current final prose.",
+                }
+                for item in pending_events
+            ],
+            discovered_causal_nodes=[],
+            confirmed_by="human",
+        )
+        event_application = (
+            root / "50_workbench" / "event_realizations" / f"ch{chapter_number:03d}.json"
+        )
+        write_json(event_application, application)
+        apply_event_realization(config, application_path=event_application)
+    contract = json.loads(
+        (root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    promise_ledger = json.loads(
+        (root / "30_state" / "reader_promise_ledger.json").read_text(encoding="utf-8")
+    )
+    promises = {item["promise_id"]: item for item in promise_ledger["items"]}
+    pending_actions = [
+        action
+        for action in contract.get("reader_promise_actions", [])
+        if not any(
+            isinstance(item, dict)
+            and item.get("chapter_number") == chapter_number
+            and item.get("action") == action.get("action")
+            and item.get("confirmed_by") == "human"
+            for item in promises[action["promise_id"]].get("actual_evidence", [])
+        )
+        and not (
+            action.get("action") == "defer"
+            and any(
+                isinstance(item, dict)
+                and item.get("chapter_number") == chapter_number
+                and item.get("approved_by") == "human"
+                for item in promises[action["promise_id"]].get("deferrals", [])
+            )
+        )
+    ]
+    if pending_actions:
+        promise_application = build_promise_evidence_application(
+            root,
+            chapter_number=chapter_number,
+            actions=pending_actions,
+            evidence=[
+                {
+                    "promise_id": action["promise_id"],
+                    "start": start,
+                    "end": end,
+                    "excerpt": excerpt,
+                    "semantic_reason": "Fixture confirmation binds the approved promise action to final prose.",
+                }
+                for action in pending_actions
+                if action.get("action") != "defer"
+            ],
+            confirmed_by="human",
+        )
+        promise_application_file = (
+            root / "50_workbench" / "promise_evidence" / f"ch{chapter_number:03d}.json"
+        )
+        write_json(promise_application_file, promise_application)
+        apply_promise_evidence(config, application_path=promise_application_file)
+    if approve_voice and 1 <= chapter_number <= 3:
         approve_author_voice_fixture(root, config, chapter_number=chapter_number)
     chapter_close(config, chapter_number=chapter_number, approved_by=approved_by)
 
@@ -1190,7 +1479,13 @@ def complete_unified_semantic_lifecycle(root: Path, config, chapter_number: int,
 def approve_author_voice_fixture(root: Path, config, *, chapter_number: int) -> None:
     """Approve one final/revision-overlapping edit pair for early-chapter fixtures."""
 
-    from longform_engine.author_voice import approve_author_voice_edit_pair
+    from longform_engine.author_voice import (
+        approve_author_voice_edit_pair,
+        author_voice_chapter_status,
+    )
+
+    if author_voice_chapter_status(root, chapter_number)["status"] == "complete":
+        return
 
     final = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
     finalization = json.loads(final.with_suffix(".finalization.json").read_text(encoding="utf-8"))

@@ -1,6 +1,6 @@
 # Pipeline Model
 
-v0.10.0 的生产主链只接受当前协议：
+v0.11.0 的生产主链只接受当前协议：
 
 ```text
 planning_bundle_v1

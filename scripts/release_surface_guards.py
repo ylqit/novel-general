@@ -208,11 +208,11 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "docs/V0_10_0_RELEASE_CHECKLIST.md",
+        "docs/V0_11_0_RELEASE_CHECKLIST.md",
         (
             "协议收口",
-            "明确的验证例外",
-            "第一阶段",
+            "本地发布验证",
+            "提交与远程发布",
             "本机同步",
             "literary_evidence_ready=false",
         ),
@@ -439,7 +439,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
             "test_author_markdown_is_story_brief_and_fact_inventory_stays_internal",
             "test_five_chapter_carrier_diagnostics_warn_and_require_human_reason",
             "test_human_accept_is_hash_bound_and_unlocks_review_barrier",
-            "test_human_redirect_failure_restores_card_decision_and_sqlite",
+            "test_human_redirect_failure_restores_stale_registry_decision_and_patterns",
         ),
     ),
     (
@@ -520,9 +520,19 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
+        "docs/V0_11_0_RELEASE_CHECKLIST.md",
+        (
+            "动态同人原著资料库",
+            "fanfiction_source_canon_v2",
+            "本地发布验证",
+            "wheel",
+            "sdist",
+        ),
+    ),
+    (
         "tests/test_agent_skill_integrity.py",
         (
-            "test_release_guard_tracks_current_v010_contracts",
+            "test_release_guard_tracks_current_v011_contracts",
             "check_experience_layer_guards",
             "DIRECT_WRITER_PATTERNS",
         ),

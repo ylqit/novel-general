@@ -1,4 +1,4 @@
-"""Explicit, evidence-bound reader promises for the v0.10 protocol."""
+"""Explicit, evidence-bound reader promises for the current protocol."""
 
 from __future__ import annotations
 
@@ -17,8 +17,13 @@ from longform_engine.storage.layout import manuscript_chapter_path
 LEDGER_SCHEMA = "reader_promise_ledger_v2"
 PROMISE_SCHEMA = "reader_promise_v2"
 EVIDENCE_APPLICATION_SCHEMA = "reader_promise_evidence_application_v1"
+LEDGER_PATH = Path("30_state/reader_promise_ledger.json")
 PROMISE_ACTIONS = frozenset({"setup", "escalate", "partial_payoff", "payoff", "defer"})
 TERMINAL_STATES = frozenset({"paid", "retired", "breached"})
+PROMISE_STATES = frozenset(
+    {"planned", "open", "escalated", "partially_paid", "paid", "breached", "retired"}
+)
+PLANNING_DEFERRAL_FIELDS = frozenset({"promise_id", "extended_latest", "reason"})
 STABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$")
 
 
@@ -28,6 +33,252 @@ class PromiseEvidenceApplyResult:
     actions: int
     ledger_file: str
     transaction_report: str
+
+
+class ReaderPromiseError(ValueError):
+    """Raised when the current reader-promise ledger is missing or invalid."""
+
+
+def empty_reader_promise_ledger() -> dict[str, Any]:
+    return materialize_explicit_reader_promises([], approved_by="human")
+
+
+def load_reader_promise_ledger(root: Path, *, required: bool = True) -> dict[str, Any]:
+    path = root / LEDGER_PATH
+    if not path.is_file():
+        if required:
+            raise ReaderPromiseError("reader_promise_ledger_missing")
+        return empty_reader_promise_ledger()
+    try:
+        payload = _read_json(path)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ReaderPromiseError(f"reader_promise_ledger_invalid:{exc}") from exc
+    errors = validate_reader_promise_ledger(payload)
+    if errors:
+        raise ReaderPromiseError("reader_promise_ledger_invalid:" + ";".join(errors))
+    return payload
+
+
+def write_reader_promise_ledger(root: Path, payload: dict[str, Any]) -> None:
+    errors = validate_reader_promise_ledger(payload)
+    if errors:
+        raise ReaderPromiseError("reader_promise_ledger_invalid:" + ";".join(errors))
+    _write_json(root / LEDGER_PATH, payload)
+
+
+def validate_reader_promise_ledger(payload: Any) -> list[str]:
+    if not isinstance(payload, dict) or set(payload) != {"schema", "items"}:
+        return ["ledger must contain schema and items only"]
+    errors: list[str] = []
+    if payload.get("schema") != LEDGER_SCHEMA:
+        errors.append(f"schema must be {LEDGER_SCHEMA}")
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return [*errors, "items must be a list"]
+    candidate_fields = {
+        "schema",
+        "promise_id",
+        "reader_expectation",
+        "owner_ref",
+        "payoff_window",
+        "staged_payoffs",
+        "selected_by",
+    }
+    runtime_fields = {
+        "status",
+        "completed_stage_ids",
+        "actual_evidence",
+        "deferrals",
+    }
+    candidates: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        prefix = f"items[{index}]"
+        if not isinstance(item, dict) or set(item) != candidate_fields | runtime_fields:
+            errors.append(f"{prefix} fields are invalid")
+            continue
+        candidates.append({field: item[field] for field in candidate_fields})
+        if item.get("selected_by") != "human":
+            errors.append(f"{prefix}.selected_by must be human")
+        if item.get("status") not in PROMISE_STATES:
+            errors.append(f"{prefix}.status is invalid")
+        completed = item.get("completed_stage_ids")
+        stage_ids = {
+            str(stage.get("stage_id"))
+            for stage in item.get("staged_payoffs", [])
+            if isinstance(stage, dict)
+        }
+        if (
+            not isinstance(completed, list)
+            or any(not isinstance(stage_id, str) or stage_id not in stage_ids for stage_id in completed)
+            or len(set(completed)) != len(completed)
+        ):
+            errors.append(f"{prefix}.completed_stage_ids is invalid")
+        for field in ("actual_evidence", "deferrals"):
+            if not isinstance(item.get(field), list) or any(
+                not isinstance(row, dict) for row in item.get(field, [])
+            ):
+                errors.append(f"{prefix}.{field} must be an object list")
+    candidate_errors = validate_reader_promise_candidates(candidates, label="items")
+    errors.extend(error for error in candidate_errors if ".selected_by" not in error)
+    return errors
+
+
+def reader_promise_planning_hash(root: Path) -> str:
+    """Hash planning authority while excluding routine evidence-only changes."""
+
+    ledger = load_reader_promise_ledger(root)
+    projection = {
+        "schema": LEDGER_SCHEMA,
+        "items": [
+            {
+                "schema": item["schema"],
+                "promise_id": item["promise_id"],
+                "reader_expectation": item["reader_expectation"],
+                "owner_ref": item["owner_ref"],
+                "payoff_window": item["payoff_window"],
+                "staged_payoffs": item["staged_payoffs"],
+                "selected_by": item["selected_by"],
+                "terminal_status": item["status"] if item["status"] in TERMINAL_STATES else "active",
+                "deferrals": item["deferrals"],
+            }
+            for item in ledger["items"]
+        ],
+    }
+    return sha256(_canonical_bytes(projection)).hexdigest()
+
+
+def promise_deadline_status(root: Path, *, chapter_number: int) -> dict[str, list[str]]:
+    ledger = load_reader_promise_ledger(root)
+    warnings: list[str] = []
+    blockers: list[str] = []
+    for item in ledger["items"]:
+        if item["status"] in TERMINAL_STATES:
+            continue
+        target = int(item["payoff_window"]["target"])
+        latest = int(item["payoff_window"]["latest"])
+        if chapter_number > latest:
+            blockers.append(f"promise_breached:{item['promise_id']}")
+        elif chapter_number >= target:
+            warnings.append(f"promise_target_due:{item['promise_id']}")
+    return {"warnings": warnings, "blockers": blockers}
+
+
+def validate_planning_deferrals(values: Any, ledger: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(values, list) or not values:
+        return ["reader_promise_deferrals must be a non-empty list"]
+    by_id = {
+        str(item.get("promise_id")): item
+        for item in ledger.get("items", [])
+        if isinstance(item, dict) and item.get("promise_id")
+    }
+    seen: set[str] = set()
+    for index, value in enumerate(values):
+        prefix = f"reader_promise_deferrals[{index}]"
+        if not isinstance(value, dict) or set(value) != PLANNING_DEFERRAL_FIELDS:
+            errors.append(f"{prefix} fields are invalid")
+            continue
+        promise_id = value.get("promise_id")
+        item = by_id.get(str(promise_id))
+        if item is None:
+            errors.append(f"{prefix}.promise_id is unresolved")
+        elif promise_id in seen:
+            errors.append(f"{prefix}.promise_id is duplicated")
+        elif item.get("status") in TERMINAL_STATES:
+            errors.append(f"{prefix}.promise_id is terminal")
+        seen.add(str(promise_id))
+        extended = value.get("extended_latest")
+        current_latest = int((item or {}).get("payoff_window", {}).get("latest") or 0)
+        if (
+            not isinstance(extended, int)
+            or isinstance(extended, bool)
+            or extended <= current_latest
+        ):
+            errors.append(f"{prefix}.extended_latest must extend the current latest chapter")
+        if not isinstance(value.get("reason"), str) or not value["reason"].strip():
+            errors.append(f"{prefix}.reason must be non-empty")
+    return errors
+
+
+def apply_planning_deferrals(
+    ledger: dict[str, Any],
+    *,
+    values: Any,
+    chapter_number: int,
+    approved_by: str,
+) -> dict[str, Any]:
+    if approved_by != "human":
+        raise ReaderPromiseError("reader_promise_deferrals_require_human")
+    errors = validate_planning_deferrals(values, ledger)
+    if errors:
+        raise ReaderPromiseError("reader_promise_deferrals_invalid:" + ";".join(errors))
+    by_id = {str(item["promise_id"]): item for item in ledger["items"]}
+    for value in values:
+        item = by_id[str(value["promise_id"])]
+        previous_latest = int(item["payoff_window"]["latest"])
+        extended_latest = int(value["extended_latest"])
+        item["payoff_window"]["latest"] = extended_latest
+        item["deferrals"].append(
+            {
+                "chapter_number": chapter_number,
+                "reason": str(value["reason"]),
+                "approved_by": "human",
+                "previous_latest": previous_latest,
+                "extended_latest": extended_latest,
+            }
+        )
+    validation_errors = validate_reader_promise_ledger(ledger)
+    if validation_errors:
+        raise ReaderPromiseError("reader_promise_ledger_invalid:" + ";".join(validation_errors))
+    return ledger
+
+
+def truncate_reader_promise_ledger(root: Path, *, to_chapter: int) -> str:
+    """Discard reader-promise lifecycle effects after a rollback boundary."""
+
+    ledger = load_reader_promise_ledger(root)
+    state_by_action = {
+        "setup": "open",
+        "escalate": "escalated",
+        "partial_payoff": "partially_paid",
+        "payoff": "paid",
+    }
+    for item in ledger["items"]:
+        all_deferrals = [row for row in item["deferrals"] if isinstance(row, dict)]
+        extending = [row for row in all_deferrals if "extended_latest" in row]
+        original_latest = (
+            int(extending[0]["previous_latest"])
+            if extending
+            else int(item["payoff_window"]["latest"])
+        )
+        evidence = [
+            row
+            for row in item["actual_evidence"]
+            if int(row.get("chapter_number") or 0) <= to_chapter
+        ]
+        deferrals = [
+            row
+            for row in all_deferrals
+            if int(row.get("chapter_number") or 0) <= to_chapter
+        ]
+        retained_extensions = [row for row in deferrals if "extended_latest" in row]
+        item["actual_evidence"] = evidence
+        item["deferrals"] = deferrals
+        item["payoff_window"]["latest"] = (
+            int(retained_extensions[-1]["extended_latest"])
+            if retained_extensions
+            else original_latest
+        )
+        completed = [
+            str(row["stage_id"])
+            for row in evidence
+            if row.get("action") in {"partial_payoff", "payoff"} and row.get("stage_id")
+        ]
+        item["completed_stage_ids"] = list(dict.fromkeys(completed))
+        lifecycle = [row for row in evidence if row.get("action") in state_by_action]
+        item["status"] = state_by_action[str(lifecycle[-1]["action"])] if lifecycle else "planned"
+    write_reader_promise_ledger(root, ledger)
+    return LEDGER_PATH.as_posix()
 
 
 def validate_reader_promise_candidates(value: Any, *, label: str = "reader_promises") -> list[str]:
@@ -120,6 +371,8 @@ def materialize_explicit_reader_promises(
 def validate_promise_actions_v2(
     actions: Any,
     ledger: dict[str, Any],
+    *,
+    chapter_number: int | None = None,
 ) -> list[str]:
     """Validate actions; an ordinary chapter may intentionally declare an empty list."""
 
@@ -151,7 +404,16 @@ def validate_promise_actions_v2(
             errors.append(f"{prefix}.promise_id is unresolved")
         elif promise_id in seen:
             errors.append(f"duplicate promise action: {promise_id}")
-        elif promise.get("status") in TERMINAL_STATES:
+        elif promise.get("status") in TERMINAL_STATES and not (
+            chapter_number is not None
+            and any(
+                isinstance(evidence, dict)
+                and evidence.get("chapter_number") == chapter_number
+                and evidence.get("action") == item.get("action")
+                and evidence.get("confirmed_by") == "human"
+                for evidence in promise.get("actual_evidence", [])
+            )
+        ):
             errors.append(f"{prefix}.promise_id is terminal")
         seen.add(str(promise_id))
         action = item.get("action")
@@ -233,6 +495,10 @@ def apply_promise_evidence(
             updated.append(promise)
             continue
         evidence = evidence_by_id.get(promise_id)
+        if action["action"] != "defer" and evidence is None:
+            raise ReaderPromiseError(
+                f"validated reader promise evidence is missing for {promise_id}"
+            )
         copy = {**promise}
         if action["action"] == "defer":
             copy["deferrals"] = [
@@ -258,10 +524,11 @@ def apply_promise_evidence(
                 copy["completed_stage_ids"] = list(
                     dict.fromkeys([*copy["completed_stage_ids"], action["stage_id"]])
                 )
+            evidence_record = dict(evidence or {})
             copy["actual_evidence"] = [
                 *copy["actual_evidence"],
                 {
-                    **evidence,
+                    **evidence_record,
                     "chapter_number": payload["chapter_number"],
                     "action": action["action"],
                     "stage_id": action["stage_id"],
@@ -343,7 +610,8 @@ def validate_promise_evidence_application(root: Path, payload: Any) -> list[str]
     if ledger.get("schema") != LEDGER_SCHEMA:
         errors.append(f"ledger schema must be {LEDGER_SCHEMA}")
     errors.extend(validate_promise_actions_v2(payload.get("actions"), ledger))
-    actions = payload.get("actions") if isinstance(payload.get("actions"), list) else []
+    raw_actions = payload.get("actions")
+    actions: list[Any] = raw_actions if isinstance(raw_actions, list) else []
     evidence = payload.get("evidence")
     if not isinstance(evidence, list):
         errors.append("evidence must be a list")
@@ -397,10 +665,14 @@ def _validate_window(value: Any, label: str, errors: list[str]) -> None:
         errors.append(f"{label} fields are invalid")
         return
     earliest, target, latest = value.get("earliest"), value.get("target"), value.get("latest")
-    if (
-        any(not isinstance(item, int) or isinstance(item, bool) or item <= 0 for item in (earliest, target, latest))
-        or not earliest <= target <= latest
+    if not all(
+        isinstance(item, int) and not isinstance(item, bool) and item > 0
+        for item in (earliest, target, latest)
     ):
+        errors.append(f"{label} must satisfy positive earliest <= target <= latest")
+        return
+    assert isinstance(earliest, int) and isinstance(target, int) and isinstance(latest, int)
+    if not earliest <= target <= latest:
         errors.append(f"{label} must satisfy positive earliest <= target <= latest")
 
 
@@ -441,3 +713,12 @@ def _write_json(path: Path, payload: Any) -> None:
 
 def _file_hash(path: Path) -> str:
     return sha256(path.read_bytes()).hexdigest()
+
+
+def _canonical_bytes(payload: Any) -> bytes:
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")

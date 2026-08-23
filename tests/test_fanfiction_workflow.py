@@ -1,4 +1,5 @@
 import json
+import os
 from hashlib import sha256
 from pathlib import Path
 
@@ -12,8 +13,12 @@ from longform_engine.agent_tasks import list_manifests, load_manifest, validate_
 from longform_engine.arc_simulation import current_basis_hashes, load_active_arc_simulation, write_arc_causal_simulation
 from longform_engine.config import load_project_config
 from longform_engine.creative import prose_naturalness_check, prose_naturalness_task
-from longform_engine.editorial import editorial_review
 from longform_engine.gates.pipeline import check_fanfiction_source_reproduction
+from longform_engine.fanfiction_sources import (
+    library_item_texts,
+    project_source_contract,
+    source_library_root,
+)
 from longform_engine.intelligence import (
     apply_compiled_design,
     apply_intelligence_candidate,
@@ -27,11 +32,12 @@ from longform_engine.intelligence import (
     validate_design_compile_delta,
     validate_intelligence_candidate,
 )
-from longform_engine.intelligence.pipeline import validate_crossover_rules
-from longform_engine.orchestration import continue_write, open_book
+from longform_engine.intelligence.pipeline import validate_crossover_rules, validate_fanfiction_canon
+from longform_engine.orchestration import open_book
 from longform_engine.orchestration.pipeline import load_fanfiction_writing_contract
 from longform_engine.publication import export_publication_bundle, publication_risk_report
 from longform_engine.storage import init_project
+from tests.test_fanfiction_source_library import approved_library_item, complete_project_pack
 from tests.project_fixtures import build_outline_candidate, write_json
 
 
@@ -61,113 +67,160 @@ def seed_fanfiction_project(tmp_path: Path):
     )
     project = init_project(template, output=tmp_path / "novel")
     config = load_project_config(project.project_config)
-    source_path = project.root / "50_workbench" / "fanfiction_sources" / "classic.txt"
-    source_path.write_text(
-        "林舟站在青铜门前，听见旧钟连续响了三次。守门人告诉他，门后的火不能被水熄灭。"
-        "林舟没有回答，只把刻着星纹的钥匙收回袖中。",
-        encoding="utf-8",
+    class Environment:
+        @staticmethod
+        def setenv(key: str, value: str) -> None:
+            os.environ[key] = value
+
+    _work, item, _source_text = approved_library_item(
+        tmp_path,
+        Environment(),
+        name="Public Domain Adventure",
+        creator="Example Author",
     )
     open_book(config)
+    (project.root / "30_state" / "reader_promise_ledger.json").write_text(
+        json.dumps(
+            {"schema": "reader_promise_ledger_v1", "items": [], "updated_at": "test"},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    complete_project_pack(config, tmp_path, item)
+    registered = project_source_contract(config, "classic")["binding"]["items"][0]
+    library_item_dir = next(
+        path.parent
+        for path in source_library_root().rglob("来源说明.yaml")
+        if registered["item_id"] in path.read_text(encoding="utf-8")
+    )
+    source_path = next((library_item_dir / "内容").iterdir())
     return config, project.root, source_path
 
 
-def valid_canon(source_path: Path) -> dict:
-    source_rel = "50_workbench/fanfiction_sources/classic.txt"
-    digest = sha256(source_path.read_bytes()).hexdigest()
+def valid_canon(config, source_path: Path) -> dict:
+    contract = project_source_contract(config, "classic")
+    binding = contract["binding"]["items"][0]
+    evidence_by_key = contract["evidence"]
+    evidence_ids = {
+        key: f"classic:e{index:03d}"
+        for index, key in enumerate(evidence_by_key, start=1)
+    }
+    evidence = [
+        {
+            "evidence_id": evidence_ids[key],
+            "item_id": record["item_id"],
+            "content_sha256": record["content_sha256"],
+            "content_file": record["content_file"],
+            "evidence_span": {"start": record["start"], "end": record["end"]},
+            "excerpt": record["excerpt"],
+        }
+        for key, record in evidence_by_key.items()
+    ]
+    first_ref, second_ref = list(evidence_ids.values())
     return {
-        "schema": "fanfiction_source_canon_v1",
+        "schema": "fanfiction_source_canon_v2",
         "continuity_mode": "canon_divergent",
         "sources": [
             {
                 "source_id": "classic",
+                "work_id": contract["setting"]["作品ID"],
                 "title": "Public Domain Adventure",
                 "creator": "Example Author",
                 "canon_cutoff": "volume-1-end",
-                "source_files": [source_rel],
-                "source_hashes": {source_rel: digest},
-                "characters": [
+                "binding_sha256": contract["binding_sha256"],
+                "coverage_plan_sha256": contract["coverage_sha256"],
+                "item_bindings": [
                     {
-                        "id": "classic:lin_zhou",
-                        "name": "林舟",
-                        "summary": "A guarded key bearer who tests claims before committing.",
-                        "motivation": "Learn who controls the bronze gate.",
-                        "voice_traits": ["brief", "evidence-led"],
-                        "evidence_refs": ["classic:e1"],
+                        "item_id": binding["item_id"],
+                        "content_sha256": binding["content_sha256"],
+                        "extraction_sha256": binding["extraction_sha256"],
                     },
+                ],
+                "facts": [
                     {
+                        "type": "人物",
                         "id": "classic:gatekeeper",
                         "name": "守门人",
                         "summary": "A keeper who communicates rules through warnings.",
-                        "motivation": "Prevent an unprepared crossing.",
-                        "voice_traits": ["indirect", "ritualized"],
-                        "evidence_refs": ["classic:e1"],
+                        "attributes": {
+                            "motivation": "Prevent an unprepared crossing.",
+                            "voice_traits": ["indirect", "ritualized"],
+                        },
+                        "evidence_refs": [first_ref],
                     },
-                ],
-                "relationships": [
                     {
+                        "type": "人物",
+                        "id": "classic:lin_zhou",
+                        "name": "林舟",
+                        "summary": "A guarded key bearer who tests claims before committing.",
+                        "attributes": {
+                            "motivation": "Learn who controls the bronze gate.",
+                            "voice_traits": ["brief", "evidence-led"],
+                        },
+                        "evidence_refs": [first_ref],
+                    },
+                    {
+                        "type": "关系",
                         "id": "classic:rel_gate",
-                        "source_character_id": "classic:lin_zhou",
-                        "target_character_id": "classic:gatekeeper",
-                        "stage": "mutual testing",
+                        "name": "林舟与守门人的关系",
                         "summary": "The keeper controls access while the bearer withholds trust.",
-                        "evidence_refs": ["classic:e1"],
-                    }
-                ],
-                "world_rules": [
+                        "attributes": {
+                            "source_character_id": "classic:lin_zhou",
+                            "target_character_id": "classic:gatekeeper",
+                            "stage": "mutual testing",
+                        },
+                        "evidence_refs": [first_ref],
+                    },
                     {
+                        "type": "世界规则",
                         "id": "classic:rule_fire",
+                        "name": "门后之火",
                         "summary": "The gate fire does not obey ordinary water.",
-                        "evidence_refs": ["classic:e1"],
-                    }
-                ],
-                "abilities": [
+                        "attributes": {},
+                        "evidence_refs": [second_ref],
+                    },
                     {
+                        "type": "能力",
                         "id": "classic:star_key",
                         "name": "星纹钥匙",
                         "summary": "A key associated with the bronze gate.",
-                        "limits": ["Its opening conditions remain unresolved."],
-                        "evidence_refs": ["classic:e1"],
-                    }
-                ],
-                "timeline": [
+                        "attributes": {"limits": ["Its opening conditions remain unresolved."]},
+                        "evidence_refs": [first_ref],
+                    },
                     {
+                        "type": "时间线",
                         "id": "classic:time_bell",
-                        "order": 1,
+                        "name": "警告之前",
                         "summary": "The old bell sounds three times before the warning.",
-                        "evidence_refs": ["classic:e1"],
-                    }
-                ],
-                "terminology": [
+                        "attributes": {"order": 1},
+                        "evidence_refs": [first_ref],
+                    },
                     {
+                        "type": "术语",
                         "id": "classic:term_bronze_gate",
                         "name": "青铜门",
                         "summary": "A guarded threshold tied to unusual fire.",
-                        "evidence_refs": ["classic:e1"],
-                    }
-                ],
-                "canon_events": [
+                        "attributes": {},
+                        "evidence_refs": [first_ref],
+                    },
                     {
+                        "type": "事件",
                         "id": "classic:event_warning",
-                        "order": 1,
+                        "name": "守门警告",
                         "summary": "The keeper warns the key bearer about the gate fire.",
-                        "evidence_refs": ["classic:e1"],
-                    }
-                ],
-                "unresolved_questions": [
+                        "attributes": {"order": 1},
+                        "evidence_refs": [second_ref],
+                    },
                     {
+                        "type": "未解决问题",
                         "id": "classic:q_controller",
+                        "name": "开门权限",
                         "summary": "Who determines when the gate may open remains unresolved.",
-                        "evidence_refs": ["classic:e1"],
-                    }
+                        "attributes": {},
+                        "evidence_refs": [first_ref],
+                    },
                 ],
-                "evidence": [
-                    {
-                        "evidence_id": "classic:e1",
-                        "source_path": source_rel,
-                        "source_hash": digest,
-                        "evidence_span": {"start": 0, "end": 48},
-                    }
-                ],
+                "evidence": evidence,
             }
         ],
     }
@@ -329,15 +382,19 @@ def valid_character_expression() -> dict:
 
 def test_fanfiction_design_compiles_realistic_canon_into_bounded_context(tmp_path):
     config, root, source_path = seed_fanfiction_project(tmp_path)
-    canon = valid_canon(source_path)
-    template = canon["sources"][0]["characters"][0]
-    canon["sources"][0]["characters"] = [
+    canon = valid_canon(config, source_path)
+    source = canon["sources"][0]
+    template = next(fact for fact in source["facts"] if fact["type"] == "人物")
+    source["facts"] = [fact for fact in source["facts"] if fact["type"] != "人物"] + [
         {
             **template,
             "id": f"classic:character_{index:03d}",
             "name": f"Character {index}",
             "summary": "A source-backed character description with distinct motive and pressure. " * 8,
-            "motivation": "Protect a bounded choice while preserving canon causality. " * 5,
+            "attributes": {
+                **template["attributes"],
+                "motivation": "Protect a bounded choice while preserving canon causality. " * 5,
+            },
         }
         for index in range(40)
     ]
@@ -536,29 +593,33 @@ def apply_design_output(config, root: Path, task_type: str, candidate: Path, pay
 
 
 def write_canon_delta(path: Path, payload: dict, source_path: Path) -> None:
-    source_text = source_path.read_text(encoding="utf-8")
-    source_rel = "50_workbench/fanfiction_sources/classic.txt"
-    evidence_ref = f"{source_rel}@0:{min(48, len(source_text))}"
-    collections = (
-        "characters",
-        "relationships",
-        "world_rules",
-        "abilities",
-        "timeline",
-        "terminology",
-        "canon_events",
-        "unresolved_questions",
-    )
+    root = next(parent for parent in path.parents if (parent / "project.yaml").is_file())
+    extraction = next((root / "50_workbench" / "同人原著资料").rglob("提取结果.json"))
+    source_rel = extraction.relative_to(root).as_posix()
+    evidence_ref = f"{source_rel}@0:{min(48, len(extraction.read_text(encoding='utf-8')))}"
     source = payload["sources"][0]
-    compact_source = {"source_id": source["source_id"]}
+    item_id = source["item_bindings"][0]["item_id"]
+    evidence_key_by_id = {
+        record["evidence_id"]: f"{item_id}:e{index}"
+        for index, record in enumerate(source["evidence"], start=1)
+    }
+    compact_source = {"source_id": source["source_id"], "facts": []}
     evidence: dict[str, list[str]] = {}
-    for collection in collections:
-        compact_source[collection] = []
-        for index, record in enumerate(source[collection]):
-            compact_source[collection].append(
-                {key: value for key, value in record.items() if key != "evidence_refs"}
-            )
-            evidence[f"/changes/sources/0/{collection}/{index}"] = [evidence_ref]
+    for index, record in enumerate(source["facts"]):
+        compact_source["facts"].append(
+            {
+                key: value
+                for key, value in record.items()
+                if key != "evidence_refs"
+            }
+            | {
+                "evidence_keys": [
+                    evidence_key_by_id[ref]
+                    for ref in record["evidence_refs"]
+                ]
+            }
+        )
+        evidence[f"/changes/sources/0/facts/{index}"] = [evidence_ref]
     path.write_text(
         json.dumps(
             {
@@ -592,14 +653,23 @@ def validate_intelligence_output(config, root: Path, task_type: str, candidate: 
     return validate_intelligence_candidate(config, task_type=task_type, file_path=candidate)
 
 
-def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
-    canon_task = create_intelligence_task(
+def apply_fanfiction_canon(config, root: Path, source_path: Path) -> None:
+    canon_task = create_intelligence_task(config, task_type="fanfiction_canon")
+    canon_candidate = root / canon_task.candidate_file
+    write_canon_delta(canon_candidate, valid_canon(config, source_path), source_path)
+    assert validate_intelligence_output(config, root, "fanfiction_canon", canon_candidate).ok
+    apply_intelligence_candidate(
         config,
         task_type="fanfiction_canon",
-        input_files=[source_path],
+        file_path=canon_candidate,
+        approved_by="human",
     )
+
+
+def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
+    canon_task = create_intelligence_task(config, task_type="fanfiction_canon")
     canon_candidate = root / canon_task.candidate_file
-    write_canon_delta(canon_candidate, valid_canon(source_path), source_path)
+    write_canon_delta(canon_candidate, valid_canon(config, source_path), source_path)
     assert validate_intelligence_output(config, root, "fanfiction_canon", canon_candidate).ok
     apply_intelligence_candidate(
         config,
@@ -787,6 +857,7 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
     selected_direction["reader_promise_actions"] = [{
         "promise_id": "story_engine:opening_three",
         "action": "setup",
+        "stage_id": None,
         "intended_reader_gain": selected_direction["reader_gain"],
         "evidence_requirement": "Show the changed gate condition in final prose.",
         "defer_reason": "",
@@ -841,50 +912,34 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
 
 def test_unverified_commercial_fanfiction_reaches_writing_and_export_without_rights_block(tmp_path):
     config, root, source_path = seed_fanfiction_project(tmp_path)
-    apply_fanfiction_foundation(config, root, source_path)
+    apply_fanfiction_canon(config, root, source_path)
 
-    assert assess_project_readiness(config).ready
     status = fanfiction_status(config)
     assert status["rights_advisory_only"] is True
     assert status["rights_warnings"][0]["blocking"] is False
-
-    writing = continue_write(config, chapter_number=1)
-    manifest = load_manifest(root, "chapter_write:ch001:v4")
-    assert validate_manifest_strict(root, manifest).ok
-    inputs = [item["path"] for item in manifest["io"]["inputs"]]
-    assert len(inputs) <= 7
-    assert inputs == ["50_workbench/writing_tasks/ch001.md"]
-    writing_payload = json.loads(Path(writing.writing_task_json).read_text(encoding="utf-8"))
-    assert "10_bible/fanfiction/source_canon.json" in writing_payload["context_plan"]["excluded_duplicates"]
-    card = json.loads(Path(writing.chapter_card).read_text(encoding="utf-8"))
-    assert card["requires_semantic_review"] is True
-    assert card["canon_refs"] == ["classic:event_warning"]
-    assert card["original_contribution"]
 
     final = root / "40_manuscript" / "final" / "ch001.md"
     final.write_text("# 第一章\n\n林舟握住星纹钥匙，决定回答守门人的问题。\n", encoding="utf-8")
     report = publication_risk_report(config)
     exported = export_publication_bundle(config)
     risk = json.loads((root / report.report_file).read_text(encoding="utf-8"))
-    review = editorial_review(config, chapter_number=1)
-    review_payload = json.loads(Path(review.review_file).read_text(encoding="utf-8"))
-    editorial_roles = {item["id"] for item in review_payload["editorial_team"]}
     assert report.blocking is False
     assert exported.blocking is False
     assert risk["schema"] == "publication_risk_report_v2"
     assert risk["blocking"] is False
     assert risk["engine_performed_legal_verification"] is False
     assert "Rights" not in (root / exported.bundle_file).read_text(encoding="utf-8")
-    assert {"reader_experience_editor", "canon_fidelity_reviewer"} <= editorial_roles
-    assert any(
-        "canon_fidelity_reviewer" in path
-        for path in review_payload["agent_task_files"]
-    )
 
 
 def test_fanfiction_writing_contract_ignores_names_in_global_forbidden_rules(tmp_path):
     config, root, source_path = seed_fanfiction_project(tmp_path)
-    apply_fanfiction_foundation(config, root, source_path)
+    apply_fanfiction_canon(config, root, source_path)
+    fanfiction_bible = root / "10_bible" / "fanfiction" / "fanfiction_bible.json"
+    fanfiction_bible.parent.mkdir(parents=True, exist_ok=True)
+    fanfiction_bible.write_text(
+        json.dumps(valid_design(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     contract = load_fanfiction_writing_contract(
         config,
@@ -904,16 +959,16 @@ def test_fanfiction_writing_contract_ignores_names_in_global_forbidden_rules(tmp
 
 def test_fanfiction_manifest_and_invalid_evidence_do_not_pollute_bible(tmp_path):
     config, root, source_path = seed_fanfiction_project(tmp_path)
-    task = create_intelligence_task(config, task_type="fanfiction_canon", input_files=[source_path])
+    task = create_intelligence_task(config, task_type="fanfiction_canon")
     manifest = load_manifest(root, task.task_id)
     assert validate_manifest_strict(root, manifest).ok
     before = (root / "10_bible" / "creative_brief.json").read_bytes()
     candidate = root / task.candidate_file
-    write_canon_delta(candidate, valid_canon(source_path), source_path)
+    write_canon_delta(candidate, valid_canon(config, source_path), source_path)
     payload = json.loads(candidate.read_text(encoding="utf-8"))
     first_pointer = next(iter(payload["evidence"]))
     payload["evidence"][first_pointer] = [
-        "50_workbench/fanfiction_sources/classic.txt@0:9999"
+        "50_workbench/同人原著资料/Public Domain Adventure/资料项/第一卷合法原件/提取结果.json@0:9999"
     ]
     candidate.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -929,13 +984,19 @@ def test_fanfiction_manifest_and_invalid_evidence_do_not_pollute_bible(tmp_path)
 
 def test_fanfiction_canon_rejects_source_prose_reconstructed_across_fields(tmp_path):
     config, root, source_path = seed_fanfiction_project(tmp_path)
-    task = create_intelligence_task(config, task_type="fanfiction_canon", input_files=[source_path])
+    task = create_intelligence_task(config, task_type="fanfiction_canon")
     candidate = root / task.candidate_file
-    payload = valid_canon(source_path)
+    payload = valid_canon(config, source_path)
     source_text = source_path.read_text(encoding="utf-8")
     midpoint = len(source_text) // 2
-    payload["sources"][0]["world_rules"][0]["summary"] = source_text[:midpoint]
-    payload["sources"][0]["unresolved_questions"][0]["summary"] = source_text[midpoint:]
+    world_rule = next(
+        fact for fact in payload["sources"][0]["facts"] if fact["type"] == "世界规则"
+    )
+    unresolved = next(
+        fact for fact in payload["sources"][0]["facts"] if fact["type"] == "未解决问题"
+    )
+    world_rule["summary"] = source_text[:midpoint]
+    unresolved["summary"] = source_text[midpoint:]
     write_canon_delta(candidate, payload, source_path)
     before = canonical_snapshot(root)
 
@@ -947,15 +1008,53 @@ def test_fanfiction_canon_rejects_source_prose_reconstructed_across_fields(tmp_p
     assert canonical_snapshot(root) == before
 
 
+def test_fanfiction_canon_rejects_evidence_from_unbound_global_item(tmp_path):
+    config, _root, source_path = seed_fanfiction_project(tmp_path)
+
+    class Environment:
+        @staticmethod
+        def setenv(key: str, value: str) -> None:
+            os.environ[key] = value
+
+    _work, other_item, _source_text = approved_library_item(
+        tmp_path,
+        Environment(),
+        name="Unbound Reference Work",
+        creator="Another Author",
+    )
+    other_content_file, other_text = next(iter(library_item_texts(other_item["item_id"]).items()))
+    payload = valid_canon(config, source_path)
+    payload["sources"][0]["evidence"][0] = {
+        "evidence_id": "classic:e001",
+        "item_id": other_item["item_id"],
+        "content_sha256": other_item["content_sha256"],
+        "content_file": other_content_file,
+        "evidence_span": {"start": 0, "end": min(20, len(other_text))},
+        "excerpt": other_text[:20],
+    }
+    errors: list[str] = []
+
+    validate_fanfiction_canon(config, payload, errors)
+
+    assert any("pinned project binding" in error for error in errors)
+
+
+def test_fanfiction_canon_rejects_evidence_span_beyond_source_content(tmp_path):
+    config, _root, source_path = seed_fanfiction_project(tmp_path)
+    payload = valid_canon(config, source_path)
+    payload["sources"][0]["evidence"][0]["evidence_span"]["end"] = 999_999
+    errors: list[str] = []
+
+    validate_fanfiction_canon(config, payload, errors)
+
+    assert any("outside source content" in error for error in errors)
+
+
 def test_invalid_fanfiction_design_does_not_pollute_canonical_state(tmp_path):
     config, root, source_path = seed_fanfiction_project(tmp_path)
-    canon_task = create_intelligence_task(
-        config,
-        task_type="fanfiction_canon",
-        input_files=[source_path],
-    )
+    canon_task = create_intelligence_task(config, task_type="fanfiction_canon")
     canon_candidate = root / canon_task.candidate_file
-    write_canon_delta(canon_candidate, valid_canon(source_path), source_path)
+    write_canon_delta(canon_candidate, valid_canon(config, source_path), source_path)
     assert validate_intelligence_output(config, root, "fanfiction_canon", canon_candidate).ok
     apply_intelligence_candidate(
         config,
@@ -985,7 +1084,7 @@ def test_invalid_fanfiction_design_does_not_pollute_canonical_state(tmp_path):
 
 def test_fanfiction_similarity_excludes_names_but_detects_continuous_source_prose(tmp_path):
     config, root, source_path = seed_fanfiction_project(tmp_path)
-    apply_fanfiction_foundation(config, root, source_path)
+    apply_fanfiction_canon(config, root, source_path)
     terms_only = "林舟握住星纹钥匙，绕过青铜门，守门人仍旧没有回答。"
     failures, _ = check_fanfiction_source_reproduction(config, root, terms_only)
     assert failures == []

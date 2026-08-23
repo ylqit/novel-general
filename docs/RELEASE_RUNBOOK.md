@@ -1,6 +1,6 @@
 # Public Release Runbook
 
-公开源固定为 `https://github.com/ylqit/novel-general`，默认分支为 `master`。发布工具只负责诊断，不会自动 commit、push、tag、创建 Release 或覆盖全局 Skill。v0.10.0 的破坏性协议接线与用户授权的无测试发布例外记录在 `V0_10_0_RELEASE_CHECKLIST.md`。
+公开源固定为 `https://github.com/ylqit/novel-general`，默认分支为 `master`。发布工具只负责诊断，不会自动 commit、push、tag、创建 Release 或覆盖全局 Skill。v0.10.0 的历史发布例外保留在其清单；v0.11.0 按当前发布纪律执行。
 
 ## 1. 完成实现
 
@@ -30,7 +30,7 @@ python scripts/release_surface_guards.py
 longform-engine release check --repository . --channel rc --json
 ```
 
-常规发布应构建并审计候选分发包，且不在实现阶段修改用户全局 Skill。v0.10.0 按明确授权不运行本节的测试、lint、类型检查、构建审计、安装 smoke、doctor 或语义 smoke；最终接线前的 `415 passed` 只保留为第一阶段历史证据。Pull Request 和主分支 CI 仍提供独立观察，不是本次 tag 的门禁。
+常规发布应构建并审计候选分发包，且不在实现阶段修改用户全局 Skill。v0.11.0 不额外执行安装 smoke、doctor 或语义 smoke；正式 tag 仍要求本节单进程验证和主分支 CI 成功。
 
 ## 3. 发布提交与主分支
 
@@ -45,11 +45,11 @@ longform-engine release check --repository . --channel public --json
 git push origin master
 ```
 
-常规发布应等待 `master` 的 GitHub Actions 成功。v0.10.0 采用清单记录的显式例外：推送后直接创建 tag，不等待或以 CI 结果阻断发布。
+发布应等待 `master` 的 GitHub Actions 成功；失败时停止，不创建 tag。
 
 ## 4. 不可变 Tag 与 GitHub Release
 
-常规发布在主分支 CI 成功后执行；v0.10.0 按已记录例外直接执行：
+主分支 CI 成功后执行：
 
 ```powershell
 git tag -a v<VERSION> -m "longform-novel-engine v<VERSION>"
@@ -64,4 +64,4 @@ Release workflow 从 tag 构建 wheel/sdist、生成 `SHA256SUMS` 并上传三�
 
 等待 tag 的制品发布任务成功，并确认 GitHub Release 包含 wheel、sdist 与 `SHA256SUMS`。Actions run、不可变 tag 和 Release assets 是发布事实；不追加发布后证据提交，也不移动 tag。
 
-只有用户显式授权时才更新全局 CLI 与 Skill。v0.10.0 使用 Python 3.12 的现有 pipx 从不可变 tag 强制安装 `[semantic]`，再只执行 `longform-engine skills update --tool codex`。本次授权明确跳过 `--version`、Skill status、doctor、semantic smoke 和临时安装验证，也不更新 Claude Skill；命令成功只表示更新操作完成。
+只有用户显式授权时才更新全局 CLI 与 Skill。v0.11.0 使用现有 pipx 的 Python 3.12 环境从不可变 tag 强制安装 `[semantic]`，再执行 `longform-engine skills update --tool codex`。本次授权不运行额外 doctor、semantic smoke 或临时安装验证；命令成功只表示更新操作完成。

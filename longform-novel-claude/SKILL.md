@@ -23,7 +23,9 @@ description: Claude Code 中文长篇小说生产 Skill；用户说“/工程下
 
 开书阶段按 `book_ideation -> book_design -> outline_design` 推进。Book Design 建立 `story_engine_contract_v1`；纲要由 `planning_bundle_v1` 生成活动卷、滚动窗口、显式 `reader_promise_ledger_v2`、语义义务和 Plot Node 表。`production next` 只有在活动卷有效、未来至少三章为 firm、规划 basis 未漂移、独立语义审查通过且全部情节节点获得人工决定后才进入写作。人类从空白表单填写 `human_chapter_intent_v2`；不得代填。作者只读取 `chapter_story_brief_v5`；`chapter_story_brief_basis_v3` 绑定唯一 `chapter_contract_v5`、批准节点、语义义务、滚动窗口、必要事实与 renderer，内部任务为 `chapter_writing_task_v7`。内部 ID、hash、原始 RAG、平台诊断和编辑代码不得进入作者工作单。
 
-同人项目允许使用 manifest 声明来源中的角色名、关系、世界观、能力和时间线。先完成 `fanfiction canon-task` 与 `fanfiction design-task`，再进入纲要和章节；不得扫描未声明原作，也不得在 canon JSON 或正文中搬运、拆分重构连续 `source prose`。`rights status` 只记录和提示，不由 Agent 擅自阻断工作流。正文与修章遵守 `character_expression_packet_v1`。自然度、人工修订或其他双稿变换触发 `prose_revision_semantic_review` 时，必须由独立角色比较来源稿与候选稿并通过 CLI 校验，不能由改稿者自审放行。
+同人项目先完成用户级原著资料注册、项目中文资料包、固定 ID/hash 绑定和每部原著“指定版本截至截止点”的全作覆盖，再执行 `fanfiction canon-task` 生成项目独立 `fanfiction_source_canon_v2`，之后才可设计、纲要和写作。Agent 只读 manifest 声明的项目批准提取，不扫描用户资料库、未声明原作、其他小说或普通研究箱；不得在 canon JSON 或正文中搬运、拆分重构连续 `source prose`。全局资料修正只产生升级提案，独立语义审查与人工决定后才可 stale 未来依赖或进入 `revision_branch_v2`。非同人项目提及作品名只生成待审研究申请，人工批准前不联网；实际使用原著人物、世界或事件必须切换同人模式。正文与修章遵守 `character_expression_packet_v1`。自然度、人工修订或其他双稿变换触发 `prose_revision_semantic_review` 时，必须由独立角色比较来源稿与候选稿并通过 CLI 校验，不能由改稿者自审放行。
+
+覆盖通过并应用 Canon 后继续执行 `fanfiction design-task`；`rights status` 是人工声明的来源治理信息，不代表法律核验，也不能授权保存或复现受保护全文。
 
 AI 初稿可通过 `chapter_coedit_session_v2` 反复共编：顾问给 2–3 个方案及影响，人类记录选择后才生成新的完整 workbench 候选；不得直接写 canonical，也不得绕过 P0/P1 repair。每章由 `scene_prose_editor` 和 `anti_template_editor` 独立审稿，阻断项进入不可变 `human_review_bundle_v2`；`reader_payoff_review` 用当前 span 证明实际收益。无阻断后，人类完成最终全文修改并锁定，以 `human_author_revision_v4` 绑定意图、共编来源、前后 span、读者影响和保护项；独立双稿复核后以 `agent=human` 提交并全量复审。`human_story_review_v7` 绑定当前合同、节点、义务及审稿证据。人工锁定后 AI 仅可只读咨询；任何 AI 正文变换都会让终稿、咨询和接受 stale。
 

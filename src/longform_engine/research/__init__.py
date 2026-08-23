@@ -11,6 +11,7 @@ from .pipeline import (
     impact_analyze,
     promote_research,
     search_research,
+    search_web_candidates,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "impact_analyze",
     "promote_research",
     "search_research",
+    "search_web_candidates",
 ]

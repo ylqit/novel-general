@@ -1,6 +1,29 @@
 # Operator Guide
 
-本指南对应 v0.10.0。旧 v0.9 项目、证据和 Skill 不能继续使用。
+## 同人原著资料
+
+作者侧中文入口与底层命令映射如下：
+
+| 中文入口 | CLI |
+| --- | --- |
+| `/创建同人作品资料` | `longform-engine fanfiction pack-init project.yaml` |
+| `/选择原著版本`、`/制定全作覆盖计划` | 编辑中文 `全作覆盖计划.yaml` 后执行 `fanfiction coverage-apply ... --approved-by human` |
+| `/查看全作资料缺口` | `longform-engine fanfiction coverage-gaps project.yaml --json` |
+| `/逐项搜索原著资料` | `longform-engine fanfiction source-search project.yaml --source-id SOURCE --gap GAP --query QUERY` |
+| `/导入本地原著资料` | `longform-engine source-library item-import ... --approved-by human` |
+| `/绑定全局原著资料` | `longform-engine fanfiction item-bind ... --approved-by human` |
+| `/提取原著设定`、`/批准原著设定` | 先执行 `source-library extraction-template --item-id ...` 生成不覆盖的 `source_extraction_candidate_v1` 骨架，逐条填写短证据后再执行 `source-library extraction-approve ... --approved-by human` |
+| `/处理版本冲突` | `longform-engine fanfiction conflict-apply project.yaml --source-id SOURCE --file 决定.yaml --approved-by human` |
+| `/补全当前章节资料` | 写作门禁自动生成 `gap-request`；人工执行 `gap-approve` 后才可 `source-search`，绑定批准资料后执行 `gap-resolve` |
+| `/查看原著资料升级` | `longform-engine fanfiction upgrade-status project.yaml --json` |
+| `/申请原著资料升级` | `longform-engine fanfiction upgrade-propose ... --created-by human` |
+| `/应用原著资料升级` | `longform-engine fanfiction upgrade-apply ... --proposal ... --review ... --decision ...` |
+| `/申请外部作品研究` | `longform-engine research external-request ...` |
+| `/批准外部作品研究` | `longform-engine research external-approve ... --approved-by human` |
+
+同人设计前，每部原著都必须完成权威版本、截止点、全目录单元、来源和维度覆盖。跨作品项目必须全部通过。全局资料升级只生成提案；未来影响使 Canon/规划 stale，历史影响路由 `revision_branch_v2`。项目不会复制完整原件，也不会从普通网页拼接受版权保护的连续小说、字幕或剧本。
+
+本指南对应 v0.11.0。旧 v0.9 项目、证据、Skill 与 `fanfiction_source_canon_v1` 不能继续使用。
 
 ## 1. 每轮唯一入口
 

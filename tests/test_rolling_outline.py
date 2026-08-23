@@ -254,6 +254,7 @@ def direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> 
     selected["reader_promise_actions"] = [{
         "promise_id": "story_engine:opening_three" if chapter_number <= 3 else "story_engine:early_serial",
         "action": "setup" if chapter_number in {1, 4} else "escalate",
+        "stage_id": None,
         "intended_reader_gain": selected["reader_gain"],
         "evidence_requirement": "Show a concrete changed condition in the final prose.",
         "defer_reason": "",
@@ -365,7 +366,7 @@ def test_outline_extension_uses_bounded_context_and_appends_atomically(tmp_path)
     assert [item["chapter_number"] for item in plan] == list(range(1, 41))
 
 
-def test_production_next_refills_at_threshold_before_writing(tmp_path):
+def test_production_next_routes_old_rolling_threshold_to_current_planning(tmp_path):
     config, root = seed_project(tmp_path)
     mark_project_ready(root, config, direction_applied=False)
     plan_path = root / "20_outline" / "chapter_plan.json"
@@ -378,13 +379,9 @@ def test_production_next_refills_at_threshold_before_writing(tmp_path):
     write_arc_simulation_fixture(root, from_chapter=1, to_chapter=8)
 
     action = production_next(config)
-    assert action["task_type"] == "arc_simulation"
-    assert action["planning_window"] == {"from_chapter": 9, "to_chapter": 28}
-
-    write_arc_simulation_fixture(root, from_chapter=9, to_chapter=28)
-    action = production_next(config)
-    assert action["task_type"] == "outline_extension"
-    assert action["planning_window"] == {"from_chapter": 9, "to_chapter": 28, "remaining": 8}
+    assert action["status"] == "planning_refresh_required"
+    assert action["task_type"] == "planning_semantic_review"
+    assert "rolling_window_missing_or_incompatible" in action["blocked_by"]
 
 
 def test_every_chapter_requires_a_human_selected_scene_direction(tmp_path):

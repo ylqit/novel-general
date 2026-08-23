@@ -1,6 +1,6 @@
 # longform-novel-engine 配置说明
 
-v0.10.0 继续使用项目 schema v2。配置合并顺序为：
+v0.11.0 继续使用项目 schema v2。配置合并顺序为：
 
 ```text
 config/default.engine.yaml
@@ -9,6 +9,20 @@ config/default.engine.yaml
 ```
 
 未知字段直接失败；删除字段不双读、不迁移。
+
+## 同人资料触发与资料库路径
+
+`creation.mode=fanfiction` 强制进入同人资料流程；`fanfiction.continuity_mode=crossover` 时每个 `fanfiction.sources[]` 都有独立资料包和覆盖门禁。作品身份、权威版本、截止点与目录单元必须由人工确定。默认覆盖模式为 `全作到截止点`；改为创作范围或逐章补全必须记录人工理由。
+
+`original`、`inspired_original` 和 `adaptation_study` 中的作品名识别只能创建 `external_work_research_request_v1`。人工批准前不得联网；`use_original_elements` 不进入普通研究，必须改为同人模式。模型记忆不能填补 Canon 缺口。
+
+用户级共享资料库默认使用操作系统用户数据目录。只有在需要迁移或隔离资料库时设置绝对路径：
+
+```text
+LONGFORM_SOURCE_LIBRARY=D:/author-data/原著资料库
+```
+
+相对路径直接失败。作者可见配置与目录使用中文；内部 schema 和稳定 ID 保持英文。
 
 ## 字数与滚动规划
 
@@ -62,4 +76,4 @@ Agent 只能读取 manifest 的 `io.inputs` 并写唯一 `io.output.path`。Bibl
 
 平台预检固定 `blocking=false`。项目不配置 AI 概率、检测规避、平台必过或人工写作比例。`literary_evidence_ready` 只能由合格真实盲评 manifest 改变；当前保持 `false`。
 
-当前公开稳定配置是 v0.10.0。发布例外见 [`V0_10_0_RELEASE_CHECKLIST.md`](V0_10_0_RELEASE_CHECKLIST.md)。
+当前公开稳定配置是 v0.11.0。发布记录见 [`V0_11_0_RELEASE_CHECKLIST.md`](V0_11_0_RELEASE_CHECKLIST.md)。

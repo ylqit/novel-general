@@ -1,5 +1,11 @@
 # Research Model
 
+## 外部作品触发边界
+
+普通研究与同人原著资料是两条隔离路径。非同人项目检测到作品名时只写 `50_workbench/research_inbox/外部作品研究申请/`，其中 `network_performed=false`；只有 `research external-approve --approved-by human` 后才能搜索。结构、节奏、人物塑造技法可进入 research inbox，但不得导入原著角色、事件或世界 Canon。准备实际使用这些元素时必须切换 `creation.mode=fanfiction`。
+
+同人项目使用用户级 `原著资料库/` 和项目 `50_workbench/同人原著资料/`。搜索必须绑定一个现有覆盖缺口，结果先落为候选；只有人工选择、权利声明、全局导入、提取批准、项目绑定和项目 Canon 批准完成后，事实才可服务写作。模型记忆、搜索摘要或官方梗概不能越权补齐人物声音、精确关系和规则细节。
+
 资料入库与联网检索的核心规则是：外部资料永远先进入 `research_inbox`，只有执行 `research promote` 后才会成为 canon，并进入 RAG、图谱和 SQLite。
 
 ## 1. 设计目标

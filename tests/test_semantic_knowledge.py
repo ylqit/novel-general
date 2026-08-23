@@ -20,6 +20,7 @@ from longform_engine.storage import init_project
 from tests.project_fixtures import (
     approve_author_voice_fixture,
     approve_story_candidate,
+    complete_unified_semantic_lifecycle,
     mark_project_ready,
     refresh_arc_simulation_fixture,
 )
@@ -269,9 +270,10 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
     assert len(repaired_foreshadow["threads"]["thread_old_badge"]["recent_actions"]) == 1
     assert len(repaired_character["recent_evidence"]) == 1
 
+    complete_unified_semantic_lifecycle(root, config, 1, approved_by="tester")
     closed = chapter_close(config, chapter_number=1, approved_by="tester")
     assert Path(closed.closure_file).exists()
-    assert closed.next_command.endswith("--chapter 2")
+    assert closed.next_command == "longform-engine production next project.yaml"
     repeated_close = chapter_close(config, chapter_number=1, approved_by="another-user")
     assert repeated_close.closure_file == closed.closure_file
     assert repeated_close.approved_by == "tester"

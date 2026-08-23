@@ -3,7 +3,6 @@ from hashlib import sha256
 
 from longform_engine.agent_protocols import PROSE_MARKDOWN_SCHEMA
 from longform_engine.agent_tasks import build_manifest, list_manifests, write_manifest
-from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_review
 from longform_engine.gates import semantic_pacing_task
@@ -119,7 +118,6 @@ def test_continue_write_creates_agent_writing_task_by_default(tmp_path):
     root = tmp_path / "novel"
     assert result.status == "task_ready"
     assert (root / "20_outline" / "chapter_cards" / "ch001.json").exists()
-    assert (root / "50_workbench" / "beats" / "ch001.md").exists()
     assert (root / "50_workbench" / "writing_tasks" / "ch001.json").exists()
     assert (root / "50_workbench" / "writing_tasks" / "ch001.md").exists()
     assert not (root / "40_manuscript" / "draft" / "ch001.md").exists()
@@ -212,7 +210,7 @@ def test_auto_write_plan_and_run_waits_for_agent_draft(tmp_path):
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
 
-def test_auto_write_resume_after_finalize_pauses_for_next_causal_window(tmp_path):
+def test_auto_write_resume_after_finalize_uses_next_firm_contract(tmp_path):
     project_config = seed_project(tmp_path)
     open_book(project_config)
     root = tmp_path / "novel"
@@ -232,12 +230,12 @@ def test_auto_write_resume_after_finalize_pauses_for_next_causal_window(tmp_path
     assert first.status == "awaiting_agent_draft"
     assert second.status == "blocked"
     assert "semantic" in second.next_command
-    assert third.status == "blocked"
-    assert "arc_simulation" in third.next_command
+    assert third.status == "awaiting_agent_draft"
+    assert "draft submit" in third.next_command
     assert state["last_finalized_chapter"] == 1
     assert state["current_chapter"] == 2
-    assert "arc_simulation" in state["next_command"]
-    assert not (root / "50_workbench" / "writing_tasks" / "ch002.md").exists()
+    assert "draft submit" in state["next_command"]
+    assert (root / "50_workbench" / "writing_tasks" / "ch002.md").exists()
 
 
 def test_auto_write_pauses_on_gate_failure(tmp_path):
@@ -649,16 +647,8 @@ def test_continue_write_does_not_leak_previous_editorial_findings_to_author(tmp_
         "from_chapter": 1,
         "to_chapter": 20,
     }
-    stamp_chapter_contract(chapter_two_card)
     chapter_two_card_path.write_text(
         json.dumps(chapter_two_card, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    chapter_two_intent_path = root / "20_outline" / "chapter_intents" / "ch002.json"
-    chapter_two_intent = json.loads(chapter_two_intent_path.read_text(encoding="utf-8"))
-    chapter_two_intent["chapter_contract_sha256"] = chapter_two_card["chapter_contract_hash"]
-    chapter_two_intent_path.write_text(
-        json.dumps(chapter_two_intent, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
 

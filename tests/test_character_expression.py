@@ -7,7 +7,6 @@ import pytest
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
 from longform_engine.agent_tasks import list_manifests, load_manifest
-from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.character_expression import (
     approve_voice_samples,
     build_character_expression_packet,
@@ -90,7 +89,6 @@ def test_chapter_work_order_compiles_character_packet_inside_existing_budget(tmp
             "emotional_aftereffect": "both lose the option to deny cooperation",
         }
     )
-    stamp_chapter_contract(card)
     card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     intent_path = root / "20_outline" / "chapter_intents" / "ch001.json"
     intent = json.loads(intent_path.read_text(encoding="utf-8"))

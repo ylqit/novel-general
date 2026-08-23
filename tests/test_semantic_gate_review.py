@@ -4,7 +4,6 @@ from pathlib import Path
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
 from longform_engine.agent_tasks import load_manifest, validate_manifest_strict
-from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.gates import gate_check, semantic_review_apply, semantic_review_validate
 from longform_engine.orchestration import continue_write, open_book, submit_agent_draft
@@ -25,7 +24,6 @@ def seed_high_risk_chapter(tmp_path: Path):
     card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
     card = json.loads(card_path.read_text(encoding="utf-8"))
     card["requires_semantic_review"] = True
-    stamp_chapter_contract(card)
     card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(
