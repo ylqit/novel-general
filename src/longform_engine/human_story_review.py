@@ -9,17 +9,15 @@ from typing import Any
 import json
 
 from longform_engine.chapter_contract import load_verified_chapter_contract
-from longform_engine.arc_simulation import SIMULATION_DIR, load_active_arc_simulation, mark_overlapping_arc_simulations_stale
 from longform_engine.config import ConfigDocument
 from longform_engine.human_chapter_intent import require_current_human_chapter_intent
 from longform_engine.quality import truncate_editorial_pattern_registry
-from longform_engine.reader_promises import reader_promise_ledger_hash
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import manuscript_chapter_path
 from longform_engine.story_brief import load_current_story_brief_binding
 
 
-SCHEMA = "human_story_review_v6"
+SCHEMA = "human_story_review_v7"
 DECISIONS = {"accept", "repair", "redirect"}
 ANNOTATION_ACTIONS = {
     "preserve",
@@ -69,7 +67,8 @@ class HumanStoryReviewTaskResult:
     story_brief_basis_sha256: str
     human_chapter_intent_sha256: str
     reader_promise_ledger_sha256: str
-    arc_causal_simulation_sha256: str
+    plot_node_table_sha256: str
+    semantic_obligation_ledger_sha256: str
     review_bundle_file: str
     review_bundle_sha256: str
     human_author_revision_sha256: str
@@ -111,7 +110,7 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
         return {
             "required": True,
             "status": dependency_drift_status,
-            "reason": "current candidate has no validated human_author_revision_v3 binding",
+            "reason": "current candidate has no validated human_author_revision_v4 binding",
             "candidate_sha256": candidate_hash,
             "human_author_revision_status": revision.get("status") or "pending",
         }
@@ -130,10 +129,7 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
     except ValueError as exc:
         return {"required": True, "status": dependency_drift_status, "reason": str(exc)}
     try:
-        promise_hash = reader_promise_ledger_hash(root)
-        _simulation, _simulation_path, simulation_hash = load_active_arc_simulation(
-            root, chapter_number=chapter_number
-        )
+        promise_hash, node_hash, obligation_hash = current_v010_planning_hashes(root, chapter_number)
     except ValueError as exc:
         return {"required": True, "status": dependency_drift_status, "reason": str(exc)}
     from longform_engine.repair_coordination import human_review_bundle_binding
@@ -156,7 +152,8 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
             "story_brief_basis_sha256": story_brief_basis_hash,
             "human_chapter_intent_sha256": intent_hash,
             "reader_promise_ledger_sha256": promise_hash,
-            "arc_causal_simulation_sha256": simulation_hash,
+            "plot_node_table_sha256": node_hash,
+            "semantic_obligation_ledger_sha256": obligation_hash,
             "review_bundle_sha256": review_bundle_hash,
             "human_author_revision_sha256": revision_hash,
         }
@@ -187,9 +184,11 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
         or str(decision_record.get("story_brief_basis_sha256") or "") != story_brief_basis_hash
         or str(decision_record.get("human_chapter_intent_sha256") or "") != intent_hash
         or str(latest.get("reader_promise_ledger_sha256") or "") != promise_hash
-        or str(latest.get("arc_causal_simulation_sha256") or "") != simulation_hash
+        or str(latest.get("plot_node_table_sha256") or "") != node_hash
+        or str(latest.get("semantic_obligation_ledger_sha256") or "") != obligation_hash
         or str(decision_record.get("reader_promise_ledger_sha256") or "") != promise_hash
-        or str(decision_record.get("arc_causal_simulation_sha256") or "") != simulation_hash
+        or str(decision_record.get("plot_node_table_sha256") or "") != node_hash
+        or str(decision_record.get("semantic_obligation_ledger_sha256") or "") != obligation_hash
         or str(latest.get("review_bundle_sha256") or "") != review_bundle_hash
         or str(decision_record.get("review_bundle_sha256") or "") != review_bundle_hash
         or str(latest.get("human_author_revision_sha256") or "") != revision_hash
@@ -204,7 +203,8 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
             "story_brief_basis_sha256": story_brief_basis_hash,
             "human_chapter_intent_sha256": intent_hash,
             "reader_promise_ledger_sha256": promise_hash,
-            "arc_causal_simulation_sha256": simulation_hash,
+            "plot_node_table_sha256": node_hash,
+            "semantic_obligation_ledger_sha256": obligation_hash,
             "review_bundle_sha256": review_bundle_hash,
             "human_author_revision_sha256": revision_hash,
             "decision_file": relative_path(root, decision_path),
@@ -219,7 +219,8 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
         "story_brief_basis_sha256": story_brief_basis_hash,
         "human_chapter_intent_sha256": intent_hash,
         "reader_promise_ledger_sha256": promise_hash,
-        "arc_causal_simulation_sha256": simulation_hash,
+        "plot_node_table_sha256": node_hash,
+        "semantic_obligation_ledger_sha256": obligation_hash,
         "review_bundle_sha256": review_bundle_hash,
         "human_author_revision_sha256": revision_hash,
         "decision_file": relative_path(root, decision_path),
@@ -285,10 +286,7 @@ def create_human_story_review_task(
     story_brief_basis_hash = str(story_brief_binding["story_brief_basis_sha256"])
     intent_binding = require_current_human_chapter_intent(root, chapter_number)
     intent_hash = str(intent_binding["sha256"])
-    promise_hash = reader_promise_ledger_hash(root)
-    _simulation, _simulation_path, simulation_hash = load_active_arc_simulation(
-        root, chapter_number=chapter_number
-    )
+    promise_hash, node_hash, obligation_hash = current_v010_planning_hashes(root, chapter_number)
     from longform_engine.repair_coordination import human_review_bundle_binding
 
     bundle_binding = human_review_bundle_binding(
@@ -331,7 +329,8 @@ def create_human_story_review_task(
         "story_brief_basis_sha256": story_brief_basis_hash,
         "human_chapter_intent_sha256": intent_hash,
         "reader_promise_ledger_sha256": promise_hash,
-        "arc_causal_simulation_sha256": simulation_hash,
+        "plot_node_table_sha256": node_hash,
+        "semantic_obligation_ledger_sha256": obligation_hash,
         "review_bundle_sha256": review_bundle_hash,
         "human_author_revision_sha256": revision_hash,
         "dimension_coverage": default_dimension_coverage(bundle_binding["payload"]),
@@ -354,7 +353,8 @@ def create_human_story_review_task(
         story_brief_basis_sha256=story_brief_basis_hash,
         human_chapter_intent_sha256=intent_hash,
         reader_promise_ledger_sha256=promise_hash,
-        arc_causal_simulation_sha256=simulation_hash,
+        plot_node_table_sha256=node_hash,
+        semantic_obligation_ledger_sha256=obligation_hash,
         review_bundle_file=str(bundle_binding["review_bundle"]),
         review_bundle_sha256=review_bundle_hash,
         human_author_revision_sha256=revision_hash,
@@ -386,7 +386,7 @@ def validate_human_story_review(
     decision = str(payload.get("decision") or "") if isinstance(payload, dict) else ""
     report_path = path.with_suffix(".validation.json")
     report = {
-        "schema": "human_story_review_validation_v6",
+        "schema": "human_story_review_validation_v7",
         "chapter_number": chapter_number,
         "candidate_file": relative_path(root, path),
         "ok": not errors,
@@ -446,14 +446,15 @@ def apply_human_story_review(
     record = {**payload, "approved_by": approved_by, "source_file": relative_path(root, path)}
     record_text = json.dumps(record, ensure_ascii=False, indent=2) + "\n"
     latest = {
-        "schema": "human_story_review_latest_v6",
+        "schema": "human_story_review_latest_v7",
         "chapter_number": chapter_number,
         "candidate_sha256": candidate_hash,
         "chapter_contract_sha256": payload["chapter_contract_sha256"],
         "story_brief_basis_sha256": payload["story_brief_basis_sha256"],
         "human_chapter_intent_sha256": payload["human_chapter_intent_sha256"],
         "reader_promise_ledger_sha256": payload["reader_promise_ledger_sha256"],
-        "arc_causal_simulation_sha256": payload["arc_causal_simulation_sha256"],
+        "plot_node_table_sha256": payload["plot_node_table_sha256"],
+        "semantic_obligation_ledger_sha256": payload["semantic_obligation_ledger_sha256"],
         "review_bundle_sha256": payload["review_bundle_sha256"],
         "human_author_revision_sha256": payload["human_author_revision_sha256"],
         "decision_file": relative_path(root, decision_path),
@@ -463,35 +464,40 @@ def apply_human_story_review(
     transaction_report = ""
     if decision == "redirect":
         from longform_engine.agent_tasks import mark_tasks_for_chapter_type
-        from longform_engine.db import sync_database
-        from longform_engine.orchestration.pipeline import upsert_chapter_plan, write_chapter_card_artifacts
-
-        card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-        card_md = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.md"
-        plan_path = root / "20_outline" / "chapter_plan.json"
-        card = load_json(card_path)
-        if not isinstance(card, dict):
-            raise HumanStoryReviewError("chapter card is missing")
-        card["direction_selection"] = {
-            "status": "outline_revision_required" if payload["redirect_scope"] == "outline_revision" else "required",
-            "redirect_reason": str(payload["reason"]),
-        }
+        stale_path = root / "30_state" / "stale_artifacts.json"
+        stale = load_json(stale_path)
+        if not isinstance(stale, dict) or stale.get("schema") != "stale_artifact_registry_v1":
+            stale = {"schema": "stale_artifact_registry_v1", "items": []}
+        stale_items = [item for item in stale.get("items", []) if isinstance(item, dict)]
+        for relative in (
+            f"20_outline/chapter_forecasts/ch{chapter_number:03d}.json",
+            f"20_outline/chapter_contracts/ch{chapter_number:03d}.json",
+            f"20_outline/plot_nodes/ch{chapter_number:03d}.json",
+            f"50_workbench/writing_tasks/ch{chapter_number:03d}.json",
+            f"50_workbench/writing_tasks/ch{chapter_number:03d}.basis.json",
+            f"50_workbench/writing_tasks/ch{chapter_number:03d}.md",
+        ):
+            stale_items.append(
+                {
+                    "artifact_path": relative,
+                    "classification": "must_stale",
+                    "reason": "human_story_review_v7 redirect",
+                    "state": "stale",
+                }
+            )
         with apply_transaction(
             root,
             command="chapter human-review redirect",
             chapter_number=chapter_number,
             source_paths=[path],
             touched_paths=[
-                card_path,
-                card_md,
-                plan_path,
                 decision_path,
                 latest_path,
+                stale_path,
                 root / "70_runtime" / "agent_tasks",
                 root / "70_runtime" / "db",
                 root / "50_workbench" / "agent_tasks",
                 root / "50_workbench" / "editorial_patterns" / "registry.jsonl",
-                *sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")),
             ],
             metadata={
                 "candidate_sha256": candidate_hash,
@@ -502,12 +508,8 @@ def apply_human_story_review(
         ) as transaction:
             write_json(decision_path, record)
             write_json(latest_path, latest)
-            write_chapter_card_artifacts(root, card)
-            upsert_chapter_plan(root, card)
+            write_json(stale_path, {"schema": "stale_artifact_registry_v1", "items": stale_items})
             truncate_editorial_pattern_registry(root, to_chapter=chapter_number - 1)
-            mark_overlapping_arc_simulations_stale(
-                root, from_chapter=chapter_number, to_chapter=10**9
-            )
             mark_tasks_for_chapter_type(
                 root,
                 chapter_number=chapter_number,
@@ -519,7 +521,6 @@ def apply_human_story_review(
                 command="chapter human-review redirect",
                 artifact=decision_path,
             )
-            sync_database(config)
         transaction_report = relative_path(root, transaction.report_file)
     else:
         write_json(decision_path, record)
@@ -529,12 +530,9 @@ def apply_human_story_review(
     elif decision == "repair":
         next_command = f"longform-engine repair synthesis-task project.yaml --chapter {chapter_number}"
     elif payload["redirect_scope"] == "outline_revision":
-        next_command = f"longform-engine intelligence task project.yaml --task-type outline_revision --from-chapter {chapter_number} --to-chapter {chapter_number}"
+        next_command = "longform-engine production next project.yaml"
     else:
-        next_command = (
-            "longform-engine intelligence task project.yaml "
-            f"--task-type chapter_direction --chapter {chapter_number}"
-        )
+        next_command = "longform-engine production next project.yaml"
     return HumanStoryReviewApplyResult(
         chapter_number=chapter_number,
         decision=decision,
@@ -564,7 +562,8 @@ def human_story_review_errors(
         "schema", "chapter_number", "candidate_sha256", "chapter_contract_sha256",
         "story_brief_basis_sha256",
         "human_chapter_intent_sha256",
-        "reader_promise_ledger_sha256", "arc_causal_simulation_sha256",
+        "reader_promise_ledger_sha256", "plot_node_table_sha256",
+        "semantic_obligation_ledger_sha256",
         "review_bundle_sha256", "human_author_revision_sha256", "dimension_coverage",
         "decision", "evidence_spans", "reader_gain_note", "finding_resolutions",
         "annotations", "redirect_scope", "reason",
@@ -575,11 +574,11 @@ def human_story_review_errors(
         "human_story_review_v5",
     }:
         return [
-            f"{payload.get('schema')} is rejected in v0.9; create a new v0.9 project and "
+            f"{payload.get('schema')} is rejected in v0.10; create a new v0.10 project and "
             "import authoritative material manually"
         ]
     if not isinstance(payload, dict) or set(payload) != required:
-        return ["review must contain exactly the human_story_review_v6 fields"]
+        return ["review must contain exactly the human_story_review_v7 fields"]
     if payload.get("schema") != SCHEMA:
         errors.append(f"schema must be {SCHEMA}")
     if payload.get("chapter_number") != chapter_number:
@@ -611,22 +610,22 @@ def human_story_review_errors(
         intent_hash = ""
     if payload.get("human_chapter_intent_sha256") != intent_hash:
         errors.append("human_chapter_intent_sha256 is stale")
-    if payload.get("reader_promise_ledger_sha256") != reader_promise_ledger_hash(root):
-        errors.append("reader_promise_ledger_sha256 is stale")
     try:
-        _simulation, _simulation_path, simulation_hash = load_active_arc_simulation(
-            root, chapter_number=chapter_number
-        )
+        promise_hash, node_hash, obligation_hash = current_v010_planning_hashes(root, chapter_number)
     except ValueError as exc:
         errors.append(str(exc))
-        simulation_hash = ""
-    if payload.get("arc_causal_simulation_sha256") != simulation_hash:
-        errors.append("arc_causal_simulation_sha256 is stale")
+        promise_hash = node_hash = obligation_hash = ""
+    if payload.get("reader_promise_ledger_sha256") != promise_hash:
+        errors.append("reader_promise_ledger_sha256 is stale")
+    if payload.get("plot_node_table_sha256") != node_hash:
+        errors.append("plot_node_table_sha256 is stale")
+    if payload.get("semantic_obligation_ledger_sha256") != obligation_hash:
+        errors.append("semantic_obligation_ledger_sha256 is stale")
     from longform_engine.human_author_revision import human_author_revision_status
 
     revision = human_author_revision_status(config, chapter_number=chapter_number)
     if revision.get("status") != "complete":
-        errors.append("current candidate has no validated human_author_revision_v3 binding")
+        errors.append("current candidate has no validated human_author_revision_v4 binding")
     elif payload.get("human_author_revision_sha256") != revision.get("validation_sha256"):
         errors.append("human_author_revision_sha256 is stale")
     bundle_payload: dict[str, Any] = {}
@@ -877,6 +876,22 @@ def default_finding_resolutions(bundle: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def current_v010_planning_hashes(root: Path, chapter_number: int) -> tuple[str, str, str]:
+    paths = (
+        root / "30_state" / "reader_promise_ledger.json",
+        root / "20_outline" / "plot_nodes" / f"ch{chapter_number:03d}.json",
+        root / "30_state" / "semantic_obligations.json",
+    )
+    labels = ("reader promise ledger v2", "approved plot node table", "semantic obligation ledger")
+    for path, label in zip(paths, labels, strict=True):
+        if not path.is_file():
+            raise HumanStoryReviewError(f"{label} is missing")
+    promise = load_json(paths[0])
+    if not isinstance(promise, dict) or promise.get("schema") != "reader_promise_ledger_v2":
+        raise HumanStoryReviewError("reader promise ledger v2 is incompatible")
+    return tuple(sha256(path.read_bytes()).hexdigest() for path in paths)  # type: ignore[return-value]
+
+
 def review_root(root: Path) -> Path:
     return root / "50_workbench" / "human_story_reviews"
 
@@ -886,13 +901,14 @@ def resolve_decision_pointer(root: Path, chapter_number: int, latest: dict[str, 
         "schema", "chapter_number", "candidate_sha256", "chapter_contract_sha256",
         "story_brief_basis_sha256",
         "human_chapter_intent_sha256",
-        "reader_promise_ledger_sha256", "arc_causal_simulation_sha256",
+        "reader_promise_ledger_sha256", "plot_node_table_sha256",
+        "semantic_obligation_ledger_sha256",
         "review_bundle_sha256", "human_author_revision_sha256",
         "decision_file", "decision_sha256",
     }
     if (
         set(latest) != expected
-        or latest.get("schema") != "human_story_review_latest_v6"
+        or latest.get("schema") != "human_story_review_latest_v7"
         or latest.get("chapter_number") != chapter_number
     ):
         return None

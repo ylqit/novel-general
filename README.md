@@ -7,9 +7,9 @@
 - 本地文件是事实源；SQLite、RAG 和图谱是受控或可重建派生状态。
 - Agent 只能写 manifest 声明的 workbench 候选，不能直接写 canonical。
 
-> 当前公开稳定版为 `v0.9.0`。这是不兼容旧项目的协议升级；发布不等于文学质量或平台接受证明。
+> 当前公开稳定版为 `v0.10.0`。这是不兼容 v0.9 项目的协议升级；发布不等于文学质量、平台接受或 AI 检测规避证明。
 
-v0.9 明确拒绝 v0.8 及更早项目，不做双读、自动迁移或字段别名。请新建 v0.9 项目，再人工导入经确认的 Bible、纲要和必要资料。
+v0.10 明确拒绝 v0.9 及更早项目，不做双读、自动迁移或字段别名。请新建 v0.10 项目，再人工导入经确认的 Bible、纲要和必要资料。
 
 ## 产品边界
 
@@ -17,16 +17,16 @@ v0.9 明确拒绝 v0.8 及更早项目，不做双读、自动迁移或字段别
 
 | 环节 | 当前实现 |
 | --- | --- |
-| 故事规划 | Story Engine、Promise Ledger、滚动纲要与因果模拟 |
-| 章节合同 | `chapter_contract_v4` 统一绑定故事义务与结尾语义 |
-| 人类写前意图 | 空白 `human_chapter_intent_v1` 绑定方向选择与合同 |
-| 作者工作单 | `chapter_story_brief_v4` 只展示作者可执行的故事信息 |
-| 编译依据 | `chapter_story_brief_basis_v2` 绑定合同、人类意图、事实、声音与历史 |
-| 写作任务 | `chapter_writing_task_v6` 与活动 manifest 严格一致才可复用 |
-| 对话共编 | `chapter_coedit_session_v1` 的方案、选择和完整候选只写 workbench |
+| 故事规划 | 全书 Spine、分卷骨架、活动卷、20 章滚动窗口与 firm 3 章合同 |
+| 章节合同 | `chapter_contract_v5` 绑定拓扑、语义义务、批准节点与承诺动作 |
+| 人类写前意图 | 空白 `human_chapter_intent_v2` 绑定 v5 合同与完整节点审批 |
+| 作者工作单 | `chapter_story_brief_v5` 只展示作者可执行的故事信息 |
+| 编译依据 | `chapter_story_brief_basis_v3` 绑定合同、节点、义务、事实、声音与历史 |
+| 写作任务 | `chapter_writing_task_v7` 与活动 manifest 严格一致才可复用 |
+| 对话共编 | `chapter_coedit_session_v2` 的方案、选择和完整候选只写 workbench |
 | 独立审稿 | `scene_prose_editor`、`anti_template_editor` 每章必审，风险角色按需增加 |
-| 人工终稿 | `human_author_revision_v3` 绑定最终锁、真实改动及双稿语义保真 |
-| 人工深审 | `human_story_review_v6` 绑定八类当前证据后才允许 finalize |
+| 人工终稿 | `human_author_revision_v4` 绑定最终锁、真实改动及双稿语义保真 |
+| 人工深审 | `human_story_review_v7` 绑定 v0.10 当前证据后才允许 finalize |
 | 发布预检 | 起点、番茄政策快照只提示风险，不输出“检测通过” |
 | 恢复 | canonical 写入使用事务、锁、证据和显式恢复命令 |
 
@@ -49,7 +49,7 @@ Windows：
 py -3 -m pip install --user pipx
 py -3 -m pipx ensurepath
 py -3 -m pipx install --force `
-  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.9.0'
+  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.10.0'
 longform-engine skills install --tool codex --force
 longform-engine doctor --tool codex
 ```
@@ -60,7 +60,7 @@ macOS / Linux：
 python3 -m pip install --user pipx
 python3 -m pipx ensurepath
 python3 -m pipx install --force \
-  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.9.0'
+  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.10.0'
 longform-engine skills install --tool codex --force
 longform-engine doctor --tool codex
 ```
@@ -80,7 +80,9 @@ longform-engine open-book project.yaml
 longform-engine production next project.yaml
 ```
 
-`production next` 是默认入口。它会报告当前阻塞原因和唯一安全的下一步。
+每轮始终先运行 `production next`。它会报告当前阻塞原因和唯一安全的下一步。
+
+从开书到投稿的逐步命令、动态占位符和失败恢复见 [Operator Guide](docs/OPERATOR_GUIDE.md)。
 
 首次设计由 Agent 工单与 CLI 校验组成：
 
@@ -96,60 +98,36 @@ longform-engine intelligence apply project.yaml --task-type book_ideation --cand
 
 ## 一章的完整闭环
 
-```text
-章节方向候选
-→ 人工选择 option ID
-→ 设计批准与语义编译
-→ chapter_contract_v4
-→ 空白表单完成人类章节意图
-→ chapter_story_brief_basis_v2
-→ chapter_story_brief_v4
-→ AI 完整候选
-→ 对话共编：2–3 个方案 → 人工选择 → 新完整候选
-→ deterministic gate
-→ scene_prose_editor + anti_template_editor
-→ 必要 repair
-→ 冻结 human_review_bundle_v2
-→ 人类最终完整修订并锁定 + human_author_revision_v3
-→ 双稿语义保真
-→ draft submit --agent human --overwrite
-→ 全量 gate 与独立复审
-→ human_story_review_v6
-→ accept
-→ finalize
-→ semantic apply / chapter close
-```
-
-准备作者工作单：
-
 ```bash
-longform-engine chapter human-intent-task project.yaml --chapter 1
-# 人工填写、validate 并 apply 当前意图记录
-longform-engine continue-write project.yaml --chapter 1
-longform-engine agent-task brief project.yaml TASK_ID
-```
-
-作者 Agent 只读：
-
-```text
-50_workbench/writing_tasks/ch001.md
-```
-
-作者只把完整小说正文写到工单声明的候选路径，然后提交：
-
-```bash
-longform-engine draft submit project.yaml \
-  --chapter 1 \
-  --file 50_workbench/agent_drafts/ch001.codex.md \
-  --agent codex
+longform-engine production next project.yaml
+# 完成章节方向、人工选择及设计语义编译
+longform-engine chapter human-intent-task project.yaml --chapter N
+# 人工填写空白 human_chapter_intent_v2 表单
+longform-engine chapter human-intent-validate project.yaml --chapter N --file INTENT_FILE
+longform-engine chapter human-intent-apply project.yaml --chapter N --file INTENT_FILE --approved-by human
+longform-engine continue-write project.yaml --chapter N
+longform-engine agent-task brief project.yaml TASK_OR_PATH
+# Agent 只读 chapter_story_brief_v5，只写 manifest 的 io.output.path
+longform-engine draft submit project.yaml --chapter N --file AGENT_CANDIDATE --agent codex
+# 按 production next 完成独立审稿及必要 repair
+longform-engine chapter human-revision-task project.yaml --chapter N
+# 人工完成全文改稿、记录和独立双稿语义复核，再以 agent=human 提交
+longform-engine chapter human-review-task project.yaml --chapter N
+# validate / apply 当前 v6 决定；accept 后才可 finalize
+longform-engine chapter finalize project.yaml --chapter N --approved-by human
+longform-engine chapter semantic-task project.yaml --chapter N
+# Agent 输出 canonical_delta_v1
+longform-engine chapter semantic-validate project.yaml --chapter N --file SEMANTIC_FILE
+longform-engine chapter semantic-apply project.yaml --chapter N --file SEMANTIC_FILE
+longform-engine chapter close project.yaml --chapter N --approved-by human
 longform-engine production next project.yaml
 ```
 
-有 P0/P1 时必须先走不可变 repair plan；不得用 waiver、咨询或人工勾选绕过。
+`TASK_OR_PATH`、候选路径、session、turn 和 hash 必须取自当前 CLI 输出，不手工猜测。作者只读 `50_workbench/writing_tasks/chNNN.md`；有 P0/P1 时必须先走不可变 repair plan，不得用咨询或人工勾选绕过。
 
 ## Story Brief 一致性
 
-`chapter_contract_v4` 绑定真正具有规范性的章节义务：
+`chapter_contract_v5` 绑定真正具有规范性的章节义务：
 
 - 欲望、阻力、戏剧问题与本章职责；
 - 关键失败、不可逆选择、转折、代价与读者收益；
@@ -159,10 +137,10 @@ longform-engine production next project.yaml
 
 合同不吞入全部 RAG、历史正文或内部控制数据。
 
-`chapter_story_brief_basis_v2` 另外绑定所有会改变作者工作单的编译依据：
+`chapter_story_brief_basis_v3` 另外绑定所有会改变作者工作单的编译依据：
 
-- 当前 `human_chapter_intent_v1`；
-- 当前合同与因果模拟；
+- 当前 `human_chapter_intent_v2`；
+- 当前合同、滚动窗口、批准节点表与语义义务；
 - 筛选后的 canonical / RAG 事实；
 - 本章人物声音与人工批准的作者声音样本；
 - 最近结构和载体历史；
@@ -192,7 +170,7 @@ Story Brief 不暴露：
 
 AI 候选不能直接定稿。共编中的圈选、方案与选择只产生完整 workbench 候选，不能写 draft、final 或 canonical。已有 P0/P1 时只能使用当前 repair plan；人工终稿锁定后，AI 只能只读咨询。
 
-每章必须提交当前候选对应的 `human_author_revision_v3`，并绑定人类意图、共编来源和最终锁。
+每章必须提交当前候选对应的 `human_author_revision_v4`，并绑定人类意图、共编来源和最终锁。
 
 人工记录至少证明两个真实影响维度，其中至少一个属于场景因果或人物声音/情绪。每项包含精确修改前后 span、`intent_ref`、预期读者影响、修改意图和必须保护项。
 
@@ -226,16 +204,16 @@ AI 候选不能直接定稿。共编中的圈选、方案与选择只产生完�
 
 ## 人工深审
 
-`human_story_review_v6` 必须绑定当前八类证据：
+`human_story_review_v7` 必须绑定当前 v0.10 证据：
 
 1. 候选正文；
-2. `chapter_contract_v4`；
-3. `human_chapter_intent_v1`；
-4. `chapter_story_brief_basis_v2`；
+2. `chapter_contract_v5`；
+3. `human_chapter_intent_v2`；
+4. `chapter_story_brief_basis_v3`；
 5. Promise Ledger；
-6. 因果模拟；
+6. 批准剧情节点与语义义务；
 7. `human_review_bundle_v2`；
-8. `human_author_revision_v3` 与最终锁。
+8. `human_author_revision_v4` 与最终锁。
 
 人类强制确认三组核心证据：关键转折、人物选择/情绪、读者收益/离场状态。其他维度显示独立审稿覆盖与当前风险；存在 finding 时必须 repair、接受 P2 或 redirect。
 
@@ -260,7 +238,7 @@ Agent 不直接写这些路径。候选、任务、diff、审稿和咨询位于 
 canonical 写入使用项目锁和事务。崩溃后先运行：
 
 ```bash
-longform-engine recover status project.yaml
+longform-engine recovery status project.yaml
 longform-engine production next project.yaml
 ```
 
@@ -301,19 +279,21 @@ longform-engine quality status project.yaml --json
 
 源码开发、单进程测试、资源清单、构建、分发审计和隔离安装命令集中在 [Release Runbook](docs/RELEASE_RUNBOOK.md)。
 
-v0.9.0 的发布清单保留实现阶段验证证据，并单独记录本次经用户授权的无测试发布例外。tag 发布工作流只构建和上传制品，不把 CI 或 smoke 结果解释为发布质量证明。
+v0.10.0 的发布清单明确记录最终接线后未运行测试或 smoke；先前 415 passed 仅是第一阶段历史证据。tag 发布工作流只构建和上传制品，不把 CI 或 smoke 结果解释为发布质量证明。
 
 活动发布面必须通过版本与 schema 守卫；历史 release checklist 保留原文，不批量改写。
 
 ## 文档
 
+- [Operator Guide](docs/OPERATOR_GUIDE.md)
+- [v0.10 实施中的语义规划与版本化回溯](docs/V0_10_0_IMPLEMENTATION.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Storage Model](docs/STORAGE_MODEL.md)
 - [Configuration](docs/CONFIGURATION.md)
 - [Quality Benchmark Runbook](docs/QUALITY_BENCHMARK_RUNBOOK.md)
 - [Release Runbook](docs/RELEASE_RUNBOOK.md)
 - [Release History](docs/RELEASE_HISTORY.md)
-- [v0.9.0 发布 Checklist](docs/V0_9_0_RELEASE_CHECKLIST.md)
+- [v0.10.0 发布 Checklist](docs/V0_10_0_RELEASE_CHECKLIST.md)
 
 ## License
 

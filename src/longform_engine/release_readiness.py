@@ -76,15 +76,15 @@ def check_release_readiness(
             if stable_version
             else ""
         )
+        rc_channel_ready = bool(stable_version) and stable_marker in readme and (
+            stable_version == version or "Release Candidate" in readme
+        )
         add_check(
             checks,
             "readme_rc_channel",
-            bool(stable_version)
-            and stable_version != version
-            and stable_marker in readme
-            and "Release Candidate" in readme,
+            rc_channel_ready,
             f"README stable channel: v{stable_version or 'missing'}; source RC: v{version or 'missing'}.",
-            "Keep stable install commands on the published tag and label the source version as Release Candidate.",
+            "Keep install commands on a published stable tag or label a newer source version as Release Candidate.",
         )
         installed_version = installed_package_version()
         if installed_version == version:

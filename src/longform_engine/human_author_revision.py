@@ -36,9 +36,9 @@ from longform_engine.storage.layout import manuscript_chapter_path
 from longform_engine.story_brief import load_current_story_brief_binding
 
 
-SCHEMA = "human_author_revision_v3"
-TASK_SCHEMA = "human_author_revision_task_v3"
-VALIDATION_SCHEMA = "human_author_revision_validation_v3"
+SCHEMA = "human_author_revision_v4"
+TASK_SCHEMA = "human_author_revision_task_v4"
+VALIDATION_SCHEMA = "human_author_revision_validation_v4"
 FINAL_LOCK_SCHEMA = "human_final_lock_v1"
 SEMANTIC_TASK_TYPE = "prose_revision_semantic_review"
 IMPACT_DIMENSIONS = frozenset(
@@ -813,7 +813,7 @@ def require_validated_human_revision_submission(
     if errors:
         raise HumanAuthorRevisionError("human author revision is missing, invalid, or stale: " + "; ".join(errors))
     return {
-        "schema": "human_author_revision_submission_binding_v3",
+        "schema": "human_author_revision_submission_binding_v4",
         "validation_file": relative(root, validation_file),
         "validation_sha256": file_hash(validation_file),
         "record_file": str(report["record_file"]),
@@ -834,7 +834,7 @@ def require_current_human_author_revision(config: ConfigDocument, *, chapter_num
     status = human_author_revision_status(config, chapter_number=chapter_number)
     if status.get("status") != "complete":
         raise HumanAuthorRevisionError(
-            f"chapter ch{chapter_number:03d} requires a current validated human_author_revision_v3 submission"
+            f"chapter ch{chapter_number:03d} requires a current validated human_author_revision_v4 submission"
         )
     return status
 
@@ -863,7 +863,7 @@ def human_author_revision_errors(
         "final_lock_confirmation",
     }
     if not isinstance(record, dict) or set(record) != required:
-        return ["record must contain exactly the human_author_revision_v3 fields"]
+        return ["record must contain exactly the human_author_revision_v4 fields"]
     if record.get("schema") != SCHEMA:
         if record.get("schema") in {"human_author_revision_v1", "human_author_revision_v2"}:
             errors.append(
@@ -1094,7 +1094,7 @@ def human_revision_binding_errors(
         "final_lock_file",
         "final_lock_sha256",
     }
-    if set(binding) != expected or binding.get("schema") != "human_author_revision_submission_binding_v3":
+    if set(binding) != expected or binding.get("schema") != "human_author_revision_submission_binding_v4":
         return ["submission human revision binding is invalid"]
     validation_file = root / str(binding.get("validation_file") or "")
     if not validation_file.is_file() or file_hash(validation_file) != str(binding.get("validation_sha256") or ""):

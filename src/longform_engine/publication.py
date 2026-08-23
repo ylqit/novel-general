@@ -379,9 +379,9 @@ def human_revision_coverage(root: Path, corpus: dict[str, Any]) -> dict[str, Any
             payload = read_json(root / "40_manuscript" / "draft" / f"ch{number:03d}.submission.json")
         binding = payload.get("human_author_revision") if isinstance(payload, dict) else None
         expected_schema = (
-            "human_author_revision_finalization_binding_v3"
+            "human_author_revision_finalization_binding_v4"
             if chapter["lane"] == "final"
-            else "human_author_revision_submission_binding_v3"
+            else "human_author_revision_submission_binding_v4"
         )
         validation = project_artifact(
             root, str((binding or {}).get("validation_file") or "")

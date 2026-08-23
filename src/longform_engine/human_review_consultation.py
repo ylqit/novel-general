@@ -445,7 +445,7 @@ def record_human_review_consultation(
         turn_number=turn_number,
         record_file=relative_path(root, record),
         response_sha256=response_hash,
-        next_command="convert selected advice to a human_story_review_v6 annotation in the review desk",
+        next_command="convert selected advice to a human_story_review_v7 annotation in the review desk",
     )
 
 
@@ -706,7 +706,7 @@ def _require_human_final_lock(
     binding = submission.get("human_author_revision") if isinstance(submission, dict) else None
     lock_file: Path | None = None
     expected_lock_hash = ""
-    if isinstance(binding, dict) and binding.get("schema") == "human_author_revision_submission_binding_v3":
+    if isinstance(binding, dict) and binding.get("schema") == "human_author_revision_submission_binding_v4":
         lock_file = root / str(binding.get("final_lock_file") or "")
         expected_lock_hash = str(binding.get("final_lock_sha256") or "")
     else:

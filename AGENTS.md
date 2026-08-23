@@ -9,7 +9,7 @@
 ```powershell
 git status --short
 git log -1 --oneline
-git tag --list "v0.9.*"
+git tag --list "v0.10.*"
 longform-engine --version
 longform-engine skills status --tool codex --json
 python scripts/check_agent_data_pipeline_readiness.py
@@ -25,7 +25,7 @@ python scripts/check_agent_data_pipeline_readiness.py
 
 ## 2. 当前发布状态
 
-- 当前公开稳定版为 `v0.9.0`，并明确拒绝旧项目。v0.9 使用写前人工意图、Story Brief basis v2、non-canonical 对话共编、人工终稿锁和八类证据风险分层深审。
+- 当前公开稳定版为 `v0.10.0`，并明确拒绝 v0.9 及更早项目。v0.10 使用语义规划、活动分卷、三章 firm 滚动窗口、逐节点人工审批、事件/承诺关闭证据和版本化设定回溯。
 - 协议与生产合同 readiness 以 `scripts/check_agent_data_pipeline_readiness.py` 的输出为准。
 - `literary_evidence_ready` 保持 `false`，直到真实章节与独立盲评证据完整。
 - 不要把任一本地小说运行、全局 Skill 状态或历史阶段文档当作源码事实源。
@@ -162,24 +162,24 @@ design task
 章节闭环采用：
 
 ```text
-story engine and rolling carrier plan
--> reader promise ledger / arc causal simulation / chapter direction options
--> chapter_direction_selection_v1 / approve / semantic compile / chapter_contract_v4
--> blank human_chapter_intent_v1 / validate / human apply
--> chapter_story_brief_basis_v2 / chapter_story_brief_v4 / chapter_writing_task_v6
+book spine / volume skeletons / active volume / rolling_window_plan_v2
+-> independent planning semantic review / human planning approval / every plot-node decision
+-> chapter_contract_v5
+-> blank human_chapter_intent_v2 / validate / human apply
+-> chapter_story_brief_basis_v3 / chapter_story_brief_v5 / chapter_writing_task_v7
 -> chapter_write
--> optional chapter_coedit_session_v1 with human-selected options and full workbench candidates
+-> optional chapter_coedit_session_v2 with human-selected options and full workbench candidates
 -> draft submit and deterministic gate
 -> independent review barrier
 -> immutable review bundle
--> mandatory human_author_revision_v3 / human final lock / independent semantic review
+-> mandatory human_author_revision_v4 / human final lock / independent semantic review
 -> human candidate submit / complete gate and independent review rerun
--> mandatory human_story_review_v6 eight-evidence accept / repair / redirect
+-> mandatory human_story_review_v7 v0.10-evidence accept / repair / redirect
 -> optional human-final read-only consultation
 -> conditional repair plan and replacement candidate
 -> explicit chapter finalize
 -> chapter semantic task
--> semantic validate/apply
+-> semantic validate/apply / human-confirmed event realization / exact reader-promise spans
 -> chapter close
 -> artifact compact/verify
 ```
@@ -188,15 +188,9 @@ story engine and rolling carrier plan
 
 ## 7. 唯一章节合同与上下文编译
 
-`20_outline/chapter_cards/chNNN.json` 是唯一 `chapter_contract_v4` 章节合同。它必须包含当前章节需要的承诺动作、当前有效因果模拟引用、情绪余波、结尾方式/意图和悬念/兑现边界，并同时包含：
+`20_outline/chapter_contracts/chNNN.json` 是唯一 `chapter_contract_v5`。它只来自活动卷 firm 层，并绑定章节拓扑、可观察变化、读者价值、语义义务、当前 reader-promise 动作和逐节点人工审批。`failure`、`choice`、`cost`、`aftermath` 使用显式 applicability，不能强迫所有章节套用同一戏剧模板。
 
-- 全书目标、卷目标和主角近期目标。
-- 当下欲望、对抗力量、戏剧问题、最早失败、不可逆选择和可见代价。
-- `chapter_turn`、`reveal_boundary`、`reader_gain`、必须演出/允许压缩过程、故事引擎、场景载体和状态变化。
-- 登场人物稳定 ID。
-- 受保护结果、禁止偏移、canon、世界规则、伏笔和禁止揭示引用。
-
-方向应用后，人类必须从空白表单填写 `human_chapter_intent_v1`。内部事实仍编译为 `chapter_fact_inventory_v1`；`chapter_story_brief_basis_v2` 绑定合同、当前人工意图和所有会改变作者工作单的投影，作者只读取 `chapter_story_brief_v4` Markdown。内部 ID、来源 hash、promise ID、编辑代码、原始 RAG、Graph、TCS、SQLite 和平台诊断不得进入作者工作单。自然度、收益、节奏、人物、场景、同人和人工深审必须绑定同一合同、意图、basis 与候选。
+规划应用后，人类必须从空白表单填写 `human_chapter_intent_v2`。内部事实仍编译为 `chapter_fact_inventory_v1`；`chapter_story_brief_basis_v3` 绑定合同、节点表、语义义务、滚动窗口、当前人工意图和所有会改变作者工作单的投影，作者只读取 `chapter_story_brief_v5` Markdown。内部 ID、来源 hash、promise ID、编辑代码、原始 RAG、Graph、TCS、SQLite 和平台诊断不得进入作者工作单。自然度、收益、节奏、人物、场景、同人和人工深审必须绑定同一合同、意图、basis 与候选。
 
 事实清单中同一事实只出现一次，并保存来源 hash、优先级和选择理由。核心 canon/world-rule 引用必须完整解析；`[depth-limited]`、缺失来源或必要证据无法装入预算时返回 `context_evidence_incomplete` 或 `prompt_budget_exceeded`，不得在证据不完整时生成可 pass 的审稿任务。
 
@@ -257,7 +251,7 @@ CLI freezes complete review_bundle
 
 修复主编只归并根因、依赖顺序、最小修改半径、保护项和回归维度。它不能删除、降级或投票否决有效 P0/P1，也不能写正文。只有有效替代稿提交才消耗一次修复额度；两轮后仍有 P0/P1 必须进入 `repair_budget_exhausted`。
 
-冻结 `human_review_bundle_v2` 后，每章必须提交并锁定 `human_author_revision_v3`：至少两个真实影响维度，其中至少一个属于场景因果或人物声音/情绪；每项绑定精确前后 span、`intent_ref`、预期读者影响、修改意图和保护项。独立 `prose_revision_semantic_reviewer` 通过后才能以 `agent=human` 提交；任何后续 AI 正文变换都会使人工终稿失效。最终 `human_story_review_v6` 绑定候选、章节合同、人类意图、Story Brief basis、承诺账本、因果模拟、bundle 和人工终稿八类当前证据。本地网页和 human_final 咨询不得直接 apply、finalize 或写 canonical。
+冻结 `human_review_bundle_v2` 后，每章必须提交并锁定 `human_author_revision_v4`：至少两个真实影响维度，其中至少一个属于场景因果或人物声音/情绪；每项绑定精确前后 span、`intent_ref`、预期读者影响、修改意图和保护项。独立 `prose_revision_semantic_reviewer` 通过后才能以 `agent=human` 提交；任何后续 AI 正文变换都会使人工终稿失效。最终 `human_story_review_v7` 绑定候选、v5 合同、人类意图、Story Brief basis、承诺账本、批准节点、语义义务、bundle 和人工终稿。本地网页和 human_final 咨询不得直接 apply、finalize 或写 canonical。
 
 ## 10. 生命周期、事务与无污染
 
@@ -328,17 +322,18 @@ task event/index 记录：
 优先阅读：
 
 1. `README.md`
-2. `docs/ARCHITECTURE.md`
-3. `docs/STORAGE_MODEL.md`
-4. `docs/V0_9_0_RELEASE_CHECKLIST.md`
-5. `docs/RELEASE_HISTORY.md`
-5. `docs/GATE_MODEL.md`
-6. `docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`
-7. `docs/CONFIGURATION.md`
-8. `docs/RAG_MODEL.md`
-9. `docs/QUALITY_BENCHMARK_RUNBOOK.md`
-10. `docs/SKILL_INSTALLATION.md`
-11. `docs/RELEASE_RUNBOOK.md`
+2. `docs/OPERATOR_GUIDE.md`
+3. `docs/ARCHITECTURE.md`
+4. `docs/STORAGE_MODEL.md`
+5. `docs/V0_10_0_RELEASE_CHECKLIST.md`
+6. `docs/RELEASE_HISTORY.md`
+7. `docs/GATE_MODEL.md`
+8. `docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`
+9. `docs/CONFIGURATION.md`
+10. `docs/RAG_MODEL.md`
+11. `docs/QUALITY_BENCHMARK_RUNBOOK.md`
+12. `docs/SKILL_INSTALLATION.md`
+13. `docs/RELEASE_RUNBOOK.md`
 
 历史发布说明只记录版本变化，不得覆盖当前 Manifest v4、`evidence_review_v2`、29 角色、配置注册表或 `chNNN.md` 存储契约。
 

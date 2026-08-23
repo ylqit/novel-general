@@ -28,11 +28,6 @@ from longform_engine.agent_tasks import (
 )
 from longform_engine.config import ConfigDocument
 from longform_engine.chapter_contract import load_verified_chapter_contract
-from longform_engine.arc_simulation import (
-    SIMULATION_DIR,
-    current_basis_hashes,
-    mark_overlapping_arc_simulations_stale,
-)
 from longform_engine.db import (
     chapter_chunk_integrity_counts,
     database_path,
@@ -43,10 +38,6 @@ from longform_engine.db import (
 from longform_engine.graph.pipeline import ensure_graph_shape, load_graph, save_graph, upsert_canon_entities
 from longform_engine.memory import apply_style_memory_delta, build_style_memory
 from longform_engine.rag import apply_embedding_delta, build_chunks, build_context, rebuild_embedding_index
-from longform_engine.reader_promises import (
-    LEDGER_PATH,
-    apply_reader_promise_actions,
-)
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import (
     list_finalized_chapter_files,
@@ -800,7 +791,6 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
         hnsw_manifest_path(hnsw_index_file),
     ]
     if existing_ledger is None:
-        causal_basis_before = current_basis_hashes(root)
         touched.extend(
             [
                 ledger_file,
@@ -812,13 +802,9 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
                 tcs_file,
                 chapter_meta,
                 novel_state_file,
-                root / LEDGER_PATH,
                 *character_files,
-                *sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")),
             ]
         )
-    else:
-        causal_basis_before = {}
     embedding_stats = None
     context = None
     written_characters: tuple[Path, ...] = ()
@@ -850,20 +836,6 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
             tcs = materialize_tcs(root, payload, chapter_number, graph, foreshadow_state)
             tcs["source_semantic_ledger_sha256"] = sha256(ledger_file.read_bytes()).hexdigest()
             atomic_write_text(tcs_file, json.dumps(tcs, ensure_ascii=False, indent=2) + "\n")
-            apply_reader_promise_actions(
-                root,
-                chapter_number=chapter_number,
-                actions=chapter_contract["reader_promise_actions"],
-                final_path=relative_path(root, final_file),
-                final_sha256=sha256(final_file.read_bytes()).hexdigest(),
-            )
-            if current_basis_hashes(root) != causal_basis_before:
-                mark_overlapping_arc_simulations_stale(
-                    root,
-                    from_chapter=chapter_number + 1,
-                    to_chapter=10**9,
-                )
-
         style = apply_style_memory_delta(config, chapter_numbers=(chapter_number,))
         rag = build_chunks(config, chapter_numbers=(chapter_number,), sync_index=False)
         changed_memory_paths = [Path(style.style_file), *character_files]
@@ -1135,6 +1107,7 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
     final_file = manuscript_chapter_path(root, chapter_number, lane="final")
     ledger_file = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
     verify_materialized_chapter(config, root, chapter_number)
+    close_evidence = require_v010_close_evidence(root, chapter_number)
     closure_file = root / "30_state" / "chapter_closures" / f"ch{chapter_number:03d}.json"
     if closure_file.exists():
         closure = read_json(closure_file, {})
@@ -1146,6 +1119,10 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
             raise ValueError(f"Existing chapter closure ch{chapter_number:03d} no longer matches final manuscript.")
         if closure.get("semantic_ledger_sha256") != sha256(ledger_file.read_bytes()).hexdigest():
             raise ValueError(f"Existing chapter closure ch{chapter_number:03d} no longer matches semantic ledger.")
+        if closure.get("event_ledger_sha256") != close_evidence["event_ledger_sha256"]:
+            raise ValueError(f"Existing chapter closure ch{chapter_number:03d} has stale event evidence.")
+        if closure.get("reader_promise_ledger_sha256") != close_evidence["reader_promise_ledger_sha256"]:
+            raise ValueError(f"Existing chapter closure ch{chapter_number:03d} has stale promise evidence.")
         archive_through = int(closure.get("archive_through") or max(0, chapter_number - 2))
         archives = compact_closed_artifacts(config, chapter_number)
         return ChapterCloseResult(
@@ -1154,7 +1131,7 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
             approved_by=str(closure.get("approved_by") or approved_by),
             archived_through=archive_through,
             archive_files=archives,
-            next_command=f"longform-engine continue-write project.yaml --chapter {chapter_number + 1}",
+            next_command="longform-engine production next project.yaml",
         )
     from longform_engine.author_voice import AuthorVoiceError, require_author_voice_pair_for_close
 
@@ -1188,21 +1165,29 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
         raise ValueError(f"Cannot close ch{chapter_number:03d}: active Agent tasks remain ({task_ids}).")
 
     state_file = root / "30_state" / "novel_state.json"
+    planning_cursor_file = root / "30_state" / "planning_cursor.json"
     archive_through = max(0, chapter_number - 2)
     with apply_transaction(
         root,
         command="chapter close",
         chapter_number=chapter_number,
-        source_paths=[final_file, ledger_file],
-        touched_paths=[closure_file, state_file],
+        source_paths=[
+            final_file,
+            ledger_file,
+            root / close_evidence["event_ledger_path"],
+            root / close_evidence["reader_promise_ledger_path"],
+        ],
+        touched_paths=[closure_file, state_file, planning_cursor_file],
         metadata={"approved_by": approved_by, "active_buffer_chapters": 2},
     ) as transaction:
         closure = {
-            "schema": "chapter_closure_v1",
+            "schema": "chapter_closure_v2",
             "chapter_number": chapter_number,
             "approved_by": approved_by,
             "final_sha256": sha256(final_file.read_bytes()).hexdigest(),
             "semantic_ledger_sha256": sha256(ledger_file.read_bytes()).hexdigest(),
+            "event_ledger_sha256": close_evidence["event_ledger_sha256"],
+            "reader_promise_ledger_sha256": close_evidence["reader_promise_ledger_sha256"],
             "closed_at": utc_now(),
             "archive_through": archive_through,
         }
@@ -1221,6 +1206,28 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
         if int(state.get("pending_close_chapter") or 0) == chapter_number:
             state.pop("pending_close_chapter", None)
         atomic_write_text(state_file, json.dumps(state, ensure_ascii=False, indent=2) + "\n")
+        rolling_window = root / "20_outline" / "rolling_window.json"
+        atomic_write_text(
+            planning_cursor_file,
+            json.dumps(
+                {
+                    "schema": "planning_cursor_v1",
+                    "last_closed_chapter": chapter_number,
+                    "next_chapter": chapter_number + 1,
+                    "rolling_window_path": rolling_window.relative_to(root).as_posix(),
+                    "rolling_window_sha256": (
+                        sha256(rolling_window.read_bytes()).hexdigest()
+                        if rolling_window.is_file()
+                        else ""
+                    ),
+                    "advanced_by": "chapter_close",
+                    "updated_at": utc_now(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+        )
         transaction.update_metadata(closure_file=relative_path(root, closure_file))
 
     archives = compact_closed_artifacts(config, chapter_number)
@@ -1230,8 +1237,99 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
         approved_by=approved_by,
         archived_through=archive_through,
         archive_files=archives,
-        next_command=f"longform-engine continue-write project.yaml --chapter {chapter_number + 1}",
+        next_command="longform-engine production next project.yaml",
     )
+
+
+def require_v010_close_evidence(root: Path, chapter_number: int) -> dict[str, str]:
+    """Require terminal event decisions and exact final/semantic evidence for every promise action."""
+
+    contract, _contract_hash = load_verified_chapter_contract(root, chapter_number)
+    final_file = manuscript_chapter_path(root, chapter_number, lane="final")
+    semantic_file = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
+    event_file = root / "30_state" / "narrative_events" / f"ch{chapter_number:03d}.json"
+    promise_file = root / "30_state" / "reader_promise_ledger.json"
+    final_text = final_file.read_text(encoding="utf-8")
+    final_hash = sha256(final_file.read_bytes()).hexdigest()
+    semantic_hash = sha256(semantic_file.read_bytes()).hexdigest()
+    events = read_json(event_file, {})
+    if not isinstance(events, dict) or events.get("schema") != "narrative_event_ledger_v1":
+        raise ValueError(f"Cannot close ch{chapter_number:03d}: narrative event ledger is missing or incompatible.")
+    event_items = events.get("events") if isinstance(events.get("events"), list) else []
+    if event_items and not str(events.get("realization_application_sha256") or ""):
+        raise ValueError(f"Cannot close ch{chapter_number:03d}: approved events have not been human-confirmed after semantic apply.")
+    for event in event_items:
+        if not isinstance(event, dict) or event.get("state") not in {"realized", "deferred", "cancelled"}:
+            raise ValueError(
+                f"Cannot close ch{chapter_number:03d}: event {event.get('event_id') if isinstance(event, dict) else 'unknown'} "
+                "is not realized or explicitly deferred/cancelled."
+            )
+        evidence = event.get("realization_evidence") if isinstance(event, dict) else None
+        if not isinstance(evidence, dict) or evidence.get("confirmed_by") != "human":
+            raise ValueError(f"Cannot close ch{chapter_number:03d}: event realization lacks human confirmation.")
+        if evidence.get("final_sha256") != final_hash or evidence.get("semantic_ledger_sha256") != semantic_hash:
+            raise ValueError(f"Cannot close ch{chapter_number:03d}: event realization evidence is stale.")
+        if event.get("state") == "realized":
+            _require_exact_close_span(final_text, evidence, "event realization")
+
+    promise_ledger = read_json(promise_file, {})
+    if not isinstance(promise_ledger, dict) or promise_ledger.get("schema") != "reader_promise_ledger_v2":
+        raise ValueError(f"Cannot close ch{chapter_number:03d}: reader promise ledger v2 is missing.")
+    promises = {
+        str(item.get("promise_id")): item
+        for item in promise_ledger.get("items", [])
+        if isinstance(item, dict) and item.get("promise_id")
+    }
+    for action in contract.get("reader_promise_actions") or []:
+        promise_id = str(action.get("promise_id") or "")
+        promise = promises.get(promise_id)
+        if promise is None:
+            raise ValueError(f"Cannot close ch{chapter_number:03d}: promise {promise_id} is unresolved.")
+        if action.get("action") == "defer":
+            if not any(
+                isinstance(item, dict)
+                and item.get("chapter_number") == chapter_number
+                and item.get("approved_by") == "human"
+                for item in promise.get("deferrals") or []
+            ):
+                raise ValueError(f"Cannot close ch{chapter_number:03d}: promise {promise_id} defer is unconfirmed.")
+            continue
+        evidence = next(
+            (
+                item
+                for item in reversed(promise.get("actual_evidence") or [])
+                if isinstance(item, dict)
+                and item.get("chapter_number") == chapter_number
+                and item.get("action") == action.get("action")
+            ),
+            None,
+        )
+        if not isinstance(evidence, dict) or evidence.get("confirmed_by") != "human":
+            raise ValueError(f"Cannot close ch{chapter_number:03d}: promise {promise_id} lacks human-confirmed evidence.")
+        if evidence.get("final_sha256") != final_hash or evidence.get("semantic_ledger_sha256") != semantic_hash:
+            raise ValueError(f"Cannot close ch{chapter_number:03d}: promise {promise_id} evidence is stale.")
+        _require_exact_close_span(final_text, evidence, f"promise {promise_id}")
+    return {
+        "event_ledger_path": event_file.relative_to(root).as_posix(),
+        "event_ledger_sha256": sha256(event_file.read_bytes()).hexdigest(),
+        "reader_promise_ledger_path": promise_file.relative_to(root).as_posix(),
+        "reader_promise_ledger_sha256": sha256(promise_file.read_bytes()).hexdigest(),
+    }
+
+
+def _require_exact_close_span(source: str, evidence: dict[str, Any], label: str) -> None:
+    start, end, excerpt = evidence.get("start"), evidence.get("end"), evidence.get("excerpt")
+    if (
+        not isinstance(start, int)
+        or isinstance(start, bool)
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+        or start < 0
+        or end <= start
+        or end > len(source)
+        or source[start:end] != excerpt
+    ):
+        raise ValueError(f"{label} must cite an exact Unicode span in the current final chapter.")
 
 
 def verify_materialized_chapter(

@@ -82,12 +82,12 @@ def test_readme_is_public_pipx_skill_package_homepage():
         "longform-engine doctor --tool codex",
         "production next",
         "agent-task brief",
-        "chapter_contract_v4",
-        "chapter_story_brief_basis_v2",
-        "chapter_story_brief_v4",
-        "chapter_writing_task_v6",
-        "human_author_revision_v3",
-        "human_story_review_v6",
+        "chapter_contract_v5",
+        "chapter_story_brief_basis_v3",
+        "chapter_story_brief_v5",
+        "chapter_writing_task_v7",
+        "human_author_revision_v4",
+        "human_story_review_v7",
         "10_bible/",
         "20_outline/",
         "40_manuscript/final/",
@@ -105,16 +105,19 @@ def test_current_release_checklist_and_management_docs_are_linked():
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     install = (ROOT / "docs" / "SKILL_INSTALLATION.md").read_text(encoding="utf-8")
     history = (ROOT / "docs" / "RELEASE_HISTORY.md").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_9_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_10_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
 
     for document in (
         "ARCHITECTURE.md",
         "STORAGE_MODEL.md",
+        "OPERATOR_GUIDE.md",
         "RELEASE_HISTORY.md",
-        "V0_9_0_RELEASE_CHECKLIST.md",
+        "V0_10_0_RELEASE_CHECKLIST.md",
     ):
         assert document in readme
-    assert "V0_9_0_RELEASE_CHECKLIST.md" in agents
+    assert "OPERATOR_GUIDE.md" in agents
+    assert "V0_10_0_RELEASE_CHECKLIST.md" in agents
+    assert "OPERATOR_GUIDE.md" in install
     for historical in (
         "V0_4_4_RELEASE_CHECKLIST.md",
         "V0_5_0_RELEASE_CHECKLIST.md",
@@ -127,11 +130,11 @@ def test_current_release_checklist_and_management_docs_are_linked():
     assert "V0_6_0_RELEASE_CHECKLIST.md" in install
     assert "V0_7_0_RELEASE_CHECKLIST.md" in install
     for section in (
-        "章节合同与 Story Brief",
-        "人工修订、审稿与咨询",
-        "过时代码",
-        "README 与活动文档",
-        "单进程验证",
+        "协议收口",
+        "版本与活动文档",
+        "明确的验证例外",
+        "提交与远程发布",
+        "本机同步",
     ):
         assert section in checklist
 
@@ -145,15 +148,15 @@ def test_shared_protocols_keep_chapter_and_editorial_contracts():
     for term in (
         "/工程续章",
         "pre-write guide",
-        "human_chapter_intent_v1",
-        "chapter_coedit_session_v1",
-        "chapter_story_brief_v4",
-        "chapter_story_brief_basis_v2",
+        "human_chapter_intent_v2",
+        "chapter_coedit_session_v2",
+        "chapter_story_brief_v5",
+        "chapter_story_brief_basis_v3",
         "protected outcomes",
         "required production closed loop",
         "human-review-task",
-        "eight-evidence-bound v6 acceptance",
-        "human_author_revision_v3",
+        "evidence-bound v7 acceptance",
+        "human_author_revision_v4",
         "planning_chief_editor",
         "anti_template_editor",
         "scene_prose_editor",

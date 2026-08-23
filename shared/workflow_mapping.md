@@ -21,25 +21,22 @@ open-book
 -> book_design_candidate_v2 with story_engine_contract_v1 and character expression contracts
 -> character_expression_design when the current book design requests expression enrichment
 -> outline_design
--> reader_promise_ledger_v1 planned expectation windows
--> human-approved arc_causal_simulation_v1 covering the rolling outline window
+-> explicit reader_promise_ledger_v2 expectation windows
+-> planning_bundle_v1 establishes active volume and a three-chapter firm rolling window
+-> independent planning semantic review
+-> human decisions for every plot node
 -> agent-task brief when an Agent task exists
--> mandatory chapter_direction with 2–3 stable option IDs
--> chapter_direction_selection_v1 binds the Markdown hash and explicit human selection
--> direction approve and semantic compile consume Markdown plus selection sidecar
--> blank human_chapter_intent_v1 / validate / human apply binds selection and contract
+-> blank human_chapter_intent_v2 / validate / human apply binds approved nodes and contract
 -> continue-write
--> chapter_contract_v4 and chapter_story_brief_basis_v2
--> chapter_story_brief_v4 author work order; bounded character voice and relevant facts are compiled, while raw packets remain separated
+-> unique firm chapter_contract_v5 and chapter_story_brief_basis_v3
+-> chapter_story_brief_v5 author work order; readable topology, obligations, approved nodes, character choices, reader value and bounded facts are compiled while raw packets remain separated
 -> /工程续章 pre-write guide:
    current desire, opposition, earliest failure, irreversible choice, visible cost, scene chain, protected outcomes, repetition risk
--> plan-chapter
--> beat
 -> CLI compiles canonical constraints and retrieval evidence into the internal fact inventory and author Story Brief
--> author reads only chapter_story_brief_v4, never control-plane packets, basis JSON or the task JSON
+-> author reads only chapter_story_brief_v5, never control-plane packets, basis JSON or the task JSON
 -> Agent writes 50_workbench/agent_drafts/chNNN.codex.md or chNNN.claude.md
 -> Agent runs a bounded natural-prose self-check without detector tricks or word quotas
--> optional chapter_coedit_session_v1: selected span / 2–3 options / human selection / complete workbench candidate
+-> optional chapter_coedit_session_v2: selected span / 2–3 options / human selection / complete workbench candidate
 -> draft submit
 -> gate-check
 -> complete semantic / payoff / pacing / editorial reviews for the same candidate hash
@@ -53,17 +50,20 @@ open-book
 -> submit the immutable rNN replacement and rerun the complete review barrier
 -> quality payoff-task / payoff-validate after gate pass when required
 -> freeze human_review_bundle_v2
--> chapter human-revision-task / validate as human_author_revision_v3 with intent refs, reader effects, exact spans, final lock and independent semantic review
+-> chapter human-revision-task / validate as human_author_revision_v4 with intent refs, reader effects, exact spans, final lock and independent semantic review
 -> submit the complete human candidate as agent=human, invalidating old review evidence
 -> rerun the complete gate and independent-review barrier
 -> optional human_final review consultation; advice remains read-only and candidate-and-basis-bound
--> chapter human-review-task / validate / apply for risk-layered v6 accept, repair, or redirect
--> chapter finalize only after current eight-evidence-bound v6 acceptance
+-> chapter human-review-task / validate / apply for risk-layered v7 accept, repair, or redirect
+-> chapter finalize only after current evidence-bound v7 acceptance
 -> reward_ledger v2 / structure_history written only inside finalize
 -> chapter semantic-task: Agent reads final once and writes canonical_delta_v1
 -> chapter semantic-validate / explicit semantic-apply
 -> graph / character current view / foreshadow state / TCS / RAG / SQLite materialized atomically
+-> every approved event reaches realized/deferred/cancelled with human confirmation
+-> every non-defer reader-promise action binds an exact final span and semantic-ledger hash
 -> chapter close --approved-by human
+-> rolling window advances; missing firm coverage or basis drift returns to planning/review/node approval
 -> compact audit artifacts outside the two-chapter active buffer
 ```
 
@@ -107,15 +107,15 @@ Rights status and commercial intent are advisory only. Names, relationships, wor
 ## Chapter Loop
 
 ```text
-1. /工程章节意图 -> blank intent task / validate / human apply
+1. /工程章节意图 -> blank v2 intent task / validate / human apply
 2. /工程续章 -> continue-write task package
 3. Agent draft and optional coedit full candidates in workbench
 4. /工程提交稿 -> draft submit; /工程验稿 -> full review barrier
-5. /工程人工终稿 -> revision v3 / final lock / human submit / full re-review
-6. /工程故事简审 -> v6 accept, repair, or redirect
+5. /工程人工终稿 -> revision v4 / final lock / human submit / full re-review
+6. /工程故事简审 -> v7 accept, repair, or redirect
 7. /工程定稿 -> chapter finalize only after current human accept
 8. /工程章节语义任务 -> one final read and one canonical_delta_v1
-9. /工程章节语义应用 -> atomically materialize knowledge, then /工程关闭章节
+9. /工程章节语义应用 -> atomically materialize knowledge, confirm event/promise evidence, then /工程关闭章节
 ```
 
 ## Creative Operator Flow

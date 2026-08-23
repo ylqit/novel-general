@@ -375,9 +375,10 @@ def test_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
     assert {item["aggregation"] for item in batches} == {"deterministic_source_hash_and_evidence_id"}
 
 
-def test_release_guard_tracks_current_v090_contracts():
+def test_release_guard_tracks_current_v010_contracts():
     guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_9_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_10_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    operator_guide = (ROOT / "docs" / "OPERATOR_GUIDE.md").read_text(encoding="utf-8")
     production = (ROOT / "src" / "longform_engine" / "production.py").read_text(encoding="utf-8")
 
     for marker in (
@@ -391,15 +392,23 @@ def test_release_guard_tracks_current_v090_contracts():
     ):
         assert marker in guard
     for section in (
-        "章节合同与 Story Brief",
-        "人工修订、审稿与咨询",
-        "过时代码",
-        "README 与活动文档",
-        "回归测试",
-        "单进程验证",
-        "发布授权与无测试例外",
+        "协议收口",
+        "版本与活动文档",
+        "明确的验证例外",
+        "提交与远程发布",
+        "本机同步",
     ):
         assert section in checklist
+    for marker in (
+        "human_chapter_intent_v2",
+        "chapter_coedit_session_v2",
+        "human_author_revision_v4",
+        "human_story_review_v7",
+        "semantic-apply",
+        "chapter close",
+        "recovery status",
+    ):
+        assert marker in operator_guide
     for marker in (
         "def production_loop",
         "def agent_task_brief",

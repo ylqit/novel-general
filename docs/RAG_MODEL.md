@@ -79,11 +79,11 @@ Semantic RAG now has a graph-aware path in addition to chunk and memory retrieva
 
 ## Creative Operator Inputs
 
-`continue-write` treats RAG as one internal input to Story Brief compilation. The author sees only the bounded projection in `chapter_story_brief_v4`; control-plane inputs include:
+`continue-write` treats RAG as one internal input to Story Brief compilation. The author sees only the bounded projection in `chapter_story_brief_v5`; control-plane inputs include:
 
 - `10_bible/creative_brief.json`,
 - Writer Craft Brief,
-- current `human_chapter_intent_v1`,
+- current `human_chapter_intent_v2`,
 - prose-naturalness quality rules,
 - Style Memory,
 - TCS,

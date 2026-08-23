@@ -36,6 +36,9 @@ ALLOW_FINAL_WRITES = {
     "src/longform_engine/orchestration/pipeline.py",
     "src/longform_engine/intelligence/pipeline.py",
     "src/longform_engine/revision/pipeline.py",
+    # v0.10 historical revision promotion atomically replaces the reviewed
+    # branch range and rebuilds semantic projections; it is a canonical owner.
+    "src/longform_engine/revision/branches.py",
     "src/longform_engine/rag/pipeline.py",
     "src/longform_engine/memory/pipeline.py",
     "src/longform_engine/db/sqlite_index.py",
@@ -43,6 +46,7 @@ ALLOW_FINAL_WRITES = {
     "src/longform_engine/research/pipeline.py",
     "src/longform_engine/gates/pipeline.py",
     "src/longform_engine/semantic/pipeline.py",
+    "src/longform_engine/canon_changes.py",
     "src/longform_engine/storage/layout.py",
     "src/longform_engine/publication.py",
     # Human revision tasks name final only as a forbidden Agent path.
@@ -158,6 +162,14 @@ RETIRED_ACTIVE_SCHEMA_TERMS = (
     "chapter_writing_task_v5",
     "human_author_revision_v2",
     "human_story_review_v5",
+    "chapter_contract_v4",
+    "chapter_story_brief_basis_v2",
+    "chapter_story_brief_v4",
+    "chapter_writing_task_v6",
+    "human_chapter_intent_v1",
+    "chapter_coedit_session_v1",
+    "human_author_revision_v3",
+    "human_story_review_v6",
     "blind_review_pack_v3",
 )
 
@@ -166,6 +178,7 @@ ACTIVE_SCHEMA_DOCUMENTS = (
     "docs/ARCHITECTURE.md",
     "docs/CONFIGURATION.md",
     "docs/GATE_MODEL.md",
+    "docs/OPERATOR_GUIDE.md",
     "docs/PIPELINE_MODEL.md",
     "docs/SQLITE_MODEL.md",
     "docs/STORAGE_MODEL.md",
@@ -181,12 +194,26 @@ RETIRED_SCHEMA_SOURCE_ALLOWLIST = {
 
 REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
-        "docs/V0_9_0_RELEASE_CHECKLIST.md",
+        "docs/OPERATOR_GUIDE.md",
         (
-            "章节合同与 Story Brief",
-            "人工修订、审稿与咨询",
-            "过时代码",
-            "单进程验证",
+            "production next",
+            "human_chapter_intent_v2",
+            "chapter_coedit_session_v2",
+            "human_author_revision_v4",
+            "human_story_review_v7",
+            "semantic-apply",
+            "chapter close",
+            "recovery status",
+            "literary_evidence_ready=false",
+        ),
+    ),
+    (
+        "docs/V0_10_0_RELEASE_CHECKLIST.md",
+        (
+            "协议收口",
+            "明确的验证例外",
+            "第一阶段",
+            "本机同步",
             "literary_evidence_ready=false",
         ),
     ),
@@ -194,23 +221,21 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         "docs/ARCHITECTURE.md",
         (
             "唯一章节合同",
-            "canonical_write_transaction_report_v3",
-            "apply_embedding_delta",
-            "配置注册表",
+            "transaction v3",
+            "chapter_contract_v5",
+            "revision_branch_v2",
         ),
     ),
     (
         "src/longform_engine/chapter_contract.py",
         (
-            'CONTRACT_SCHEMA = "chapter_contract_v4"',
-            '"chapter_turn"',
-            '"reveal_boundary"',
-            '"reader_gain"',
-            '"primary_story_engine"',
-            '"scene_carriers"',
-            '"protected_story_outcomes"',
+            'CONTRACT_SCHEMA = "chapter_contract_v5"',
+            '"topology"',
+            '"observable_change"',
+            '"reader_value"',
+            '"semantic_obligation_refs"',
+            '"plot_node_table_ref"',
             '"reader_promise_actions"',
-            '"arc_simulation_ref"',
         ),
     ),
     (
@@ -228,25 +253,35 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "src/longform_engine/story_brief.py",
         (
-            'BASIS_SCHEMA = "chapter_story_brief_basis_v2"',
-            'STORY_BRIEF_SCHEMA = "chapter_story_brief_v4"',
-            'WRITING_TASK_SCHEMA = "chapter_writing_task_v6"',
-            'RENDERER_VERSION = "chapter_story_brief_renderer_v4"',
+            'BASIS_SCHEMA = "chapter_story_brief_basis_v3"',
+            'STORY_BRIEF_SCHEMA = "chapter_story_brief_v5"',
+            'WRITING_TASK_SCHEMA = "chapter_writing_task_v7"',
+            'RENDERER_VERSION = "chapter_story_brief_renderer_v5"',
             "load_current_story_brief_binding",
             "story_brief_status",
         ),
     ),
     (
-        "src/longform_engine/intelligence/pipeline.py",
+        "src/longform_engine/planning/contracts.py",
         (
-            '"schema": "chapter_direction_candidate_v5"',
-            '"schema": "chapter_direction_selection_v1"',
-            "load_chapter_direction_selection",
-            '"story_engine_contract_v1"',
-            '"reader_promise_actions"',
-            '"arc_simulation_ref"',
-            '"outline_revision_required"',
-            "chapter_carrier_repetition_status",
+            'PLANNING_BUNDLE_SCHEMA = "planning_bundle_v1"',
+            'ROLLING_WINDOW_SCHEMA = "rolling_window_plan_v2"',
+            'SEMANTIC_OBLIGATION_SCHEMA = "semantic_obligation_v1"',
+            'PLOT_NODE_TABLE_SCHEMA = "plot_node_table_v1"',
+            "validate_planning_bundle",
+            "validate_rolling_window",
+            "validate_plot_node_table",
+        ),
+    ),
+    (
+        "src/longform_engine/planning/workflow.py",
+        (
+            'PLANNING_SEMANTIC_APPLICATION_SCHEMA = "planning_semantic_review_application_v1"',
+            'HUMAN_NODE_DECISIONS_SCHEMA = "human_plot_node_decisions_v1"',
+            'NARRATIVE_EVENT_LEDGER_SCHEMA = "narrative_event_ledger_v1"',
+            "build_planning_semantic_application",
+            "validate_human_node_decisions",
+            "apply_planning_bundle",
         ),
     ),
     (
@@ -263,7 +298,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "src/longform_engine/human_story_review.py",
         (
-            'SCHEMA = "human_story_review_v6"',
+            'SCHEMA = "human_story_review_v7"',
             'DECISIONS = {"accept", "repair", "redirect"}',
             "CHECK_FIELDS",
             "EVIDENCE_KINDS",
@@ -272,7 +307,8 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
             "story_brief_basis_sha256",
             "human_chapter_intent_sha256",
             "reader_promise_ledger_sha256",
-            "arc_causal_simulation_sha256",
+            "plot_node_table_sha256",
+            "semantic_obligation_ledger_sha256",
             "review_bundle_sha256",
             "human_author_revision_sha256",
             "apply_transaction",
@@ -280,20 +316,50 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "src/longform_engine/reader_promises.py",
+        "src/longform_engine/reader_promises_v2.py",
         (
-            'LEDGER_SCHEMA = "reader_promise_ledger_v1"',
-            'PROMISE_ACTIONS = {"setup", "escalate", "partial_payoff", "payoff", "defer"}',
-            "apply_reader_promise_actions",
+            'LEDGER_SCHEMA = "reader_promise_ledger_v2"',
+            'PROMISE_ACTIONS = frozenset({"setup", "escalate", "partial_payoff", "payoff", "defer"})',
+            "apply_promise_evidence",
         ),
     ),
     (
-        "src/longform_engine/arc_simulation.py",
+        "src/longform_engine/narrative_events.py",
         (
-            'SIMULATION_SCHEMA = "arc_causal_simulation_v1"',
-            "current_basis_hashes",
-            "load_active_arc_simulation",
-            "load_covering_arc_simulation",
+            'EVENT_REALIZATION_APPLICATION_SCHEMA = "event_realization_application_v1"',
+            "validate_event_realization_application",
+            "apply_event_realization",
+            "event realization must be human-confirmed",
+        ),
+    ),
+    (
+        "src/longform_engine/canon_changes.py",
+        (
+            'CANONICAL_FACT_SCHEMA = "canonical_fact_v2"',
+            'PROPOSAL_SCHEMA = "canon_change_proposal_v1"',
+            'IMPACT_SCHEMA = "dependency_impact_v1"',
+            'SEMANTIC_REVIEW_SCHEMA = "canon_change_semantic_review_v1"',
+            'HUMAN_DECISION_SCHEMA = "human_canon_change_decision_v1"',
+            "deterministic must_stale cannot be downgraded",
+            "create_versioned_revision_branch",
+        ),
+    ),
+    (
+        "src/longform_engine/reader_feedback.py",
+        (
+            'BATCH_SCHEMA = "reader_feedback_batch_v1"',
+            'DECISION_SCHEMA = "human_reader_feedback_decision_v1"',
+            'PLANNING_PROPOSAL_SCHEMA = "planning_change_proposal_v1"',
+            "canon_change_proposal_v1",
+        ),
+    ),
+    (
+        "src/longform_engine/revision/branches.py",
+        (
+            'REVISION_BRANCH_SCHEMA = "revision_branch_v2"',
+            "create_versioned_revision_branch",
+            "promote_revision_branch",
+            "historical revision must cover through the current head",
         ),
     ),
     (
@@ -437,18 +503,18 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "docs/PIPELINE_MODEL.md",
         (
-            "production_status_v1",
-            "production next",
-            "agent-task brief",
-            "chapter finalize",
+            "planning_bundle_v1",
+            "chapter_contract_v5",
+            "chapter_story_brief_v5",
+            "chapter_closure_v2",
         ),
     ),
     (
-        "docs/V0_9_0_RELEASE_CHECKLIST.md",
+        "docs/V0_10_0_RELEASE_CHECKLIST.md",
         (
-            "单进程验证",
-            "发布授权与无测试例外",
-            "本次发布不重跑",
+            "明确的验证例外",
+            "415 passed",
+            "不运行 pytest",
             "wheel",
             "sdist",
         ),
@@ -456,7 +522,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "tests/test_agent_skill_integrity.py",
         (
-            "test_release_guard_tracks_current_v090_contracts",
+            "test_release_guard_tracks_current_v010_contracts",
             "check_experience_layer_guards",
             "DIRECT_WRITER_PATTERNS",
         ),
@@ -509,18 +575,18 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         "docs/ARCHITECTURE.md",
         (
             "唯一章节合同",
-            "canonical_write_transaction_report_v3",
-            "apply_embedding_delta",
-            "release check --channel rc",
+            "transaction v3",
+            "chapter_contract_v5",
+            "reader_feedback_batch_v1",
         ),
     ),
     (
         "docs/STORAGE_MODEL.md",
         (
             "Transaction v3",
-            "recovery discard-preparing",
-            "recovery rollback-transaction",
-            "source_sha256",
+            "discard-preparing",
+            "rollback-transaction",
+            "chapter_closure_v2",
         ),
     ),
     (
@@ -630,9 +696,11 @@ def main() -> int:
         if marker in (ROOT / relative).read_text(encoding="utf-8", errors="ignore"):
             failures.append(f"removed thin or unsafe compatibility entry point returned: {relative}:{marker}")
     chapter_contract_text = (SRC / "chapter_contract.py").read_text(encoding="utf-8", errors="ignore")
-    for alias in ('"duty"', '"information"', '"reader_payoff"'):
-        if alias not in chapter_contract_text:
-            failures.append(f"chapter contract removed-alias rejection marker is missing: {alias}")
+    for marker in ('CONTRACT_SCHEMA = "chapter_contract_v5"', '"plot_node_table_ref"', '"semantic_obligation_refs"'):
+        if marker not in chapter_contract_text:
+            failures.append(f"chapter contract v5 marker is missing: {marker}")
+    if "chapter_contract_v4" in chapter_contract_text:
+        failures.append("chapter_contract.py must not retain a v4 dual-read or compatibility path")
     for path in iter_text_files(SRC):
         rel = relpath(path)
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -674,7 +742,7 @@ def main() -> int:
     failures.extend(check_artifact_compaction_guards())
     failures.extend(check_public_distribution_guards())
     failures.extend(check_single_project_scope_guards())
-    failures.extend(check_v090_active_schema_surface())
+    failures.extend(check_v010_active_schema_surface())
     failures.extend(check_required_release_contract_markers())
 
     if failures:
@@ -737,7 +805,7 @@ def check_required_release_contract_markers() -> list[str]:
     return failures
 
 
-def check_v090_active_schema_surface() -> list[str]:
+def check_v010_active_schema_surface() -> list[str]:
     """Keep retired schemas out of active docs/code while preserving explicit rejectors."""
 
     failures: list[str] = []
@@ -755,7 +823,7 @@ def check_v090_active_schema_surface() -> list[str]:
         for term in RETIRED_ACTIVE_SCHEMA_TERMS:
             if term in text:
                 failures.append(
-                    f"retired schema `{term}` remains on active v0.9 surface: {relative}"
+                    f"retired schema `{term}` remains on active v0.10 surface: {relative}"
                 )
     return failures
 

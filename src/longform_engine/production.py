@@ -78,9 +78,11 @@ from longform_engine.repair_coordination import (
     repair_plan_status,
     review_barrier_status,
 )
+from longform_engine.revision import active_revision_branch
 from longform_engine.roles import load_role_registry, session_directive
 from longform_engine.semantic import semantic_task as chapter_semantic_task
 from longform_engine.semantic import semantic_validate as chapter_semantic_validate
+from longform_engine.semantic.pipeline import require_v010_close_evidence
 from longform_engine.storage import recovery_status, resolve_project_root
 from longform_engine.storage.layout import (
     existing_manuscript_chapter_path,
@@ -88,6 +90,7 @@ from longform_engine.storage.layout import (
     list_finalized_chapter_files,
     manuscript_chapter_path,
 )
+from longform_engine.chapter_contract import ChapterContractError, load_verified_chapter_contract
 
 
 TASK_WAITING_FOR = {
@@ -187,6 +190,31 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
                 ],
             ],
         )
+    revision = active_revision_branch(root)
+    if revision is not None:
+        branch_id = str(revision["branch_id"])
+        next_chapter = revision.get("next_chapter")
+        ready = revision.get("status") == "ready_for_promotion"
+        next_command = (
+            f"longform-engine revision promote project.yaml --branch-id {branch_id} --approved-by human"
+            if ready
+            else ""
+        )
+        return base_action(
+            status="revision_branch_ready_for_promotion" if ready else "revision_branch_active",
+            chapter_number=int(next_chapter or revision["to_chapter"]),
+            blocked_by="versioned_historical_revision",
+            waiting_for="human_promotion" if ready else "isolated_revision_workflow",
+            next_command=next_command,
+            human_summary=(
+                f"Revision branch {branch_id} isolates ch{int(revision['from_chapter']):03d}-"
+                f"ch{int(revision['to_chapter']):03d}; normal mainline continuation is blocked until "
+                "the branch is promoted or abandoned."
+            ),
+            sources=[
+                f"50_workbench/revision_branches/{branch_id}/branch.json",
+            ],
+        )
     completion_state, completion = fast_completion_marker(config)
     if completion_state == "approved":
         return base_action(
@@ -213,10 +241,7 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
         or task_lifecycle_reconciliation_action(root)
         or chapter_semantic_lifecycle_action(root)
         or chapter_workflow_action(config, root)
-        or project_readiness_action(config, root)
-        or arc_simulation_action(config, root)
-        or rolling_outline_action(config, root)
-        or chapter_direction_action(config, root)
+        or v010_planning_action(config, root)
         or human_chapter_intent_action(root)
         or first_active_agent_task(root)
         or first_draft_without_gate_action(root)
@@ -235,6 +260,93 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
     )
 
 
+def v010_planning_action(config: ConfigDocument, root: Path) -> dict[str, Any] | None:
+    """Route every prose turn through the current active volume and three firm v5 contracts."""
+
+    next_chapter = highest_finalized_chapter(root) + 1
+    window_path = root / "20_outline" / "rolling_window.json"
+    basis_path = root / "30_state" / "planning_basis.json"
+    window = read_json(window_path)
+    basis = read_json(basis_path)
+    reasons: list[str] = []
+    if not isinstance(window, dict) or window.get("schema") != "rolling_window_plan_v2":
+        reasons.append("rolling_window_missing_or_incompatible")
+    if not isinstance(basis, dict) or basis.get("schema") != "planning_basis_v1":
+        reasons.append("planning_basis_missing_or_incompatible")
+    elif isinstance(window, dict) and basis.get("rolling_window_basis_sha256") != window.get(
+        "basis_sha256"
+    ):
+        reasons.append("rolling_window_basis_drift")
+    if isinstance(basis, dict):
+        for item in basis.get("source_files") or []:
+            if not isinstance(item, dict):
+                reasons.append("planning_basis_binding_invalid")
+                continue
+            source = (root / str(item.get("path") or "")).resolve()
+            try:
+                source.relative_to(root.resolve())
+            except ValueError:
+                reasons.append("planning_basis_source_escaped")
+                continue
+            if not source.is_file() or sha256(source.read_bytes()).hexdigest() != item.get("sha256"):
+                reasons.append("planning_basis_source_drift:" + str(item.get("path") or ""))
+    firm_end = next_chapter - 1
+    if isinstance(window, dict):
+        firm = (window.get("tiers") or {}).get("firm")
+        if not isinstance(firm, list) or len(firm) != 2 or not int(firm[0]) <= next_chapter:
+            reasons.append("next_chapter_outside_firm_window")
+        else:
+            firm_end = min(int(firm[1]), int(window.get("end_chapter") or firm[1]))
+    required_firm_end = next_chapter + 2
+    volume_files = sorted((root / "20_outline" / "volumes").glob("vol*.json"))
+    active_volume = next(
+        (
+            payload
+            for payload in (read_json(path) for path in volume_files)
+            if isinstance(payload, dict) and payload.get("lifecycle") == "active"
+        ),
+        None,
+    )
+    if not isinstance(active_volume, dict):
+        reasons.append("active_volume_missing")
+    else:
+        chapter_range = active_volume.get("chapter_range")
+        if not isinstance(chapter_range, list) or len(chapter_range) != 2:
+            reasons.append("active_volume_range_invalid")
+        elif not int(chapter_range[0]) <= next_chapter <= int(chapter_range[1]):
+            reasons.append("active_volume_rollover_required")
+        else:
+            required_firm_end = min(required_firm_end, int(chapter_range[1]))
+    if firm_end < required_firm_end:
+        reasons.append("firm_contract_coverage_below_three")
+    for chapter in range(next_chapter, required_firm_end + 1):
+        try:
+            load_verified_chapter_contract(root, chapter)
+        except ChapterContractError as exc:
+            reasons.append(f"firm_contract_ch{chapter:03d}_invalid:{exc}")
+    if not reasons:
+        return None
+    candidate = "50_workbench/planning/planning_bundle_v1.json"
+    return base_action(
+        status="planning_refresh_required",
+        chapter_number=next_chapter,
+        task_type="planning_semantic_review",
+        blocked_by=";".join(dict.fromkeys(reasons)),
+        waiting_for="planning_agent_then_independent_semantic_reviewer_then_human_node_approval",
+        next_command=(
+            "longform-engine planning structural-validate project.yaml "
+            f"--file {candidate}"
+        ),
+        human_summary=(
+            "Prepare or refresh the active-volume rolling plan, validate the exact bundle, run an "
+            "independent semantic review, and record an explicit human decision for every firm plot node."
+        ),
+        sources=[
+            window_path.relative_to(root).as_posix(),
+            basis_path.relative_to(root).as_posix(),
+        ],
+        planning_window={"next_chapter": next_chapter, "required_firm_through": required_firm_end},
+    )
 def task_lifecycle_reconciliation_action(root: Path) -> dict[str, Any] | None:
     """Expose a read-only next command for explicit parent-child projection drift."""
 
@@ -2249,6 +2361,39 @@ def chapter_semantic_lifecycle_action(root: Path) -> dict[str, Any] | None:
                         f"ch{chapter_number:03d} is one of the first three chapters and needs one approved edit pair from the real human revision."
                     ),
                     sources=[relative_path(root, final_file)],
+                )
+            try:
+                require_v010_close_evidence(root, chapter_number)
+            except ValueError as exc:
+                reason = str(exc)
+                if "event" in reason.casefold():
+                    application = f"50_workbench/event_realizations/ch{chapter_number:03d}.json"
+                    command = (
+                        f"longform-engine chapter event-realization-validate project.yaml --file {application}"
+                    )
+                    return base_action(
+                        status="awaiting_event_realization",
+                        chapter_number=chapter_number,
+                        blocked_by="approved_event_realization_incomplete",
+                        waiting_for="human_confirmed_semantic_event_application",
+                        next_command=command,
+                        failure_next_command=command,
+                        human_summary=reason,
+                        sources=[relative_path(root, ledger_file)],
+                    )
+                application = f"50_workbench/promise_evidence/ch{chapter_number:03d}.json"
+                command = (
+                    f"longform-engine chapter promise-evidence-validate project.yaml --file {application}"
+                )
+                return base_action(
+                    status="awaiting_reader_promise_evidence",
+                    chapter_number=chapter_number,
+                    blocked_by="reader_promise_evidence_incomplete",
+                    waiting_for="human_confirmed_exact_final_span",
+                    next_command=command,
+                    failure_next_command=command,
+                    human_summary=reason,
+                    sources=[relative_path(root, ledger_file)],
                 )
             command = f"longform-engine chapter close project.yaml --chapter {chapter_number} --approved-by human"
             return base_action(

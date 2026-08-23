@@ -79,7 +79,7 @@ def test_pacing_review_and_failed_gate_wait_for_review_barrier(tmp_path):
     assert (root / "50_workbench" / "gate_artifacts" / "ch001" / "pacing_review.md").exists()
 
 
-def test_gate_event_matrix_blocks_cooldown_and_fast_quota(tmp_path):
+def test_lexical_event_hints_cannot_create_cooldown_or_fast_quota_failures(tmp_path):
     project_config = seed_gate_project(tmp_path)
     project_config.data["length"]["chapter"]["hard_min"] = 20
     project_config.data["pacing"]["fast_chapter_quota_per_volume"] = 1
@@ -97,12 +97,12 @@ def test_gate_event_matrix_blocks_cooldown_and_fast_quota(tmp_path):
     draft = "# Chapter 2\n\n" + ("Ari enters the battle as the secret trap tightens. " * 30)
     (root / "40_manuscript" / "draft" / "ch002.md").write_text(draft, encoding="utf-8")
 
-    result = gate_check(project_config, chapter_number=2)
-    messages = " ".join(str(item.get("message", "")) for item in result.failures)
+    result = pacing_review(project_config, chapter_number=2)
+    messages = " ".join(result.issues)
 
-    assert result.passed is False
-    assert "event_cooldown" in messages
-    assert "fast_quota" in messages
+    assert "event_cooldown" not in messages
+    assert "fast_quota" not in messages
+    assert any("require semantic review" in warning for warning in result.warnings)
 
 
 def test_gate_does_not_treat_one_event_word_as_a_blocking_event(tmp_path):
@@ -132,7 +132,7 @@ def test_gate_does_not_treat_one_event_word_as_a_blocking_event(tmp_path):
     assert any("weak lexical event hints" in warning for warning in gate_payload["warnings"])
 
 
-def test_pacing_review_warns_when_soft_event_gap_persists(tmp_path):
+def test_pacing_review_keeps_soft_event_requirement_at_plan_level(tmp_path):
     project_config = seed_gate_project(tmp_path)
     root = tmp_path / "novel"
     (root / "30_state" / "pacing_history.json").write_text(
@@ -155,8 +155,9 @@ def test_pacing_review_warns_when_soft_event_gap_persists(tmp_path):
 
     result = pacing_review(project_config, chapter_number=6)
 
-    assert any("soft event gap persists" in warning for warning in result.warnings)
     assert any("soft event required" in warning for warning in result.warnings)
+    assert not any("soft event gap persists" in warning for warning in result.warnings)
+    assert any("require semantic review" in warning for warning in result.warnings)
 
 
 def test_reverse_brake_blocks_complete_core_secret_reveal(tmp_path):

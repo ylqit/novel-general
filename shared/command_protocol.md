@@ -85,7 +85,7 @@
 | --- | --- | --- | --- | --- |
 | `/工程章节卡` | `longform-engine plan-chapter project.yaml --chapter N` | `--chapter N` | `20_outline/chapter_cards/` | 生成或刷新章节卡。 |
 | `/工程分镜` | `longform-engine beat project.yaml --chapter N` | `--chapter N` | `50_workbench/beats/` | 生成 Beat Sheet。 |
-| `/工程续章` | `longform-engine continue-write project.yaml --chapter N` | `--chapter N` | `50_workbench/writing_tasks/` | 生成 `chapter_story_brief_basis_v2` 与 `chapter_story_brief_v4`；必要人物声音和筛选事实进入作者 Markdown，内部 ID、hash 与原始控制包不进入。 |
+| `/工程续章` | `longform-engine continue-write project.yaml --chapter N` | `--chapter N` | `50_workbench/writing_tasks/` | 从 firm `chapter_contract_v5` 生成 `chapter_story_brief_basis_v3`、`chapter_story_brief_v5` 与 `chapter_writing_task_v7`；可读拓扑、义务、批准节点、人物选择和读者价值进入作者 Markdown，内部 ID、hash 与原始控制包不进入。 |
 | `/工程批量续章` | `longform-engine batch-write project.yaml --chapters N --stop-on-gate-failure` | `--chapters N` | `50_workbench/writing_tasks/`、run reports | 安全调度多章任务，遇到门禁失败停止。 |
 
 ## 草稿与门禁
@@ -112,7 +112,7 @@
 | `/工程章节语义校验` | `longform-engine chapter semantic-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation report | 校验 final hash、精确 span、实体 ID、关系旧状态、角色知识来源、伏笔 ID/窗口和完整性声明。 |
 | `/工程章节语义应用` | `longform-engine chapter semantic-apply project.yaml --chapter N --file ...` | `--chapter N`、`--file` | 语义账本、graph、角色当前视图、伏笔状态、TCS、RAG、SQLite | 显式、事务化物化全部章节知识；不同候选不得覆盖已落盘语义账本。 |
 | `/工程语义重建` | `longform-engine chapter semantic-rebuild project.yaml --through N --approved-by human` | `--through N`、`--approved-by` | graph、角色当前视图、伏笔状态、world、timeline、TCS、RAG、SQLite | 只从连续 canonical semantic ledgers 重建派生视图，不读取现有派生状态作为事实。 |
-| `/工程关闭章节` | `longform-engine chapter close project.yaml --chapter N --approved-by human` | `--chapter N`、`--approved-by` | 章节关闭记录、按章审计 ZIP | 验证语义与所有派生视图后关闭章节；保留最近两章活动工作区，才允许进入下一章。 |
+| `/工程关闭章节` | `longform-engine chapter close project.yaml --chapter N --approved-by human` | `--chapter N`、`--approved-by` | `chapter_closure_v2`、规划游标、按章审计 ZIP | 验证语义与所有派生视图、逐项批准事件终态及所有非 defer 承诺的精确终稿 span 后关闭章节并推进滚动窗口。 |
 
 ## RAG / Semantic / Memory / Graph
 
@@ -229,7 +229,7 @@ Editorial review contract:
 
 `/工程续章` 是续写章节的主入口，对应 `longform-engine continue-write project.yaml --chapter N`。它只生成或刷新 Agent 写作任务包，不直接写 final、RAG、story graph、memory、TCS 或 SQLite；中文工程命令保持为唯一主入口。
 
-执行 `/工程续章` 前，作者 Agent 只读取 `50_workbench/writing_tasks/chNNN.md` 中的 `chapter_story_brief_v4`。该 Markdown 已编译本章必要人物声音与相关事实；配对 task/basis JSON、fact inventory、承诺账本、因果模拟、编辑模式、原始 RAG、Graph、TCS 和数据库工件属于 CLI/规划/编辑/语义档案控制面，不得作为作者上下文直接加载。作者必须完成以下预检：
+执行 `/工程续章` 前，作者 Agent 只读取 `50_workbench/writing_tasks/chNNN.md` 中的 `chapter_story_brief_v5`。该 Markdown 已编译本章可读拓扑、剧情义务、批准节点、人物选择、读者价值、必要人物声音与相关事实；配对 task/basis JSON、fact inventory、承诺账本、滚动规划 basis、节点表、语义义务、编辑模式、原始 RAG、Graph、TCS 和数据库工件属于 CLI/规划/编辑/语义档案控制面，不得作为作者上下文直接加载。作者必须完成以下预检：
 
 1. 故事压力：确认本章正在发生什么、主角要什么、谁或什么拒绝、最早失败、不可逆选择和可见代价。
 2. 场景链：逐场确认行动、反应、选择、代价和离场状态；关键转折必须完整演出，只压缩 Brief 允许压缩的过程。
@@ -245,7 +245,7 @@ Editorial review contract:
 3. `/工程提交稿` -> `draft submit` 把候选稿送入受控 draft。
 4. `/工程验稿` -> `gate-check` 检查节奏、反向刹车、风格、自然度、图谱、记忆和语义风险。
 5. `/工程审稿` -> 每章必做 `scene_prose_editor` 与 `anti_template_editor`，其他风险角色追加；所有独立审稿必须绑定当前候选和 basis。
-6. `/工程故事简审` -> 完成人工终稿锁与全量复审后选择 accept、repair 或 redirect；只有当前八类证据的 v6 accept 才允许定稿。
+6. `/工程故事简审` -> 完成人工终稿锁与全量复审后选择 accept、repair 或 redirect；只有当前合同、节点、义务及审稿证据绑定的 v7 accept 才允许定稿。
 7. `/工程定稿` -> `chapter finalize --approved-by human` 写入正式正文、收益和结构观察；失败则修章、改向、改纲或回滚。
 8. `/工程章节语义任务` -> Agent 对 final 做一次证据化统一抽取，CLI validate 后由用户显式 `/工程章节语义应用`。
-9. `/工程关闭章节` -> 验证图谱、角色当前状态、伏笔、TCS 与派生索引完整后关闭；关闭前不得续写下一章。
+9. `/工程关闭章节` -> 验证图谱、角色当前状态、伏笔、TCS、派生索引、批准事件终态和承诺精确 span 后关闭并推进滚动窗口；关闭前不得续写下一章。

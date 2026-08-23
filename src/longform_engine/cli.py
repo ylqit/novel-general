@@ -158,6 +158,18 @@ from longform_engine.memory import (
     validate_tcs,
     validate_memory,
 )
+from longform_engine.narrative_events import (
+    apply_event_realization,
+    validate_event_realization_application,
+)
+from longform_engine.canon_changes import (
+    apply_canon_change,
+    build_dependency_impact,
+    validate_canon_change_proposal,
+    validate_canon_change_semantic_review,
+    validate_dependency_impact,
+    validate_human_canon_change_decision,
+)
 from longform_engine.models import (
     cache_status_payload,
     install_model_profile,
@@ -178,7 +190,17 @@ from longform_engine.orchestration import (
     plan_chapter,
     submit_agent_draft,
 )
-from longform_engine.planning import revise_outline
+from longform_engine.planning import (
+    apply_planning_bundle,
+    build_human_node_decisions,
+    build_human_planning_approval,
+    build_planning_semantic_application,
+    revise_outline,
+    validate_human_node_decisions,
+    validate_planning_bundle,
+    validate_planning_semantic_application,
+    write_workbench_record,
+)
 from longform_engine.publication import (
     creation_provenance_manifest,
     export_publication_bundle,
@@ -197,6 +219,15 @@ from longform_engine.quality import (
     transition_editorial_pattern,
 )
 from longform_engine.quality.status import quality_status
+from longform_engine.reader_promises_v2 import (
+    apply_promise_evidence,
+    validate_promise_evidence_application,
+)
+from longform_engine.reader_feedback import (
+    convert_reader_feedback_to_proposal,
+    record_reader_feedback_batch,
+    record_reader_feedback_decision,
+)
 from longform_engine.rag import (
     build_chunks,
     build_context,
@@ -215,8 +246,11 @@ from longform_engine.research import (
 )
 from longform_engine.revision import (
     RevisionError,
-    create_revision_branch,
+    abandon_revision_branch,
+    create_versioned_revision_branch,
     project_status,
+    promote_revision_branch,
+    record_revision_chapter,
     rollback,
     rollback_impact,
 )
@@ -1462,7 +1496,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     chapter_human_intent_task = chapter_subparsers.add_parser(
         "human-intent-task",
-        help="Create the blank human_chapter_intent_v1 form required before prose generation.",
+        help="Create the blank human_chapter_intent_v2 form required before prose generation.",
     )
     chapter_human_intent_task.add_argument("config", nargs="?", default="project.yaml")
     chapter_human_intent_task.add_argument("--chapter", type=positive_int_arg, required=True)
@@ -1568,13 +1602,13 @@ def build_parser() -> argparse.ArgumentParser:
     chapter_human_revision_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     chapter_human_revision_validate.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
     chapter_human_revision_validate.add_argument("--file", required=True, help="Complete human candidate under 50_workbench/.")
-    chapter_human_revision_validate.add_argument("--record", required=True, help="human_author_revision_v3 record JSON.")
+    chapter_human_revision_validate.add_argument("--record", required=True, help="human_author_revision_v4 record JSON.")
     chapter_human_revision_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     chapter_human_revision_validate.set_defaults(func=cmd_chapter_human_revision_validate)
 
     chapter_human_review_validate = chapter_subparsers.add_parser(
         "human-review-validate",
-        help="Validate a human_story_review_v6 decision against the human revision and frozen review bundle.",
+        help="Validate a human_story_review_v7 decision against the human revision and frozen review bundle.",
     )
     chapter_human_review_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     chapter_human_review_validate.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
@@ -1621,6 +1655,42 @@ def build_parser() -> argparse.ArgumentParser:
     chapter_semantic_apply_cmd.add_argument("--file", required=True, help="Validated semantic JSON under 50_workbench/.")
     chapter_semantic_apply_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     chapter_semantic_apply_cmd.set_defaults(func=cmd_chapter_semantic_apply)
+
+    chapter_event_realization_validate = chapter_subparsers.add_parser(
+        "event-realization-validate",
+        help="Validate semantic event observations against approved nodes and exact final spans.",
+    )
+    chapter_event_realization_validate.add_argument("config", nargs="?", default="project.yaml")
+    chapter_event_realization_validate.add_argument("--file", required=True)
+    chapter_event_realization_validate.add_argument("--json", action="store_true")
+    chapter_event_realization_validate.set_defaults(func=cmd_chapter_event_realization_validate)
+
+    chapter_event_realization_apply = chapter_subparsers.add_parser(
+        "event-realization-apply",
+        help="Apply human-confirmed event realization without lexical inference.",
+    )
+    chapter_event_realization_apply.add_argument("config", nargs="?", default="project.yaml")
+    chapter_event_realization_apply.add_argument("--file", required=True)
+    chapter_event_realization_apply.add_argument("--json", action="store_true")
+    chapter_event_realization_apply.set_defaults(func=cmd_chapter_event_realization_apply)
+
+    chapter_promise_evidence_validate = chapter_subparsers.add_parser(
+        "promise-evidence-validate",
+        help="Validate explicit reader-promise actions and exact final evidence spans.",
+    )
+    chapter_promise_evidence_validate.add_argument("config", nargs="?", default="project.yaml")
+    chapter_promise_evidence_validate.add_argument("--file", required=True)
+    chapter_promise_evidence_validate.add_argument("--json", action="store_true")
+    chapter_promise_evidence_validate.set_defaults(func=cmd_chapter_promise_evidence_validate)
+
+    chapter_promise_evidence_apply = chapter_subparsers.add_parser(
+        "promise-evidence-apply",
+        help="Apply human-confirmed reader-promise progress to reader_promise_ledger_v2.",
+    )
+    chapter_promise_evidence_apply.add_argument("config", nargs="?", default="project.yaml")
+    chapter_promise_evidence_apply.add_argument("--file", required=True)
+    chapter_promise_evidence_apply.add_argument("--json", action="store_true")
+    chapter_promise_evidence_apply.set_defaults(func=cmd_chapter_promise_evidence_apply)
 
     chapter_semantic_rebuild_cmd = chapter_subparsers.add_parser(
         "semantic-rebuild",
@@ -1811,15 +1881,191 @@ def build_parser() -> argparse.ArgumentParser:
     impact.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     impact.set_defaults(func=cmd_impact_analyze)
 
+    planning = subparsers.add_parser(
+        "planning",
+        help="Validate and apply v0.10 semantic planning with explicit human ownership.",
+    )
+    planning_subparsers = planning.add_subparsers(dest="planning_command", required=True)
+
+    planning_structural = planning_subparsers.add_parser(
+        "structural-validate",
+        help="Validate protocol, ranges, IDs, hashes, and dependency closure without a semantic verdict.",
+    )
+    planning_structural.add_argument("config", nargs="?", default="project.yaml")
+    planning_structural.add_argument("--file", required=True, help="planning_bundle_v1 JSON.")
+    planning_structural.add_argument("--json", action="store_true")
+    planning_structural.set_defaults(func=cmd_planning_structural_validate)
+
+    planning_semantic_bind = planning_subparsers.add_parser(
+        "semantic-bind",
+        help="Bind an isolated evidence_review_v2 to an exact planning bundle.",
+    )
+    planning_semantic_bind.add_argument("config", nargs="?", default="project.yaml")
+    planning_semantic_bind.add_argument("--subject", required=True)
+    planning_semantic_bind.add_argument(
+        "--profile", required=True, choices=["architecture", "chapter_plan", "change_impact"]
+    )
+    planning_semantic_bind.add_argument("--author-task-id", required=True)
+    planning_semantic_bind.add_argument("--author-role-id", required=True)
+    planning_semantic_bind.add_argument("--compiler-task-id", default="")
+    planning_semantic_bind.add_argument("--compiler-role-id", default="")
+    planning_semantic_bind.add_argument("--reviewer-task-id", required=True)
+    planning_semantic_bind.add_argument("--reviewer-role-id", required=True)
+    planning_semantic_bind.add_argument("--reviewer-version", required=True)
+    planning_semantic_bind.add_argument("--review-result", required=True)
+    planning_semantic_bind.add_argument("--output", required=True, help="Path under 50_workbench/.")
+    planning_semantic_bind.add_argument("--json", action="store_true")
+    planning_semantic_bind.set_defaults(func=cmd_planning_semantic_bind)
+
+    planning_semantic_validate = planning_subparsers.add_parser(
+        "semantic-validate",
+        help="Validate isolated review independence, current hashes, verdict, and exact evidence spans.",
+    )
+    planning_semantic_validate.add_argument("config", nargs="?", default="project.yaml")
+    planning_semantic_validate.add_argument("--file", required=True)
+    planning_semantic_validate.add_argument("--json", action="store_true")
+    planning_semantic_validate.set_defaults(func=cmd_planning_semantic_validate)
+
+    planning_approval = planning_subparsers.add_parser(
+        "approval-record",
+        help="Record the human decision for a current semantic review.",
+    )
+    planning_approval.add_argument("config", nargs="?", default="project.yaml")
+    planning_approval.add_argument("--application", required=True)
+    planning_approval.add_argument("--decision", required=True, choices=["approve", "repair", "defer"])
+    planning_approval.add_argument("--reason", required=True)
+    planning_approval.add_argument("--approved-by", required=True, choices=["human"])
+    planning_approval.add_argument("--output", required=True, help="Path under 50_workbench/.")
+    planning_approval.add_argument("--json", action="store_true")
+    planning_approval.set_defaults(func=cmd_planning_approval_record)
+
+    planning_nodes = planning_subparsers.add_parser(
+        "node-decisions-record",
+        help="Record one explicit approve/adjust/reject/defer decision for every plot node row.",
+    )
+    planning_nodes.add_argument("config", nargs="?", default="project.yaml")
+    planning_nodes.add_argument("--bundle", required=True)
+    planning_nodes.add_argument("--file", required=True, help="JSON list of human node decisions.")
+    planning_nodes.add_argument("--decided-by", required=True, choices=["human"])
+    planning_nodes.add_argument("--output", required=True, help="Path under 50_workbench/.")
+    planning_nodes.add_argument("--json", action="store_true")
+    planning_nodes.set_defaults(func=cmd_planning_node_decisions_record)
+
+    planning_apply = planning_subparsers.add_parser(
+        "apply",
+        help="Atomically apply a structurally valid, semantically passed, human-approved planning bundle.",
+    )
+    planning_apply.add_argument("config", nargs="?", default="project.yaml")
+    planning_apply.add_argument("--bundle", required=True)
+    planning_apply.add_argument("--application", required=True)
+    planning_apply.add_argument("--approval", required=True)
+    planning_apply.add_argument("--node-decisions", required=True)
+    planning_apply.add_argument("--approved-by", required=True, choices=["human"])
+    planning_apply.add_argument("--json", action="store_true")
+    planning_apply.set_defaults(func=cmd_planning_apply)
+
+    canon_change = subparsers.add_parser(
+        "canon-change",
+        help="Review and apply v0.10 canonical facts through exact stable-ID dependency closure.",
+    )
+    canon_change_subparsers = canon_change.add_subparsers(dest="canon_change_command", required=True)
+    canon_change_impact = canon_change_subparsers.add_parser(
+        "impact", help="Build dependency_impact_v1 without keyword inference."
+    )
+    canon_change_impact.add_argument("config", nargs="?", default="project.yaml")
+    canon_change_impact.add_argument("--proposal", required=True)
+    canon_change_impact.add_argument("--output", required=True, help="Path under 50_workbench/.")
+    canon_change_impact.add_argument("--json", action="store_true")
+    canon_change_impact.set_defaults(func=cmd_canon_change_impact)
+    canon_change_validate = canon_change_subparsers.add_parser(
+        "validate", help="Validate proposal, exact impact, independent semantic review, and human decision."
+    )
+    canon_change_validate.add_argument("config", nargs="?", default="project.yaml")
+    canon_change_validate.add_argument("--proposal", required=True)
+    canon_change_validate.add_argument("--impact", required=True)
+    canon_change_validate.add_argument("--review", required=True)
+    canon_change_validate.add_argument("--decision", required=True)
+    canon_change_validate.add_argument("--json", action="store_true")
+    canon_change_validate.set_defaults(func=cmd_canon_change_validate)
+    canon_change_apply = canon_change_subparsers.add_parser(
+        "apply", help="Apply a future change or route historical impact to revision_branch_v2."
+    )
+    canon_change_apply.add_argument("config", nargs="?", default="project.yaml")
+    canon_change_apply.add_argument("--proposal", required=True)
+    canon_change_apply.add_argument("--impact", required=True)
+    canon_change_apply.add_argument("--review", required=True)
+    canon_change_apply.add_argument("--decision", required=True)
+    canon_change_apply.add_argument("--json", action="store_true")
+    canon_change_apply.set_defaults(func=cmd_canon_change_apply)
+
+    reader_feedback = subparsers.add_parser(
+        "reader-feedback", help="Record non-canonical human feedback and convert accepted hypotheses to proposals."
+    )
+    feedback_subparsers = reader_feedback.add_subparsers(dest="reader_feedback_command", required=True)
+    feedback_batch = feedback_subparsers.add_parser("batch-record")
+    feedback_batch.add_argument("config", nargs="?", default="project.yaml")
+    feedback_batch.add_argument("--file", required=True)
+    feedback_batch.add_argument("--json", action="store_true")
+    feedback_batch.set_defaults(func=cmd_reader_feedback_batch)
+    feedback_decision = feedback_subparsers.add_parser("decision-record")
+    feedback_decision.add_argument("config", nargs="?", default="project.yaml")
+    feedback_decision.add_argument("--batch", required=True)
+    feedback_decision.add_argument("--file", required=True)
+    feedback_decision.add_argument("--json", action="store_true")
+    feedback_decision.set_defaults(func=cmd_reader_feedback_decision)
+    feedback_proposal = feedback_subparsers.add_parser("propose")
+    feedback_proposal.add_argument("config", nargs="?", default="project.yaml")
+    feedback_proposal.add_argument("--batch", required=True)
+    feedback_proposal.add_argument("--decision", required=True)
+    feedback_proposal.add_argument("--target", required=True, choices=["planning", "canon"])
+    feedback_proposal.add_argument("--json", action="store_true")
+    feedback_proposal.set_defaults(func=cmd_reader_feedback_proposal)
+
     revision = subparsers.add_parser("revision", help="Manage rewrite branches and rollbacks.")
     revision_subparsers = revision.add_subparsers(dest="revision_command", required=True)
 
-    revision_branch = revision_subparsers.add_parser("branch", help="Create a rewrite candidate for a chapter.")
+    revision_branch = revision_subparsers.add_parser(
+        "branch",
+        help="Open an isolated revision_branch_v2 for E..current-head without mutating mainline.",
+    )
     revision_branch.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    revision_branch.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
-    revision_branch.add_argument("--overwrite", action="store_true", help="Overwrite existing rewrite candidate.")
+    revision_branch.add_argument("--from-chapter", type=positive_int_arg, required=True)
+    revision_branch.add_argument("--to-chapter", type=positive_int_arg, required=True)
+    revision_branch.add_argument("--reason", required=True)
+    revision_branch.add_argument("--created-by", required=True, choices=["human"])
     revision_branch.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     revision_branch.set_defaults(func=cmd_revision_branch)
+
+    revision_record = revision_subparsers.add_parser(
+        "record",
+        help="Record the next sequential rewritten chapter after its complete isolated workflow.",
+    )
+    revision_record.add_argument("config", nargs="?", default="project.yaml")
+    revision_record.add_argument("--branch-id", required=True)
+    revision_record.add_argument("--receipt", required=True)
+    revision_record.add_argument("--json", action="store_true")
+    revision_record.set_defaults(func=cmd_revision_record)
+
+    revision_abandon = revision_subparsers.add_parser(
+        "abandon",
+        help="Abandon an isolated revision branch with zero canonical mutation.",
+    )
+    revision_abandon.add_argument("config", nargs="?", default="project.yaml")
+    revision_abandon.add_argument("--branch-id", required=True)
+    revision_abandon.add_argument("--reason", required=True)
+    revision_abandon.add_argument("--abandoned-by", required=True, choices=["human"])
+    revision_abandon.add_argument("--json", action="store_true")
+    revision_abandon.set_defaults(func=cmd_revision_abandon)
+
+    revision_promote = revision_subparsers.add_parser(
+        "promote",
+        help="Atomically replace the branch range and rebuild semantic/RAG/DB views.",
+    )
+    revision_promote.add_argument("config", nargs="?", default="project.yaml")
+    revision_promote.add_argument("--branch-id", required=True)
+    revision_promote.add_argument("--approved-by", required=True, choices=["human"])
+    revision_promote.add_argument("--json", action="store_true")
+    revision_promote.set_defaults(func=cmd_revision_promote)
 
     revision_rollback = revision_subparsers.add_parser("rollback", help="Roll back to a chapter and detach later drafts.")
     revision_rollback.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
@@ -1977,6 +2223,10 @@ def build_parser() -> argparse.ArgumentParser:
         chapter_semantic_task_cmd,
         chapter_semantic_validate_cmd,
         chapter_semantic_apply_cmd,
+        chapter_event_realization_validate,
+        chapter_event_realization_apply,
+        chapter_promise_evidence_validate,
+        chapter_promise_evidence_apply,
         chapter_semantic_rebuild_cmd,
         chapter_close_cmd,
         artifacts_compact_cmd,
@@ -1998,7 +2248,22 @@ def build_parser() -> argparse.ArgumentParser:
         research_gaps,
         research_promote,
         impact,
+        planning_structural,
+        planning_semantic_bind,
+        planning_semantic_validate,
+        planning_approval,
+        planning_nodes,
+        planning_apply,
+        canon_change_impact,
+        canon_change_validate,
+        canon_change_apply,
+        feedback_batch,
+        feedback_decision,
+        feedback_proposal,
         revision_branch,
+        revision_record,
+        revision_abandon,
+        revision_promote,
         revision_rollback,
         revision_snapshot,
         revise,
@@ -4823,6 +5088,71 @@ def cmd_chapter_semantic_rebuild(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chapter_event_realization_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    path = (root / args.file).resolve() if not Path(args.file).is_absolute() else Path(args.file).resolve()
+    path.relative_to(root.resolve())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    result = validate_event_realization_application(root, payload)
+    rendered = asdict(result)
+    if args.json:
+        print(json.dumps(rendered, ensure_ascii=False, indent=2))
+    else:
+        print("OK: event realization is valid" if result.ok else "BLOCKED: event realization is invalid")
+        print(f"Redirect required: {result.redirect_required}")
+        for error in result.errors:
+            print(f"ERROR: {error}")
+        for warning in result.warnings:
+            print(f"WARNING: {warning}")
+    return 0 if result.ok else 1
+
+
+def cmd_chapter_event_realization_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = apply_event_realization(config, application_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: semantic event realization applied")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Events: {result.events}")
+        print(f"Ledger: {result.event_ledger}")
+        print(f"Transaction: {result.transaction_report}")
+    return 0
+
+
+def cmd_chapter_promise_evidence_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    path = (root / args.file).resolve() if not Path(args.file).is_absolute() else Path(args.file).resolve()
+    path.relative_to(root.resolve())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    errors = validate_promise_evidence_application(root, payload)
+    rendered = {"ok": not errors, "errors": errors}
+    if args.json:
+        print(json.dumps(rendered, ensure_ascii=False, indent=2))
+    else:
+        print("OK: reader promise evidence is valid" if not errors else "BLOCKED: reader promise evidence is invalid")
+        for error in errors:
+            print(f"ERROR: {error}")
+    return 0 if not errors else 1
+
+
+def cmd_chapter_promise_evidence_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = apply_promise_evidence(config, application_path=args.file)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: reader promise evidence applied")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Actions: {result.actions}")
+        print(f"Ledger: {result.ledger_file}")
+        print(f"Transaction: {result.transaction_report}")
+    return 0
+
+
 def cmd_chapter_close(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
     result = chapter_close(config, chapter_number=args.chapter, approved_by=args.approved_by)
@@ -5252,18 +5582,358 @@ def cmd_impact_analyze(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_revision_branch(args: argparse.Namespace) -> int:
+def cmd_planning_structural_validate(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = create_revision_branch(config, chapter_number=args.chapter, overwrite=args.overwrite)
+    root = resolve_project_root(config)
+    candidate = (root / args.file).resolve() if not Path(args.file).is_absolute() else Path(args.file).resolve()
+    candidate.relative_to(root.resolve())
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    result = validate_planning_bundle(payload)
+    rendered = result.as_dict()
+    if args.json:
+        print(json.dumps(rendered, ensure_ascii=False, indent=2))
+    else:
+        print("OK: planning structure is valid" if result.ok else "BLOCKED: planning structure is invalid")
+        print("Semantic verdict: not evaluated")
+        print(f"Subject SHA-256: {result.subject_sha256}")
+        for error in result.errors:
+            print(f"ERROR: {error}")
+        for warning in result.warnings:
+            print(f"WARNING: {warning}")
+    return 0 if result.ok else 1
+
+
+def cmd_planning_semantic_bind(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    application = build_planning_semantic_application(
+        root,
+        subject_path=args.subject,
+        profile=args.profile,
+        author_task_id=args.author_task_id,
+        author_role_id=args.author_role_id,
+        compiler_task_id=args.compiler_task_id,
+        compiler_role_id=args.compiler_role_id,
+        reviewer_task_id=args.reviewer_task_id,
+        reviewer_role_id=args.reviewer_role_id,
+        reviewer_version=args.reviewer_version,
+        review_result_path=args.review_result,
+    )
+    path = write_workbench_record(root, args.output, application)
+    result = validate_planning_semantic_application(root, application)
+    payload = {
+        "application_file": path.relative_to(root).as_posix(),
+        "state": result.state,
+        "ok": result.ok,
+        "errors": list(result.errors),
+        "warnings": list(result.warnings),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: planning semantic review bound" if result.ok else "BLOCKED: semantic review binding is invalid")
+        print(f"State: {result.state}")
+        print(f"Application: {payload['application_file']}")
+        for error in result.errors:
+            print(f"ERROR: {error}")
+    return 0 if result.ok else 1
+
+
+def cmd_planning_semantic_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    path = (root / args.file).resolve() if not Path(args.file).is_absolute() else Path(args.file).resolve()
+    path.relative_to(root.resolve())
+    result = validate_planning_semantic_application(
+        root,
+        json.loads(path.read_text(encoding="utf-8")),
+    )
+    payload = {
+        "ok": result.ok,
+        "state": result.state,
+        "errors": list(result.errors),
+        "warnings": list(result.warnings),
+        "evidence_ids": sorted(result.evidence),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: planning semantic review is current" if result.ok else "BLOCKED: planning semantic review is invalid")
+        print(f"State: {result.state}")
+        print(f"Resolved evidence spans: {len(result.evidence)}")
+        for error in result.errors:
+            print(f"ERROR: {error}")
+    return 0 if result.ok else 1
+
+
+def cmd_planning_approval_record(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    approval = build_human_planning_approval(
+        root,
+        application_path=args.application,
+        decision=args.decision,
+        reason=args.reason,
+        approved_by=args.approved_by,
+    )
+    path = write_workbench_record(root, args.output, approval)
+    payload = {**approval, "path": path.relative_to(root).as_posix()}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: human planning decision recorded")
+        print(f"Decision: {approval['decision']}")
+        print(f"Record: {payload['path']}")
+    return 0
+
+
+def cmd_planning_node_decisions_record(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    source = (root / args.file).resolve() if not Path(args.file).is_absolute() else Path(args.file).resolve()
+    source.relative_to(root.resolve())
+    decisions = json.loads(source.read_text(encoding="utf-8"))
+    if not isinstance(decisions, list):
+        raise ValueError("node decision input must be a JSON list")
+    record = build_human_node_decisions(
+        root,
+        bundle_path=args.bundle,
+        decisions=decisions,
+        decided_by=args.decided_by,
+    )
+    errors = validate_human_node_decisions(root, record)
+    if errors:
+        raise ValueError("node decision record is invalid: " + "; ".join(errors))
+    path = write_workbench_record(root, args.output, record)
+    payload = {
+        "ok": True,
+        "decisions": len(record["decisions"]),
+        "path": path.relative_to(root).as_posix(),
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: every plot node has an explicit human decision")
+        print(f"Decisions: {payload['decisions']}")
+        print(f"Record: {payload['path']}")
+    return 0
+
+
+def cmd_planning_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = apply_planning_bundle(
+        config,
+        bundle_path=args.bundle,
+        application_path=args.application,
+        approval_path=args.approval,
+        node_decisions_path=args.node_decisions,
+        approved_by=args.approved_by,
+    )
+    payload = asdict(result)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: v0.10 planning bundle applied atomically")
+        print(f"Canonical paths: {len(result.canonical_paths)}")
+        print(f"State-changing nodes: {result.planned_events}")
+        print(f"Micro nodes kept outside event graph: {result.micro_nodes}")
+        print(f"Transaction: {result.transaction_report}")
+    return 0
+
+
+def cmd_canon_change_impact(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    proposal = _load_project_json(root, args.proposal)
+    errors = validate_canon_change_proposal(proposal)
+    if errors:
+        raise ValueError("canon change proposal is invalid: " + "; ".join(errors))
+    impact = build_dependency_impact(root, proposal)
+    output = write_workbench_record(root, args.output, impact)
+    payload = {"ok": True, "must_stale": len(impact["impacts"]), "path": output.relative_to(root).as_posix()}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: dependency_impact_v1 written from stable IDs and explicit refs")
+        print(f"Must stale: {payload['must_stale']}")
+        print(f"Impact: {payload['path']}")
+    return 0
+
+
+def cmd_canon_change_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    proposal = _load_project_json(root, args.proposal)
+    impact = _load_project_json(root, args.impact)
+    review = _load_project_json(root, args.review)
+    decision = _load_project_json(root, args.decision)
+    errors = [
+        *validate_canon_change_proposal(proposal),
+        *validate_dependency_impact(root, proposal, impact),
+        *validate_canon_change_semantic_review(proposal, impact, review),
+        *validate_human_canon_change_decision(proposal, impact, review, decision),
+    ]
+    payload = {"ok": not errors, "errors": errors, "must_stale": len(impact.get("impacts") or [])}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: canon change evidence is current" if not errors else "BLOCKED: canon change evidence is invalid")
+        for error in errors:
+            print(f"ERROR: {error}")
+    return 0 if not errors else 1
+
+
+def cmd_canon_change_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = apply_canon_change(
+        config,
+        proposal_path=args.proposal,
+        impact_path=args.impact,
+        review_path=args.review,
+        decision_path=args.decision,
+    )
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
-        print("OK: rewrite candidate created")
-        print(f"Chapter: {result.chapter_number}")
+        print(f"OK: {result.status}")
+        if result.revision_branch_id:
+            print(f"Revision branch: {result.revision_branch_id}")
+        else:
+            print(f"Canonical facts: {result.canonical_fact_file}")
+            print(f"Stale artifacts: {result.stale_artifacts}")
+            print(f"Transaction: {result.transaction_report}")
+    return 0
+
+
+def cmd_reader_feedback_batch(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    result = record_reader_feedback_batch(config, payload=_load_project_json(root, args.file))
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: non-canonical reader feedback batch recorded")
+        print(f"Artifact: {result.artifact_file}")
+    return 0
+
+
+def cmd_reader_feedback_decision(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    root = resolve_project_root(config)
+    result = record_reader_feedback_decision(
+        config,
+        batch_path=args.batch,
+        decision=_load_project_json(root, args.file),
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: human reader-feedback decision recorded")
+        print(f"Artifact: {result.artifact_file}")
+    return 0
+
+
+def cmd_reader_feedback_proposal(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = convert_reader_feedback_to_proposal(
+        config,
+        batch_path=args.batch,
+        decision_path=args.decision,
+        target=args.target,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print(f"OK: {result.status}")
+        print(f"Proposal: {result.artifact_file}")
+    return 0
+
+
+def _load_project_json(root: Path, value: str | Path) -> dict[str, Any]:
+    path = Path(value)
+    resolved = path.resolve() if path.is_absolute() else (root / path).resolve()
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError("JSON input escaped the project root") from exc
+    payload = json.loads(resolved.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("JSON input must be an object")
+    return payload
+
+
+def cmd_revision_branch(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = create_versioned_revision_branch(
+        config,
+        from_chapter=args.from_chapter,
+        to_chapter=args.to_chapter,
+        reason=args.reason,
+        created_by=args.created_by,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: isolated revision_branch_v2 created")
+        print(f"Branch: {result.branch_id}")
+        print(f"Range: ch{result.from_chapter:03d}-ch{result.to_chapter:03d}")
         print(f"Status: {result.status}")
-        print(f"Source: {result.source_path}")
-        print(f"Candidate: {result.candidate_path}")
-        print(f"Report: {result.report_file}")
+        print(f"Base head SHA-256: {result.base_head_sha256}")
+        print(f"Branch file: {result.branch_file}")
+    return 0
+
+
+def cmd_revision_record(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = record_revision_chapter(
+        config,
+        branch_id=args.branch_id,
+        receipt_path=args.receipt,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: revision chapter recorded")
+        print(f"Branch: {result.branch_id}")
+        print(f"Status: {result.status}")
+        print(f"Next chapter: {result.next_chapter or 'promotion'}")
+        print(f"Branch file: {result.branch_file}")
+    return 0
+
+
+def cmd_revision_abandon(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = abandon_revision_branch(
+        config,
+        branch_id=args.branch_id,
+        reason=args.reason,
+        abandoned_by=args.abandoned_by,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: revision branch abandoned; canonical mainline was not changed")
+        print(f"Branch: {result.branch_id}")
+        print(f"Status: {result.status}")
+    return 0
+
+
+def cmd_revision_promote(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = promote_revision_branch(
+        config,
+        branch_id=args.branch_id,
+        approved_by=args.approved_by,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: revision branch promoted with full semantic/RAG/DB rebuild")
+        print(f"Branch: {result.branch_id}")
+        print(f"Chapters: {len(result.chapters)}")
+        print(f"Transaction: {result.transaction_report}")
+        print(f"Semantic rebuild: {result.semantic_rebuild_report}")
+        print(f"Publication revision manifest: {result.publication_manifest}")
     return 0
 
 

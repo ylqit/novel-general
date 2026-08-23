@@ -1,136 +1,120 @@
 # Architecture
 
-本文描述 `longform-novel-engine` v0.9.0 公开稳定版的当前边界。发生冲突时，以源码、`AGENTS.md`、本文件、`STORAGE_MODEL.md` 和 `V0_9_0_RELEASE_CHECKLIST.md` 为准。
+本文描述 `longform-novel-engine` v0.10.0 的活动架构。v0.10 是破坏性协议，不读取或迁移 v0.9 项目。
 
 ## 1. 系统定位
 
-引擎是 Host Agent 的本地控制平面，不是内置 LLM 客户端。Codex 或 Claude Code 负责需要生成式判断的创作、设计、语义抽取与审稿；Python 负责确定性的任务协议、路径约束、hash、状态机、事务、索引和审计。
+Host Agent 负责创作、规划、语义判断和独立审稿；CLI 负责协议、路径、hash、状态机、事务和 canonical 写入。Python 不在后台调用 LLM，也不创建并行写入者。
 
 ```text
 Host Agent
-  -> AgentTaskManifest v4 + bounded inputs
+  -> bounded AgentTaskManifest v4
   -> one declared workbench output
-  -> deterministic validate
-  -> explicit human-approved apply/finalize
-  -> canonical filesystem
-  -> rebuildable SQLite / RAG / vector / cache views
+  -> deterministic structural validation
+  -> independent semantic review
+  -> explicit human decision
+  -> transaction v3 canonical apply
+  -> rebuildable graph / RAG / vector / SQLite views
 ```
-
-当前协议面包含 29 个角色、27 类任务和 4 类 Agent 输出协议。所有流程均为单进程顺序执行；引擎不创建 Agent 子进程、worker pool 或后台写入者。
 
 ## 2. 事实层级
 
-事实优先级从高到低为：
+1. 人工批准的治理、`canonical_fact_v2`、Book Spine、分卷和滚动规划。
+2. `40_manuscript/final/chNNN.md`。
+3. 与 final 精确 span 绑定的 semantic ledger、事件实现和承诺证据。
+4. graph、角色状态、伏笔状态、TCS 等物化视图。
+5. RAG、向量、SQLite 和缓存等可重建视图。
 
-1. 人工批准的治理文件和设计 Markdown。
-2. `40_manuscript/final/chNNN.md` 定稿正文。
-3. 与 final SHA 和 evidence span 绑定的 `30_state/semantic_ledger/chNNN.json`。
-4. graph、角色状态、伏笔状态、时间线、世界状态和 TCS 等 materialized view。
-5. chunks、向量、SQLite、查询缓存和上下文等可重建派生状态。
+摘要、关键词命中、平台启发式或 Agent 推断不能覆盖高层事实。
 
-低层数据不得覆盖高层事实。摘要、检索命中和模型推断只能定位或投影证据，不能自行成为正文事实。
+## 3. 语义规划与分卷滚动
 
-## 3. 领域所有权
+`planning_bundle_v1` 同时提供：
 
-| 领域 | 主要模块 | 所有权 |
-| --- | --- | --- |
-| 配置 | `config/loader.py`、`config/default.engine.yaml` | 默认 YAML 是唯一默认值源；配置注册表记录字段类型、默认值、最终值、覆盖来源和负责模块 |
-| Agent 协议 | `agent_protocols.py`、`agent_tasks.py`、`agent_results.py` | Manifest、四类输出协议、lineage 与生命周期 |
-| 生产编排 | `production.py`、`orchestration/pipeline.py` | 下一动作、章节卡、写作、定稿与批次边界 |
-| 章节合同 | `chapter_contract.py` | 唯一字段、hash、引用完整性；拒绝已删除别名 |
-| 智能设计 | `intelligence/pipeline.py` | 设计候选、rolling outline、章节方向 Markdown 与 `chapter_direction_selection_v1` 联合 validate/apply |
-| 叙事规划状态 | `reader_promises.py`、`arc_simulation.py` | 读者期待窗口、角色场外行动和逐章因果义务；不进入事实层 |
-| 人类协作与审稿 | `human_chapter_intent.py`、`chapter_coedit.py`、`human_author_revision.py`、`human_story_review.py`、`human_review_consultation.py`、`review_server.py` | 写前意图、non-canonical 共编、人工终稿锁、风险分层深审、只读咨询与修复闭环 |
-| 作者声音 | `author_voice.py` | 只从真实人工修改和当前 final 批准 edit pair；限制 active 数量与作者任务加载范围 |
-| 编辑模式 | `quality/editorial_patterns.py` | 从结构化 role/finding 建立无正文复发注册表；只服务编辑与 repair |
-| 章节语义 | `semantic/pipeline.py` | final 证据验证、semantic ledger 与 materialized views |
-| RAG | `rag/pipeline.py` | chunk、full embedding rebuild、chapter/memory delta 与 context |
-| 向量层 | `vectorstore/pipeline.py`、`vector_backends.py` | 本地 SQLite/HNSW upsert、source replace、query 与 health |
-| 派生数据库 | `db/sqlite_index.py` | 显式 full sync/rebuild 与 chapter semantic source delta |
-| 存储事务 | `storage/project.py` | 原子写、项目锁、transaction v3、文件/SQLite 快照 |
-| 崩溃恢复 | `storage/recovery.py`、`cli_recovery.py` | 只读诊断、hash/审批绑定的显式恢复和审计 |
-| 发布表面 | `publication.py`、`release_readiness.py`、`distribution.py` | 官方政策快照、非阻断平台预检、创作来源清单、RC/public 通道与安装诊断 |
+- `book_spine_v1` 与 `volume_skeletons_v1`；
+- 唯一活动 `volume_plan_v1`；
+- 最多 20 章的 `rolling_window_plan_v2`；
+- firm 1–3 章、directional 4–10 章、horizon 11–20 章；
+- 逐章 forecast、语义义务、Plot Node 表和 `chapter_contract_v5`；
+- 明确选入的 `reader_promise_v2`，不从文本猜测承诺。
 
-`cli.py` 负责顶层命令组合与公共异常策略；领域命令组应由领域模块注册。只有拥有验证、错误策略、生命周期或兼容边界的抽象才应保留。
+结构校验只判断字段、范围、稳定 ID、引用与 hash。独立语义审查必须绑定原规划 bytes，并与作者/编译者角色隔离；人工随后批准整体规划，并对 firm 层每个 Plot Node 逐项 `approve|adjust|reject|defer`。只有全部节点获批后，CLI 才能事务化写入 canonical。
 
-## 4. 唯一章节合同
+章节关闭推进 `planning_cursor_v1`。下一章不足三个有效 firm 合同、进入新卷或 planning basis 漂移时，`production next` 必须返回重新规划；重新规划仍需独立语义审查和全节点审批。
 
-`20_outline/chapter_cards/chNNN.json` 使用 `chapter_contract_v4`，并绑定当前 `reader_promise_ledger_v1` 动作与已批准的 `arc_causal_simulation_v1`。核心 canonical 字段为：
+## 4. 唯一章节合同与作者上下文
 
-```text
-chapter_number, title, book_goal, volume_goal, protagonist_goal,
-chapter_duty, platform_promise, immediate_desire, opposition_force,
-dramatic_question, conflict, key_failure, irreversible_choice,
-chapter_turn, reveal_boundary, emotional_aftereffect, ending_mode, ending_intent,
-scene_chain, must_dramatize, may_summarize,
-primary_story_engine, scene_carriers, protected_story_outcomes, prohibited_drift,
-featured_character_ids, reader_gain, cost, state_change_kind, dramatic_method,
-exposition_carrier,
-relationship_move, canon_refs, world_rule_refs, foreshadow_refs,
-forbidden_reveals, must_preserve_suspense, resolution_markers,
-reader_promise_actions, arc_simulation_ref
-```
+正式章节合同只位于 `20_outline/chapter_contracts/chNNN.json`，schema 只有 `chapter_contract_v5`。v4 章节卡、别名、双读和自动迁移均不存在。
 
-`information_release`、`duty`、`information`、`reader_payoff`、`hook`、`hook_mode`、`plot_obligation`、`irreversible_action` 和卡片级 `dramatic_freedom` 是已移除字段。发现它们时返回 `chapter_contract_inconsistent` 或候选校验错误，不做静默双读。
+合同绑定：
 
-写作、自然度修订、节奏、收益、人物、场景和编辑任务消费同一合同投影及 `chapter_contract_hash`。章节方向 apply 必须同时更新章节卡和 rolling plan 的 canonical 字段。
+- forecast、章节拓扑、章节职责、可观察变化与读者价值；
+- `failure|choice|cost|aftermath` 的显式 applicability；
+- 当前人工批准的 Plot Node 表；
+- 语义义务、承诺动作、保护项和禁止偏移。
 
-同人滚动章节计划逐章提供非空 `protected_canon_outcomes`；章节卡保留该权威列表，方向候选必须原样保留。缺失或改写该列表都视为改纲范围，不能靠局部场景方案绕过；新增长期事实也必须进入 `outline_revision`。改纲 apply 通过一个 transaction v3 同步更新纲要与承诺账本、截断受影响编辑模式、失效因果模拟/章节卡/作者工作单/Agent 任务并重建 SQLite 投影；范围内已有正式章节时必须先 rollback。
-
-Book Design 还必须提供 `story_engine_contract_v1`。规划侧通过读者承诺账本管理期待窗口，通过角色因果模拟约束滚动纲要；二者都不是世界事实。方向应用后，人类从空白表单完成 `human_chapter_intent_v1`，声明故事意图、关键选择、情绪真相、POV 声音意图和保护项。CLI 再生成 `chapter_story_brief_basis_v2`，绑定合同、人类意图、因果模拟、筛选事实、本章人物声音、最多两个已批准声音样本、最近五章结构指纹、有效质量合同与 renderer；随后渲染 `chapter_story_brief_v4`。作者只看到可执行故事信息，内部 ID、hash、finding code、原始 RAG 与平台诊断留在控制面。
-
-`chapter_writing_task_v6` 只有在任务状态、合同 hash、basis hash、Story Brief Markdown 字节和活动 manifest 全部一致时才可复用。合同义务变化必须改变合同与 basis；人物声音、RAG 事实投影或结构历史变化可保持合同不变，但必须改变 basis，并使旧写作任务、咨询、审稿和接受记录 stale。
-
-章节方向 Markdown 必须给出 2–3 个稳定 option ID。人工选择单独写成 `chapter_direction_selection_v1`，绑定方向文档 hash、所选 option、调整说明与载体重复理由；方向批准和语义编译必须同时消费两者，任何 hash 漂移都拒绝继续。
-
-AI 初稿可进入 `chapter_coedit_session_v1`：圈选提问后，`human_author_advisor` 只给 2–3 个带影响说明的方案；人工选择或调整后才创建完整 workbench 改写任务。共编不能写 draft、final 或 canonical；若已有 P0/P1，只能消费当前 repair plan。AI 候选完成 gate、`scene_prose_editor` 与 `anti_template_editor` 独立审稿后，P0/P1 进入不可变 repair；无阻断时冻结 `human_review_bundle_v2`。
-
-人类作者随后在 `50_workbench/human_author_revisions/` 完成最终全文修改并锁定。`human_author_revision_v3` 绑定写前意图、共编来源、最终锁、至少两个真实影响维度、精确前后 span、`intent_ref`、预期读者影响、保护项与人工确认；至少一个维度属于场景因果或人物声音/情绪。只改空白、格式或标点不能通过；独立 `prose_revision_semantic_reviewer` 核查合同、知识、能力代价、关系阶段和保护结果。
-
-`draft submit --agent human --overwrite` 只消费当前已验证修订和最终锁。新候选 hash 使旧 gate、审稿、咨询、人工接受和平台预检全部失效，随后必须全量复审。`human_story_review_v6` 绑定候选、章节合同、人类意图、Story Brief basis、承诺账本、因果模拟、review bundle、人工修订/最终锁八类当前证据。人类必须提供关键转折、人物选择/情绪、读者收益三组精确证据；finding 必须显式处置，前端不得代填理由。v0.8 及更早协议明确拒绝，不自动迁移；用户必须创建 v0.9 项目并人工导入权威资料。
-
-`human_author_advisor` 复用 `design_document_v1`。`phase=coedit` 可从已记录且人工选择的方案创建完整改写任务；`phase=human_final` 永远只读。咨询只读取当前候选、Story Brief、冻结 bundle、用户 span 与同候选历史，不保存完整 Prompt 或无关聊天。候选、basis 或意图变化后会话与建议 stale。本地三栏审稿台只监听 `127.0.0.1`，使用一次性 token、Host/Origin/CSRF/CSP 与预期 hash。人工终稿锁定后任何 AI 正文变换都使其失效并退回共编阶段。
-
-`scene_prose_editor` 对核心转折提供正文 span，证明 `attempt → counteraction → choice → visible_cost → state_delta → reader_gain`；`anti_template_editor` 每章独立审查功能重复和叙事损害。单词、句长、对白率、感官密度、慢章和尾钩只能触发 P2 定位信号。模板化 P1 必须有至少两个精确 span、重复功能、读者损害与保护项。当前 P0/P1 始终进入同一候选的不可变 repair bundle，不能由跨章模式“带到下一章”来替代修复。
-
-## 5. 写入与恢复状态机
-
-canonical mutation 必须在项目写锁和 `ApplyTransaction` 内执行，并生成 `canonical_write_transaction_report_v3`：
+写作链只有：
 
 ```text
-preparing --快照清单逐项落盘--> prepared --开放 mutation 边界--> applied
-                                                   \--异常--> rolled_back
+human_chapter_intent_v2
+-> chapter_story_brief_basis_v3
+-> chapter_story_brief_v5
+-> chapter_writing_task_v7
+-> chapter_story_brief_renderer_v5
 ```
 
-- `preparing`：canonical 写入尚未开始；崩溃后只能丢弃预备快照。
-- `prepared`：快照 inventory 已持久化；崩溃后必须按 inventory 回滚。
-- `applied`：提交证据先于快照清理落盘；崩溃后只能清理残留快照，不能回滚已提交状态。
-- `rolled_back` / `aborted_before_apply`：终态。
+作者稿只展示可读拓扑、剧情义务、批准节点、人物选择、读者价值、必要事实与声音。内部 ID、hash、原始 RAG、Graph、SQLite、平台诊断和 Prompt 日志不得进入作者工作单。
 
-恢复从 `recovery status` 开始。锁或报告的 SHA 变化、未知主机、无法确认的 process identity、空或非当前 schema inventory、touched path 未被 inventory 完整覆盖、越界路径或缺失快照均进入 need-human。恢复动作要求 `--approved-by` 和 status 返回的精确 SHA，并在 `70_runtime/recovery/` 写审计报告。SQLite 回滚清除 sidecar、使用 backup API，并以 `integrity_check` 收口。
+共编使用 `chapter_coedit_session_v2`；人工终稿使用 `human_author_revision_v4`；最终深审使用 `human_story_review_v7`。任何 v0.9 schema 直接不兼容。
 
-除 recovery 自身外，所有普通 CLI mutation 会在取锁前路由 stale/unknown/invalid lock，并在取得项目锁后再次执行恢复预检；存在 preparing/prepared/applied-cleanup 或 need-human transaction 时，在领域 handler 开始前即阻断。另一个活跃进程持锁时保持普通并发互斥语义，不把正在运行的 transaction 误报为崩溃恢复。
+## 5. 章节关闭
 
-## 6. Semantic RAG
+final 后的 `canonical_delta_v1` 先生成 semantic ledger 和派生视图。语义应用不再自动推进承诺。
 
-逐章语义应用与全量重建使用不同 API：
+关闭前必须满足：
 
-- `apply_style_memory_delta` / `sync_semantic_delta` / `apply_embedding_delta`：只读取当前 final、当前章节 chunk 和本次变化的 memory/TCS owner；style 使用已有 per-source 小样本聚合，SQLite 与 vector 只替换声明 owner 下的记录。逐章路径不扫描历史正文，也不重写 `embeddings.jsonl`。
-- `rebuild_embedding_index`：扫描全部 canonical chunk/memory，重写完整 embedding snapshot，并同步整个向量库。只用于显式 rebuild/backfill/基准初始构建。
+- 每个获批 state-changing event 已由人确认 `realized|deferred|cancelled`；realized 必须引用当前 final 的 Unicode 精确 span，并绑定 semantic ledger hash；
+- 每个非 defer reader-promise 动作都有当前 final 精确 span、semantic ledger hash 和人工确认；
+- defer 动作有逐章人工原因；
+- gate、独立审稿、人工终稿、深审、任务 lineage 和作者声音门禁均为当前状态。
 
-本地 vector SQLite 是在线向量事实；`60_rag/metadata/embeddings.jsonl` 是可重建的完整导出快照。章节关闭要求当前 final SHA、chunk source SHA、chunk 数量和 active vector source SHA 全部一致，并要求下一章 semantic context 可用。
+`chapter_closure_v2` 固化 final、semantic ledger、event ledger 与 reader-promise ledger hash。未完成时 `chapter close` 阻断。
 
-配置只接受已经实现 query/upsert 的 `local_sqlite` 与 `local_hnsw`。其他后端不属于公开配置契约。
+## 6. 设定传播与版本化回溯
 
-## 7. 质量和发布边界
+活动设定协议为：
 
-工程门禁验证协议正确性、零污染、可恢复性和可解释证据，不等价于文学质量证明。盲评 v4 要求三个不同题材，覆盖起点开篇、番茄开篇和十五章连载三类 scope，每组至少三名独立人类评审；自然度等六项中位数须达绝对阈值，关键四项还须相对 v0.8 提升。外部 Agent 评分不能替代人类人数。当前仓库未导入合格真实盲评 manifest，因此 `literary_evidence_ready=false`。
+```text
+canonical_fact_v2
+-> canon_change_proposal_v1
+-> dependency_impact_v1
+-> canon_change_semantic_review_v1
+-> human_canon_change_decision_v1
+```
 
-`platform_publication_policy_registry_v1` 与创作市场画像分离，只保存随版本发布的官方来源快照、未知项和复核期限。平台预检固定 `blocking=false`：番茄映射公开低质治理类别，起点显示公开全面 AI 禁令与内部判定未知，国家生成合成内容标识仅作披露提示。任何报告都不得输出 AI 概率、检测通过、规避检测或人类写作占比。
+依赖闭包只读取稳定事实 ID 和显式 dependency/obligation refs，不使用关键词猜测。确定性闭包中的 `must_stale` 不允许被语义审查或人工决定降级。
 
-发布检查分为：
+未来生效的变更事务化更新 `10_bible/canonical_facts.json`，并在 `30_state/stale_artifacts.json` 标记受影响 forecast、合同、节点、Story Brief 和任务。重新规划写入新证据和新 hash 后才能解除。
 
-- `release check --channel rc`：验证未发布源码、稳定 README 安装通道、无意外 RC tag、资源与工程合同。
-- `release check --channel public`：默认严格模式，要求当前包版本、README 安装 tag、HEAD tag 和远程发布面一致。
+影响已定稿章节的变更不直接修改 mainline，而是创建覆盖 `E..当前头` 的 `revision_branch_v2`。提升分支时统一重建 semantic ledger、图谱、RAG、向量和 SQLite。
 
-任何 commit、push、tag、Release 或全局 Skill 更新仍需要用户明确授权。
+## 7. 人工读者反馈
+
+`reader_feedback_batch_v1` 与 `human_reader_feedback_decision_v1` 永远位于 workbench，不能直接修改正文、承诺账本、平台策略或 canonical。被人接受的假设只能转换为 planning proposal 或 canon-change seed，再进入各自完整审批链。
+
+## 8. 写入、恢复与派生状态
+
+所有 canonical mutation 使用项目锁和 transaction v3：
+
+```text
+preparing -> prepared -> applied
+                 \-> rolled_back
+```
+
+文件是事实源；SQLite、vector、RAG 和查询缓存可重建。普通命令发现 pending transaction 或 stale lock 时必须先路由 `recovery status`。恢复动作绑定精确报告 SHA 和人工审批，禁止手工删锁或快照。
+
+## 9. 平台与质量边界
+
+起点男频是主要编辑画像；番茄免费只提供 P2 非阻断观察。平台快照和启发式不能升级为作者配额或合规门禁。项目不实现 AI 概率、规避检测、平台必过或人工写作比例声明。
+
+`protocol_ready`、`author_acceptance_ready`、`literary_evidence_ready` 独立报告。当前仍无合格真实盲评 manifest，因此 `literary_evidence_ready=false`。

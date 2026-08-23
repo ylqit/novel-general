@@ -104,7 +104,7 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
                 revision_binding = revision_value
         decision_path = _decision_path(root, chapter_number, binding)
         decision = _read_json(decision_path) if decision_path is not None else None
-        if not isinstance(decision, dict) and binding.get("schema") == "human_story_review_finalization_binding_v3":
+        if not isinstance(decision, dict) and binding.get("schema") == "human_story_review_finalization_binding_v4":
             decision = {
                 "schema": SCHEMA,
                 "chapter_number": chapter_number,
@@ -122,7 +122,8 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
                         "story_brief_basis_sha256",
                         "human_chapter_intent_sha256",
                         "reader_promise_ledger_sha256",
-                        "arc_causal_simulation_sha256",
+                        "plot_node_table_sha256",
+                        "semantic_obligation_ledger_sha256",
                         "review_bundle_sha256",
                         "human_author_revision_sha256",
                     )
@@ -131,7 +132,7 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
         revision_file = _project_file(root, str(revision_binding.get("validation_file") or ""))
         final_lock_file = _project_file(root, str(revision_binding.get("final_lock_file") or ""))
         revision_current = bool(
-            revision_binding.get("schema") == "human_author_revision_finalization_binding_v3"
+            revision_binding.get("schema") == "human_author_revision_finalization_binding_v4"
             and str(revision_binding.get("validation_sha256") or "")
             and revision_file is not None
             and revision_file.is_file()
@@ -150,7 +151,7 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
             chapter_errors.append("human_accept_decision_missing")
         else:
             if decision.get("schema") != SCHEMA:
-                chapter_errors.append("human_accept_schema_not_v6")
+                chapter_errors.append("human_accept_schema_not_v7")
             if decision.get("chapter_number") != chapter_number:
                 chapter_errors.append("human_accept_chapter_mismatch")
             if decision.get("decision") != "accept" or decision.get("approved_by") != "human":
@@ -203,18 +204,19 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
             "story_brief_basis_sha256",
             "human_chapter_intent_sha256",
             "reader_promise_ledger_sha256",
-            "arc_causal_simulation_sha256",
+            "plot_node_table_sha256",
+            "semantic_obligation_ledger_sha256",
             "review_bundle_sha256",
             "human_author_revision_sha256",
         )
-        if not binding or binding.get("schema") != "human_story_review_finalization_binding_v3":
+        if not binding or binding.get("schema") != "human_story_review_finalization_binding_v4":
             chapter_errors.append("human_accept_finalization_binding_missing")
         elif isinstance(decision, dict) and any(
             not str(binding.get(field) or "")
             or str(binding.get(field)) != str(decision.get(field) or "")
             for field in required_hashes
         ):
-            chapter_errors.append("human_accept_eight_hash_binding_mismatch")
+            chapter_errors.append("human_accept_v010_hash_binding_mismatch")
         if isinstance(decision, dict) and revision_current and (
             decision.get("human_author_revision_sha256") != revision_binding.get("validation_sha256")
         ):

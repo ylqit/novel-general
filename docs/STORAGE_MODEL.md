@@ -1,127 +1,72 @@
 # Storage Model
 
-本文定义 v0.9.0 公开稳定版的项目落盘合同、事务恢复语义和派生数据边界。
+本文定义 v0.10.0 的落盘合同。v0.9 文件不能作为当前协议证据。
 
-## 1. 标准目录
+## 1. canonical 与 workbench
 
-| 目录 | 数据等级 | 写入者 | 恢复/重建策略 |
-| --- | --- | --- | --- |
-| `00_governance/` | canonical | 经批准的 CLI apply | 事务回滚 |
-| `10_bible/` | canonical | intelligence/research apply | 事务回滚 |
-| `20_outline/` | canonical | planning/intelligence apply | 事务回滚 |
-| `20_outline/arc_simulations/` | approved planning constraint | intelligence apply + human approval | basis 变化标 stale；改纲/redirect/rollback 事务同步失效 |
-| `30_state/reader_promise_ledger.json` | author-side planning ledger | outline/semantic apply | transaction v3；从规划与已批准正文证据推进 |
-| `30_state/semantic_ledger/` | canonical evidence | semantic apply | final + candidate hash 验证后事务写入 |
-| `30_state/` 其余文件 | materialized canonical view | semantic/planning apply | 可从批准设计、final、ledger 重建 |
-| `40_manuscript/draft/` | submitted working state | draft submit | 可替换，不能冒充 final |
-| `40_manuscript/final/` | canonical prose | chapter finalize | hash 审批与事务回滚 |
-| `50_workbench/` | non-canonical evidence | Agent + CLI | 可归档；不得被查询层当 canonical |
-| `20_outline/chapter_intents/` | canonical human writing intent | CLI + human apply | 空白填写的 v1 意图绑定当前方向选择与合同；漂移后不能编译写作任务 |
-| `50_workbench/chapter_coedit/` | non-canonical coedit sessions/turns | CLI + human + advisor | 保存 span、2–3 个方案、选择、意图和完整候选 hash；不能直接写 draft/final |
-| `50_workbench/human_story_reviews/bundles/` | immutable review evidence | CLI | 冻结当前候选的完整独立审稿；hash 漂移使决定失效 |
-| `50_workbench/human_author_revisions/` | pre-final human authorship evidence | CLI + human + isolated reviewer | 源候选、意图、共编来源、人工完整候选、最终锁和双稿复核均以 hash 绑定 |
-| `50_workbench/human_story_reviews/` | eight-evidence-bound human review | CLI + human | v6 决定按候选、意图与 Story Brief basis 不可变保留；latest 仅指当前决定 |
-| `50_workbench/human_story_reviews/consultations/` | non-canonical advisory records | CLI + human | coedit 可创建完整改写任务，human_final 只读；候选变化后全部 stale |
-| `50_workbench/intelligence_selections/` | hash-bound human selection | CLI + human | `chapter_direction_selection_v1` 与方向 Markdown 联合批准和编译 |
-| `10_bible/style_profiles/author_voice_edit_pairs.json` | human-approved style evidence | CLI + human | 只引用真实人工修改与 final 的重合 span；最多 12 个 active，不自动淘汰 |
-| `80_exports/platform/` | derived publication advisory | publication subsystem | 政策预检与 provenance 可重建；不保存正文、Prompt 或检测器结论 |
-| `50_workbench/editorial_patterns/registry.jsonl` | derived editorial diagnostics | editorial aggregate / explicit commands | 不承担门禁；损坏由 doctor 警告并显式 rebuild |
-| `60_rag/chunks/` | derived | RAG builder | 从 final/ledger 重建 |
-| `60_rag/metadata/embeddings.jsonl` | derived full snapshot | explicit full rebuild | 从 chunks/memory 重建 |
-| `60_rag/memory/` | materialized view | chapter semantic apply / memory compression | 从 ledger 或 memory compression source 重建 |
-| `60_rag/context/`、`query_cache/` | ephemeral derived | RAG query/context | 可删除重建 |
-| `70_runtime/db/*.sqlite` | derived runtime | DB/vector layer | 从 canonical 文件/full embedding snapshot 重建 |
-| `70_runtime/locks/` | lifecycle | lock manager/recovery | 只可按恢复协议回收 |
-| `70_runtime/transactions/` | audit + recovery authority | transaction manager | 不得手工改写 |
-| `70_runtime/tx/` | temporary recovery data | transaction manager | 仅由 commit/rollback/recovery 清理 |
-| `70_runtime/recovery/` | immutable recovery audit | recovery commands | 保留审计 |
-| `70_runtime/artifacts/` | compacted audit | artifact subsystem | hash verify 后可恢复工作材料 |
-| `70_runtime/literary_evidence/` | prose-free external evidence manifest | blind-review aggregate | 验证 pack/source/aggregate hash；缺失或篡改即不就绪 |
-| `80_exports/` | publication output | publication subsystem | 从 final 重建 |
+| 路径 | 角色 |
+| --- | --- |
+| `10_bible/canonical_facts.json` | `canonical_fact_registry_v2`，稳定事实 ID 的设定事实源 |
+| `20_outline/book_spine.json` | 全书主轴 |
+| `20_outline/volume_skeletons.json` | 全书分卷骨架 |
+| `20_outline/volumes/volNNN.json` | 活动卷/历史卷计划 |
+| `20_outline/rolling_window.json` | 当前 `rolling_window_plan_v2` |
+| `20_outline/chapter_forecasts/chNNN.json` | 逐章滚动预测 |
+| `20_outline/chapter_contracts/chNNN.json` | 唯一 `chapter_contract_v5` |
+| `20_outline/plot_nodes/chNNN.json` | 逐节点人工审批表 |
+| `20_outline/chapter_intents/chNNN.json` | `human_chapter_intent_v2` |
+| `30_state/semantic_obligations.json` | 语义义务账本 |
+| `30_state/narrative_events/chNNN.json` | 获批事件与实现证据 |
+| `30_state/reader_promise_ledger.json` | `reader_promise_ledger_v2` |
+| `30_state/planning_basis.json` | 规划 basis 文件绑定 |
+| `30_state/planning_cursor.json` | 章节关闭后的滚动游标 |
+| `30_state/stale_artifacts.json` | 设定传播 stale 注册表 |
+| `30_state/semantic_ledger/chNNN.json` | final 精确证据的章节语义 |
+| `30_state/chapter_closures/chNNN.json` | `chapter_closure_v2` |
+| `40_manuscript/final/chNNN.md` | 唯一正文事实源 |
+| `50_workbench/` | 候选、任务、审稿、反馈与审批证据，非 canonical |
 
-## 2. 路径与文件名合同
+正式正文只接受 `ch{chapter:03d}.md`；四位及以上自然扩展。任何旧命名、`.txt` 或别名均不搜索、不迁移。
 
-正式正文与摘要只接受 `ch{chapter:03d}.md`：`ch001.md`、`ch999.md`、`ch1000.md`。`chapter_001.md`、`1.md`、中文章名和任何 `.txt` 都会被直接拒绝，不执行别名搜索或自动迁移。章节卡、语义账本和其他结构化产物仍按各自 schema 使用 `chNNN.json`。非章节 JSON 不参与正文枚举。
+## 2. 作者工作单
 
-Agent 只能写 manifest 中唯一声明的 `io.output.path`。它不能直接写 Bible、outline、state、final、RAG 或 runtime DB。CLI 在 validate 成功后才可通过 apply/finalize 将候选物化到 canonical 路径。
+`50_workbench/writing_tasks/` 保存：
 
-网页审稿、共编与咨询记录都属于 non-canonical evidence。人工正文修改不能直接编辑 draft/final：普通修订与 repair 绑定修订都只能写 `50_workbench` 的完整候选，经 `human_author_revision_v3`、最终锁、双稿语义复核和 `agent=human` 提交。普通修订不消耗 repair 额度；repair 绑定候选消费对应轮次。提交后旧 gate、bundle、咨询、接受和平台预检全部 stale，并重跑全量 gate 与独立审稿。人工锁定后的 AI 正文变换会使锁失效。
+- `chNNN.json`：`chapter_writing_task_v7`；
+- `chNNN.md`：作者唯一可读的 `chapter_story_brief_v5`；
+- `chNNN.basis.json`：`chapter_story_brief_basis_v3`；
+- `chNNN.agent_task.json`：活动 Agent manifest；
+- `chNNN.fact_inventory.json`：控制面事实投影。
 
-`50_workbench/writing_tasks/chNNN.basis.json` 保存 `chapter_story_brief_basis_v2`。它不是新的 canonical 事实源，而是作者工作单的不可变编译依据：合同、人类意图、因果模拟、筛选事实、人物/作者声音、最近五章结构历史、质量合同和 renderer 任一投影变化都会生成新 basis，并使旧工作单、共编会话与下游人工证据 stale。
+basis 绑定 v5 合同、人工意图、滚动窗口、Plot Node 表、语义义务、筛选事实、人物/作者声音、结构历史和 renderer v5。任一来源变化即 stale。
 
-`reader_promise_ledger_v1` 是作者向读者建立的期待窗口，不是实际读者行为；`arc_causal_simulation_v1` 是经人工批准的滚动规划约束，不是世界事实；`editorial_pattern_item_v1` 是无正文的编辑复发诊断，不是事实或作者提示。这三个层面禁止相互混写。因果模拟的角色状态 basis 直接哈希 semantic apply 维护的 `60_rag/memory/characters/`，不再读取旧的单文件 character-memory 投影。
+## 3. 事件、承诺与关闭
 
-所有写路径在进入事务前解析为绝对路径并验证位于项目根目录下。事务快照引用必须位于 `70_runtime/tx/<transaction-id>/`；恢复报告必须位于 `70_runtime/transactions/`。
+事件实现和 promise evidence 只能在 semantic apply 后写入，并必须绑定当前 final 和 semantic ledger hash。实现/兑现 span 使用 Python Unicode codepoint offset，`excerpt == final[start:end]`。
 
-## 3. Transaction v3 报告
+`chapter_closure_v2` 固定四项 SHA：final、semantic ledger、event ledger、reader-promise ledger。已有 closure 的任一证据漂移都会阻断幂等 close。
 
-`canonical_write_transaction_report_v3` 包含：
+## 4. 设定变更与反馈
 
-- `command`、`chapter_number`、`source_paths`、`touched_paths`。
-- `status` 与稳定 `created_at`。
-- `snapshot_dir`、预期 `inventory_targets`、文件 `snapshots`、`sqlite_backups`。
-- `before_state` / `after_state` 的路径类型、字节数和 SHA-256。
-- `cleanup_complete`、`snapshots_retained`、`cleanup_errors`。
-- 不允许 Agent 输出直接成为 canonical 的 boundary 声明。
+设定变更证据位于 `50_workbench/`；未来变更 apply 后更新 canonical facts 和 stale registry。影响已定稿章节时只创建 `50_workbench/revision_branches/<branch-id>/`，不改 mainline。
 
-普通文件/目录通过复制快照参与；项目根内所有声明为 transaction participant 的 `.sqlite`、`.sqlite3` 和 `.db` 文件都使用 SQLite backup API，避免复制 WAL 中间态。`70_runtime/db` 目录作为 participant 时会枚举这些数据库文件；父目录已参与时不重复加入普通子路径。恢复前会重新验证 `touched_paths` 与 filesystem/SQLite inventory 一一覆盖，重复、缺失或漂移均进入 need-human。SQLite restore 会先清除 WAL、SHM 和 rollback-journal sidecar，再用 backup API 恢复并执行 `PRAGMA integrity_check`。
+`50_workbench/reader_feedback/` 永远非 canonical。反馈只能形成假设、人工决定和 proposal，不能成为正文或账本事实。
 
-提交顺序是：先原子写 `status=applied` 和 `after_state`，再删除快照，最后写清理结果。这样任何崩溃点都有唯一恢复语义。
+## 5. Transaction v3 与恢复
 
-## 4. 项目锁 v2
+transaction 报告保存 source/touched paths、before/after hash、文件快照、SQLite backup 和清理状态。`preparing` 不开放 mutation；`prepared` 才允许写；`applied` 先落盘再清理快照。
 
-`70_runtime/locks/project.lock` 使用 `O_EXCL` 创建，记录：
+恢复只允许：
 
-```text
-schema, owner, owner_token, command, created_at, root,
-pid, hostname, process_identity
-```
+- `discard-preparing`；
+- `rollback-transaction`；
+- `cleanup-committed`；
+- `reclaim-lock`。
 
-释放时只有 owner token 仍匹配的持有者可以删除锁。`recovery status` 对同主机进程检查 PID 与启动 identity，以区分 active、PID reuse 和 confirmed-dead。远程主机、权限不足或 identity 不可得时是 unknown，不允许自动回收。
+所有动作都绑定 `recovery status` 返回的精确 SHA 与人工审批。
 
-stale lock 回收使用独立 `recovery.lock`，避免两个恢复者同时处理同一 stale lock。transaction discard/rollback/cleanup 则在普通项目写锁内串行执行。
+## 6. 派生视图与隐私
 
-## 5. 恢复矩阵
+graph、角色状态、伏笔状态、TCS、RAG、vector 和 SQLite 都可从批准设计、final 与 semantic ledger 重建。逐章 delta 只替换本章/source owner；全量 rebuild 只由显式命令或 revision promotion 执行。
 
-| 观察状态 | 是否自动判断 | 允许动作 |
-| --- | --- | --- |
-| `preparing` + 安全 snapshot dir | 是 | `recovery discard-preparing` |
-| `prepared` + 完整 inventory | 是 | `recovery rollback-transaction` |
-| `applied` + `cleanup_complete=false` + 安全 snapshot 路径 | 是 | `recovery cleanup-committed`；允许清理中断后幂等重试，不读取 snapshot inventory 做回滚 |
-| `rolled_back` / `aborted_before_apply` / clean `applied` | 是 | 无，终态 |
-| `recovery_failed` | 否 | need-human，保留快照和错误清单 |
-| 非当前 schema 的 pending/prepared、坏 JSON、越界路径、缺失快照 | 否 | need-human |
-| project lock `confirmed_dead` | 是 | `recovery reclaim-lock` |
-| lock `active` / `unknown` / `invalid` | 否 | 等待或人工诊断，禁止删除 |
-
-标准操作：
-
-```powershell
-longform-engine recovery status project.yaml --json
-# 复制 status 给出的 report/lock SHA，不得自行计算后跳过复查
-longform-engine recovery discard-preparing project.yaml --report <path> --expected-sha256 <sha> --approved-by <name>
-longform-engine recovery rollback-transaction project.yaml --report <path> --expected-sha256 <sha> --approved-by <name>
-longform-engine recovery cleanup-committed project.yaml --report <path> --expected-sha256 <sha> --approved-by <name>
-longform-engine recovery reclaim-lock project.yaml --expected-sha256 <sha> --approved-by <name>
-```
-
-`production next` 和 doctor 会优先暴露恢复 blocker；存在 blocker 时不能继续普通生产。普通 mutation 在取锁前识别 confirmed-dead/unknown/invalid stale lock，在取锁后复查 transaction blocker；活跃持锁者仍由 `O_EXCL` 并发互斥直接阻断。
-
-## 6. RAG 与向量存储
-
-逐章 delta 的 replace key 是 canonical `source_path`：章节向量绑定 final 路径，memory 向量绑定具体 memory JSON。写 SQLite 前会逐条验证 chunk 的 chapter owner、canonical final path 与 `source_sha256`，避免被错误 payload 写入其他章节。delta 只读取这些来源的 active vector，复用相同 `model + content_hash + source_sha256` 的向量，upsert 变化项，并将同来源但本次缺失的旧 ID 标 stale。Style Memory 保存 per-source fingerprint/hash 小样本，逐章只合并当前 final；完整历史扫描只属于 explicit semantic rebuild。
-
-HNSW 的 label metadata 保存在 vector SQLite；mutation 前标记 dirty，索引和 manifest 成功持久化后清除。查询在 dirty、manifest 不一致或依赖缺失时不把索引报告为健康。
-
-runtime database、vector SQLite、HNSW index 与 manifest 必须解析在所属小说项目根目录内；绝对路径可以使用，但越出项目根会在任何写入前失败。
-
-Full rebuild 会重写 `embeddings.jsonl` 并全量同步 vector store。它是恢复/回填工具，不得被逐章 semantic apply 隐式调用。
-
-## 7. 保留与隐私
-
-- 成功事务快照应立即清理；残留由 recovery 显式处理。
-- `artifacts compact` 不删除 transaction v3 快照；事务清理由精确 SHA 与审批绑定的 recovery 命令独占。
-- 失败恢复材料在完成或人工处置前保留。
-- 章节工作台默认保留最近两章，其余经 `artifacts compact` + `artifacts verify` 后归档。
-- 不在日志或报告中写 API key、完整 Prompt、完整未发布正文或不必要的模型输入。
-- `novels/`、模型缓存、SQLite、query cache、`dist/` 不进入源码发布包。
+不提交小说正文、API key、完整 Prompt 日志、模型、SQLite、缓存、`dist/` 或 `novels/`。

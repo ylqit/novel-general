@@ -29,10 +29,11 @@ from longform_engine.storage.layout import manuscript_chapter_path
 from longform_engine.story_brief import load_current_story_brief_binding
 
 
-SESSION_SCHEMA = "chapter_coedit_session_v1"
+SESSION_SCHEMA = "chapter_coedit_session_v2"
 TURN_SCHEMA = "chapter_coedit_turn_v1"
 SELECTION_SCHEMA = "chapter_coedit_selection_v1"
 VALIDATION_SCHEMA = "chapter_coedit_candidate_validation_v1"
+TEXT_ANCHOR_SCHEMA = "text_anchor_v2"
 TASK_TYPE = "chapter_coedit_rewrite"
 OPTION_PATTERN = re.compile(r"^###\s+(OPTION-[A-Z0-9][A-Z0-9_-]{0,31})\s*$", re.MULTILINE)
 
@@ -150,7 +151,7 @@ def create_chapter_coedit_turn(
         "candidate_sha256": candidate_hash,
         "story_brief_basis_sha256": basis_hash,
         "human_chapter_intent_sha256": intent_hash,
-        "selection": {"start": start, "end": end, "text": text[start:end]},
+        "selection": build_text_anchor(text, start=start, end=end, source_sha256=candidate_hash),
         "question": normalized_question,
     }
     turn = {
@@ -936,6 +937,41 @@ def load_json(path: Path) -> Any:
         return None
 
 
+def build_text_anchor(
+    text: str,
+    *,
+    start: int,
+    end: int,
+    source_sha256: str,
+) -> dict[str, Any]:
+    """Bind a UI selection using Unicode code-point offsets and paragraph identity."""
+
+    if start < 0 or end <= start or end > len(text):
+        raise ChapterCoeditError("text anchor must satisfy 0 <= start < end <= source length")
+    paragraph_start = text.rfind("\n\n", 0, start)
+    paragraph_start = 0 if paragraph_start < 0 else paragraph_start + 2
+    paragraph_end = text.find("\n\n", end)
+    paragraph_end = len(text) if paragraph_end < 0 else paragraph_end
+    paragraph = text[paragraph_start:paragraph_end]
+    selected = text[start:end]
+    paragraph_index = text[:paragraph_start].count("\n\n") + 1
+    return {
+        "schema": TEXT_ANCHOR_SCHEMA,
+        "offset_unit": "unicode_codepoint",
+        "source_sha256": source_sha256,
+        "start": start,
+        "end": end,
+        "text": selected,
+        "selected_sha256": sha256(selected.encode("utf-8")).hexdigest(),
+        "paragraph_id": f"p{paragraph_index:04d}-{sha256(paragraph.encode('utf-8')).hexdigest()[:12]}",
+        "paragraph_sha256": sha256(paragraph.encode("utf-8")).hexdigest(),
+        "paragraph_start": paragraph_start,
+        "paragraph_end": paragraph_end,
+        "context_before": text[max(paragraph_start, start - 80):start],
+        "context_after": text[end:min(paragraph_end, end + 80)],
+    }
+
+
 def write_json(path: Path, payload: Any) -> None:
     atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
@@ -971,7 +1007,9 @@ __all__ = [
     "ChapterCoeditTurnResult",
     "SESSION_SCHEMA",
     "TASK_TYPE",
+    "TEXT_ANCHOR_SCHEMA",
     "TURN_SCHEMA",
+    "build_text_anchor",
     "coedit_provenance",
     "coedit_status",
     "create_chapter_coedit_rewrite_task",

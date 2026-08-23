@@ -24,7 +24,7 @@ longform-engine review serve project.yaml --chapter 12 --port 8765
 
 gate 的 P0/P1 只是一类已验证 finding，不会跳过其他独立审稿。`scene_prose_editor` 与 `anti_template_editor` 每章必审；全部审稿绑定同一候选后，任何 P0/P1 直接进入不可变 repair bundle。`repair synthesis-task` 编排根因、依赖、最小修改半径与保护项，验证后再创建完整替代稿任务。
 
-无 P0/P1 时冻结 `human_review_bundle_v2`。每章必须完成人类完整修订、独立双稿语义复核、`agent=human` 提交和全量复审，之后才能创建 `human_story_review_v6`。accept 需要关键转折、人物选择/情绪和读者收益三类精确 span，并处置所有 finding；repair 需要结构化批注；redirect 必须选择回到章节方向或改纲。候选、合同、Story Brief basis、承诺账本、因果模拟、review bundle 或人工修订任一 hash 漂移都使决定失效，未完成修订和深审绝不能 finalize。
+无 P0/P1 时冻结 `human_review_bundle_v2`。每章必须完成人类完整修订、独立双稿语义复核、`agent=human` 提交和全量复审，之后才能创建 `human_story_review_v7`。accept 需要关键转折、人物选择/情绪和读者收益三类精确 span，并处置所有 finding；repair 需要结构化批注；redirect 必须返回 v0.10 重新规划。候选、v5 合同、Story Brief basis、承诺账本、批准节点、语义义务、review bundle 或人工修订任一 hash 漂移都使决定失效。
 
 ## 3. 产物契约
 

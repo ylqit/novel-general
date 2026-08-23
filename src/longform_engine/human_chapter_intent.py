@@ -15,7 +15,7 @@ from longform_engine.config import ConfigDocument
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 
 
-SCHEMA = "human_chapter_intent_v1"
+SCHEMA = "human_chapter_intent_v2"
 VALIDATION_SCHEMA = "human_chapter_intent_validation_v1"
 INTENT_FIELDS = (
     "story_intent",
@@ -35,7 +35,7 @@ class HumanChapterIntentTaskResult:
     task_file: str
     candidate_file: str
     chapter_contract_sha256: str
-    direction_selection_sha256: str
+    plot_node_approval_sha256: str
     next_command: str
 
 
@@ -79,13 +79,13 @@ def create_human_chapter_intent_task(
         raise HumanChapterIntentError("chapter_number must be positive")
     root = resolve_project_root(config)
     _contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
-    selection = current_direction_selection_binding(root, chapter_number)
+    node_approval = current_plot_node_approval_binding(root, chapter_number)
     paths = human_chapter_intent_paths(root, chapter_number)
     candidate = {
         "schema": SCHEMA,
         "chapter_number": chapter_number,
         "chapter_contract_sha256": contract_hash,
-        "direction_selection_sha256": selection["sha256"],
+        "plot_node_approval_sha256": node_approval["sha256"],
         "story_intent": "",
         "key_character_choice": "",
         "emotional_truth": "",
@@ -102,7 +102,7 @@ def create_human_chapter_intent_task(
         and existing.get("schema") == SCHEMA
         and existing.get("chapter_number") == chapter_number
         and existing.get("chapter_contract_sha256") == contract_hash
-        and existing.get("direction_selection_sha256") == selection["sha256"]
+        and existing.get("plot_node_approval_sha256") == node_approval["sha256"]
         and existing.get("status") == "draft"
     )
     if not reusable:
@@ -132,7 +132,7 @@ def create_human_chapter_intent_task(
         task_file=relative(root, paths["task"]),
         candidate_file=relative(root, paths["candidate"]),
         chapter_contract_sha256=contract_hash,
-        direction_selection_sha256=selection["sha256"],
+        plot_node_approval_sha256=node_approval["sha256"],
         next_command=(
             f"longform-engine chapter human-intent-validate project.yaml --chapter {chapter_number} "
             f"--file {relative(root, paths['candidate'])}"
@@ -261,7 +261,7 @@ def require_current_human_chapter_intent(root: Path, chapter_number: int) -> dic
     errors = human_chapter_intent_errors(root, chapter_number, payload, expect_status="approved")
     if errors:
         raise HumanChapterIntentError(
-            "current human_chapter_intent_v1 is missing or stale: " + "; ".join(errors)
+            "current human_chapter_intent_v2 is missing or stale: " + "; ".join(errors)
         )
     return {
         "payload": payload,
@@ -289,30 +289,23 @@ def human_chapter_intent_status(root: Path, chapter_number: int) -> dict[str, An
     }
 
 
-def current_direction_selection_binding(root: Path, chapter_number: int) -> dict[str, str]:
+def current_plot_node_approval_binding(root: Path, chapter_number: int) -> dict[str, str]:
     load_verified_chapter_contract(root, chapter_number)
-    card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json")
-    selection = card.get("direction_selection") if isinstance(card, dict) else None
-    if not isinstance(selection, dict) or selection.get("status") != "applied":
-        raise HumanChapterIntentError("chapter direction has not been applied")
-    relative_path = str(selection.get("selection_file") or "")
-    expected_hash = str(selection.get("selection_sha256") or "")
-    if not relative_path or not expected_hash:
-        raise HumanChapterIntentError(
-            "v0.8 chapter direction records without a selection sidecar are rejected in v0.9; "
-            "create a v0.9 project and manually import approved planning material"
-        )
-    path = resolve_inside(root, relative_path, root / "50_workbench" / "intelligence_selections")
+    path = root / "20_outline" / "plot_nodes" / f"ch{chapter_number:03d}.json"
     payload = load_json(path)
     if (
         not isinstance(payload, dict)
-        or payload.get("schema") != "chapter_direction_selection_v1"
+        or payload.get("schema") != "plot_node_table_v1"
         or payload.get("chapter_number") != chapter_number
-        or payload.get("selected_by") != "human"
-        or file_hash(path) != expected_hash
+        or not str(payload.get("approval_sha256") or "")
+        or any(
+            not isinstance(node, dict)
+            or (node.get("human_decision") or {}).get("decision") not in {"approve", "adjust"}
+            for node in payload.get("nodes") or []
+        )
     ):
-        raise HumanChapterIntentError("chapter direction selection sidecar is missing, stale, or not human-selected")
-    return {"path": relative(root, path), "sha256": expected_hash}
+        raise HumanChapterIntentError("plot node table is missing, stale, or not fully human-approved")
+    return {"path": relative(root, path), "sha256": file_hash(path)}
 
 
 def human_chapter_intent_errors(
@@ -326,7 +319,7 @@ def human_chapter_intent_errors(
         "schema",
         "chapter_number",
         "chapter_contract_sha256",
-        "direction_selection_sha256",
+        "plot_node_approval_sha256",
         *INTENT_FIELDS,
         "protected_items",
         "completed_by",
@@ -335,7 +328,7 @@ def human_chapter_intent_errors(
         "approved_at",
     }
     if not isinstance(payload, dict) or set(payload) != fields:
-        return ["intent must contain exactly the human_chapter_intent_v1 fields"]
+        return ["intent must contain exactly the human_chapter_intent_v2 fields"]
     errors: list[str] = []
     if payload.get("schema") != SCHEMA:
         errors.append(f"schema must be {SCHEMA}; v0.8 human workflow records are not accepted")
@@ -343,15 +336,15 @@ def human_chapter_intent_errors(
         errors.append("chapter_number does not match")
     try:
         _contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
-        selection = current_direction_selection_binding(root, chapter_number)
+        node_approval = current_plot_node_approval_binding(root, chapter_number)
     except ValueError as exc:
         errors.append(str(exc))
         contract_hash = ""
-        selection = {"sha256": ""}
+        node_approval = {"sha256": ""}
     if payload.get("chapter_contract_sha256") != contract_hash:
         errors.append("chapter_contract_sha256 is stale")
-    if payload.get("direction_selection_sha256") != selection["sha256"]:
-        errors.append("direction_selection_sha256 is stale")
+    if payload.get("plot_node_approval_sha256") != node_approval["sha256"]:
+        errors.append("plot_node_approval_sha256 is stale")
     for field in INTENT_FIELDS:
         value = payload.get(field)
         if not isinstance(value, str) or len(value.strip()) < 8:

@@ -13,6 +13,21 @@ from .pipeline import (
     rollback,
     rollback_impact,
 )
+from .branches import (
+    ACTIVE_BRANCH_STATES,
+    PUBLICATION_REVISION_MANIFEST_SCHEMA,
+    REVISION_BASE_HEAD_SCHEMA,
+    REVISION_BRANCH_SCHEMA,
+    REVISION_CHAPTER_RECEIPT_SCHEMA,
+    RevisionBranchV2Result,
+    RevisionPromotionResult,
+    abandon_revision_branch,
+    active_revision_branch,
+    create_versioned_revision_branch,
+    promote_revision_branch,
+    record_revision_chapter,
+    validate_revision_chapter_receipt,
+)
 
 __all__ = [
     "ChapterTransactionState",
@@ -26,4 +41,17 @@ __all__ = [
     "project_status",
     "rollback",
     "rollback_impact",
+    "ACTIVE_BRANCH_STATES",
+    "PUBLICATION_REVISION_MANIFEST_SCHEMA",
+    "REVISION_BASE_HEAD_SCHEMA",
+    "REVISION_BRANCH_SCHEMA",
+    "REVISION_CHAPTER_RECEIPT_SCHEMA",
+    "RevisionBranchV2Result",
+    "RevisionPromotionResult",
+    "abandon_revision_branch",
+    "active_revision_branch",
+    "create_versioned_revision_branch",
+    "promote_revision_branch",
+    "record_revision_chapter",
+    "validate_revision_chapter_receipt",
 ]

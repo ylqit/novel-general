@@ -853,41 +853,23 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
 
     verify_stale_indexes(root, chapter_number)
     verify_previous_gate(root, chapter_number)
-    readiness = assess_project_readiness(config)
-    if not readiness.ready:
-        next_command = (
-            "longform-engine open-book project.yaml"
-            if readiness.stage == "open_book"
-            else f"longform-engine intelligence task project.yaml --task-type {readiness.required_task_type}"
-        )
+    try:
+        load_verified_chapter_contract(root, chapter_number)
+    except ChapterContractError as exc:
         raise WorkflowError(
-            f"Project is not ready for chapter writing ({readiness.stage}): "
-            f"{'; '.join(readiness.errors[:3])} Run {next_command}."
-        )
-    direction = assess_chapter_direction(config, chapter_number)
-    if direction["required"]:
-        if direction.get("status") == "outline_revision_required":
-            raise WorkflowError(
-                f"Chapter ch{chapter_number:03d} is blocked by an outline redirect. Run "
-                "longform-engine intelligence task project.yaml --task-type outline_revision "
-                f"--from-chapter {chapter_number} --to-chapter {chapter_number}."
-            )
-        if direction.get("status") == "arc_simulation_required":
-            window = load_json(root / "20_outline" / "planning_window.json", default={})
-            start = int(window.get("start_chapter") or chapter_number) if isinstance(window, dict) else chapter_number
-            end = int(window.get("end_chapter") or chapter_number) if isinstance(window, dict) else chapter_number
-            if not start <= chapter_number <= end:
-                start = chapter_number
-                end = chapter_number + int(config.data["length"]["planning"]["detailed_horizon"]) - 1
-            raise WorkflowError(
-                f"Chapter ch{chapter_number:03d} requires an approved causal simulation. Run "
-                "longform-engine intelligence task project.yaml --task-type arc_simulation "
-                f"--from-chapter {start} --to-chapter {end}."
-            )
+            f"Chapter ch{chapter_number:03d} requires a current firm chapter_contract_v5, "
+            "independent planning semantic approval, and per-node human decisions: " + str(exc)
+        ) from exc
+    rolling_window = load_json(root / "20_outline" / "rolling_window.json", default={})
+    firm_range = (rolling_window.get("tiers") or {}).get("firm") if isinstance(rolling_window, dict) else None
+    if (
+        not isinstance(firm_range, list)
+        or len(firm_range) != 2
+        or not int(firm_range[0]) <= chapter_number <= int(firm_range[1])
+    ):
         raise WorkflowError(
-            f"Chapter ch{chapter_number:03d} requires an explicit direction choice "
-            f"({', '.join(direction['reasons'])}). Run longform-engine intelligence task project.yaml "
-            f"--task-type chapter_direction --chapter {chapter_number}."
+            f"Chapter ch{chapter_number:03d} is outside the current firm rolling tier; "
+            "re-plan, run independent semantic review, and approve every plot node first."
         )
 
     creative_brief = validate_creative_brief(config)
@@ -908,8 +890,8 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
         chapter_number=chapter_number,
         semantic=semantic_enabled(config),
     )
-    card = plan_chapter(config, chapter_number=chapter_number, overwrite=overwrite)
-    beat = generate_beat_sheet(config, chapter_number=chapter_number, overwrite=overwrite)
+    chapter_contract_file = root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
+    plot_node_file = root / "20_outline" / "plot_nodes" / f"ch{chapter_number:03d}.json"
     writing_mode = str(config.data.get("writing", {}).get("mode", "agent_skill"))
 
     if writing_mode == "agent_skill":
@@ -917,8 +899,8 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
             config,
             chapter_number=chapter_number,
             context_file=Path(context.context_file),
-            chapter_card_file=Path(card.json_file),
-            beat_sheet_file=Path(beat.json_file),
+            chapter_card_file=chapter_contract_file,
+            beat_sheet_file=plot_node_file,
             overwrite=overwrite,
         )
         state.update(
@@ -948,16 +930,16 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
                 "query_rag_context",
                 "validate_graph",
                 "build_tcs",
-                "make_chapter_card",
-                "generate_beat_sheet",
+                "verify_chapter_contract_v5",
+                "verify_approved_plot_nodes",
                 "write_agent_task",
                 "sync_indexes",
             ],
             "artifacts": {
                 "context": context.context_file,
                 "tcs": tcs.tcs_file,
-                "chapter_card": card.json_file,
-                "beat_sheet": beat.markdown_file,
+                "chapter_contract": str(chapter_contract_file),
+                "plot_node_table": str(plot_node_file),
                 "writing_task_json": task["task_json"],
                 "writing_task_markdown": task["task_markdown"],
                 "recommended_agent_draft": task["recommended_agent_draft"],
@@ -969,8 +951,8 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
         return ContinueWriteResult(
             chapter_number=chapter_number,
             context_file=context.context_file,
-            chapter_card=card.json_file,
-            beat_sheet=beat.markdown_file,
+            chapter_card=str(chapter_contract_file),
+            beat_sheet=str(plot_node_file),
             draft_file="",
             writing_task_json=task["task_json"],
             writing_task_markdown=task["task_markdown"],
@@ -1009,16 +991,16 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
             "query_rag_context",
             "validate_graph",
             "build_tcs",
-            "make_chapter_card",
-            "generate_beat_sheet",
+            "verify_chapter_contract_v5",
+            "verify_approved_plot_nodes",
             "draft_chapter",
             "sync_indexes",
         ],
         "artifacts": {
             "context": context.context_file,
             "tcs": tcs.tcs_file,
-            "chapter_card": card.json_file,
-            "beat_sheet": beat.markdown_file,
+            "chapter_contract": str(chapter_contract_file),
+            "plot_node_table": str(plot_node_file),
             "draft": str(draft_path),
             "gate_result": gate.gate_result,
         },
@@ -1028,8 +1010,8 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
     return ContinueWriteResult(
         chapter_number=chapter_number,
         context_file=context.context_file,
-        chapter_card=card.json_file,
-        beat_sheet=beat.markdown_file,
+        chapter_card=str(chapter_contract_file),
+        beat_sheet=str(plot_node_file),
         draft_file=str(draft_path),
         writing_task_json="",
         writing_task_markdown="",
@@ -1422,8 +1404,8 @@ def finalize_chapter(
             and existing_finalization.get("chapter_number") == chapter_number
             and existing_finalization.get("approved_by") == "human"
             and existing_finalization.get("final_sha256") == sha256_text(normalized_draft)
-            and existing_review.get("schema") == "human_story_review_finalization_binding_v3"
-            and existing_revision.get("schema") == "human_author_revision_finalization_binding_v3"
+            and existing_review.get("schema") == "human_story_review_finalization_binding_v4"
+            and existing_revision.get("schema") == "human_author_revision_finalization_binding_v4"
             and existing_decision.is_file()
             and existing_review.get("decision_sha256") == sha256_bytes(existing_decision.read_bytes())
             and existing_validation.is_file()
@@ -1576,7 +1558,7 @@ def finalize_chapter(
                 else ""
             ),
             "human_story_review": {
-                "schema": "human_story_review_finalization_binding_v3",
+                "schema": "human_story_review_finalization_binding_v4",
                 "decision_file": str(human_accept["decision_file"]),
                 "decision_sha256": str(human_accept["decision_sha256"]),
                 "candidate_sha256": str(human_accept["candidate_sha256"]),
@@ -1588,7 +1570,10 @@ def finalize_chapter(
                     human_accept["human_chapter_intent_sha256"]
                 ),
                 "reader_promise_ledger_sha256": str(human_accept["reader_promise_ledger_sha256"]),
-                "arc_causal_simulation_sha256": str(human_accept["arc_causal_simulation_sha256"]),
+                "plot_node_table_sha256": str(human_accept["plot_node_table_sha256"]),
+                "semantic_obligation_ledger_sha256": str(
+                    human_accept["semantic_obligation_ledger_sha256"]
+                ),
                 "review_bundle_sha256": str(human_accept["review_bundle_sha256"]),
                 "human_author_revision_sha256": str(
                     human_accept["human_author_revision_sha256"]
@@ -1602,7 +1587,7 @@ def finalize_chapter(
                 "reader_gain_note": human_accept["reader_gain_note"],
             },
             "human_author_revision": {
-                "schema": "human_author_revision_finalization_binding_v3",
+                "schema": "human_author_revision_finalization_binding_v4",
                 "validation_file": str(human_revision["validation_file"]),
                 "validation_sha256": str(human_revision["validation_sha256"]),
                 "record_file": str(human_revision["record_file"]),
@@ -1873,6 +1858,23 @@ def write_writing_task(
     recommended_draft = draft_dir / f"ch{chapter_number:03d}.{default_agent}.md"
     card = load_json(chapter_card_file, default={})
     beat = load_json(beat_sheet_file, default={})
+    if not isinstance(card, dict) or card.get("schema") != "chapter_contract_v5":
+        raise WorkflowError("chapter writing requires chapter_contract_v5; v0.9 chapter cards are incompatible")
+    if not isinstance(beat, dict) or beat.get("schema") != "plot_node_table_v1":
+        raise WorkflowError("chapter writing requires the current approved plot_node_table_v1")
+    obligation_file = root / "30_state" / "semantic_obligations.json"
+    obligation_ledger = load_json(obligation_file, default={})
+    obligations_by_id = {
+        str(item.get("obligation_id")): item
+        for item in obligation_ledger.get("items", [])
+        if isinstance(item, dict) and item.get("obligation_id")
+    } if isinstance(obligation_ledger, dict) else {}
+    chapter_obligations = [
+        obligations_by_id[ref]
+        for ref in card.get("semantic_obligation_refs") or []
+        if ref in obligations_by_id
+    ]
+    rolling_window_file = root / "20_outline" / "rolling_window.json"
     story_graph_path = root / "30_state" / "story_graph.json"
     story_graph = load_json(story_graph_path, default={})
     length = config.data.get("length", {})
@@ -1976,18 +1978,14 @@ def write_writing_task(
         resolved_contract_refs=resolved_contract_refs,
         style_context=style_context,
         human_intent=human_intent,
-    )
-    simulation_ref = chapter_contract.get("arc_simulation_ref")
-    simulation_path = (
-        root / str(simulation_ref.get("path") or "")
-        if isinstance(simulation_ref, dict)
-        else root / "20_outline" / "arc_simulations" / "missing.json"
+        semantic_obligations=chapter_obligations,
     )
     source_paths = [
         context_file,
         chapter_card_file,
         beat_sheet_file,
-        simulation_path,
+        rolling_window_file,
+        obligation_file,
         root / "10_bible" / "characters.json",
         root / "10_bible" / "relationships.json",
         root / "10_bible" / "character_expression.json",
@@ -2010,9 +2008,9 @@ def write_writing_task(
         chapter_number=chapter_number,
         chapter_contract_sha256=chapter_contract_digest,
         human_chapter_intent_sha256=str(human_intent_binding["sha256"]),
-        arc_causal_simulation_sha256=str(
-            simulation_ref.get("sha256") if isinstance(simulation_ref, dict) else ""
-        ),
+        rolling_window_sha256=sha256_bytes(rolling_window_file.read_bytes()),
+        plot_node_table_sha256=sha256_bytes(beat_sheet_file.read_bytes()),
+        semantic_obligation_ledger_sha256=sha256_bytes(obligation_file.read_bytes()),
         canonical_projection=story_brief.get("relevant_facts") or [],
         character_voice_projection=story_brief.get("character_guidance") or [],
         author_voice_projection=story_brief.get("author_voice_examples") or [],
@@ -2027,7 +2025,7 @@ def write_writing_task(
     payload = {
         "schema": WRITING_TASK_SCHEMA,
         "chapter_number": chapter_number,
-        "title": card.get("title", f"第{chapter_number}章"),
+        "title": f"第{chapter_number}章",
         "status": "task_ready",
         "writing_mode": "agent_skill",
         "target_character_count": target_characters,
@@ -2060,7 +2058,7 @@ def write_writing_task(
             ],
             "must_follow": [
                 "只输出小说正文和章节标题。",
-                "遵守章节卡职责、Beat Sheet 顺序和 RAG 上下文。",
+                "遵守章节拓扑、批准剧情节点、语义义务和 Story Brief 的因果顺序。",
                 "不得直接修改 final、RAG、story_graph 或 SQLite。",
                 "遵守 Creative Brief、Writer Craft Brief 与 prose-naturalness 自查规则；不使用检测词典或平台固定配额。",
             ],
@@ -3910,42 +3908,31 @@ def build_chapter_story_brief(
     resolved_contract_refs: list[dict[str, Any]],
     style_context: dict[str, Any],
     human_intent: dict[str, Any],
+    semantic_obligations: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Compile the author-facing story problem without exposing control-plane evidence."""
 
     scenes: list[dict[str, Any]] = []
-    scene_chain = card.get("scene_chain") if isinstance(card.get("scene_chain"), list) else []
+    scene_chain = beat.get("nodes") if isinstance(beat.get("nodes"), list) else []
     for index, scene in enumerate(scene_chain, start=1):
         if not isinstance(scene, dict):
             continue
+        decision = scene.get("human_decision") if isinstance(scene.get("human_decision"), dict) else {}
+        changes = author_fact_strings(scene.get("expected_changes"))
+        choice = card.get("choice") if isinstance(card.get("choice"), dict) else {}
+        cost = card.get("cost") if isinstance(card.get("cost"), dict) else {}
         scenes.append(
             {
                 "order": index,
-                "location": str(scene.get("location") or ""),
-                "carrier": str(scene.get("carrier") or (card.get("scene_carriers") or [""])[0]),
-                "action": str(scene.get("action") or scene.get("desire_collision") or ""),
-                "reaction": str(scene.get("reaction") or "阻力因主角行动而作出反应。"),
-                "choice": str(scene.get("choice") or ""),
-                "cost": str(scene.get("cost") or card.get("cost") or ""),
-                "exit_state": str(scene.get("exit_state") or scene.get("turn") or ""),
+                "carrier": str(scene.get("dramatic_function") or "剧情推进"),
+                "action": str(scene.get("action_or_exchange") or ""),
+                "reaction": "；".join(changes) or "让这一行动产生可感知的状态变化。",
+                "choice": str(choice.get("description") or "由人物在当前压力下作出真实选择。"),
+                "cost": str(cost.get("description") or "代价依本章拓扑落地。"),
+                "exit_state": "；".join(changes),
+                "approved_adjustment": str(decision.get("adjustment") or ""),
             }
         )
-    if not scenes:
-        for index, item in enumerate(beat.get("beats") or [], start=1):
-            if not isinstance(item, dict):
-                continue
-            scenes.append(
-                {
-                    "order": index,
-                    "location": "",
-                    "carrier": str((card.get("scene_carriers") or [""])[0]),
-                    "action": str(item.get("scene_goal") or item.get("purpose") or ""),
-                    "reaction": str(item.get("conflict") or ""),
-                    "choice": str(item.get("choice") or ""),
-                    "cost": str(item.get("cost") or card.get("cost") or ""),
-                    "exit_state": str(item.get("chapter_turn") or item.get("turn") or ""),
-                }
-            )
     history = read_jsonl(root / "30_state" / "quality" / "structure_history.jsonl")[-5:]
     recent_structure_fingerprints = [
         {
@@ -3963,26 +3950,9 @@ def build_chapter_story_brief(
         for item in history
         if isinstance(item, dict)
     ]
-    carriers = [
-        str(item.get("primary_scene_carrier") or "")
-        for item in recent_structure_fingerprints
-    ]
-    primary_carrier = str((card.get("scene_carriers") or [""])[0])
+    carriers = [str(item.get("primary_scene_carrier") or "") for item in recent_structure_fingerprints]
+    primary_carrier = str(scenes[0].get("carrier") if scenes else card.get("topology") or "")
     repetition_count = carriers[-4:].count(primary_carrier) + (1 if primary_carrier else 0)
-    try:
-        simulation, _simulation_path, _simulation_hash = load_active_arc_simulation(
-            root, chapter_number=chapter_number
-        )
-    except ArcSimulationError:
-        simulation = {}
-    causal_obligation = next(
-        (
-            item
-            for item in simulation.get("causal_obligations") or []
-            if isinstance(item, dict) and item.get("chapter_number") == chapter_number
-        ),
-        {},
-    )
     promise_gains = [
         str(item.get("intended_reader_gain") or "")
         for item in card.get("reader_promise_actions") or []
@@ -4005,34 +3975,27 @@ def build_chapter_story_brief(
             "pov_voice_intent": str(human_intent.get("pov_voice_intent") or ""),
             "protected_items": dedupe_strings(as_list(human_intent.get("protected_items"))),
         },
+        "topology": str(card.get("topology") or ""),
         "happening_now": str(card.get("chapter_duty") or ""),
-        "protagonist_want": str(card.get("immediate_desire") or card.get("protagonist_goal") or ""),
-        "opposition": str(card.get("opposition_force") or card.get("conflict") or ""),
-        "dramatic_question": str(card.get("dramatic_question") or ""),
-        "earliest_failure": str(card.get("key_failure") or ""),
-        "irreversible_choice": str(card.get("irreversible_choice") or ""),
-        "visible_cost": str(card.get("cost") or ""),
-        "causal_pressure": "；".join(
-            str(causal_obligation.get(key) or "")
-            for key in ("cause", "pressure", "choice", "consequence")
-            if str(causal_obligation.get(key) or "").strip()
-        ),
+        "observable_change": str(card.get("observable_change") or ""),
+        "reader_value": str(card.get("reader_value") or ""),
+        "failure": author_applicability_text(card.get("failure")),
+        "choice": author_applicability_text(card.get("choice")),
+        "cost": author_applicability_text(card.get("cost")),
+        "aftermath": author_applicability_text(card.get("aftermath")),
         "scenes": scenes,
-        "must_dramatize": as_list(card.get("must_dramatize")),
-        "may_summarize": as_list(card.get("may_summarize")),
-        "reader_gain": str(card.get("reader_gain") or ""),
+        "semantic_obligations": [
+            {
+                "change": str(item.get("intended_change") or ""),
+                "reader_value": str(item.get("reader_value") or ""),
+                "evidence": str(item.get("evidence_requirement") or ""),
+                "protected": dedupe_strings(as_list(item.get("protected_invariants"))),
+            }
+            for item in semantic_obligations
+        ],
         "promised_reader_gains": promise_gains,
-        "emotional_aftereffect": str(card.get("emotional_aftereffect") or ""),
-        "relationship_change": str(card.get("relationship_move") or ""),
-        "protected_outcomes": dedupe_strings(
-            as_list(card.get("protected_story_outcomes"))
-            + as_list(card.get("must_preserve_suspense"))
-        ),
-        "prohibited_drift": dedupe_strings(
-            as_list(card.get("prohibited_drift"))
-            + [f"不得提前揭示：{item}" for item in as_list(card.get("forbidden_reveals"))]
-            + [f"不得提前解决：{item}" for item in as_list(card.get("resolution_markers"))]
-        ),
+        "protected_outcomes": dedupe_strings(as_list(card.get("protected_invariants"))),
+        "prohibited_drift": dedupe_strings(as_list(card.get("prohibited_drift"))),
         "local_freedom": str(
             writing_brief.get("local_freedom")
             or "在受保护结果和禁止偏移内，可自由设计具体动作、摩擦、细节与潜台词。"
@@ -4047,10 +4010,18 @@ def build_chapter_story_brief(
             "count_in_window": repetition_count,
             "warning": repetition_count >= 3,
         },
-        "ending_state": str(card.get("chapter_turn") or ""),
-        "ending_mode": str(card.get("ending_mode") or ""),
-        "ending_intent": str(card.get("ending_intent") or ""),
+        "ending_state": str(card.get("observable_change") or ""),
     }
+
+
+def author_applicability_text(value: Any) -> str:
+    item = value if isinstance(value, dict) else {}
+    applicability = str(item.get("applicability") or "")
+    if applicability == "not_applicable":
+        return "本章不强制设置；原因：" + str(item.get("reason") or "符合当前章节拓扑")
+    if applicability == "optional":
+        return "可选：" + str(item.get("description") or "由具体演出决定")
+    return str(item.get("description") or "")
 
 
 def author_character_guidance(packet: dict[str, Any]) -> list[dict[str, Any]]:
@@ -4225,14 +4196,14 @@ def render_chapter_story_brief_markdown(payload: dict[str, Any]) -> str:
         "## 本章故事问题",
         "",
         f"- 标题：{payload.get('title', '')}",
+        f"- 章节拓扑：{brief.get('topology', '')}",
         f"- 本章正在发生：{brief.get('happening_now', '')}",
-        f"- 主角现在要：{brief.get('protagonist_want', '')}",
-        f"- 真正拒绝他的力量：{brief.get('opposition', '')}",
-        f"- 戏剧问题：{brief.get('dramatic_question', '')}",
-        f"- 最早失败：{brief.get('earliest_failure', '')}",
-        f"- 不可逆选择：{brief.get('irreversible_choice', '')}",
-        f"- 可见代价：{brief.get('visible_cost', '')}",
-        f"- 本章因果压力：{brief.get('causal_pressure', '')}",
+        f"- 必须形成的可观察变化：{brief.get('observable_change', '')}",
+        f"- 读者价值：{brief.get('reader_value', '')}",
+        f"- 失败要求：{brief.get('failure', '')}",
+        f"- 选择要求：{brief.get('choice', '')}",
+        f"- 代价要求：{brief.get('cost', '')}",
+        f"- 余波要求：{brief.get('aftermath', '')}",
         "",
         "## 逐场行动",
         "",
@@ -4243,12 +4214,12 @@ def render_chapter_story_brief_markdown(payload: dict[str, Any]) -> str:
         lines.extend(
             [
                 f"### 场景 {scene.get('order', '')} · {scene.get('carrier', '')}",
-                f"- 地点：{scene.get('location', '')}",
                 f"- 行动：{scene.get('action', '')}",
                 f"- 反应：{scene.get('reaction', '')}",
                 f"- 选择：{scene.get('choice', '')}",
                 f"- 代价：{scene.get('cost', '')}",
                 f"- 离场状态：{scene.get('exit_state', '')}",
+                f"- 人工调整：{scene.get('approved_adjustment', '') or '按批准节点执行'}",
                 "",
             ]
         )
@@ -4256,20 +4227,26 @@ def render_chapter_story_brief_markdown(payload: dict[str, Any]) -> str:
         [
             "## 演出边界",
             "",
-            f"- 必须完整演出：{'；'.join(as_list(brief.get('must_dramatize'))) or '无'}",
-            f"- 允许压缩：{'；'.join(as_list(brief.get('may_summarize'))) or '无'}",
-            f"- 读者收益：{brief.get('reader_gain', '')}",
             f"- 本章还应让读者得到：{'；'.join(as_list(brief.get('promised_reader_gains'))) or '无额外要求'}",
-            f"- 情绪余波：{brief.get('emotional_aftereffect', '')}",
-            f"- 关系变化：{brief.get('relationship_change', '')}",
             f"- 受保护结果：{'；'.join(as_list(brief.get('protected_outcomes'))) or '无'}",
             f"- 禁止偏移：{'；'.join(as_list(brief.get('prohibited_drift'))) or '无'}",
             f"- 局部自由：{brief.get('local_freedom', '')}",
             "",
-            "## 必要已知事实",
+            "## 本章剧情义务",
             "",
         ]
     )
+    obligations = brief.get("semantic_obligations") or []
+    lines.extend(
+        [
+            f"- 变化：{item.get('change', '')}；读者获得：{item.get('reader_value', '')}；"
+            f"必须写出：{item.get('evidence', '')}；保护：{'；'.join(as_list(item.get('protected'))) or '无'}"
+            for item in obligations
+            if isinstance(item, dict)
+        ]
+        or ["- 规划未提供可执行剧情义务，停止写作并返回重新规划。"]
+    )
+    lines.extend(["", "## 必要已知事实", ""])
     lines.extend(
         [f"- {item}" for item in brief.get("relevant_facts") or []]
         or ["- 本章没有额外事实投影；以合同和已定稿状态为准。"]
@@ -4321,8 +4298,6 @@ def render_chapter_story_brief_markdown(payload: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            f"- 结尾方式：{brief.get('ending_mode', '')}",
-            f"- 结尾意图：{brief.get('ending_intent', '')}",
             f"- 离场状态：{brief.get('ending_state', '')}",
             "",
             "## 最近五章结构指纹",

@@ -702,7 +702,7 @@ def create_repair_candidate_task(
                 "只改计划允许的最小范围，保留 preservation ledger 中已经通过的内容。",
                 "不得新增计划外剧情、改写 canonical 事实或用解释性段落掩盖机制冲突。",
                 *(
-                    ["人工完成全文后必须建立 human_author_revision_v3 记录、锁定终稿并通过双稿语义复核；不得直接提交。"]
+                    ["人工完成全文后必须建立 human_author_revision_v4 记录、锁定终稿并通过双稿语义复核；不得直接提交。"]
                     if safe_agent == "human"
                     else []
                 ),

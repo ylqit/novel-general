@@ -133,6 +133,10 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("recovery", "rollback-transaction", "project.yaml", "--report", "70_runtime/transactions/tx.json", "--expected-sha256", "0" * 64, "--approved-by", "human"),
         ("recovery", "cleanup-committed", "project.yaml", "--report", "70_runtime/transactions/tx.json", "--expected-sha256", "0" * 64, "--approved-by", "human"),
         ("chapter", "semantic-apply", "project.yaml", "--chapter", "1", "--file", "50_workbench/semantic_tasks/ch001.semantic.json"),
+        ("chapter", "event-realization-validate", "project.yaml", "--file", "50_workbench/event_realizations/ch001.json"),
+        ("chapter", "event-realization-apply", "project.yaml", "--file", "50_workbench/event_realizations/ch001.json"),
+        ("chapter", "promise-evidence-validate", "project.yaml", "--file", "50_workbench/promise_evidence/ch001.json"),
+        ("chapter", "promise-evidence-apply", "project.yaml", "--file", "50_workbench/promise_evidence/ch001.json"),
         ("gate-check", "project.yaml", "--chapter", "1"),
         ("gate-waiver", "project.yaml", "--chapter", "1", "--reason", "人工确认"),
         ("pacing-review", "project.yaml", "--chapter", "1"),
@@ -176,7 +180,28 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("research", "search", "project.yaml", "市舶司"),
         ("research", "promote", "project.yaml", "--item", "research_001"),
         ("impact-analyze", "project.yaml", "--research-item", "research_001"),
-        ("revision", "branch", "project.yaml", "--chapter", "1"),
+        ("planning", "structural-validate", "project.yaml", "--file", "50_workbench/planning/bundle.json"),
+        ("planning", "semantic-bind", "project.yaml", "--subject", "50_workbench/planning/bundle.json", "--profile", "architecture", "--author-task-id", "author-1", "--author-role-id", "planner", "--reviewer-task-id", "review-1", "--reviewer-role-id", "reviewer", "--reviewer-version", "v1", "--review-result", "50_workbench/planning/review.json", "--output", "50_workbench/planning/application.json"),
+        ("planning", "semantic-validate", "project.yaml", "--file", "50_workbench/planning/application.json"),
+        ("planning", "approval-record", "project.yaml", "--application", "50_workbench/planning/application.json", "--decision", "approve", "--reason", "human approved", "--approved-by", "human", "--output", "50_workbench/planning/approval.json"),
+        ("planning", "node-decisions-record", "project.yaml", "--bundle", "50_workbench/planning/bundle.json", "--file", "50_workbench/planning/node-decisions-source.json", "--decided-by", "human", "--output", "50_workbench/planning/node-decisions.json"),
+        ("planning", "apply", "project.yaml", "--bundle", "50_workbench/planning/bundle.json", "--application", "50_workbench/planning/application.json", "--approval", "50_workbench/planning/approval.json", "--node-decisions", "50_workbench/planning/node-decisions.json", "--approved-by", "human"),
+        (
+            "revision",
+            "branch",
+            "project.yaml",
+            "--from-chapter",
+            "1",
+            "--to-chapter",
+            "1",
+            "--reason",
+            "rewrite historical chapter",
+            "--created-by",
+            "human",
+        ),
+        ("revision", "record", "project.yaml", "--branch-id", "rev-test", "--receipt", "receipt.json"),
+        ("revision", "abandon", "project.yaml", "--branch-id", "rev-test", "--reason", "human cancelled", "--abandoned-by", "human"),
+        ("revision", "promote", "project.yaml", "--branch-id", "rev-test", "--approved-by", "human"),
         ("revision", "rollback", "project.yaml", "--to-chapter", "1"),
         ("revision", "snapshot", "project.yaml"),
         ("editorial", "submit-review", "project.yaml", "--chapter", "1", "--role", "anti_template_editor", "--file", "50_workbench/editorial_reviews/results/ch001.anti_template_editor.json"),
@@ -830,13 +855,25 @@ def test_cli_revision_branch_rollback_and_impact(tmp_path):
             encoding="utf-8",
         )
 
-    branch = run_cli("revision", "branch", str(project_yaml), "--chapter", "2")
+    branch = run_cli(
+        "revision",
+        "branch",
+        str(project_yaml),
+        "--from-chapter",
+        "2",
+        "--to-chapter",
+        "2",
+        "--reason",
+        "rewrite chapter two",
+        "--created-by",
+        "human",
+    )
     rollback = run_cli("revision", "rollback", str(project_yaml), "--to-chapter", "1")
     impact = run_cli("impact-analyze", str(project_yaml), "--after-rollback")
     status = run_cli("status", str(project_yaml), "--json")
 
     assert branch.returncode == 0
-    assert "OK: rewrite candidate created" in branch.stdout
+    assert "OK: isolated revision_branch_v2 created" in branch.stdout
     assert rollback.returncode == 0
     assert "OK: rollback completed" in rollback.stdout
     assert "Transaction: 70_runtime/transactions/" in rollback.stdout

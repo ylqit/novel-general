@@ -1083,7 +1083,10 @@ def pacing_review(
     weak_detected_event_types = tuple(
         event_type for event_type in detected_event_types if event_type not in strong_detected_event_types
     )
-    active_event_types = strong_detected_event_types or tuple(recommended_event_types[:1])
+    # Lexical matches are diagnostic hints only.  They cannot establish an event,
+    # consume an event quota, or create a P1 failure; semantic realization is
+    # recorded later from exact final evidence.
+    active_event_types = tuple(recommended_event_types[:1])
     default_tier = {
         "fast": "fast",
         "measured": "slow",
@@ -1111,6 +1114,11 @@ def pacing_review(
         warnings.append(
             "weak lexical event hints did not override the chapter plan: "
             + ", ".join(weak_detected_event_types)
+        )
+    if strong_detected_event_types:
+        warnings.append(
+            "lexical event hints require semantic review and were not treated as realized events: "
+            + ", ".join(strong_detected_event_types)
         )
     matrix = evaluate_event_matrix(
         config,

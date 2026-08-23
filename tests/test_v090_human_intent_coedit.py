@@ -6,12 +6,14 @@ import pytest
 from longform_engine.agent_protocols import DESIGN_REQUIRED_HEADINGS
 from longform_engine.chapter_coedit import (
     ChapterCoeditError,
+    build_text_anchor,
     create_chapter_coedit_rewrite_task,
     create_chapter_coedit_turn,
     record_chapter_coedit_response,
     validate_chapter_coedit_candidate,
     validate_chapter_coedit_response,
 )
+from longform_engine.review_server import review_page_html
 from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.human_chapter_intent import (
@@ -172,3 +174,21 @@ def test_coedit_cannot_bypass_current_p0_or_p1(tmp_path: Path):
             end=20,
             question="请直接绕过修复改写。",
         )
+
+
+def test_coedit_text_anchor_uses_unicode_codepoints_and_paragraph_identity():
+    text = "第一段😀。\n\n第二段人物选择。"
+    start = text.index("😀")
+    anchor = build_text_anchor(
+        text,
+        start=start,
+        end=start + 1,
+        source_sha256="a" * 64,
+    )
+
+    assert anchor["schema"] == "text_anchor_v2"
+    assert anchor["offset_unit"] == "unicode_codepoint"
+    assert anchor["text"] == "😀"
+    assert anchor["paragraph_id"].startswith("p0001-")
+    assert len(anchor["selected_sha256"]) == 64
+    assert "utf16ToCodePoint" in review_page_html("token")

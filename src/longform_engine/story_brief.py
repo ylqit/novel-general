@@ -12,10 +12,10 @@ from longform_engine.agent_tasks import load_manifest, validate_manifest_strict
 from longform_engine.chapter_contract import load_verified_chapter_contract
 
 
-BASIS_SCHEMA = "chapter_story_brief_basis_v2"
-STORY_BRIEF_SCHEMA = "chapter_story_brief_v4"
-WRITING_TASK_SCHEMA = "chapter_writing_task_v6"
-RENDERER_VERSION = "chapter_story_brief_renderer_v4"
+BASIS_SCHEMA = "chapter_story_brief_basis_v3"
+STORY_BRIEF_SCHEMA = "chapter_story_brief_v5"
+WRITING_TASK_SCHEMA = "chapter_writing_task_v7"
+RENDERER_VERSION = "chapter_story_brief_renderer_v5"
 
 
 class StoryBriefBindingError(ValueError):
@@ -35,7 +35,9 @@ def build_story_brief_basis(
     chapter_number: int,
     chapter_contract_sha256: str,
     human_chapter_intent_sha256: str,
-    arc_causal_simulation_sha256: str,
+    rolling_window_sha256: str,
+    plot_node_table_sha256: str,
+    semantic_obligation_ledger_sha256: str,
     canonical_projection: Any,
     character_voice_projection: Any,
     author_voice_projection: Any,
@@ -52,7 +54,9 @@ def build_story_brief_basis(
         "components": {
             "chapter_contract_sha256": chapter_contract_sha256,
             "human_chapter_intent_sha256": human_chapter_intent_sha256,
-            "arc_causal_simulation_sha256": arc_causal_simulation_sha256,
+            "rolling_window_sha256": rolling_window_sha256,
+            "plot_node_table_sha256": plot_node_table_sha256,
+            "semantic_obligation_ledger_sha256": semantic_obligation_ledger_sha256,
             "canonical_projection_sha256": json_sha256(canonical_projection),
             "character_voice_projection_sha256": json_sha256(character_voice_projection),
             "author_voice_projection_sha256": json_sha256(author_voice_projection),
@@ -92,7 +96,7 @@ def load_current_story_brief_binding(root: Path, chapter_number: int) -> dict[st
     manifest = _read_json(paths["manifest"])
     if not isinstance(task, dict) or task.get("schema") != WRITING_TASK_SCHEMA:
         raise StoryBriefBindingError(
-            "story_brief_incompatible: v0.8 writing tasks are rejected; create a v0.9 project "
+            "story_brief_incompatible: v0.9 writing tasks are rejected; create a v0.10 project "
             "and manually import authoritative Bible and outline material"
         )
     if task.get("status") != "task_ready":
@@ -161,7 +165,7 @@ def load_current_story_brief_binding(root: Path, chapter_number: int) -> dict[st
         )
         human_binding_current = (
             human_revision.get("schema")
-            == "human_author_revision_submission_binding_v3"
+            == "human_author_revision_submission_binding_v4"
             and human_revision.get("story_brief_basis_sha256") == recorded_basis_hash
         )
         if not (
@@ -196,10 +200,14 @@ def load_current_story_brief_binding(root: Path, chapter_number: int) -> dict[st
         or components.get("human_chapter_intent_sha256") != intent["sha256"]
     ):
         raise StoryBriefBindingError("story_brief_human_chapter_intent_sha256_stale")
-    simulation_value = contract.get("arc_simulation_ref")
-    simulation_ref: dict[str, Any] = simulation_value if isinstance(simulation_value, dict) else {}
-    if components.get("arc_causal_simulation_sha256") != simulation_ref.get("sha256"):
-        raise StoryBriefBindingError("story_brief_arc_simulation_sha256_stale")
+    current_sources = {
+        "rolling_window_sha256": root / "20_outline" / "rolling_window.json",
+        "plot_node_table_sha256": root / "20_outline" / "plot_nodes" / f"ch{chapter_number:03d}.json",
+        "semantic_obligation_ledger_sha256": root / "30_state" / "semantic_obligations.json",
+    }
+    for component, source in current_sources.items():
+        if not source.is_file() or components.get(component) != _file_sha256(source):
+            raise StoryBriefBindingError(f"story_brief_{component}_stale")
     for item in basis.get("source_files") or []:
         if not isinstance(item, dict):
             raise StoryBriefBindingError("story_brief_basis_source_binding_invalid")
@@ -209,7 +217,7 @@ def load_current_story_brief_binding(root: Path, chapter_number: int) -> dict[st
                 "story_brief_basis_source_stale:" + str(item.get("path") or "")
             )
     return {
-        "schema": "chapter_story_brief_binding_v2",
+        "schema": "chapter_story_brief_binding_v3",
         "chapter_number": chapter_number,
         "chapter_contract_sha256": contract_hash,
         "human_chapter_intent_sha256": intent["sha256"],

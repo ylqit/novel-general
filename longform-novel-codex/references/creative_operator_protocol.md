@@ -27,7 +27,7 @@ Canonical state changes must go through CLI commands: `draft submit`, `chapter f
 - After `open-book`, follow `production next` through `book_ideation`. Each work order asks one core question and offers two or three options with tradeoffs. Do not infer a selection from silence.
 - Write only `book_ideation_candidate_v1`; the CLI saves one explicitly selected/provided answer through `intelligence apply --approved-by human`.
 - Every unapplied chapter reaches `chapter_direction` before prose: offer two or three causally distinct directions with stable option IDs and costs. Record the user's explicit selection in `chapter_direction_selection_v1`; approval and semantic compilation consume both Markdown and sidecar. Do not write chapter prose in this task.
-- After direction apply, the human completes the blank `human_chapter_intent_v1` form. Do not prefill story intent, key choice, emotional truth, POV voice intent, or protected items; writing cannot start until the record binds the current selection and contract.
+- After Plot Node approval, the human completes the blank `human_chapter_intent_v2` form. Do not prefill story intent, key choice, emotional truth, POV voice intent, or protected items; writing cannot start until the record binds the current approval and contract.
 - Read the `effective_quality_contract_v1` embedded in the chapter card/writing brief. It combines market, genre, phase, approved baseline, and project overrides, but is not a universal sentence-length, dialogue-density, pace, or cliffhanger template.
 - Never add a finalized chapter to the approved style baseline automatically. Only the explicit `quality baseline-approve` CLI command may add its prose-free craft fingerprint.
 
@@ -35,7 +35,7 @@ Canonical state changes must go through CLI commands: `draft submit`, `chapter f
 
 Use this guide before writing any new chapter draft. `/工程续章` is the primary Chinese engineering entry for continuing a chapter; it maps to `longform-engine continue-write project.yaml --chapter N`.
 
-Before prose is written, the author Agent reads only `50_workbench/writing_tasks/chNNN.md`, the rendered `chapter_story_brief_v4`. The paired JSON, `chapter_story_brief_basis_v2`, fact inventory, reader-promise ledger, causal simulation, editorial-pattern registry and raw retrieval/control-plane packets are CLI/editor inputs, not author inputs. The Markdown already contains the bounded character-voice and story-fact projections needed for this chapter.
+Before prose is written, the author Agent reads only `50_workbench/writing_tasks/chNNN.md`, the rendered `chapter_story_brief_v5`. The paired JSON, `chapter_story_brief_basis_v3`, fact inventory, reader-promise ledger, rolling-plan basis, plot-node table, semantic-obligation ledger, editorial-pattern registry and raw retrieval/control-plane packets are CLI/editor inputs, not author inputs. The Markdown already contains readable topology, approved nodes, obligations, character choices, reader value, bounded character voice and relevant facts.
 
 - Story pressure: confirm what is happening, what the protagonist wants, who or what refuses, the earliest failure, irreversible choice and visible cost.
 - Scene execution: follow each declared action, reaction, choice, cost and exit state; fully dramatize the required turns and compress only the allowed connective process.
@@ -43,7 +43,7 @@ Before prose is written, the author Agent reads only `50_workbench/writing_tasks
 - Carrier variation: use the recent-five-chapter carrier warning to change pressure, character ownership or dramatic method when needed; an approved repetition reason is authority, not a quota exemption invented by the author.
 - Ending condition: land on the declared changed state and chapter pressure without forcing a universal cliffhanger.
 - Coedit path: a selected span may receive two or three advisor options with consequences. Only a recorded human selection can create a new complete workbench candidate. Coedit never writes draft/final/canonical and cannot bypass an active repair plan.
-- Failure repair path: follow `production next` until semantic, payoff, pacing and editorial reviews all bind to the same candidate and Story Brief basis. `scene_prose_editor` and `anti_template_editor` are mandatory; P0/P1 enters immutable repair before author acceptance. With no blockers, complete the human final candidate, `human_author_revision_v3`, final lock, independent dual-prose semantic review, human submit and full re-review. Then run `human_story_review_v6`: three human core evidence kinds, eight current evidence bindings and explicit finding dispositions are required.
+- Failure repair path: follow `production next` until semantic, payoff, pacing and editorial reviews all bind to the same candidate and Story Brief basis. `scene_prose_editor` and `anti_template_editor` are mandatory; P0/P1 enters immutable repair before author acceptance. With no blockers, complete the human final candidate, `human_author_revision_v4`, final lock, independent dual-prose semantic review, human submit and full re-review. Then run `human_story_review_v7`: human core evidence, current contract/node/obligation bindings and explicit finding dispositions are required.
 
 Required production closed loop:
 
@@ -68,9 +68,9 @@ Required production closed loop:
    - Preserve numeric facts, named characters, chapter duty, reader gain, cost, promise payoff, and declared canon/divergence constraints.
    - Do not force every platform into short sentences, dense dialogue, fast pacing, or a cliffhanger; follow the task's market profile.
 7. Submit with `longform-engine draft submit project.yaml --chapter N --file 50_workbench/agent_drafts/chNNN.codex.md --agent codex`.
-8. After all independent reviews, freeze `human_review_bundle_v2`, complete and lock the human final candidate, then submit it and rerun all reviews. Finalize only after a current eight-evidence-bound v6 `accept`. `phase=human_final` consultation is read-only; any later AI prose transform invalidates the final lock.
+8. After all independent reviews, freeze `human_review_bundle_v2`, complete and lock the human final candidate, then submit it and rerun all reviews. Finalize only after a current evidence-bound `human_story_review_v7` `accept`. `phase=human_final` consultation is read-only; any later AI prose transform invalidates the final lock.
 9. Follow `production next` into `chapter semantic-task`; read the final once, write only the declared semantic JSON, then run validate and wait for explicit apply.
-10. Close the chapter only with `longform-engine chapter close project.yaml --chapter N --approved-by human` after all materialized views verify.
+10. Close the chapter only with `longform-engine chapter close project.yaml --chapter N --approved-by human` after all materialized views verify, every approved event has a human-confirmed terminal state, and every non-defer promise action cites an exact final span and current semantic-ledger hash.
 11. If the gate or semantic validation fails, stop the next-chapter flow and repair the current chapter or semantic candidate.
 
 ## Repair A Failed Chapter

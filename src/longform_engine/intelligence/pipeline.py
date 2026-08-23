@@ -58,7 +58,6 @@ from longform_engine.character_expression import (
     validate_character_expression_profile,
     write_character_expression_profile,
 )
-from longform_engine.chapter_contract import REMOVED_ALIAS_FIELDS
 from longform_engine.config import ConfigDocument
 from longform_engine.db import sync_database
 from longform_engine.lengths import compile_length_forecast
@@ -77,6 +76,23 @@ from longform_engine.reader_promises import (
 from longform_engine.story_profiles import BUILTIN_MARKET_IDS, active_story_facets, compile_story_profile
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import manuscript_chapter_path
+
+
+# Outline candidates still reject these pre-v0.8 aliases, but the rule belongs
+# to outline-candidate validation rather than the formal v0.10 chapter contract.
+REMOVED_CHAPTER_PLAN_ALIAS_FIELDS = frozenset(
+    {
+        "duty",
+        "information",
+        "information_release",
+        "reader_payoff",
+        "hook",
+        "hook_mode",
+        "plot_obligation",
+        "irreversible_action",
+        "dramatic_freedom",
+    }
+)
 
 
 INTELLIGENCE_TASK_TYPES = (
@@ -4301,7 +4317,7 @@ def validate_rolling_chapter_plan(
         if not isinstance(chapter, dict):
             errors.append(f"chapter_plan[{index}] must be an object.")
             continue
-        removed_aliases = sorted(REMOVED_ALIAS_FIELDS & set(chapter))
+        removed_aliases = sorted(REMOVED_CHAPTER_PLAN_ALIAS_FIELDS & set(chapter))
         if removed_aliases:
             errors.append(
                 f"chapter_plan[{index}] contains removed aliases: {', '.join(removed_aliases)}."

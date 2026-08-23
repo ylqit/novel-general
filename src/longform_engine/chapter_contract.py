@@ -1,422 +1,289 @@
-"""Single-source chapter contract projection and integrity checks."""
+"""The only formal chapter contract accepted by the v0.10 production line."""
 
 from __future__ import annotations
 
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 import json
-import re
 
-from longform_engine.arc_simulation import ArcSimulationError, load_active_arc_simulation
-from longform_engine.reader_promises import (
-    ACTION_FIELDS,
-    PROMISE_ACTIONS,
-    ReaderPromiseError,
-    load_reader_promise_ledger,
-    validate_promise_actions,
+from longform_engine.reader_promises_v2 import validate_promise_actions_v2
+
+
+CONTRACT_SCHEMA = "chapter_contract_v5"
+TOPOLOGIES = frozenset(
+    {"escalation", "revelation", "aftermath", "relationship", "transition", "payoff"}
 )
-
-
-CONTRACT_SCHEMA = "chapter_contract_v4"
-REMOVED_ALIAS_FIELDS = frozenset(
-    {
-        "duty",
-        "information",
-        "information_release",
-        "reader_payoff",
-        "hook",
-        "hook_mode",
-        "plot_obligation",
-        "irreversible_action",
-        "dramatic_freedom",
-    }
-)
-CONTRACT_FIELDS = (
+APPLICABILITY = frozenset({"required", "optional", "not_applicable"})
+APPLICABILITY_FIELDS = ("failure", "choice", "cost", "aftermath")
+CONTRACT_FIELDS = {
+    "schema",
+    "contract_id",
     "chapter_number",
-    "title",
-    "book_goal",
-    "volume_goal",
-    "protagonist_goal",
+    "forecast_ref",
+    "topology",
     "chapter_duty",
-    "platform_promise",
-    "immediate_desire",
-    "opposition_force",
-    "dramatic_question",
-    "conflict",
-    "key_failure",
-    "irreversible_choice",
-    "chapter_turn",
-    "reveal_boundary",
-    "emotional_aftereffect",
-    "ending_mode",
-    "ending_intent",
-    "scene_chain",
-    "must_dramatize",
-    "may_summarize",
-    "primary_story_engine",
-    "scene_carriers",
-    "protected_story_outcomes",
-    "prohibited_drift",
-    "featured_character_ids",
-    "reader_gain",
+    "observable_change",
+    "reader_value",
+    "failure",
+    "choice",
     "cost",
-    "state_change_kind",
-    "dramatic_method",
-    "exposition_carrier",
-    "relationship_move",
-    "canon_refs",
-    "world_rule_refs",
-    "foreshadow_refs",
-    "forbidden_reveals",
-    "must_preserve_suspense",
-    "resolution_markers",
+    "aftermath",
+    "plot_node_table_ref",
+    "semantic_obligation_refs",
     "reader_promise_actions",
-    "arc_simulation_ref",
-)
-LIST_FIELDS = frozenset(
-    {
-        "scene_chain",
-        "must_dramatize",
-        "may_summarize",
-        "scene_carriers",
-        "protected_story_outcomes",
-        "prohibited_drift",
-        "featured_character_ids",
-        "canon_refs",
-        "world_rule_refs",
-        "foreshadow_refs",
-        "forbidden_reveals",
-        "must_preserve_suspense",
-        "resolution_markers",
-        "reader_promise_actions",
-    }
-)
-NON_EMPTY_LIST_FIELDS = frozenset(
-    {
-        "scene_chain",
-        "must_dramatize",
-        "scene_carriers",
-        "protected_story_outcomes",
-        "prohibited_drift",
-        "featured_character_ids",
-        "reader_promise_actions",
-    }
-)
-SCENE_FIELDS = frozenset(
-    {
-        "scene_id", "location", "participants", "carrier", "desire_collision",
-        "action", "reaction", "choice", "cost", "turn", "exit_state",
-    }
-)
+    "protected_invariants",
+    "prohibited_drift",
+}
 
 
 class ChapterContractError(ValueError):
-    """Raised when chapter production sees a split or incomplete contract."""
+    """Raised when current v0.10 chapter evidence is missing, incompatible, or stale."""
 
 
-def project_chapter_contract(card: dict[str, Any]) -> dict[str, Any]:
-    removed_aliases = sorted(REMOVED_ALIAS_FIELDS & set(card))
-    if removed_aliases:
-        raise ChapterContractError(
-            "chapter_contract_inconsistent:removed_alias_present:" + ",".join(removed_aliases)
-        )
-    contract: dict[str, Any] = {"schema": CONTRACT_SCHEMA}
-    for field in CONTRACT_FIELDS:
-        value = card.get(field)
-        if field in LIST_FIELDS:
-            if not isinstance(value, list):
-                raise ChapterContractError(f"chapter_contract_inconsistent:{field}_must_be_list")
-            if field in NON_EMPTY_LIST_FIELDS and not value:
-                raise ChapterContractError(f"chapter_contract_inconsistent:{field}_missing")
-            if field == "scene_chain":
-                validate_scene_chain(value)
-            elif field == "reader_promise_actions":
-                validate_promise_action_shape(value)
-            elif any(not isinstance(item, str) or not item.strip() for item in value):
-                raise ChapterContractError(f"chapter_contract_inconsistent:{field}_must_be_string_list")
-            contract[field] = value
-        elif field == "arc_simulation_ref":
-            validate_arc_simulation_ref(value, int(card.get("chapter_number") or 0))
-            contract[field] = value
-        else:
-            if field == "chapter_number":
-                if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                    raise ChapterContractError("chapter_contract_inconsistent:chapter_number")
-                contract[field] = value
-            elif not isinstance(value, str) or not value.strip():
-                raise ChapterContractError(f"chapter_contract_inconsistent:{field}_missing")
-            else:
-                contract[field] = value.strip()
-    return contract
-
-
-def validate_scene_chain(scenes: list[Any]) -> None:
-    for index, scene in enumerate(scenes):
-        if not isinstance(scene, dict) or set(scene) != SCENE_FIELDS:
-            raise ChapterContractError(
-                f"chapter_contract_inconsistent:scene_chain_{index}_fields"
-            )
-        participants = scene.get("participants")
-        if not isinstance(participants, list) or not participants or any(
-            not isinstance(item, str) or not item.strip() for item in participants
+def validate_chapter_contract(
+    value: Any,
+    *,
+    promise_ledger: dict[str, Any] | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(value, dict) or set(value) != CONTRACT_FIELDS:
+        return ["chapter_contract_v5 fields are invalid; v0.9 chapter cards are incompatible"]
+    if value.get("schema") != CONTRACT_SCHEMA:
+        errors.append(f"schema must be {CONTRACT_SCHEMA}")
+    contract_id = value.get("contract_id")
+    if not isinstance(contract_id, str) or not contract_id.startswith("contract:ch"):
+        errors.append("contract_id must be a stable contract:chNNN ID")
+    chapter = value.get("chapter_number")
+    if not isinstance(chapter, int) or isinstance(chapter, bool) or chapter <= 0:
+        errors.append("chapter_number must be positive")
+    if value.get("topology") not in TOPOLOGIES:
+        errors.append("topology is invalid")
+    for field in ("forecast_ref", "chapter_duty", "observable_change", "reader_value"):
+        if not isinstance(value.get(field), str) or not value[field].strip():
+            errors.append(f"{field} must be non-empty")
+    for field in APPLICABILITY_FIELDS:
+        _validate_applicability(value.get(field), field, errors)
+    node_ref = value.get("plot_node_table_ref")
+    if not isinstance(node_ref, dict) or set(node_ref) != {"table_id", "candidate_sha256"}:
+        errors.append("plot_node_table_ref fields are invalid")
+    else:
+        if not isinstance(node_ref.get("table_id"), str) or not node_ref["table_id"].strip():
+            errors.append("plot_node_table_ref.table_id must be non-empty")
+        if not _is_sha256(node_ref.get("candidate_sha256")):
+            errors.append("plot_node_table_ref.candidate_sha256 must be SHA-256")
+    for field in ("semantic_obligation_refs", "protected_invariants", "prohibited_drift"):
+        raw = value.get(field)
+        if not isinstance(raw, list) or any(
+            not isinstance(item, str) or not item.strip() for item in raw
         ):
-            raise ChapterContractError(
-                f"chapter_contract_inconsistent:scene_chain_{index}_participants"
-            )
-        for field in SCENE_FIELDS - {"participants"}:
-            if not isinstance(scene.get(field), str) or not scene[field].strip():
-                raise ChapterContractError(
-                    f"chapter_contract_inconsistent:scene_chain_{index}_{field}"
-                )
-
-
-def validate_promise_action_shape(actions: list[Any]) -> None:
-    for index, action in enumerate(actions):
-        if not isinstance(action, dict) or set(action) != ACTION_FIELDS:
-            raise ChapterContractError(
-                f"chapter_contract_inconsistent:reader_promise_actions_{index}_fields"
-            )
-        if action.get("action") not in PROMISE_ACTIONS:
-            raise ChapterContractError(
-                f"chapter_contract_inconsistent:reader_promise_actions_{index}_action"
-            )
-        for field in ("promise_id", "intended_reader_gain", "evidence_requirement"):
-            if not isinstance(action.get(field), str) or not action[field].strip():
-                raise ChapterContractError(
-                    f"chapter_contract_inconsistent:reader_promise_actions_{index}_{field}"
-                )
-        if action.get("action") == "defer":
-            if not isinstance(action.get("defer_reason"), str) or not action["defer_reason"].strip():
-                raise ChapterContractError(
-                    f"chapter_contract_inconsistent:reader_promise_actions_{index}_defer_reason"
-                )
-        elif action.get("defer_reason") not in {"", None}:
-            raise ChapterContractError(
-                f"chapter_contract_inconsistent:reader_promise_actions_{index}_unexpected_defer_reason"
-            )
-
-
-def validate_arc_simulation_ref(value: Any, chapter_number: int) -> None:
-    fields = {"path", "sha256", "from_chapter", "to_chapter"}
-    if not isinstance(value, dict) or set(value) != fields:
-        raise ChapterContractError("chapter_contract_inconsistent:arc_simulation_ref_fields")
-    if not isinstance(value.get("path"), str) or not value["path"].strip():
-        raise ChapterContractError("chapter_contract_inconsistent:arc_simulation_ref_path")
-    if not isinstance(value.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"]):
-        raise ChapterContractError("chapter_contract_inconsistent:arc_simulation_ref_sha256")
-    start, end = value.get("from_chapter"), value.get("to_chapter")
-    if not isinstance(start, int) or not isinstance(end, int) or not start <= chapter_number <= end:
-        raise ChapterContractError("chapter_contract_inconsistent:arc_simulation_ref_range")
+            errors.append(f"{field} must be a string list")
+        elif len(raw) != len(set(raw)):
+            errors.append(f"{field} must not contain duplicates")
+    if not value.get("semantic_obligation_refs"):
+        errors.append("semantic_obligation_refs must not be empty in the firm tier")
+    if not value.get("protected_invariants"):
+        errors.append("protected_invariants must not be empty")
+    actions = value.get("reader_promise_actions")
+    if not isinstance(actions, list):
+        errors.append("reader_promise_actions must be a list")
+    elif promise_ledger is not None:
+        errors.extend(validate_promise_actions_v2(actions, promise_ledger))
+    return errors
 
 
 def chapter_contract_hash(contract: dict[str, Any]) -> str:
     return sha256(
-        json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
     ).hexdigest()
 
 
-def stamp_chapter_contract(card: dict[str, Any]) -> dict[str, Any]:
-    contract = project_chapter_contract(card)
-    card["chapter_contract_schema"] = CONTRACT_SCHEMA
-    card["chapter_contract_hash"] = chapter_contract_hash(contract)
-    return contract
+def stamp_chapter_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    """Return a hash-stamped v5 contract; old chapter-card projection is intentionally absent."""
+
+    errors = validate_chapter_contract(contract)
+    if errors:
+        raise ChapterContractError("chapter_contract_v5_invalid:" + ";".join(errors))
+    return {**contract, "chapter_contract_hash": chapter_contract_hash(contract)}
 
 
 def load_verified_chapter_contract(root: Path, chapter_number: int) -> tuple[dict[str, Any], str]:
-    path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    path = root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
+    _reject_stale_artifact(root, path)
     try:
-        card = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ChapterContractError(f"chapter_contract_inconsistent:{exc}") from exc
-    if not isinstance(card, dict) or card.get("chapter_number") != chapter_number:
-        raise ChapterContractError("chapter_contract_inconsistent:chapter_number")
-    if card.get("chapter_contract_schema") != CONTRACT_SCHEMA:
         raise ChapterContractError(
-            "chapter_contract_incompatible: v0.7 chapter cards are rejected; create a v0.8 "
-            "project and manually import authoritative Bible and outline material"
-        )
-    contract = project_chapter_contract(card)
+            "chapter_contract_v5_unreadable; v0.9 chapter cards are not accepted: " + str(exc)
+        ) from exc
+    if not isinstance(payload, dict) or set(payload) != CONTRACT_FIELDS | {"chapter_contract_hash"}:
+        raise ChapterContractError("chapter_contract_v5_invalid:fields")
+    contract = {field: payload[field] for field in CONTRACT_FIELDS}
+    ledger_path = root / "30_state" / "reader_promise_ledger.json"
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ChapterContractError(f"reader_promise_ledger_v2_unreadable:{exc}") from exc
+    if not isinstance(ledger, dict) or ledger.get("schema") != "reader_promise_ledger_v2":
+        raise ChapterContractError("chapter_contract_v5_requires_reader_promise_ledger_v2")
+    errors = validate_chapter_contract(contract, promise_ledger=ledger)
+    if errors:
+        raise ChapterContractError("chapter_contract_v5_invalid:" + ";".join(errors))
+    if contract["chapter_number"] != chapter_number:
+        raise ChapterContractError("chapter_contract_v5_invalid:chapter_number")
     digest = chapter_contract_hash(contract)
-    if card.get("chapter_contract_hash") != digest:
-        raise ChapterContractError("chapter_contract_inconsistent:hash")
-    validate_contract_planning_dependencies(root, contract, chapter_number)
+    if payload.get("chapter_contract_hash") != digest:
+        raise ChapterContractError("chapter_contract_v5_invalid:hash")
+    _validate_plot_node_table(root, contract, chapter_number)
+    _validate_semantic_obligations(root, contract)
     return contract, digest
 
 
-def validate_contract_planning_dependencies(
-    root: Path,
-    contract: dict[str, Any],
-    chapter_number: int,
-) -> None:
-    try:
-        ledger = load_reader_promise_ledger(root)
-    except ReaderPromiseError as exc:
-        raise ChapterContractError(f"chapter_contract_inconsistent:{exc}") from exc
-    promise_errors = validate_promise_actions(contract.get("reader_promise_actions"), ledger)
-    if promise_errors:
-        raise ChapterContractError(
-            "chapter_contract_inconsistent:" + ";".join(promise_errors)
-        )
-    try:
-        simulation, path, digest = load_active_arc_simulation(root, chapter_number=chapter_number)
-    except ArcSimulationError as exc:
-        raise ChapterContractError(f"chapter_contract_inconsistent:{exc}") from exc
-    reference = contract.get("arc_simulation_ref") or {}
-    expected_path = path.relative_to(root).as_posix()
-    if (
-        reference.get("path") != expected_path
-        or reference.get("sha256") != digest
-        or reference.get("from_chapter") != simulation.get("from_chapter")
-        or reference.get("to_chapter") != simulation.get("to_chapter")
-    ):
-        raise ChapterContractError("chapter_contract_inconsistent:arc_simulation_ref_stale")
-
-
 def resolve_chapter_contract_refs(root: Path, contract: dict[str, Any]) -> list[dict[str, Any]]:
-    """Resolve every declared canon, world-rule, and foreshadow ref without truncation."""
+    """Resolve author facts through stable fact IDs and explicit obligation dependencies only."""
 
-    groups = (
-        ("canon", contract.get("canon_refs") or [], canon_reference_sources(root)),
-        ("world_rule", contract.get("world_rule_refs") or [], world_rule_sources(root)),
-        ("foreshadow", contract.get("foreshadow_refs") or [], foreshadow_sources(root)),
-    )
-    resolved: list[dict[str, Any]] = []
-    missing: list[str] = []
-    for kind, refs, sources in groups:
-        for raw_ref in refs:
-            ref = str(raw_ref or "").strip().replace("\\", "/")
-            if not ref:
-                continue
-            path = (root / ref).resolve()
-            try:
-                path.relative_to(root.resolve())
-            except ValueError:
-                missing.append(f"{kind}:{ref}")
-                continue
-            if path.is_file():
-                text = path.read_text(encoding="utf-8")
-                reject_depth_limited(kind, ref, text)
-                resolved.append(
-                    {
-                        "kind": kind,
-                        "ref": ref,
-                        "source": ref,
-                        "sha256": sha256(path.read_bytes()).hexdigest(),
-                        "value": text,
-                    }
-                )
-                continue
-            matches = find_records_by_id(sources, ref)
-            if not matches:
-                missing.append(f"{kind}:{ref}")
-                continue
-            if kind != "foreshadow" and len(matches) > 1:
-                raise ChapterContractError(f"context_evidence_incomplete:ambiguous_ref:{kind}:{ref}")
-            source_paths = [item[0] for item in matches]
-            if kind == "foreshadow":
-                value: Any = {
-                    "thread_id": ref,
-                    "plan": next(
-                        (record for source, record in matches if source.name == "foreshadowing_ledger.json"),
-                        None,
-                    ),
-                    "current_state": next(
-                        (record for source, record in matches if source.name == "foreshadowing_state.json"),
-                        None,
-                    ),
-                }
-            else:
-                value = matches[0][1]
-            reject_depth_limited(kind, ref, value)
-            source_names = [path.relative_to(root).as_posix() for path in source_paths]
-            resolved.append(
-                {
-                    "kind": kind,
-                    "ref": ref,
-                    "source": source_names[0] if len(source_names) == 1 else source_names,
-                    "sha256": sha256(
-                        "\n".join(sha256(path.read_bytes()).hexdigest() for path in source_paths).encode("ascii")
-                    ).hexdigest(),
-                    "value": value,
-                }
-            )
+    obligation_path = root / "30_state" / "semantic_obligations.json"
+    obligation_payload = _read_json_object(obligation_path, "semantic_obligation_ledger")
+    obligations = {
+        str(item.get("obligation_id")): item
+        for item in obligation_payload.get("items", [])
+        if isinstance(item, dict) and item.get("obligation_id")
+    }
+    selected = [obligations[ref] for ref in contract["semantic_obligation_refs"]]
+    fact_ids: list[str] = []
+    for obligation in selected:
+        for field in ("subject_refs", "prior_state_refs", "dependency_refs"):
+            for fact_id in obligation.get(field) or []:
+                token = str(fact_id)
+                if token not in fact_ids:
+                    fact_ids.append(token)
+    fact_path = root / "10_bible" / "canonical_facts.json"
+    if not fact_ids:
+        return []
+    facts_payload = _read_json_object(fact_path, "canonical_fact_registry_v2")
+    if facts_payload.get("schema") != "canonical_fact_registry_v2":
+        raise ChapterContractError("canonical_fact_v2_registry_incompatible")
+    facts = {
+        str(item.get("fact_id")): item
+        for item in facts_payload.get("items", [])
+        if isinstance(item, dict) and item.get("schema") == "canonical_fact_v2"
+    }
+    missing = [fact_id for fact_id in fact_ids if fact_id not in facts]
     if missing:
         raise ChapterContractError(
-            "context_evidence_incomplete:unresolved_refs:" + ",".join(sorted(missing))
+            "context_evidence_incomplete:unresolved_stable_fact_ids:" + ",".join(missing)
         )
-    return resolved
+    digest = sha256(fact_path.read_bytes()).hexdigest()
+    return [
+        {
+            "kind": "canonical_fact",
+            "ref": fact_id,
+            "source": fact_path.relative_to(root).as_posix(),
+            "sha256": digest,
+            "value": facts[fact_id].get("statement"),
+        }
+        for fact_id in fact_ids
+    ]
 
 
-def canon_reference_sources(root: Path) -> list[Path]:
-    return existing_files(
-        root,
-        (
-            "10_bible/fanfiction/source_canon.json",
-            "10_bible/fanfiction/fanfiction_bible.json",
-            "10_bible/research_canon.json",
-        ),
+def _validate_plot_node_table(root: Path, contract: dict[str, Any], chapter_number: int) -> None:
+    node_ref = contract["plot_node_table_ref"]
+    node_path = root / "20_outline" / "plot_nodes" / f"ch{chapter_number:03d}.json"
+    node_table = _read_json_object(node_path, "plot_node_table")
+    if (
+        node_table.get("table_id") != node_ref["table_id"]
+        or node_table.get("candidate_sha256") != node_ref["candidate_sha256"]
+        or not node_table.get("nodes")
+        or any(
+            not isinstance(node, dict)
+            or not isinstance(node.get("human_decision"), dict)
+            or node["human_decision"].get("decision") not in {"approve", "adjust"}
+            for node in node_table.get("nodes", [])
+        )
+    ):
+        raise ChapterContractError("chapter_contract_v5_invalid:plot_node_table_ref_stale")
+
+
+def _validate_semantic_obligations(root: Path, contract: dict[str, Any]) -> None:
+    payload = _read_json_object(
+        root / "30_state" / "semantic_obligations.json", "semantic_obligation_ledger"
     )
+    known = {
+        str(item.get("obligation_id"))
+        for item in payload.get("items", [])
+        if isinstance(item, dict) and item.get("obligation_id")
+    }
+    missing = sorted(set(contract["semantic_obligation_refs"]) - known)
+    if missing:
+        raise ChapterContractError(
+            "chapter_contract_v5_invalid:semantic_obligations_unresolved:" + ",".join(missing)
+        )
 
 
-def world_rule_sources(root: Path) -> list[Path]:
-    return existing_files(
-        root,
-        (
-            "10_bible/fanfiction/source_canon.json",
-            "10_bible/fanfiction/fanfiction_bible.json",
-            "10_bible/abilities.json",
-            "10_bible/world_rules.json",
-        ),
-    )
+def _read_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ChapterContractError(f"{label}_unreadable:{exc}") from exc
+    if not isinstance(payload, dict):
+        raise ChapterContractError(f"{label}_invalid")
+    return payload
 
 
-def foreshadow_sources(root: Path) -> list[Path]:
-    return existing_files(
-        root,
-        (
-            "20_outline/foreshadowing_ledger.json",
-            "30_state/foreshadowing_state.json",
-        ),
-    )
+def _reject_stale_artifact(root: Path, path: Path) -> None:
+    registry = root / "30_state" / "stale_artifacts.json"
+    if not registry.is_file():
+        return
+    payload = _read_json_object(registry, "stale_artifact_registry")
+    relative = path.relative_to(root).as_posix()
+    if any(
+        isinstance(item, dict)
+        and item.get("artifact_path") == relative
+        and item.get("state") == "stale"
+        for item in payload.get("items", [])
+    ):
+        raise ChapterContractError(
+            f"chapter_contract_v5_stale_by_canon_change:{relative}; replan and bind a new hash"
+        )
 
 
-def existing_files(root: Path, relatives: Iterable[str]) -> list[Path]:
-    return [root / relative for relative in relatives if (root / relative).is_file()]
+def _validate_applicability(value: Any, label: str, errors: list[str]) -> None:
+    if not isinstance(value, dict) or set(value) != {"applicability", "description", "reason"}:
+        errors.append(f"{label} applicability fields are invalid")
+        return
+    applicability = value.get("applicability")
+    if applicability not in APPLICABILITY:
+        errors.append(f"{label}.applicability is invalid")
+    description = value.get("description")
+    reason = value.get("reason")
+    if applicability == "required":
+        if not isinstance(description, str) or not description.strip():
+            errors.append(f"{label}.description is required")
+    elif description not in {None, ""} and not isinstance(description, str):
+        errors.append(f"{label}.description must be text or null")
+    if applicability == "not_applicable":
+        if not isinstance(reason, str) or not reason.strip():
+            errors.append(f"{label}.reason must explain not_applicable")
+    elif reason not in {None, ""} and not isinstance(reason, str):
+        errors.append(f"{label}.reason must be text or null")
 
 
-def reject_depth_limited(kind: str, ref: str, value: Any) -> None:
-    serialized = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, sort_keys=True)
-    if "[depth-limited]" in serialized:
-        raise ChapterContractError(f"context_evidence_incomplete:depth_limited:{kind}:{ref}")
+def _is_sha256(value: Any) -> bool:
+    token = str(value or "")
+    return len(token) == 64 and all(character in "0123456789abcdef" for character in token)
 
 
-def find_records_by_id(sources: Iterable[Path], expected_id: str) -> list[tuple[Path, dict[str, Any]]]:
-    matches: list[tuple[Path, dict[str, Any]]] = []
-    for path in sources:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            continue
-        for record in iter_id_records(payload):
-            if str(record.get("id") or record.get("thread_id") or "") == expected_id:
-                matches.append((path, record))
-    source_counts: dict[Path, int] = {}
-    for path, _record in matches:
-        source_counts[path] = source_counts.get(path, 0) + 1
-    duplicate_sources = {path for path, count in source_counts.items() if count > 1}
-    if duplicate_sources:
-        names = ",".join(sorted(path.as_posix() for path in duplicate_sources))
-        raise ChapterContractError(f"context_evidence_incomplete:duplicate_ref:{expected_id}:{names}")
-    return matches
-
-
-def iter_id_records(value: Any) -> Iterable[dict[str, Any]]:
-    if isinstance(value, dict):
-        if value.get("id") or value.get("thread_id"):
-            yield value
-        for child in value.values():
-            yield from iter_id_records(child)
-    elif isinstance(value, list):
-        for child in value:
-            yield from iter_id_records(child)
+__all__ = [
+    "APPLICABILITY",
+    "CONTRACT_FIELDS",
+    "CONTRACT_SCHEMA",
+    "TOPOLOGIES",
+    "ChapterContractError",
+    "chapter_contract_hash",
+    "load_verified_chapter_contract",
+    "resolve_chapter_contract_refs",
+    "stamp_chapter_contract",
+    "validate_chapter_contract",
+]

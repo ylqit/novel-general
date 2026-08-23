@@ -262,8 +262,8 @@ class ReviewDeskService:
         )
         if not candidate.is_file():
             raise ReviewServerError("human review task must be prepared before validation")
-        if review.get("schema") != "human_story_review_v6":
-            raise ReviewServerError("review schema must be human_story_review_v6")
+        if review.get("schema") != "human_story_review_v7":
+            raise ReviewServerError("review schema must be human_story_review_v7")
         if set(review.get("dimension_coverage") or {}) != CHECK_FIELDS:
             raise ReviewServerError("review must cover all ten risk-layered story dimensions")
         with acquire_project_lock(
@@ -578,7 +578,7 @@ class ReviewDeskService:
         ):
             raise ReviewServerError("repair candidate is missing or changed; save and reload first")
         raise ReviewServerError(
-            "manual repair cannot submit directly; prepare and validate human_author_revision_v3 first"
+            "manual repair cannot submit directly; prepare and validate human_author_revision_v4 first"
         )
 
     def manual_repair_state(self) -> dict[str, Any]:
@@ -1014,7 +1014,7 @@ textarea{width:100%;min-height:120px;border:1px solid var(--line);border-radius:
 <div id="layout">
 <aside class="col"><section><h2>人类章节意图</h2><pre id="chapterIntent"></pre></section><section><h2>Story Brief</h2><pre id="brief"></pre></section><section><h2>章节合同</h2><pre id="contract"></pre></section><section><h2>承诺账本</h2><pre id="promises"></pre></section><section><h2>起点 / 番茄非阻断观察</h2><pre id="market"></pre></section></aside>
 <main class="col"><section><h2>正文与精确 span</h2><textarea id="manuscript" readonly></textarea><div class="toolbar"><button data-evidence="key_turn">设为关键转折</button><button data-evidence="character_choice_or_emotion">设为人物选择/情绪</button><button data-evidence="reader_gain">设为读者收益</button></div><pre id="evidenceView" class="muted"></pre></section>
-<section><h2>AI 源稿—人工终稿—diff—修改意图</h2><div id="revisionMeta" class="muted"></div><textarea id="revisionText"></textarea><label>human_author_revision_v3 记录（含 intent_ref、读者影响与终稿确认）</label><textarea id="revisionRecord"></textarea><pre id="diff"></pre><div class="toolbar"><button id="revisionPrepare">建立人工终稿工作区</button><button id="revisionSave">保存到 workbench</button><button id="revisionValidate">语义复核并锁定</button><button id="revisionSubmit" class="primary">以 human 提交并全量复审</button></div><div id="revisionStatus" class="status"></div></section>
+<section><h2>AI 源稿—人工终稿—diff—修改意图</h2><div id="revisionMeta" class="muted"></div><textarea id="revisionText"></textarea><label>human_author_revision_v4 记录（含 intent_ref、读者影响与终稿确认）</label><textarea id="revisionRecord"></textarea><pre id="diff"></pre><div class="toolbar"><button id="revisionPrepare">建立人工终稿工作区</button><button id="revisionSave">保存到 workbench</button><button id="revisionValidate">语义复核并锁定</button><button id="revisionSubmit" class="primary">以 human 提交并全量复审</button></div><div id="revisionStatus" class="status"></div></section>
 <section><h2>人工完整 repair 候选</h2><div id="repairMeta" class="muted"></div><textarea id="repairText"></textarea><div class="toolbar"><button id="repairPrepare">建立 human repair 工单</button><button id="repairSave">保存完整候选</button><button id="repairSubmit" class="primary">转入人工修订验证</button></div><div id="repairStatus" class="status"></div></section></main>
 <aside class="col"><section><h2>独立审稿 finding</h2><div id="findings"></div></section>
 <section><h2>风险分层人工深审</h2><div id="checks"></div><label>十维覆盖（核心理由必须人工填写）</label><textarea id="coverageJson"></textarea><label>finding 处置（理由必须人工填写）</label><textarea id="findingJson"></textarea><label>决定 <select id="decision"><option>repair</option><option>accept</option><option>redirect</option></select></label><label>redirect 范围 <select id="redirect"><option>direction</option><option>outline_revision</option></select></label><input id="gainNote" placeholder="读者收益说明"><input id="reviewReason" placeholder="决定理由"><div class="toolbar"><button id="reviewPrepare">准备冻结深审表</button><button id="reviewValidate" class="primary">保存并校验（不 apply）</button></div><div id="reviewStatus" class="status"></div></section>
@@ -1025,7 +1025,8 @@ textarea{width:100%;min-height:120px;border:1px solid var(--line);border-radius:
 const csrf="__CSRF_TOKEN__";let state=null;let selected={start:0,end:0,text:""};let evidence={};let annotations=[];
 const $=id=>document.getElementById(id);const show=(id,value,cls="")=>{const el=$(id);el.textContent=typeof value==="string"?value:JSON.stringify(value,null,2);el.className="status "+cls};
 async function api(path,body){const r=await fetch(path,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-Review-CSRF":csrf},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(data.error||"request failed");return data.result}
-function capture(){const el=$("manuscript");selected={start:el.selectionStart,end:el.selectionEnd,text:el.value.slice(el.selectionStart,el.selectionEnd)};if(selected.end<=selected.start)throw new Error("请先圈选正文 span");return selected}
+function utf16ToCodePoint(text,index){return Array.from(text.slice(0,index)).length}
+function capture(){const el=$("manuscript");const utf16Start=el.selectionStart,utf16End=el.selectionEnd;selected={start:utf16ToCodePoint(el.value,utf16Start),end:utf16ToCodePoint(el.value,utf16End),text:el.value.slice(utf16Start,utf16End)};if(selected.end<=selected.start)throw new Error("请先圈选正文 span");return selected}
 async function load(){state=await fetch("/api/state",{credentials:"same-origin"}).then(r=>r.json());$("title").textContent=`ch${String(state.chapter_number).padStart(3,"0")} 人工可视化深审`;$("candidate").textContent=state.consultation_candidate.sha256;$("chapterIntent").textContent=JSON.stringify(state.human_chapter_intent,null,2);$("brief").textContent=state.story_brief.text;$("contract").textContent=JSON.stringify(state.chapter_contract,null,2);$("promises").textContent=JSON.stringify(state.reader_promises,null,2);$("market").textContent=JSON.stringify(state.market_observations,null,2);$("manuscript").value=state.consultation_candidate.text;$("consultPhase").textContent=state.consultation_candidate.phase==="coedit"?"coedit：可生成完整 workbench 候选":"human_final：锁定后仅只读咨询";
 $("findings").replaceChildren(...(state.review_barrier.findings||[]).map(f=>{const d=document.createElement("div");d.className="finding";d.textContent=`[${f.severity}] ${f.code||f.finding_id}: ${f.diagnosis||""}`;return d}));
 $("checks").replaceChildren(...state.review_checks.map(c=>{const l=document.createElement("div");l.className="check";const current=(state.review_template.dimension_coverage||{})[c.id]||{};l.textContent=`${c.label} — ${current.coverage_source||"待覆盖"} / ${current.status||"待判断"}`;return l}));
