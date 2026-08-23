@@ -18,7 +18,17 @@ import secrets
 
 from longform_engine.agent_tasks import list_manifests, manifest_output, relative_path
 from longform_engine.chapter_contract import load_verified_chapter_contract
+from longform_engine.chapter_coedit import (
+    coedit_status,
+    create_chapter_coedit_rewrite_task,
+    create_chapter_coedit_turn,
+    current_coedit_candidate,
+    record_chapter_coedit_response,
+    validate_chapter_coedit_candidate,
+    validate_chapter_coedit_response,
+)
 from longform_engine.config import ConfigDocument
+from longform_engine.human_chapter_intent import human_chapter_intent_status
 from longform_engine.human_review_consultation import (
     consultation_status,
     create_human_review_consult_task,
@@ -34,6 +44,7 @@ from longform_engine.human_story_review import (
 from longform_engine.human_author_revision import (
     create_human_author_revision_task,
     human_author_revision_status,
+    task_record_path_for_hash,
     validate_human_author_revision,
 )
 from longform_engine.orchestration.pipeline import submit_agent_draft
@@ -46,6 +57,7 @@ from longform_engine.repair_coordination import (
 )
 from longform_engine.storage import acquire_project_lock, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import manuscript_chapter_path
+from longform_engine.story_brief import load_current_story_brief_binding, story_brief_status
 
 
 MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -97,6 +109,14 @@ class ReviewDeskService:
         draft_text = draft.read_text(encoding="utf-8")
         draft_hash = _file_hash(draft)
         story_brief = self.root / "50_workbench" / "writing_tasks" / f"ch{chapter:03d}.md"
+        brief_currentness = story_brief_status(self.root, chapter)
+        try:
+            story_brief_binding = load_current_story_brief_binding(self.root, chapter)
+        except ValueError:
+            story_brief_binding = {}
+        story_brief_basis_hash = str(
+            story_brief_binding.get("story_brief_basis_sha256") or ""
+        )
 
         contract: dict[str, Any] = {}
         contract_hash = ""
@@ -135,7 +155,7 @@ class ReviewDeskService:
             self.root
             / "50_workbench"
             / "human_story_reviews"
-            / f"ch{chapter:03d}.{draft_hash[:12]}.candidate.json"
+            / f"ch{chapter:03d}.{draft_hash[:12]}.{story_brief_basis_hash[:12]}.candidate.json"
         )
         review_template = _load_json(template_path, default={})
         manual = self.manual_repair_state()
@@ -152,14 +172,28 @@ class ReviewDeskService:
             )
         consult = consultation_status(self.config, chapter_number=chapter)
         consult["sessions"] = self._consultation_views(consult.get("sessions") or [])
+        coedit = coedit_status(self.config, chapter_number=chapter)
+        coedit["sessions"] = self._coedit_views(coedit.get("sessions") or [])
         human_revision = self.human_revision_state()
+        try:
+            coedit_candidate = current_coedit_candidate(self.root, chapter)
+        except ValueError:
+            coedit_candidate = draft
+        active_candidate = (
+            self.root / str(human_revision.get("candidate_file") or "")
+            if human_revision.get("available")
+            else coedit_candidate
+        )
+        if not active_candidate.is_file():
+            active_candidate = draft
         consult_candidate = {
-            "path": human_revision.get("candidate_file") or relative_path(self.root, draft),
-            "sha256": human_revision.get("candidate_sha256") or draft_hash,
-            "text": human_revision.get("text") or draft_text,
+            "path": relative_path(self.root, active_candidate),
+            "sha256": _file_hash(active_candidate),
+            "text": active_candidate.read_text(encoding="utf-8"),
+            "phase": "human_final" if human_revision.get("available") else "coedit",
         }
         return {
-            "schema": "human_review_desk_state_v1",
+            "schema": "human_review_desk_state_v3",
             "chapter_number": chapter,
             "draft": {
                 "path": relative_path(self.root, draft),
@@ -169,6 +203,8 @@ class ReviewDeskService:
             "story_brief": {
                 "path": relative_path(self.root, story_brief),
                 "text": story_brief.read_text(encoding="utf-8") if story_brief.is_file() else "",
+                "basis_sha256": story_brief_basis_hash,
+                "currentness": brief_currentness,
             },
             "chapter_contract": contract,
             "chapter_contract_sha256": contract_hash,
@@ -185,6 +221,8 @@ class ReviewDeskService:
             ],
             "market_observations": market_view,
             "consultations": consult,
+            "coedit": coedit,
+            "human_chapter_intent": human_chapter_intent_status(self.root, chapter),
             "manual_repair": manual,
             "repair_diff": diff_text,
             "human_author_revision": human_revision,
@@ -208,16 +246,24 @@ class ReviewDeskService:
         self._require_current_candidate(expected_candidate_sha256)
         if not isinstance(review, dict):
             raise ReviewServerError("review must be a JSON object")
+        try:
+            story_brief_binding = load_current_story_brief_binding(
+                self.root,
+                self.chapter_number,
+            )
+        except ValueError as exc:
+            raise ReviewServerError(str(exc)) from exc
+        basis_hash = str(story_brief_binding["story_brief_basis_sha256"])
         candidate = (
             self.root
             / "50_workbench"
             / "human_story_reviews"
-            / f"ch{self.chapter_number:03d}.{expected_candidate_sha256[:12]}.candidate.json"
+            / f"ch{self.chapter_number:03d}.{expected_candidate_sha256[:12]}.{basis_hash[:12]}.candidate.json"
         )
         if not candidate.is_file():
             raise ReviewServerError("human review task must be prepared before validation")
-        if review.get("schema") != "human_story_review_v4":
-            raise ReviewServerError("review schema must be human_story_review_v4")
+        if review.get("schema") != "human_story_review_v6":
+            raise ReviewServerError("review schema must be human_story_review_v6")
         if set(review.get("dimension_coverage") or {}) != CHECK_FIELDS:
             raise ReviewServerError("review must cover all ten risk-layered story dimensions")
         with acquire_project_lock(
@@ -238,19 +284,34 @@ class ReviewDeskService:
         start: int,
         end: int,
         question: str,
+        phase: str,
     ) -> dict[str, Any]:
         self._require_current_consult_candidate(expected_candidate_sha256)
         with acquire_project_lock(
             self.config, owner="review-desk", command="review consult-task"
         ):
-            result = create_human_review_consult_task(
-                self.config,
-                chapter_number=self.chapter_number,
-                start=start,
-                end=end,
-                question=question,
-            )
-        return asdict(result)
+            if phase == "coedit":
+                return asdict(
+                    create_chapter_coedit_turn(
+                        self.config,
+                        chapter_number=self.chapter_number,
+                        start=start,
+                        end=end,
+                        question=question,
+                    )
+                )
+            elif phase == "human_final":
+                return asdict(
+                    create_human_review_consult_task(
+                        self.config,
+                        chapter_number=self.chapter_number,
+                        start=start,
+                        end=end,
+                        question=question,
+                    )
+                )
+            else:
+                raise ReviewServerError("consultation phase must be coedit or human_final")
 
     def prepare_human_revision(self, *, expected_candidate_sha256: str) -> dict[str, Any]:
         self._require_current_candidate(expected_candidate_sha256)
@@ -350,8 +411,13 @@ class ReviewDeskService:
         if not draft.is_file():
             return {"available": False, "status": "pending"}
         digest = _file_hash(draft)
-        directory = self.root / "50_workbench" / "human_author_revisions" / f"ch{chapter:03d}"
-        task_file = directory / f"{digest[:12]}.task.json"
+        try:
+            task_file = task_record_path_for_hash(self.root, chapter, digest)
+        except ValueError:
+            return {
+                "available": False,
+                **human_author_revision_status(self.config, chapter_number=chapter),
+            }
         task = _load_json(task_file, default={})
         status = human_author_revision_status(self.config, chapter_number=chapter)
         if not isinstance(task, dict) or not task:
@@ -383,25 +449,81 @@ class ReviewDeskService:
             "diff": diff,
         }
 
-    def validate_consultation(self, *, response_file: str) -> dict[str, Any]:
+    def validate_consultation(self, *, response_file: str, phase: str) -> dict[str, Any]:
         with acquire_project_lock(
             self.config, owner="review-desk", command="review consult-validate"
         ):
-            result = validate_human_review_consultation(
-                self.config,
-                chapter_number=self.chapter_number,
-                file_path=response_file,
-            )
-        return asdict(result)
+            if phase == "coedit":
+                return asdict(
+                    validate_chapter_coedit_response(
+                        self.config,
+                        chapter_number=self.chapter_number,
+                        file_path=response_file,
+                    )
+                )
+            elif phase == "human_final":
+                return asdict(
+                    validate_human_review_consultation(
+                        self.config,
+                        chapter_number=self.chapter_number,
+                        file_path=response_file,
+                    )
+                )
+            else:
+                raise ReviewServerError("consultation phase must be coedit or human_final")
 
-    def record_consultation(self, *, response_file: str) -> dict[str, Any]:
+    def record_consultation(self, *, response_file: str, phase: str) -> dict[str, Any]:
         with acquire_project_lock(
             self.config, owner="review-desk", command="review consult-record"
         ):
-            result = record_human_review_consultation(
+            if phase == "coedit":
+                return asdict(
+                    record_chapter_coedit_response(
+                        self.config,
+                        chapter_number=self.chapter_number,
+                        file_path=response_file,
+                    )
+                )
+            elif phase == "human_final":
+                return asdict(
+                    record_human_review_consultation(
+                        self.config,
+                        chapter_number=self.chapter_number,
+                        file_path=response_file,
+                    )
+                )
+            else:
+                raise ReviewServerError("consultation phase must be coedit or human_final")
+
+    def create_coedit_rewrite(
+        self,
+        *,
+        session_id: str,
+        turn_number: int,
+        option_id: str,
+        adjustment: str,
+    ) -> dict[str, Any]:
+        with acquire_project_lock(
+            self.config, owner="review-desk", command="review coedit-rewrite-task"
+        ):
+            result = create_chapter_coedit_rewrite_task(
                 self.config,
                 chapter_number=self.chapter_number,
-                file_path=response_file,
+                session_id=session_id,
+                turn_number=turn_number,
+                option_id=option_id,
+                adjustment=adjustment,
+            )
+        return asdict(result)
+
+    def validate_coedit_candidate(self, *, candidate_file: str) -> dict[str, Any]:
+        with acquire_project_lock(
+            self.config, owner="review-desk", command="review coedit-candidate-validate"
+        ):
+            result = validate_chapter_coedit_candidate(
+                self.config,
+                chapter_number=self.chapter_number,
+                file_path=candidate_file,
             )
         return asdict(result)
 
@@ -456,7 +578,7 @@ class ReviewDeskService:
         ):
             raise ReviewServerError("repair candidate is missing or changed; save and reload first")
         raise ReviewServerError(
-            "manual repair cannot submit directly; prepare and validate human_author_revision_v1 first"
+            "manual repair cannot submit directly; prepare and validate human_author_revision_v3 first"
         )
 
     def manual_repair_state(self) -> dict[str, Any]:
@@ -522,8 +644,13 @@ class ReviewDeskService:
         state = self.human_revision_state()
         current = str(state.get("candidate_sha256") or "") if state.get("available") else ""
         if not current:
-            draft = manuscript_chapter_path(self.root, self.chapter_number, lane="draft")
-            current = _file_hash(draft) if draft.is_file() else ""
+            try:
+                candidate = current_coedit_candidate(self.root, self.chapter_number)
+            except ValueError:
+                candidate = manuscript_chapter_path(
+                    self.root, self.chapter_number, lane="draft"
+                )
+            current = _file_hash(candidate) if candidate.is_file() else ""
         if not current or not hmac.compare_digest(current, str(expected_hash or "")):
             raise ReviewServerError("consultation candidate hash changed; reload the review desk")
 
@@ -555,6 +682,40 @@ class ReviewDeskService:
                         response_text = resolved.read_text(encoding="utf-8")
                 turn["response"] = response_text
                 turns.append(turn)
+            item["turns"] = turns
+            views.append(item)
+        return views
+
+    def _coedit_views(self, sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        base = (
+            self.root
+            / "50_workbench"
+            / "human_story_reviews"
+            / "consultations"
+            / "coedit"
+            / f"ch{self.chapter_number:03d}"
+        ).resolve()
+        views: list[dict[str, Any]] = []
+        for session in sessions:
+            item = dict(session)
+            turns: list[dict[str, Any]] = []
+            for turn_path in session.get("turns") or []:
+                resolved = (self.root / str(turn_path or "")).resolve()
+                try:
+                    resolved.relative_to(base)
+                except ValueError:
+                    continue
+                turn = _load_json(resolved, default={})
+                if not isinstance(turn, dict):
+                    continue
+                response = (self.root / str(turn.get("response_file") or "")).resolve()
+                try:
+                    response.relative_to(base)
+                except ValueError:
+                    response = Path()
+                view = dict(turn)
+                view["response"] = response.read_text(encoding="utf-8") if response.is_file() else ""
+                turns.append(view)
             item["turns"] = turns
             views.append(item)
         return views
@@ -634,12 +795,24 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                     start=int(body.get("start") or 0),
                     end=int(body.get("end") or 0),
                     question=str(body.get("question") or ""),
+                    phase=str(body.get("phase") or ""),
                 ),
                 "/api/consult/validate": lambda: self.server.service.validate_consultation(
-                    response_file=str(body.get("response_file") or "")
+                    response_file=str(body.get("response_file") or ""),
+                    phase=str(body.get("phase") or ""),
                 ),
                 "/api/consult/record": lambda: self.server.service.record_consultation(
-                    response_file=str(body.get("response_file") or "")
+                    response_file=str(body.get("response_file") or ""),
+                    phase=str(body.get("phase") or ""),
+                ),
+                "/api/coedit/rewrite-task": lambda: self.server.service.create_coedit_rewrite(
+                    session_id=str(body.get("session_id") or ""),
+                    turn_number=int(body.get("turn_number") or 0),
+                    option_id=str(body.get("option_id") or ""),
+                    adjustment=str(body.get("adjustment") or ""),
+                ),
+                "/api/coedit/candidate-validate": lambda: self.server.service.validate_coedit_candidate(
+                    candidate_file=str(body.get("candidate_file") or "")
                 ),
                 "/api/human-revision/prepare": lambda: self.server.service.prepare_human_revision(
                     expected_candidate_sha256=str(body.get("expected_candidate_sha256") or "")
@@ -839,36 +1012,39 @@ textarea{width:100%;min-height:120px;border:1px solid var(--line);border-radius:
 </style></head><body>
 <header><strong id="title">人工可视化深审</strong><span id="candidate" class="muted"></span><button id="reload">刷新</button><span id="globalStatus"></span></header>
 <div id="layout">
-<aside class="col"><section><h2>Story Brief</h2><pre id="brief"></pre></section><section><h2>章节合同</h2><pre id="contract"></pre></section><section><h2>承诺账本</h2><pre id="promises"></pre></section><section><h2>起点主合同 / 番茄 P2 观察</h2><pre id="market"></pre></section></aside>
+<aside class="col"><section><h2>人类章节意图</h2><pre id="chapterIntent"></pre></section><section><h2>Story Brief</h2><pre id="brief"></pre></section><section><h2>章节合同</h2><pre id="contract"></pre></section><section><h2>承诺账本</h2><pre id="promises"></pre></section><section><h2>起点 / 番茄非阻断观察</h2><pre id="market"></pre></section></aside>
 <main class="col"><section><h2>正文与精确 span</h2><textarea id="manuscript" readonly></textarea><div class="toolbar"><button data-evidence="key_turn">设为关键转折</button><button data-evidence="character_choice_or_emotion">设为人物选择/情绪</button><button data-evidence="reader_gain">设为读者收益</button></div><pre id="evidenceView" class="muted"></pre></section>
-<section><h2>AI 源稿—人工完整改稿—diff—修改意图</h2><div id="revisionMeta" class="muted"></div><textarea id="revisionText"></textarea><label>human_author_revision_v1 记录</label><textarea id="revisionRecord"></textarea><pre id="diff"></pre><div class="toolbar"><button id="revisionPrepare">建立人工修订工作区</button><button id="revisionSave">保存到 workbench</button><button id="revisionValidate">校验修订与双稿语义</button><button id="revisionSubmit" class="primary">以 human 提交并全量复审</button></div><div id="revisionStatus" class="status"></div></section>
+<section><h2>AI 源稿—人工终稿—diff—修改意图</h2><div id="revisionMeta" class="muted"></div><textarea id="revisionText"></textarea><label>human_author_revision_v3 记录（含 intent_ref、读者影响与终稿确认）</label><textarea id="revisionRecord"></textarea><pre id="diff"></pre><div class="toolbar"><button id="revisionPrepare">建立人工终稿工作区</button><button id="revisionSave">保存到 workbench</button><button id="revisionValidate">语义复核并锁定</button><button id="revisionSubmit" class="primary">以 human 提交并全量复审</button></div><div id="revisionStatus" class="status"></div></section>
 <section><h2>人工完整 repair 候选</h2><div id="repairMeta" class="muted"></div><textarea id="repairText"></textarea><div class="toolbar"><button id="repairPrepare">建立 human repair 工单</button><button id="repairSave">保存完整候选</button><button id="repairSubmit" class="primary">转入人工修订验证</button></div><div id="repairStatus" class="status"></div></section></main>
 <aside class="col"><section><h2>独立审稿 finding</h2><div id="findings"></div></section>
 <section><h2>风险分层人工深审</h2><div id="checks"></div><label>十维覆盖（核心理由必须人工填写）</label><textarea id="coverageJson"></textarea><label>finding 处置（理由必须人工填写）</label><textarea id="findingJson"></textarea><label>决定 <select id="decision"><option>repair</option><option>accept</option><option>redirect</option></select></label><label>redirect 范围 <select id="redirect"><option>direction</option><option>outline_revision</option></select></label><input id="gainNote" placeholder="读者收益说明"><input id="reviewReason" placeholder="决定理由"><div class="toolbar"><button id="reviewPrepare">准备冻结深审表</button><button id="reviewValidate" class="primary">保存并校验（不 apply）</button></div><div id="reviewStatus" class="status"></div></section>
 <section><h2>结构化批注</h2><select id="severity"><option>P1</option><option>P0</option><option>P2</option></select><select id="action"><option>rewrite</option><option>expand_scene</option><option>compress</option><option>clarify</option><option>reorder</option><option>replace_carrier</option><option>preserve</option></select><input id="checkId" placeholder="check_id"><input id="intent" placeholder="修改意图"><input id="preserve" placeholder="必须保护项，逗号分隔"><button id="addAnnotation">将当前 span 转为批注</button><pre id="annotationView"></pre></section>
-<section><h2>Codex 咨询</h2><textarea id="question" placeholder="围绕当前选中 span 提问"></textarea><div class="toolbar"><button id="consultTask">创建咨询工单</button><button id="consultValidate">校验最新回答</button><button id="consultRecord">记录最新回答</button></div><div id="consultHistory"></div><div id="consultStatus" class="status"></div></section></aside>
+<section><h2>对话式协作 / 终稿只读咨询</h2><div id="consultPhase" class="muted"></div><textarea id="question" placeholder="围绕当前选中 span 提问"></textarea><div class="toolbar"><button id="consultTask">创建咨询工单</button><button id="consultValidate">校验最新回答</button><button id="consultRecord">记录最新回答</button></div><input id="optionId" placeholder="coedit 方案 ID，例如 OPTION-A"><input id="optionAdjustment" placeholder="人工调整（可空）"><div class="toolbar"><button id="coeditRewrite">从已记录方案创建完整改写任务</button><button id="coeditCandidateValidate">校验完整协作候选</button></div><div id="consultHistory"></div><div id="consultStatus" class="status"></div></section></aside>
 </div>
 <script nonce="reviewdesk">
 const csrf="__CSRF_TOKEN__";let state=null;let selected={start:0,end:0,text:""};let evidence={};let annotations=[];
 const $=id=>document.getElementById(id);const show=(id,value,cls="")=>{const el=$(id);el.textContent=typeof value==="string"?value:JSON.stringify(value,null,2);el.className="status "+cls};
 async function api(path,body){const r=await fetch(path,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-Review-CSRF":csrf},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(data.error||"request failed");return data.result}
 function capture(){const el=$("manuscript");selected={start:el.selectionStart,end:el.selectionEnd,text:el.value.slice(el.selectionStart,el.selectionEnd)};if(selected.end<=selected.start)throw new Error("请先圈选正文 span");return selected}
-async function load(){state=await fetch("/api/state",{credentials:"same-origin"}).then(r=>r.json());$("title").textContent=`ch${String(state.chapter_number).padStart(3,"0")} 人工可视化深审`;$("candidate").textContent=state.consultation_candidate.sha256;$("brief").textContent=state.story_brief.text;$("contract").textContent=JSON.stringify(state.chapter_contract,null,2);$("promises").textContent=JSON.stringify(state.reader_promises,null,2);$("market").textContent=JSON.stringify(state.market_observations,null,2);$("manuscript").value=state.consultation_candidate.text;
+async function load(){state=await fetch("/api/state",{credentials:"same-origin"}).then(r=>r.json());$("title").textContent=`ch${String(state.chapter_number).padStart(3,"0")} 人工可视化深审`;$("candidate").textContent=state.consultation_candidate.sha256;$("chapterIntent").textContent=JSON.stringify(state.human_chapter_intent,null,2);$("brief").textContent=state.story_brief.text;$("contract").textContent=JSON.stringify(state.chapter_contract,null,2);$("promises").textContent=JSON.stringify(state.reader_promises,null,2);$("market").textContent=JSON.stringify(state.market_observations,null,2);$("manuscript").value=state.consultation_candidate.text;$("consultPhase").textContent=state.consultation_candidate.phase==="coedit"?"coedit：可生成完整 workbench 候选":"human_final：锁定后仅只读咨询";
 $("findings").replaceChildren(...(state.review_barrier.findings||[]).map(f=>{const d=document.createElement("div");d.className="finding";d.textContent=`[${f.severity}] ${f.code||f.finding_id}: ${f.diagnosis||""}`;return d}));
 $("checks").replaceChildren(...state.review_checks.map(c=>{const l=document.createElement("div");l.className="check";const current=(state.review_template.dimension_coverage||{})[c.id]||{};l.textContent=`${c.label} — ${current.coverage_source||"待覆盖"} / ${current.status||"待判断"}`;return l}));
 const t=state.review_template||{};$("coverageJson").value=JSON.stringify(t.dimension_coverage||{},null,2);$("findingJson").value=JSON.stringify(t.finding_resolutions||[],null,2);evidence=Object.fromEntries((t.evidence_spans||[]).map(x=>[x.kind,x]));annotations=t.annotations||[];renderEvidence();renderAnnotations();renderRevision();renderRepair();renderConsult();show("globalStatus",`屏障：${state.review_barrier.status}`)}
 function renderEvidence(){$("evidenceView").textContent=JSON.stringify(evidence,null,2)}function renderAnnotations(){$("annotationView").textContent=JSON.stringify(annotations,null,2)}
 function renderRevision(){const r=state.human_author_revision||{};$("revisionMeta").textContent=r.available?`${r.status||"pending"} / ${r.candidate_file}`:"尚未建立人工修订工作区";$("revisionText").value=r.text||state.draft.text;$("revisionRecord").value=JSON.stringify(r.record||{},null,2);$("diff").textContent=r.diff||"暂无人工改稿 diff";$("revisionPrepare").disabled=!!r.available;$("revisionSave").disabled=!r.available;$("revisionValidate").disabled=!r.available;$("revisionSubmit").disabled=!r.available||r.status!=="validated_for_submit"}
 function renderRepair(){const r=state.manual_repair||{};$("repairMeta").textContent=r.available?`${r.task_id} / ${r.task_status} / 剩余 ${r.attempts.remaining}`:r.reason||"无 repair 工单";$("repairText").value=r.text||state.draft.text;$("repairSave").disabled=!r.available||!r.editable;$("repairSubmit").disabled=!r.available||!r.editable;$("repairPrepare").disabled=!!r.available}
-function latestTurn(){for(const s of state.consultations.sessions||[])for(let i=(s.turns||[]).length-1;i>=0;i--)return s.turns[i];return null}
-function renderConsult(){const rows=[];for(const s of state.consultations.sessions||[])for(const t of s.turns||[])rows.push(`${s.status} t${t.turn_number}: ${t.response||t.response_file}`);$("consultHistory").textContent=rows.join("\n\n")||"暂无咨询"}
+function activeSessions(){return state.consultation_candidate.phase==="coedit"?(state.coedit.sessions||[]):(state.consultations.sessions||[])}
+function latestTurn(){const sessions=activeSessions();for(let j=sessions.length-1;j>=0;j--)for(let i=(sessions[j].turns||[]).length-1;i>=0;i--)return {...sessions[j].turns[i],session_id:sessions[j].session_id};return null}
+function renderConsult(){const rows=[];for(const s of activeSessions())for(const t of s.turns||[])rows.push(`${s.effective_status||s.status} t${t.turn_number}: ${t.response||t.response_file}`);$("consultHistory").textContent=rows.join("\n\n")||"暂无咨询";const coedit=state.consultation_candidate.phase==="coedit";$("coeditRewrite").disabled=!coedit;$("coeditCandidateValidate").disabled=!coedit}
 document.querySelectorAll("[data-evidence]").forEach(b=>b.onclick=()=>{try{const s=capture();evidence[b.dataset.evidence]={kind:b.dataset.evidence,...s};renderEvidence()}catch(e){show("globalStatus",e.message,"error")}});
 $("addAnnotation").onclick=()=>{try{const s=capture();annotations.push({annotation_id:`HR-${Date.now()}`,start:s.start,end:s.end,text:s.text,check_id:$("checkId").value,severity:$("severity").value,action:$("action").value,intent:$("intent").value,must_preserve:$("preserve").value.split(",").map(x=>x.trim()).filter(Boolean),note:"由人工在审稿台明确转换"});renderAnnotations()}catch(e){show("reviewStatus",e.message,"error")}};
 $("reviewPrepare").onclick=async()=>{try{show("reviewStatus",await api("/api/human-review/prepare",{expected_candidate_sha256:state.draft.sha256}),"ok");await load()}catch(e){show("reviewStatus",e.message,"error")}};
 $("reviewValidate").onclick=async()=>{try{const base=state.review_template;if(!base.schema)throw new Error("请先准备深审表");const dimension_coverage=JSON.parse($("coverageJson").value);const finding_resolutions=JSON.parse($("findingJson").value);const review={...base,dimension_coverage,finding_resolutions,decision:$("decision").value,evidence_spans:Object.values(evidence),reader_gain_note:$("gainNote").value,annotations,redirect_scope:$("redirect").value,reason:$("reviewReason").value};show("reviewStatus",await api("/api/human-review/validate",{expected_candidate_sha256:state.draft.sha256,review}),"ok");await load()}catch(e){show("reviewStatus",e.message,"error")}};
-$("consultTask").onclick=async()=>{try{const s=capture();show("consultStatus",await api("/api/consult/task",{expected_candidate_sha256:state.consultation_candidate.sha256,start:s.start,end:s.end,question:$("question").value}),"ok");await load()}catch(e){show("consultStatus",e.message,"error")}};
-$("consultValidate").onclick=async()=>{try{const t=latestTurn();if(!t)throw new Error("暂无咨询工单");show("consultStatus",await api("/api/consult/validate",{response_file:t.response_file}),"ok");await load()}catch(e){show("consultStatus",e.message,"error")}};
-$("consultRecord").onclick=async()=>{try{const t=latestTurn();if(!t)throw new Error("暂无咨询工单");show("consultStatus",await api("/api/consult/record",{response_file:t.response_file}),"ok");await load()}catch(e){show("consultStatus",e.message,"error")}};
+$("consultTask").onclick=async()=>{try{const s=capture();show("consultStatus",await api("/api/consult/task",{phase:state.consultation_candidate.phase,expected_candidate_sha256:state.consultation_candidate.sha256,start:s.start,end:s.end,question:$("question").value}),"ok");await load()}catch(e){show("consultStatus",e.message,"error")}};
+$("consultValidate").onclick=async()=>{try{const t=latestTurn();if(!t)throw new Error("暂无咨询工单");show("consultStatus",await api("/api/consult/validate",{phase:state.consultation_candidate.phase,response_file:t.response_file}),"ok");await load()}catch(e){show("consultStatus",e.message,"error")}};
+$("consultRecord").onclick=async()=>{try{const t=latestTurn();if(!t)throw new Error("暂无咨询工单");show("consultStatus",await api("/api/consult/record",{phase:state.consultation_candidate.phase,response_file:t.response_file}),"ok");await load()}catch(e){show("consultStatus",e.message,"error")}};
+$("coeditRewrite").onclick=async()=>{try{const t=latestTurn();if(!t)throw new Error("暂无已记录协作方案");show("consultStatus",await api("/api/coedit/rewrite-task",{session_id:t.session_id,turn_number:t.turn_number,option_id:$("optionId").value,adjustment:$("optionAdjustment").value}),"ok");await load()}catch(e){show("consultStatus",e.message,"error")}};
+$("coeditCandidateValidate").onclick=async()=>{try{const t=latestTurn();if(!t||!t.rewrite_candidate_file)throw new Error("暂无完整协作候选");show("consultStatus",await api("/api/coedit/candidate-validate",{candidate_file:t.rewrite_candidate_file}),"ok");await load()}catch(e){show("consultStatus",e.message,"error")}};
 $("revisionPrepare").onclick=async()=>{try{show("revisionStatus",await api("/api/human-revision/prepare",{expected_candidate_sha256:state.draft.sha256}),"ok");await load()}catch(e){show("revisionStatus",e.message,"error")}};
 $("revisionSave").onclick=async()=>{try{const r=state.human_author_revision;show("revisionStatus",await api("/api/human-revision/save",{expected_draft_sha256:state.draft.sha256,expected_candidate_sha256:r.candidate_sha256||"",expected_record_sha256:r.record_sha256||"",text:$("revisionText").value,record:JSON.parse($("revisionRecord").value)}),"ok");await load()}catch(e){show("revisionStatus",e.message,"error")}};
 $("revisionValidate").onclick=async()=>{try{show("revisionStatus",await api("/api/human-revision/validate",{expected_draft_sha256:state.draft.sha256}),"ok");await load()}catch(e){show("revisionStatus",e.message,"error")}};

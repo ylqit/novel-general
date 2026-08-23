@@ -341,6 +341,7 @@ def prepare_repair_round(tmp_path):
     root = tmp_path / "novel"
     open_book(config)
     mark_project_ready(root, config)
+    continue_write(config, chapter_number=1)
     tcs = root / "30_state" / "tcs" / "ch001.json"
     tcs.parent.mkdir(parents=True, exist_ok=True)
     tcs.write_text(
@@ -354,6 +355,7 @@ def prepare_repair_round(tmp_path):
         ),
         encoding="utf-8",
     )
+    continue_write(config, chapter_number=1)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\n治疗规则与救援动作冲突。\n", encoding="utf-8")
     write_blocking_gate(root, draft, chapter_number=1)

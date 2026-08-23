@@ -227,6 +227,10 @@ def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str
         "foreshadow_move": "The false treaty thread echoes through the matching seal cut.",
         "relationship_move": card_payload["relationship_move"],
         "ending_mode": "changed_problem",
+        "ending_intent": "The shared route makes the next pursuit possible while preserving the editor's identity.",
+        "emotional_aftereffect": "Ari feels the cost of sharing control and the alliance becomes harder to deny.",
+        "must_preserve_suspense": ["identity of the archive editor"],
+        "resolution_markers": [],
         "main_risks": ["Too much procedure could flatten the choice."],
         "canon_refs": [],
         "world_rule_refs": [],
@@ -260,7 +264,7 @@ def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str
         "to_chapter": simulation["to_chapter"],
     }
     return {
-        "schema": "chapter_direction_candidate_v4",
+        "schema": "chapter_direction_candidate_v5",
         "chapter_number": chapter_number,
         "chapter_card_sha256": sha256(card.read_bytes()).hexdigest(),
         "trigger_reasons": reasons,
@@ -574,7 +578,9 @@ def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
     assert applied_card["direction_selection"]["direction_id"] == "verify_witness"
     assert applied_card["reader_gain"] == valid["selected_direction"]["reader_gain"]
     assert assess_chapter_direction(config, 1)["required"] is False
-    assert production_next(config)["status"] == "ready_for_continue_write"
+    next_after_direction = production_next(config)
+    assert next_after_direction["status"] == "awaiting_human_chapter_intent"
+    assert next_after_direction["task_type"] == "human_chapter_intent"
 
 
 def test_chapter_direction_selection_sidecar_binds_document_option_and_compile_inputs(tmp_path):

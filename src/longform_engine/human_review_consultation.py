@@ -28,13 +28,14 @@ from longform_engine.config import ConfigDocument
 from longform_engine.repair_coordination import human_review_bundle_binding
 from longform_engine.storage import atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import manuscript_chapter_path
+from longform_engine.story_brief import load_current_story_brief_binding
 
 
-SESSION_SCHEMA = "human_review_consult_session_v1"
-REQUEST_SCHEMA = "human_review_consult_request_v1"
-HISTORY_SCHEMA = "human_review_consult_history_v1"
-VALIDATION_SCHEMA = "human_review_consult_validation_v1"
-RECORD_SCHEMA = "human_review_consult_record_v1"
+SESSION_SCHEMA = "human_review_consult_session_v3"
+REQUEST_SCHEMA = "human_review_consult_request_v3"
+HISTORY_SCHEMA = "human_review_consult_history_v3"
+VALIDATION_SCHEMA = "human_review_consult_validation_v3"
+RECORD_SCHEMA = "human_review_consult_record_v3"
 
 
 class HumanReviewConsultError(ValueError):
@@ -53,6 +54,7 @@ class HumanReviewConsultTaskResult:
     history_file: str
     response_file: str
     candidate_sha256: str
+    story_brief_basis_sha256: str
     review_bundle_sha256: str
     next_command: str
 
@@ -93,6 +95,7 @@ def create_human_review_consult_task(
     if not draft.is_file():
         raise HumanReviewConsultError("current chapter draft is missing")
     candidate = _current_consult_candidate(root, chapter_number)
+    final_lock = _require_human_final_lock(root, chapter_number, candidate)
     candidate_text = candidate.read_text(encoding="utf-8")
     if not isinstance(start, int) or not isinstance(end, int) or start < 0 or end <= start:
         raise HumanReviewConsultError("selected span must satisfy 0 <= start < end")
@@ -103,6 +106,8 @@ def create_human_review_consult_task(
         raise HumanReviewConsultError("consultation question must not be empty")
 
     candidate_hash = _file_hash(candidate)
+    story_brief_binding = load_current_story_brief_binding(root, chapter_number)
+    story_brief_basis_hash = str(story_brief_binding["story_brief_basis_sha256"])
     mark_stale_human_consultations(root, chapter_number=chapter_number)
     binding = human_review_bundle_binding(config, chapter_number=chapter_number, freeze=False)
     if not binding.get("frozen"):
@@ -112,6 +117,8 @@ def create_human_review_consult_task(
     source_hash = _file_hash(draft)
     if str(binding.get("candidate_sha256") or "") != source_hash:
         raise HumanReviewConsultError("frozen review bundle is stale for the current revision source")
+    if str(binding.get("story_brief_basis_sha256") or "") != story_brief_basis_hash:
+        raise HumanReviewConsultError("frozen review bundle is stale for the current Story Brief basis")
 
     story_brief = root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.md"
     if not story_brief.is_file():
@@ -120,30 +127,44 @@ def create_human_review_consult_task(
     if _file_hash(bundle) != str(binding["review_bundle_sha256"]):
         raise HumanReviewConsultError("frozen review bundle bytes do not match its SHA-256")
 
-    session_dir = _candidate_session_dir(root, chapter_number, candidate_hash)
+    session_dir = _candidate_session_dir(
+        root,
+        chapter_number,
+        candidate_hash,
+        story_brief_basis_hash,
+    )
     session_file = session_dir / "session.json"
     session = _load_json(session_file, default={})
     if session:
-        _require_session_candidate(session, candidate_hash)
+        _require_session_candidate(session, candidate_hash, story_brief_basis_hash)
         session_id = str(session.get("session_id") or "")
         turns = list(session.get("turns") or [])
     else:
-        session_id = f"consult-ch{chapter_number:03d}-{candidate_hash[:16]}"
+        session_id = (
+            f"consult-ch{chapter_number:03d}-{candidate_hash[:12]}-"
+            f"{story_brief_basis_hash[:12]}"
+        )
         turns = []
         session = {
             "schema": SESSION_SCHEMA,
             "session_id": session_id,
             "chapter_number": chapter_number,
             "candidate_sha256": candidate_hash,
+            "story_brief_basis_sha256": story_brief_basis_hash,
             "review_bundle": str(binding["review_bundle"]),
             "review_bundle_sha256": str(binding["review_bundle_sha256"]),
             "status": "active",
+            "phase": "human_final",
+            "human_final_lock_sha256": final_lock["sha256"],
             "created_at": _utc_now(),
             "turns": turns,
         }
     turn_number = len(turns) + 1
     token = f"turn{turn_number:02d}"
-    task_id = f"human_review_consult:ch{chapter_number:03d}:{candidate_hash[:12]}:t{turn_number:02d}:v4"
+    task_id = (
+        f"human_review_consult:ch{chapter_number:03d}:{candidate_hash[:12]}:"
+        f"{story_brief_basis_hash[:12]}:t{turn_number:02d}:v5"
+    )
     task_file = session_dir / f"{token}.task.md"
     request_file = session_dir / f"{token}.request.json"
     history_file = session_dir / f"{token}.history.json"
@@ -155,10 +176,12 @@ def create_human_review_consult_task(
 
     request = {
         "schema": REQUEST_SCHEMA,
+        "phase": "human_final",
         "session_id": session_id,
         "turn_number": turn_number,
         "chapter_number": chapter_number,
         "candidate_sha256": candidate_hash,
+        "story_brief_basis_sha256": story_brief_basis_hash,
         "review_bundle_sha256": str(binding["review_bundle_sha256"]),
         "selection": {
             "start": start,
@@ -172,6 +195,7 @@ def create_human_review_consult_task(
         "schema": HISTORY_SCHEMA,
         "session_id": session_id,
         "candidate_sha256": candidate_hash,
+        "story_brief_basis_sha256": story_brief_basis_hash,
         "turns": _recorded_history(root, turns)[-8:],
     }
     _write_json(request_file, request)
@@ -182,6 +206,7 @@ def create_human_review_consult_task(
             chapter_number=chapter_number,
             turn_number=turn_number,
             candidate_hash=candidate_hash,
+            story_brief_basis_hash=story_brief_basis_hash,
             draft=relative_path(root, candidate),
             story_brief=relative_path(root, story_brief),
             bundle=relative_path(root, bundle),
@@ -217,7 +242,7 @@ def create_human_review_consult_task(
             "selection_report": request_file,
             "quality_focus": ("scene_causality", "character_agency"),
         },
-        role_id="human_review_advisor",
+        role_id="human_author_advisor",
         task_id=task_id,
     )
     written_manifest = write_manifest(root, manifest, manifest_file)
@@ -247,6 +272,7 @@ def create_human_review_consult_task(
         history_file=relative_path(root, history_file),
         response_file=relative_path(root, response_file),
         candidate_sha256=candidate_hash,
+        story_brief_basis_sha256=story_brief_basis_hash,
         review_bundle_sha256=str(binding["review_bundle_sha256"]),
         next_command=f"longform-engine agent-task brief project.yaml {task_id}",
     )
@@ -297,6 +323,7 @@ def validate_human_review_consultation(
         "response_file": relative_path(root, response),
         "response_sha256": _file_hash(response) if response.is_file() else "",
         "candidate_sha256": _current_candidate_hash(root, chapter_number),
+        "story_brief_basis_sha256": _current_story_brief_basis_hash(root, chapter_number),
         "review_bundle_sha256": _session_for_task(root, task)[1].get(
             "review_bundle_sha256", ""
         ),
@@ -388,6 +415,7 @@ def record_human_review_consultation(
                 "task_id": str(task["task_id"]),
                 "chapter_number": chapter_number,
                 "candidate_sha256": str(session["candidate_sha256"]),
+                "story_brief_basis_sha256": str(session["story_brief_basis_sha256"]),
                 "review_bundle_sha256": str(session["review_bundle_sha256"]),
                 "request_file": str(turn["request_file"]),
                 "response_file": relative_path(root, response),
@@ -417,7 +445,7 @@ def record_human_review_consultation(
         turn_number=turn_number,
         record_file=relative_path(root, record),
         response_sha256=response_hash,
-        next_command="convert selected advice to a human_story_review_v4 annotation in the review desk",
+        next_command="convert selected advice to a human_story_review_v6 annotation in the review desk",
     )
 
 
@@ -425,20 +453,30 @@ def mark_stale_human_consultations(root: Path, *, chapter_number: int) -> list[s
     """Mark every session for an older candidate stale; never mutate manuscript state."""
 
     root = root.resolve()
-    current_hash = _current_candidate_hash(root, chapter_number)
     base = root / "50_workbench" / "human_story_reviews" / "consultations" / f"ch{chapter_number:03d}"
     stale_sessions: list[str] = []
     if not base.is_dir():
         return stale_sessions
+    current_hash = _current_candidate_hash(root, chapter_number)
+    current_basis_hash = _current_story_brief_basis_hash(root, chapter_number)
     for session_file in sorted(base.glob("*/session.json")):
         session = _load_json(session_file, default={})
         if not isinstance(session, dict) or session.get("schema") != SESSION_SCHEMA:
             continue
-        if str(session.get("candidate_sha256") or "") == current_hash:
+        candidate_current = str(session.get("candidate_sha256") or "") == current_hash
+        basis_current = (
+            str(session.get("story_brief_basis_sha256") or "") == current_basis_hash
+        )
+        if candidate_current and basis_current:
             continue
         if session.get("status") != "stale":
             session["status"] = "stale"
-            session["stale_reason"] = "candidate_sha256_changed"
+            stale_reason = (
+                "candidate_sha256_changed"
+                if not candidate_current
+                else "story_brief_basis_sha256_changed"
+            )
+            session["stale_reason"] = stale_reason
             session["stale_at"] = _utc_now()
             for turn in session.get("turns") or []:
                 if not isinstance(turn, dict):
@@ -449,7 +487,7 @@ def mark_stale_human_consultations(root: Path, *, chapter_number: int) -> list[s
                     record = _load_json(root / record_file, default={})
                     if isinstance(record, dict):
                         record["status"] = "stale"
-                        record["stale_reason"] = "candidate_sha256_changed"
+                        record["stale_reason"] = stale_reason
                         _write_json(root / record_file, record)
                 task_id = str(turn.get("task_id") or "")
                 indexed = next(
@@ -464,7 +502,7 @@ def mark_stale_human_consultations(root: Path, *, chapter_number: int) -> list[s
                         root,
                         task_id,
                         to_status="superseded",
-                        command="review consultation candidate changed",
+                        command="review consultation candidate or Story Brief basis changed",
                     )
             _write_json(session_file, session)
         stale_sessions.append(str(session.get("session_id") or ""))
@@ -476,6 +514,7 @@ def consultation_status(config: ConfigDocument, *, chapter_number: int) -> dict[
 
     root = resolve_project_root(config)
     current_hash = _current_candidate_hash(root, chapter_number)
+    current_basis_hash = _current_story_brief_basis_hash(root, chapter_number)
     base = root / "50_workbench" / "human_story_reviews" / "consultations" / f"ch{chapter_number:03d}"
     sessions: list[dict[str, Any]] = []
     if base.is_dir():
@@ -485,14 +524,18 @@ def consultation_status(config: ConfigDocument, *, chapter_number: int) -> dict[
                 continue
             item = dict(session)
             item["session_file"] = relative_path(root, session_file)
-            if str(item.get("candidate_sha256") or "") != current_hash:
+            if (
+                str(item.get("candidate_sha256") or "") != current_hash
+                or str(item.get("story_brief_basis_sha256") or "") != current_basis_hash
+            ):
                 item["status"] = "stale"
             sessions.append(item)
     sessions.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     return {
-        "schema": "human_review_consultation_status_v1",
+        "schema": "human_review_consultation_status_v2",
         "chapter_number": chapter_number,
         "candidate_sha256": current_hash,
+        "story_brief_basis_sha256": current_basis_hash,
         "sessions": sessions,
         "canonical_mutated": False,
     }
@@ -504,6 +547,7 @@ def _render_task(**values: Any) -> str:
             f"# ch{values['chapter_number']:03d} 人工深审咨询 t{values['turn_number']:02d}",
             "",
             f"- 当前候选 SHA-256：`{values['candidate_hash']}`",
+            f"- Story Brief basis SHA-256：`{values['story_brief_basis_hash']}`",
             f"- 当前正文：`{values['draft']}`",
             f"- Story Brief：`{values['story_brief']}`",
             f"- 冻结 review bundle：`{values['bundle']}`",
@@ -561,6 +605,20 @@ def _current_turn_errors(root: Path, chapter_number: int, task: dict[str, Any]) 
         errors.append("consultation session is stale")
     if str(session.get("candidate_sha256") or "") != _current_candidate_hash(root, chapter_number):
         errors.append("candidate_sha256 changed")
+    if (
+        str(session.get("story_brief_basis_sha256") or "")
+        != _current_story_brief_basis_hash(root, chapter_number)
+    ):
+        errors.append("story_brief_basis_sha256 changed")
+    try:
+        lock = _require_human_final_lock(
+            root, chapter_number, _current_consult_candidate(root, chapter_number)
+        )
+    except HumanReviewConsultError as exc:
+        errors.append(str(exc))
+    else:
+        if session.get("human_final_lock_sha256") != lock.get("sha256"):
+            errors.append("human_final_lock_sha256 changed")
     bundle = root / str(session.get("review_bundle") or "")
     if not bundle.is_file() or _file_hash(bundle) != str(session.get("review_bundle_sha256") or ""):
         errors.append("review_bundle_sha256 changed")
@@ -601,22 +659,33 @@ def _update_turn_status(root: Path, task: dict[str, Any], status: str) -> None:
         _write_json(session_file, session)
 
 
-def _candidate_session_dir(root: Path, chapter_number: int, candidate_hash: str) -> Path:
+def _candidate_session_dir(
+    root: Path,
+    chapter_number: int,
+    candidate_hash: str,
+    story_brief_basis_hash: str,
+) -> Path:
     return (
         root
         / "50_workbench"
         / "human_story_reviews"
         / "consultations"
         / f"ch{chapter_number:03d}"
-        / candidate_hash[:12]
+        / f"{candidate_hash[:12]}.{story_brief_basis_hash[:12]}"
     )
 
 
-def _require_session_candidate(session: dict[str, Any], candidate_hash: str) -> None:
+def _require_session_candidate(
+    session: dict[str, Any],
+    candidate_hash: str,
+    story_brief_basis_hash: str,
+) -> None:
     if session.get("schema") != SESSION_SCHEMA:
         raise HumanReviewConsultError("consultation session schema is invalid")
     if str(session.get("candidate_sha256") or "") != candidate_hash:
         raise HumanReviewConsultError("candidate hash prefix collision in consultation storage")
+    if str(session.get("story_brief_basis_sha256") or "") != story_brief_basis_hash:
+        raise HumanReviewConsultError("Story Brief basis prefix collision in consultation storage")
     if session.get("status") == "stale":
         raise HumanReviewConsultError("stale consultation session cannot receive a new turn")
 
@@ -626,18 +695,59 @@ def _current_candidate_hash(root: Path, chapter_number: int) -> str:
     return _file_hash(candidate) if candidate.is_file() else ""
 
 
+def _require_human_final_lock(
+    root: Path, chapter_number: int, candidate: Path
+) -> dict[str, str]:
+    """Require the immutable human-final lock before entering read-only consultation."""
+
+    candidate_hash = _file_hash(candidate)
+    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
+    submission = _load_json(draft.with_suffix(".submission.json"), default={})
+    binding = submission.get("human_author_revision") if isinstance(submission, dict) else None
+    lock_file: Path | None = None
+    expected_lock_hash = ""
+    if isinstance(binding, dict) and binding.get("schema") == "human_author_revision_submission_binding_v3":
+        lock_file = root / str(binding.get("final_lock_file") or "")
+        expected_lock_hash = str(binding.get("final_lock_sha256") or "")
+    else:
+        try:
+            from longform_engine.human_author_revision import task_record_path_for_hash
+
+            task = _load_json(
+                task_record_path_for_hash(root, chapter_number, _file_hash(draft)),
+                default={},
+            )
+        except ValueError:
+            task = {}
+        if isinstance(task, dict):
+            lock_file = root / str(task.get("final_lock_file") or "")
+    if lock_file is None or not lock_file.is_file():
+        raise HumanReviewConsultError(
+            "human_final consultation requires a current immutable human_final_lock_v1"
+        )
+    lock = _load_json(lock_file, default={})
+    lock_hash = _file_hash(lock_file)
+    if (
+        not isinstance(lock, dict)
+        or lock.get("schema") != "human_final_lock_v1"
+        or lock.get("revision_candidate_sha256") != candidate_hash
+        or (expected_lock_hash and expected_lock_hash != lock_hash)
+    ):
+        raise HumanReviewConsultError("human final lock is stale for the consultation candidate")
+    return {"file": relative_path(root, lock_file), "sha256": lock_hash}
+
+
 def _current_consult_candidate(root: Path, chapter_number: int) -> Path:
     draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     if not draft.is_file():
         return draft
     digest = _file_hash(draft)
-    task_file = (
-        root
-        / "50_workbench"
-        / "human_author_revisions"
-        / f"ch{chapter_number:03d}"
-        / f"{digest[:12]}.task.json"
-    )
+    try:
+        from longform_engine.human_author_revision import task_record_path_for_hash
+
+        task_file = task_record_path_for_hash(root, chapter_number, digest)
+    except ValueError:
+        return draft
     task = _load_json(task_file, default={})
     candidate = root / str(task.get("candidate_file") or "") if isinstance(task, dict) else Path()
     try:
@@ -645,6 +755,14 @@ def _current_consult_candidate(root: Path, chapter_number: int) -> Path:
     except ValueError:
         return draft
     return candidate if candidate.is_file() and candidate.read_text(encoding="utf-8").strip() else draft
+
+
+def _current_story_brief_basis_hash(root: Path, chapter_number: int) -> str:
+    try:
+        binding = load_current_story_brief_binding(root, chapter_number)
+    except ValueError:
+        return ""
+    return str(binding.get("story_brief_basis_sha256") or "")
 
 
 def _resolve_inside(root: Path, file_path: str | Path) -> Path:

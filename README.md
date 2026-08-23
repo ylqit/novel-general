@@ -1,434 +1,319 @@
 # longform-novel-engine
 
-面向 Codex App、Codex CLI 与 Claude Code 的中文长篇小说生产引擎和平台专用 Skill。Agent 负责写作、修章、润色与语义判断，CLI 负责任务包、严格校验、显式 apply/finalize、事务、索引与回滚。
+面向 Codex App、Codex CLI 与 Claude Code：Agent 负责创作、修订与语义判断，CLI 负责任务编译、校验、canonical 写入与回滚。`longform-novel-engine = Python engine + Codex Skill + Claude Code Skill`
 
-`longform-novel-engine = Python engine + Codex skill + Claude Code skill`
+- 面向百万字中文长篇与数百章连续生产。
+- 默认使用宿主产品当前会话，不要求 provider API key。
+- 本地文件是事实源；SQLite、RAG 和图谱是受控或可重建派生状态。
+- Agent 只能写 manifest 声明的 workbench 候选，不能直接写 canonical。
 
-- 面向百万字中文长篇小说与数百章连续生产。
-- 默认 `agent_skill` / No API key：使用宿主产品当前会话，不要求 OpenAI、Anthropic 或 provider API key。
-- 本地文件是事实源；SQLite、RAG 和图谱是受控写入或可重建派生状态。
-- 每个 Agent 工单声明输入文件、允许输出、schema、validate、apply、失败命令与硬边界。
+> 当前公开稳定版为 `v0.9.0`。这是不兼容旧项目的协议升级；发布不等于文学质量或平台接受证明。
 
-> 当前稳定版为 `v0.7.0`：在起点男频主合同与番茄非阻断兼容观察之上，新增证据化的人类作者完整修订、风险分层深审、真实作者声音 edit pair，以及只提示不阻断的平台发布预检。发布门禁与验证记录见 [v0.7.0 Checklist](docs/V0_7_0_RELEASE_CHECKLIST.md)。
+v0.9 明确拒绝 v0.8 及更早项目，不做双读、自动迁移或字段别名。请新建 v0.9 项目，再人工导入经确认的 Bible、纲要和必要资料。
 
-当前实现边界见 [Architecture](docs/ARCHITECTURE.md)，落盘、transaction v3 与崩溃恢复合同见 [Storage Model](docs/STORAGE_MODEL.md)。
+## 产品边界
 
-## Skills
+本项目解决的是长篇生产协议、上下文一致性、人工修订证据和失败恢复，不自动证明文学优秀，也不承诺平台接受。
+
+| 环节 | 当前实现 |
+| --- | --- |
+| 故事规划 | Story Engine、Promise Ledger、滚动纲要与因果模拟 |
+| 章节合同 | `chapter_contract_v4` 统一绑定故事义务与结尾语义 |
+| 人类写前意图 | 空白 `human_chapter_intent_v1` 绑定方向选择与合同 |
+| 作者工作单 | `chapter_story_brief_v4` 只展示作者可执行的故事信息 |
+| 编译依据 | `chapter_story_brief_basis_v2` 绑定合同、人类意图、事实、声音与历史 |
+| 写作任务 | `chapter_writing_task_v6` 与活动 manifest 严格一致才可复用 |
+| 对话共编 | `chapter_coedit_session_v1` 的方案、选择和完整候选只写 workbench |
+| 独立审稿 | `scene_prose_editor`、`anti_template_editor` 每章必审，风险角色按需增加 |
+| 人工终稿 | `human_author_revision_v3` 绑定最终锁、真实改动及双稿语义保真 |
+| 人工深审 | `human_story_review_v6` 绑定八类当前证据后才允许 finalize |
+| 发布预检 | 起点、番茄政策快照只提示风险，不输出“检测通过” |
+| 恢复 | canonical 写入使用事务、锁、证据和显式恢复命令 |
+
+## 两套 Skill
 
 | Skill | 宿主 | Agent 允许写入 |
 | --- | --- | --- |
-| `longform-novel-codex` | Codex App / Codex CLI | `50_workbench/agent_drafts/chNNN.codex.md` 或 manifest 声明路径 |
-| `longform-novel-claude` | Claude Code | `50_workbench/agent_drafts/chNNN.claude.md` 或 manifest 声明路径 |
+| `longform-novel-codex` | Codex App / CLI | manifest 声明的 `50_workbench/` 候选 |
+| `longform-novel-claude` | Claude Code | manifest 声明的 `50_workbench/` 候选 |
 
-两个 Skill 都是自包含包，各自带有 `references/`；公开安装不再创建一个容易与其他项目冲突的全局 `shared/` Skill。
+两套 Skill 都自带 `references/`。仓库内 `shared/` 是引用事实源；发布前同步到两套副本。
 
-## 核心能力
+## 安装稳定版
 
-| 环节 | Agent 与 CLI 分工 |
-| --- | --- |
-| 章节写作 | CLI 从事实、承诺动作和因果模拟编译 `chapter_story_brief_v2`，Agent 只按欲望—动作—阻力—选择—代价写正文 |
-| 修章 | CLI 生成 repair task，Agent 写候选稿，CLI 重新提交与门禁 |
-| 双稿修订 | Humanizer、人工完整修订和其他双稿变换统一由 `prose_revision_semantic_reviewer` 做语义保真复核 |
-| 图谱与记忆 | Agent 对 final 输出一次 `canonical_delta_v1`，CLI validate 后由 `chapter semantic-apply` 统一物化 |
-| 编辑团队 | `scene_prose_editor` 与 `anti_ai_editor` 每章独立必审，其他角色按风险追加；aggregate 保留分歧和少数派 P0/P1 |
-| 节奏审查 | Agent 做语义判断，CLI 固化报告与阻断结果 |
-| 项目级智能任务 | 开书、纲要、改纲、研究、风格与改编分析均走候选/校验/显式 apply |
-| 人物表现与场景化叙事 | Book Design v2 建立人物表达合同；每章编译最小人物包，人物编辑按证据检查声音可交换性、工具人化和旁白代讲 |
-| 同人创作 | 支持原角色、关系、世界观、力量体系、续写、前传、AU、分歧与 crossover |
-| 中文网文质量 | 故事引擎合同、滚动载体轮换、低质信号与语义问题分离、人工完整修订及 `human_story_review_v4` 风险分层深审 |
+仓库地址：<https://github.com/ylqit/novel-general>
 
-## 安装
-
-唯一发布源是 [ylqit/novel-general](https://github.com/ylqit/novel-general)。公开安装使用 pipx，把 engine 放入隔离环境，再由 engine 原子复制对应 Skill。无需先 clone 仓库，也不执行远程 `curl | shell`。
-
-> 当前公开稳定版为 `v0.7.0`。以下命令固定到不可变 tag。
-
-`v0.7.0` 明确拒绝 v0.6 的 `human_story_review_v3` 项目，也不提供自动迁移；请新建项目，或由人工审核后重新导入权威资料。当前 `literary_evidence_ready=false`。
-
-### 让 Agent 安装
-
-复制到 Codex：
-
-```text
-请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.7.0。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool codex --force 和 longform-engine doctor --tool codex。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Codex 会话，并从 /工程下一步 开始。
-```
-
-复制到 Claude Code：
-
-```text
-请从 https://github.com/ylqit/novel-general 安装 longform-novel-engine v0.7.0。使用 pipx 安装 longform-novel-engine[semantic]，不要 clone 临时源码或 editable install；然后运行 longform-engine skills install --tool claude-code --force 和 longform-engine doctor --tool claude-code。普通 Agent-Skill 写作不需要 OpenAI、Anthropic 或 provider API key。完成后提醒我重启 Claude Code 会话，并从 /工程下一步 开始。
-```
-
-### Windows PowerShell
+Windows：
 
 ```powershell
-py -3 -m pip install --user --upgrade pipx
+py -3 -m pip install --user pipx
 py -3 -m pipx ensurepath
-$env:PIPX_BIN_DIR = if ($env:PIPX_BIN_DIR) { $env:PIPX_BIN_DIR } else { Join-Path $env:USERPROFILE ".local\bin" }
-$env:PATH = "$env:PIPX_BIN_DIR;$env:PATH"
-py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.7.0'
-longform-engine skills install --tool all --force
-longform-engine doctor --tool all
+py -3 -m pipx install --force `
+  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.9.0'
+longform-engine skills install --tool codex --force
+longform-engine doctor --tool codex
 ```
 
-只安装一个宿主时，把 `all` 改成 `codex` 或 `claude-code`。
-
-Windows 如果自定义 `PIPX_HOME`，请使用较短的绝对路径。Semantic 完整依赖包含 Torch；把虚拟环境放在过深的源码子目录中可能触发 Windows `WinError 206`。README 的默认 pipx 用户目录不需要调整。
-
-### macOS / Linux Bash
+macOS / Linux：
 
 ```bash
-python3 -m pip install --user --upgrade pipx
+python3 -m pip install --user pipx
 python3 -m pipx ensurepath
-export PIPX_BIN_DIR="${PIPX_BIN_DIR:-$HOME/.local/bin}"
-export PATH="$PIPX_BIN_DIR:$PATH"
-python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.7.0'
-longform-engine skills install --tool all --force
-longform-engine doctor --tool all
+python3 -m pipx install --force \
+  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.9.0'
+longform-engine skills install --tool codex --force
+longform-engine doctor --tool codex
 ```
 
-安装后重启 Codex / Claude Code 会话，让宿主刷新 Skill discovery。
+Claude Code 用户把 `--tool codex` 换成 `--tool claude-code`。
 
-### 升级与卸载
+安装或升级 Skill 后重启宿主会话，让新协议生效。
 
-```powershell
-py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.7.0'
-longform-engine skills update --tool all
-longform-engine doctor --tool all
+## 快速开始
+
+创建项目：
+
+```bash
+longform-engine init --template qidian-longform --output my-novel
+cd my-novel
+longform-engine open-book project.yaml
+longform-engine production next project.yaml
 ```
 
-```powershell
-longform-engine skills uninstall --tool all --yes
-py -3 -m pipx uninstall longform-novel-engine
+`production next` 是默认入口。它会报告当前阻塞原因和唯一安全的下一步。
+
+首次设计由 Agent 工单与 CLI 校验组成：
+
+```bash
+longform-engine intelligence task project.yaml --task-type book_ideation
+longform-engine agent-task brief project.yaml TASK_ID
+# Agent 写入工单声明的候选文件
+longform-engine agent-task validate project.yaml TASK_ID --result-file FILE
+longform-engine intelligence apply project.yaml --task-type book_ideation --candidate FILE
 ```
 
-安装器只删除带合法 `.longform-install.json` 元数据的目录；任何不属于本引擎的目录都不会被自动删除。
+继续按 `production next` 完成 Book Design、纲要、人物表达和因果模拟。设计输出不会直接写 Bible；CLI 先验证，再原子物化 canonical 视图。
 
-## 首次使用
-
-先验证模板并创建一本书：
-
-```powershell
-longform-engine --version
-longform-engine validate-config --template qidian-longform
-longform-engine open-book --interactive
-```
-
-之后每轮从同一条生产入口开始：
+## 一章的完整闭环
 
 ```text
-/工程下一步
--> longform-engine production next project.yaml
-
-/工程工单
--> longform-engine agent-task brief project.yaml TASK_OR_PATH
+章节方向候选
+→ 人工选择 option ID
+→ 设计批准与语义编译
+→ chapter_contract_v4
+→ 空白表单完成人类章节意图
+→ chapter_story_brief_basis_v2
+→ chapter_story_brief_v4
+→ AI 完整候选
+→ 对话共编：2–3 个方案 → 人工选择 → 新完整候选
+→ deterministic gate
+→ scene_prose_editor + anti_template_editor
+→ 必要 repair
+→ 冻结 human_review_bundle_v2
+→ 人类最终完整修订并锁定 + human_author_revision_v3
+→ 双稿语义保真
+→ draft submit --agent human --overwrite
+→ 全量 gate 与独立复审
+→ human_story_review_v6
+→ accept
+→ finalize
+→ semantic apply / chapter close
 ```
 
-Agent 只读取工作单与 manifest `io.inputs`，只写 `io.output.path` 并遵守 `io.output.protocol`，然后运行 `commands.validate`。`commands.apply` 与 finalize 必须显式执行；`production loop --no-apply` 遇到 Agent、人工、apply 或 finalize 边界会暂停。
+准备作者工作单：
 
-空白项目不会直接进入第一章。`production next` 会先要求完成下面的项目级闭环：
+```bash
+longform-engine chapter human-intent-task project.yaml --chapter 1
+# 人工填写、validate 并 apply 当前意图记录
+longform-engine continue-write project.yaml --chapter 1
+longform-engine agent-task brief project.yaml TASK_ID
+```
+
+作者 Agent 只读：
 
 ```text
-open-book
--> book_ideation 每轮一个问题 -> Agent 给 2-3 个选项 -> human selection/apply
--> book_design 工作单 -> Agent 权威 Markdown -> human approve -> canonical delta 编译 -> explicit apply
--> outline_design 工作单 -> Agent 权威 Markdown -> human approve -> canonical delta 编译 -> explicit apply
--> 角色、全书故事弧、卷级字数预算、未来 20 章详细窗口和伏笔账本就绪
--> 第一章 writing 工作单
+50_workbench/writing_tasks/ch001.md
 ```
 
-`book_ideation` 依次确认目标读者与阅读场景、核心卖点、世界规则、主角欲望与缺陷、长期矛盾、卷级升级、结局边界以及禁区。CLI 每轮只保存用户明确选择或明确提供的一项答案。缺少这些决定、稳定角色 ID、人物弧线、全书故事弧、卷级预算、首个详细窗口或伏笔窗口时，CLI 会阻止第一章任务生成。详细窗口只覆盖未来 20 章，剩余计划不足 8 章时才安排下一轮 `outline_extension`。项目级 apply 仍由人显式确认，Agent 不能直接写 Bible 或 outline。
+作者只把完整小说正文写到工单声明的候选路径，然后提交：
 
-典型章节闭环：
-
-```text
-/工程续章 -> 方向候选 -> 人工 direction-select -> 批准/编译 -> /工程工单
--> Agent 写 chNNN.codex.md 或 chNNN.claude.md
--> /工程提交稿 -> gate
--> scene_prose_editor + anti_ai_editor 独立必审；P0/P1 先 repair
--> 冻结人工修订前 review bundle -> 人类作者完整改稿 -> 双稿语义复核
--> 以 agent=human 提交 -> 新 hash 下全量 gate 与独立审稿
--> review serve 中完成风险分层 v4 深审，必要时进行只读咨询
--> accept 后显式 /工程定稿；repair/redirect 必须回到对应闭环
--> /工程章节语义任务 -> Agent 一次读取 final 并输出统一语义 JSON
--> /工程章节语义校验 -> 显式 /工程章节语义应用
--> /工程关闭章节 -> 下一章
+```bash
+longform-engine draft submit project.yaml \
+  --chapter 1 \
+  --file 50_workbench/agent_drafts/ch001.codex.md \
+  --agent codex
+longform-engine production next project.yaml
 ```
 
-`reader_gain` 只是章节卡中的计划。`balanced`/`strict` 流程会在定稿前创建
-`reader_payoff_review`，要求 Agent 用当前 draft 的 hash 和精确 span 证明实际收益、代价与承诺进度。
-CLI 通过后，`chapter finalize` 才在同一事务中写入 `reader_reward_entry_v2` 和
-`30_state/quality/structure_history.jsonl`；失败或过期审稿不会污染正式状态。finalize 只确立正文证据，
-不再用正文开头冒充摘要，也不提前更新图谱、角色记忆、伏笔、TCS、RAG 或 SQLite。定稿后由
-Agent 以 `canonical_delta_v1` 一次提交全部证据化变化；CLI 校验后规范化为内部章节语义账本并事务化物化当前状态，`chapter close`
-成功后才允许进入下一章。graph、memory 与 character-memory 不再各自重复读取正文，全部由统一章节语义 delta 物化。
+有 P0/P1 时必须先走不可变 repair plan；不得用 waiver、咨询或人工勾选绕过。
 
-## 创作模式与同人
+## Story Brief 一致性
 
-`creation.mode` 支持四种边界不同的创作方式：
+`chapter_contract_v4` 绑定真正具有规范性的章节义务：
 
-| 模式 | 用途 |
-| --- | --- |
-| `original` | 完全原创长篇 |
-| `fanfiction` | 使用原作角色、关系、世界、能力与时间线创作续写、前传、AU、原作分歧或多作品联动 |
-| `adaptation_study` | 拆解结构、节奏与技法，不保存或重构来源正文 |
-| `inspired_original` | 借鉴抽象题材机制后全面原创，不保留可识别专名和具体剧情 |
+- 欲望、阻力、戏剧问题与本章职责；
+- 关键失败、不可逆选择、转折、代价与读者收益；
+- 情绪余波、结尾方式、结尾意图；
+- 必须保护的悬念和允许兑现的标记；
+- 场景链、保护结果、禁止偏移、承诺动作与因果模拟引用。
 
-同人是正式一等工作流，不再借用 `adaptation_analysis` 承担创作。项目配置示例：
+合同不吞入全部 RAG、历史正文或内部控制数据。
 
-```yaml
-creation:
-  mode: fanfiction
-fanfiction:
-  continuity_mode: canon_divergent
-  sources:
-    - source_id: work_a
-      title: 作品名
-      creator: 原作者
-      canon_cutoff: 第一卷结束
-      allowed_elements: [characters, relationships, world, abilities, timeline]
-      rights_status: unverified
-      commercial_intent: true
-      platform_policy_url: ""
-```
+`chapter_story_brief_basis_v2` 另外绑定所有会改变作者工作单的编译依据：
 
-`continuity_mode` 可为 `canon_compliant`、`canon_divergent`、`alternate_universe`、`continuation`、`prequel` 或 `crossover`。权利状态是用户声明，可为 `user_claimed_authorized`、`public_domain_claimed`、`platform_permitted_claimed` 或 `unverified`。无论是否核验、是否商业使用，CLI 都只生成提示，不阻断 canon、设计、写作、定稿或导出。
+- 当前 `human_chapter_intent_v1`；
+- 当前合同与因果模拟；
+- 筛选后的 canonical / RAG 事实；
+- 本章人物声音与人工批准的作者声音样本；
+- 最近结构和载体历史；
+- 有效质量合同与 renderer 版本。
 
-同人开书顺序：
+合同义务变化必须同时改变合同 hash 和 basis。人物声音、事实投影或结构历史变化可以保持合同 hash 不变，但必须改变 basis，并让旧任务、咨询、审稿和接受记录 stale。
 
-```text
-open-book
--> fanfiction canon-task -> Agent 输出 fanfiction_source_canon_v1
--> canon-validate -> canon-apply --approved-by human
--> book_ideation 逐轮人工确认原创贡献与创作边界
--> fanfiction design-task -> Agent 输出 fanfiction_design_candidate_v1
--> design-validate -> design-apply --approved-by human
--> outline_design -> writing
-```
+只有任务状态、合同、basis、Markdown 字节和活动 manifest 全部一致，旧写作任务才可复用。
 
-常用命令：
+## 作者工作单的信息边界
 
-```powershell
-longform-engine fanfiction canon-task project.yaml --input 50_workbench/fanfiction_sources/source.txt
-longform-engine fanfiction canon-validate project.yaml --file 50_workbench/intelligence_candidates/fanfiction_canon.project.candidate.json
-longform-engine fanfiction canon-apply project.yaml --file 50_workbench/intelligence_candidates/fanfiction_canon.project.candidate.json --approved-by human
-longform-engine fanfiction design-task project.yaml
-longform-engine fanfiction status project.yaml
-longform-engine publication report project.yaml
-longform-engine publication export project.yaml
-```
+Story Brief 只提供当前章节可以直接使用的信息：
 
-允许使用角色名、关系、招式名和世界术语，不会仅因与原作设定一致而判为 OOC。AU 与原作分歧项目检查的是“变化是否由声明的分歧点和后续因果支撑”。来源正文仍不能被整段搬运、拆到多个 JSON 字段重构或拼成章节；canon 只保存转述事实、来源 hash 和字符 span。
+- 人物欲望、阻力、行动、选择和代价；
+- 场景离场状态、读者收益与情绪余波；
+- 必要的人物感知、决策、说话方式与情绪泄漏；
+- 与本章直接相关的事实、能力边界和关系阶段；
+- 受保护结果、禁止偏移和有限创作自由。
 
-`publication_risk_report_v2` 会记录真实生产方式、人工修订覆盖、政策快照、来源声明和生成合成内容标识提醒，但 `blocking` 固定为 `false`，也不会向正文自动插入或删除声明。报告不输出 AI 概率、检测通过、规避检测或人类占比。引擎允许创作不等于对具体发布行为完成法律或平台内部审核，参考[《著作权法》](https://www.ncac.gov.cn/xxfb/flfg/flfg_532/202103/t20210309_50530.html)与[同人案件说明](https://www.sdcourt.gov.cn/dyzy/372897/372899/44482953/index.html)。
+Story Brief 不暴露：
 
-## 写入边界
+- hash、内部 ID、finding code 或任务控制字段；
+- 原始 RAG 包、Graph、SQLite、TCS 和完整历史正文；
+- 禁词表、检测词典、平台算法猜测或模型 Prompt 日志。
 
-Agent 不得直接写入：
+## 人类作者修订
+
+AI 候选不能直接定稿。共编中的圈选、方案与选择只产生完整 workbench 候选，不能写 draft、final 或 canonical。已有 P0/P1 时只能使用当前 repair plan；人工终稿锁定后，AI 只能只读咨询。
+
+每章必须提交当前候选对应的 `human_author_revision_v3`，并绑定人类意图、共编来源和最终锁。
+
+人工记录至少证明两个真实影响维度，其中至少一个属于场景因果或人物声音/情绪。每项包含精确修改前后 span、`intent_ref`、预期读者影响、修改意图和必须保护项。
+
+以下内容不能独立满足人工修订门禁：
+
+- 只查看或勾选；
+- 只改空白、排版或标点；
+- 自动生成相同的通过理由；
+- 把 AI 建议直接当成人工决定。
+
+人工修订不得改变章节合同、知识边界、能力代价、关系阶段和保护结果。需要改变时必须 redirect 到章节方向或纲要。
+
+双稿由独立 `prose_revision_semantic_review` 验证保真。人工终稿后的任何 Agent、`prose_naturalness` 或 repair 正文变换都会让旧记录 stale，并退回共编与全量复审阶段。
+
+## 去 AI 味与低质治理
+
+本项目不实现 AI 概率、检测器评分、规避检测或“检测通过”声明。
+
+确定性 gate 只阻断可直接证明的问题，例如：
+
+- 空正文；
+- Prompt、任务或创作说明残留；
+- 大段精确重复；
+- 明确格式损坏。
+
+常见词、句长、对白率、感官密度、慢章、无悬崖结尾和多个情节词只能作为 P2 定位信号，不能单独产生 P1。
+
+模板化 P1 必须由 `anti_template_editor` 引用至少两个精确 span，说明重复的叙事功能、对读者的损害以及必须保护的内容。
+
+细节是否有效取决于它是否改变感知、判断、行动或关系，不使用感官配额、对白配额或 A/B/C 关键词配额。
+
+## 人工深审
+
+`human_story_review_v6` 必须绑定当前八类证据：
+
+1. 候选正文；
+2. `chapter_contract_v4`；
+3. `human_chapter_intent_v1`；
+4. `chapter_story_brief_basis_v2`；
+5. Promise Ledger；
+6. 因果模拟；
+7. `human_review_bundle_v2`；
+8. `human_author_revision_v3` 与最终锁。
+
+人类强制确认三组核心证据：关键转折、人物选择/情绪、读者收益/离场状态。其他维度显示独立审稿覆盖与当前风险；存在 finding 时必须 repair、接受 P2 或 redirect。
+
+审稿台不能自动填写人工理由。咨询只读，不能修改正文、批准章节或写入 final；候选或 basis 变化后立即 stale。
+
+## Canonical 边界
+
+canonical 主要包括：
 
 ```text
 10_bible/
 20_outline/
-10_bible/research_canon.jsonl
-30_state/story_graph.json
-30_state/semantic_ledger/
-30_state/foreshadowing_state.json
-30_state/tcs/
+30_state/
 40_manuscript/final/
-60_rag/
-70_runtime/db/
+project.yaml
 ```
 
-Bible、outline、research canon、final、semantic ledger、RAG、graph、foreshadow state、TCS 与 SQLite 只能由 CLI 在候选产物通过 validate 后，通过显式 apply/finalize/close 和事务机制改变。无效输出、反馈摘要和 benchmark 记录不能进入 canonical 状态。SQLite 与向量库是可重建派生索引，不能覆盖 final 和证据化语义账本。语义与产物规则见 [章节语义知识库与产物精简](docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md)。
+Agent 不直接写这些路径。候选、任务、diff、审稿和咨询位于 `50_workbench/`。
 
-## 中文网文质量与去 AI 味
+`draft submit` 只能把经过相应协议验证的完整候选提交到 draft；`chapter finalize` 只能消费当前 gate、独立审稿、人工修订和人工接受证据。定稿后的统一语义任务输出 `canonical_delta_v1`，再由 CLI 显式应用。
 
-去 AI 味不等于追逐检测器，也不等于把所有平台都改成短句、高对白和悬崖结尾。引擎从 wheel 内置资源按
-`事实边界 -> 市场 -> 主世界类型 -> 剧情引擎 -> 叙事形式 -> 前提装置 -> 关系重点 -> 当前故事弧 -> 人工风格 -> 项目覆盖`
-编译质量合同。玄幻、游戏异界、都市属于世界分面；成长、求生、调查、言情属于剧情引擎；轻小说、群像、多视角属于叙事形式；穿越、重生、系统属于前提装置；同人则由 `creation.mode` 独立表达。冲突不会按数组顺序静默覆盖，必须由人明确解决。
+canonical 写入使用项目锁和事务。崩溃后先运行：
 
-- 确定性检查只阻断空稿、Prompt/任务残留、格式损坏和大段精确重复等可直接证明的问题。孤立词语、句长、对白率、感官密度、慢章和尾钩强弱只作 P2 定位信号。
-- `anti_ai_editor` 每章独立必审；模板化 P1 必须引用至少两个精确 span，并证明同一功能重复正在替代场景、人物选择、新信息或情绪后果。
-- Humanizer v4 的第二遍改写读取 `character_expression_packet_v1`，保护人物的感知偏向、决策偏向、话语层级、社交面具和情绪泄漏，并强化相反欲望、隐藏议程、不可逆行动和情绪余波。
-- 经批准的设计 Markdown 必须先编译为 `canonical_delta_v1`，再由 CLI 原子物化人物与关系视图；v0.7.0 明确拒绝 v0.6 的 `human_story_review_v3` 项目，不自动迁移，也不允许 Agent 直接写 Bible。
-- v0.7.0 工作区继续使用自适应上下文预算：`compact/standard/large` 分别提供 24K/48K/96K engine-controlled units，也可由项目覆盖。字符数和文件数只作诊断；CLI 依次去重、移除未触发参考、按需加载证据并拆分范围上下文，只有核心事实仍无法容纳时才进入 `need-human`。
-- 每章作者使用新的章节会话；repair 可继续该章作者会话；Humanizer、连贯/人物/节奏/收益/同人审稿和 final 语义档案使用独立新会话。CLI 只给出会话要求和第一条命令，不创建子进程，也不把聊天历史当长期状态。
-- 29 个任务角色、27 类任务、4 类输出协议与 12 个中文写作 Playbook 按区段渐进加载；其中 `repair_coordinator` 只编排已验证 finding，`human_review_advisor` 只提供不可直接写 canonical 的咨询。44 个故事分面均有独立中文适配器，每轮最多激活三个。当前只能称为“高级专业候选 Prompt”，真实混合题材人工盲评完成前不作文学等级承诺。
-- 第 1-3 章、人物初登场、POV 切换、关系转折和对白同质复发会选择 `character_editor`；即使 pass，也必须给每个 featured character 提供正文证据。
-- 双稿候选会与来源稿比较合同、知识边界、能力代价、关系阶段和保护结果，不使用改写比例；独立复核后修改任一候选都会使旧结果失效。
-- 章节卡声明 `chapter_duty`、`reader_gain`、代价、章节拓扑、结尾方式、承诺引用与兑现；finalize 后写入读者收益账本。
-- 第 1/3/10/30 章、卷首卷末、重大揭露、关系转折和所有同人章节默认要求 Agent semantic review。
-- 同人语义审稿额外检查人物声音、关系阶段、能力与世界规则、分歧因果、原角色主体性、原创贡献、集体降智和“只套角色皮”。
-- 当前候选的 P0/P1 finding 固定进入不可变 review bundle 并必须本章修复；跨章复发只由结构化 `role_id + finding_code` 写入内部 editorial pattern registry。该注册表不进入作者工作单、事实、RAG 或 Graph，也不冒充读者反馈。
-- 章节卡和写作者工作单携带生效质量合同；它允许慢章、完整收束和余波章，不把画像变成固定句长、对白率或钩子模板。
-- `qidian_male` 是默认主合同；`fanqie_free` 只输出最多三条非阻断兼容建议，不会自动改章或阻断定稿。
-- 起点与番茄画像的每项建议必须绑定 `market_evidence_registry_v2` 的 claim、来源类型、发布者、核验日期和适用范围；平台经验只能是 P2 非阻断观察，不推断推荐算法。
-- 章节卡明确区分平台承诺、章节职责、读者收益、代价与关系变化；Reader Payoff 必须从正文证据验证，不能把计划当成事实。
-- `quality baseline-approve` 只能显式批准已定稿章节的 prose-free 结构指纹，CLI 不会自动把新章节加入风格基线。
-- 每章方向使用 `design_document_v1`：Agent 提供 2 至 3 个带稳定 option ID 和明确代价的方向，用户通过 `chapter_direction_selection_v1` sidecar 显式选择；批准与语义编译必须同时消费 Markdown 和 sidecar。CLI 不替作者决定关键剧情。
-- 每章 finalize 前必须有 `human_author_revision_v1`：至少两个有精确前后 span 的真实影响维度，其中一个属于场景因果或人物声音/情绪；只改空白、格式或标点不能通过。任何后续 Agent/Humanizer/repair 改稿都会让该记录 stale。
-- `human_story_review_v4` 绑定人工修订及候选、章节合同、承诺账本、因果模拟、冻结 review bundle 六类 hash。人工强制确认三组核心证据；其他维度复用独立审稿覆盖，有 finding 时必须明确接受 P2、repair 或 redirect，前端不代填通过理由。
-- 真实人工修改可批准为 `author_voice_edit_pair_v1`。第 1–3 章关闭前每章至少一个与人工修改区重合的 pair；后续最多加载两个相关正例，active 总量超过 12 时必须由人选择替换。
-- `publication preflight` 分离官方治理快照与写作画像：番茄只映射公开的粗制滥造、格式混乱、结构失常和空洞水文风险；起点明确显示公开全面 AI 禁令与内部判定未知。预检始终非阻断，也不承诺平台接受。
+```bash
+longform-engine recover status project.yaml
+longform-engine production next project.yaml
+```
 
-查看本章实际合同：
+不要手工修改 SQLite、派生 RAG 索引或聚合状态来绕过事实源。
 
-```powershell
-longform-engine quality contract project.yaml --chapter N
-longform-engine quality contract project.yaml --chapter N --explain
-longform-engine quality contract project.yaml --chapter N --compare-market fanqie_free
+## 起点与番茄边界
+
+默认画像是起点男频主合同，番茄免费仅提供 P2 非阻断兼容观察。
+
+跨平台共同核心由章节合同表达：卖点进入事件、人物推动因果、行动产生选择与代价、阶段性收益、关系变化、信息释放和长线兑现。
+
+平台启发式不等于平台规则。前三章、收益频率、句长、对白率和尾钩强度都不得提升为违规门禁。
+
+平台预检：
+
+- 报告真实生产方式、人工修订覆盖和政策快照；
+- 番茄映射公开的低质治理类别；
+- 起点明确显示未发现可核验的公开全面 AI 禁令，内部判定未知；
+- 只提示，不承诺通过，也不自动插入或删除披露标识。
+
+政策快照超过 `next_review_at` 后显示 `policy_verification_required`。
+
+## 质量状态
+
+```bash
 longform-engine quality status project.yaml --json
-longform-engine intelligence direction-select project.yaml --chapter N --option OPTION_ID
-longform-engine review serve project.yaml --chapter N --port 8765
-longform-engine chapter human-revision-task project.yaml --chapter N
-longform-engine creative author-voice-approve project.yaml --chapter N --record 50_workbench/author_voice/chNNN.json --approved-by human
-longform-engine publication preflight project.yaml --target qidian_male --json
-longform-engine publication provenance project.yaml --target qidian_male --json
-longform-engine quality baseline-approve project.yaml --chapter N --approved-by editor
-longform-engine character audit-task project.yaml --from-chapter 1 --to-chapter 15
-longform-engine character samples-approve project.yaml --file 50_workbench/character_reviews/voice_samples.json --approved-by human
 ```
 
-这些约束针对中文网文常见的开篇拖沓、流水账、角色扁平、对白失真和机械钩子，不承诺单一风格模板适合所有平台。公开写作课程背景可参考[番茄作家课堂](https://fanqienovel.com/writer/zone/tutorial?tab=1)。
+三项状态不能相互替代：
 
-## 长篇一致性
+- `protocol_ready`：可执行生产协议结构有效；
+- `author_acceptance_ready`：每个已定稿章节都有当前协议的可验证人工接受；
+- `literary_evidence_ready`：独立盲评证据满足文学证据 manifest。
 
-v0.7.0 延续 `content_characters_v1` 作为唯一生产规模口径：只统计正文中的 Unicode 字母和数字，不计空白、标点、Markdown 标记、标题、工作单或审稿文件。默认目标为 200 万正文字符，每章目标 3000、软区间 2400 至 3600，预测约 667 章和 8 卷；章节数与卷数会随实际章长和故事密度重估，不再是硬约束。200 万以内属于正式工程支持，超过 200 万可配置但 doctor 标记为 experimental。
+当前仓库没有满足要求的真实盲评 manifest，因此 `literary_evidence_ready=false`。自动测试、作者接受和工程协议就绪都不能改写这一结论。
 
-全书完成条件是“人工批准的结局完成 + 必要承诺闭环 + 正文字符数进入容差 + 无 P0/P1”，不是抵达某个固定章节号。低于目标时只能由人批准扩展故事弧，禁止自动注水；超过目标时提示重估，不机械压缩已经成立的剧情。核心状态层包括：
+## 开发与发布
 
-| 机制 | 作用 |
-| --- | --- |
-| RAG | 从 final、摘要和 canon 召回相关事实 |
-| Story Graph | 管理人物、地点、组织、关系、事件与伏笔 |
-| TCS | 防止未来事实泄漏和时间状态错位 |
-| Character Memory | 约束角色动机、关系和能力边界 |
-| Outline Anchors | 约束卷目标、阶段推进和改纲影响 |
-| Reader Promise Ledger | 管理作者建立的期待、兑现窗口和人工延期，不代表真实读者行为 |
-| Arc Causal Simulation | 在滚动窗口内约束角色目标、拒绝点、场外行动与逐章因果义务 |
-| Research Canon | 只接纳经引用检查和显式提升的研究结论 |
+源码开发、单进程测试、资源清单、构建、分发审计和隔离安装命令集中在 [Release Runbook](docs/RELEASE_RUNBOOK.md)。
 
-章节候选必须通过字数、连续性、节奏、AI 味、禁揭露和发布可读性门禁。deterministic evidence gate 负责可复核的短语、状态和路径证据；高风险章节还必须完成 Agent semantic review，检查动机、空间、能力、关系、伏笔和因果，并引用正文 span 与 canonical state。CLI 校验证据后才重算门禁。失败时生成 `gate_result.json` 与 `repair_plan.md`，不会进入 final，也不会污染 RAG、图谱或 SQLite。
+v0.9.0 的发布清单保留实现阶段验证证据，并单独记录本次经用户授权的无测试发布例外。tag 发布工作流只构建和上传制品，不把 CI 或 smoke 结果解释为发布质量证明。
 
-## Semantic RAG
-
-公开完整版安装包含 Semantic RAG Python 依赖。默认 profile：
-
-- embedding：`BAAI/bge-m3`
-- reranker：`BAAI/bge-reranker-v2-m3`
-- 缓存：`70_runtime/models/`
-- `semantic.allow_network_download: true`
-- `semantic.allow_fallback: false`
-
-doctor 只检查依赖和缓存，不会下载模型。需要预热时显式运行：
-
-```powershell
-longform-engine models install project.yaml --profile bge-m3 --download
-longform-engine doctor --tool all --project project.yaml
-```
-
-## 中文工程指令
-
-| 指令 | 作用 |
-| --- | --- |
-| `/工程开书` | 创建或打开小说项目 |
-| `/工程下一步` | 返回最高优先级安全动作 |
-| `/工程工单` | 渲染 AgentTaskManifest 工作单 |
-| `/工程生产状态` | 查看稳定生产状态 |
-| `/工程生产看板` | 查看章节与任务看板 |
-| `/工程推进` | 仅推进确定性、无 apply 的步骤 |
-| `/工程续章` | 生成下一章任务包 |
-| `/工程提交稿` | 提交 Agent 草稿并运行门禁 |
-| `/工程修章` | 生成或处理修章任务 |
-| `/工程定稿` | 人工确认后进入 final |
-| `/工程章节语义任务` | 对 final 做一次统一证据抽取 |
-| `/工程章节语义应用` | 显式物化关系、伏笔、角色状态、TCS 与索引 |
-| `/工程关闭章节` | 完整性校验、关闭章节并保留两章活动区 |
-| `/工程产物精简` | dry-run 后将旧工作材料归档为可验证 ZIP |
-| `/工程改纲` | 生成范围改纲候选与影响标记 |
-| `/工程入库` | 显式提升审核后的研究资料 |
-| `/工程回滚` | 事务回滚并标记派生产物 stale |
-| `/工程同人状态` | 查看 canon、设计和权利提示状态 |
-| `/工程同人Canon任务` | 创建来源证据约束的同人 canon 工作单 |
-| `/工程同人设计任务` | 创建人物声音、分歧因果与原创主线工作单 |
-| `/工程发布风险` | 生成仅提示、不阻断的发布风险报告 |
-| `/工程发布导出` | 导出 final 正文并同时生成风险报告 |
-
-完整映射在 Skill 自带的 `references/command_protocol.md`。
-
-## 项目目录
-
-```text
-00_governance/   开书确认和生产规则
-10_bible/        世界观、人物、风格与 research canon
-20_outline/      总纲、卷纲、章节计划、锚点与伏笔账本
-30_state/        图谱、TCS、时间线和角色状态
-40_manuscript/   draft、final、summary 与 revision 工作区
-50_workbench/    Agent tasks、候选稿、审稿与修复产物
-60_rag/          检索和记忆派生状态
-70_runtime/      SQLite、锁、快照、模型和 benchmark
-80_exports/      导出产物
-```
-
-## 开发者安装
-
-源码开发才需要 clone、venv 与 editable install：
-
-```powershell
-git clone https://github.com/ylqit/novel-general.git
-Set-Location novel-general
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -U pip
-python -m pip install -e ".[semantic,dev]"
-python -m ruff check src tests
-python -m mypy --follow-imports=skip src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/storage/recovery.py src/longform_engine/human_author_revision.py src/longform_engine/human_story_review.py src/longform_engine/author_voice.py src/longform_engine/publication.py
-python scripts\sync_skill_references.py --check
-python scripts\build_resource_manifest.py --check
-python scripts\validate_skills.py
-python scripts\check_markdown_links.py
-python scripts\release_surface_guards.py
-python -m pytest --cov=longform_engine --cov-report=term-missing
-python -m build
-python scripts\audit_wheel.py
-python scripts\audit_sdist.py
-longform-engine release check --repository . --check-remote
-longform-engine release check --repository . --channel rc
-```
-
-开发时可使用 `scripts/install-agent-skills.ps1 -Mode junction` 或 `scripts/install-agent-skills.sh --mode symlink`。公开安装固定使用 CLI 的安全 copy 模式。
-
-## 质量基准
-
-工程回归、作者接受和文学证据分开记录，不手工修改聚合 JSON，也不把正文复制进 manifest。v0.7.0 文学证据固定比较相同宿主、模型、场景与生成条件下的一组 v0.7.0 候选与一组 v0.6.0 基线；既有 v0.6.0/v0.5.0 结果不能替代本版本证据：
-
-```powershell
-longform-engine benchmark init project.yaml --run-id codex-smoke-5 --host-product codex --chapters 5 --scenario-id setting-v1 --agent-model MODEL --host-version VERSION
-longform-engine benchmark record project.yaml --run-id codex-smoke-5 --chapter 1 --continuity 8 --character-consistency 8 --foreshadowing-control 8 --pacing 7 --reader-payoff 8 --ai-taste 3 --gate-passed --context-file-count 6 --context-character-count 18000 --judge editor-a --judge editor-b --judge editor-c
-longform-engine benchmark report project.yaml --run-id codex-smoke-5
-longform-engine benchmark rag-scale-run project.yaml --scale-chapters 667 --backend local_hnsw
-longform-engine benchmark compare project.yaml --comparison-id workflow-a-b-10 --run-id workflow-a-10 --run-id workflow-b-10
-longform-engine benchmark blind-pack project.yaml --comparison-id qidian-opening-v070 --run-id candidate-qidian-3 --run-id baseline-qidian-3 --review-scope qidian_opening_3 --seed PRIVATE_SEED
-```
-
-`rag-scale-run` 使用固定种子验证 50/200/500/667 章下的向量索引、增量更新、stale 和 rollback；结果明确标记为 `synthetic_engineering`，不等于文学质量证据。`blind_review_pack_v3` 分别要求起点前三章、番茄前三章和十五章纵向 scope，每组至少三名独立人工评审；三组来源与聚合 hash 全部通过后，才生成可令 `literary_evidence_ready=true` 的无正文 manifest。
+活动发布面必须通过版本与 schema 守卫；历史 release checklist 保留原文，不批量改写。
 
 ## 文档
 
-- [Skill 安装与开发方式](docs/SKILL_INSTALLATION.md)
-- [架构](docs/ARCHITECTURE.md)
-- [存储模型](docs/STORAGE_MODEL.md)
-- [配置契约](docs/CONFIGURATION.md)
-- [质量证据管理](docs/QUALITY_BENCHMARK_RUNBOOK.md)
-- [公开发布 Runbook](docs/RELEASE_RUNBOOK.md)
-- [v0.7.0 实施与发布 Checklist](docs/V0_7_0_RELEASE_CHECKLIST.md)
-- [v0.6.0 历史发布 Checklist](docs/V0_6_0_RELEASE_CHECKLIST.md)
-- [v0.5.0 历史发布 Checklist](docs/V0_5_0_RELEASE_CHECKLIST.md)
-- [v0.4.4 发布 Checklist](docs/V0_4_4_RELEASE_CHECKLIST.md)
-
-## 质量声明
-
-工程化边界、上下文约束和编辑模式诊断为长篇一致性提供可验证基础。目前仓库没有三类真实盲评 manifest，故 `literary_evidence_ready=false`；接口完成、自动测试通过和工具链 smoke 都不能替代真实章节与独立盲评证据。
+- [Architecture](docs/ARCHITECTURE.md)
+- [Storage Model](docs/STORAGE_MODEL.md)
+- [Configuration](docs/CONFIGURATION.md)
+- [Quality Benchmark Runbook](docs/QUALITY_BENCHMARK_RUNBOOK.md)
+- [Release Runbook](docs/RELEASE_RUNBOOK.md)
+- [Release History](docs/RELEASE_HISTORY.md)
+- [v0.9.0 发布 Checklist](docs/V0_9_0_RELEASE_CHECKLIST.md)
 
 ## License
 

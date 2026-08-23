@@ -1,6 +1,6 @@
 ---
 schema: craft_playbook_source_v1
-playbook_id: anti_ai_expression
+playbook_id: anti_template_expression
 sections:
   core: always
   creation: task

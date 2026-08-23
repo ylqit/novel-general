@@ -121,7 +121,7 @@ SUBDIRECTORIES = [
     "50_workbench/quality_reviews",
     "50_workbench/repair_plans",
     "50_workbench/repair_candidates",
-    "50_workbench/humanizer_tasks",
+    "50_workbench/prose_naturalness_tasks",
     "50_workbench/intelligence_tasks",
     "50_workbench/intelligence_candidates",
     "50_workbench/intelligence_selections",

@@ -37,13 +37,29 @@ def build_structure_observation(
     prose_chars = max(1, len(re.sub(r"\s+", "", text)))
     paragraph_lengths = [len(re.sub(r"\s+", "", item)) for item in paragraphs]
     return {
-        "schema": "structure_observation_v2",
+        "schema": "structure_observation_v3",
         "chapter_number": chapter_number,
         "source_hash": sha256_text(text),
         "chapter_duty": str(card.get("chapter_duty") or ""),
         "opening_mode": str(craft.get("opening_mode") or infer_opening_mode(text)),
+        "opening_carrier": str(
+            craft.get("opening_carrier")
+            or card.get("opening_carrier")
+            or infer_opening_mode(text)
+        ),
+        "scene_function_chain": infer_scene_function_chain(craft, card),
+        "character_reaction_mode": str(
+            craft.get("character_reaction_mode")
+            or card.get("character_reaction_mode")
+            or infer_character_reaction_mode(text)
+        ),
         "topology_id": str(craft.get("topology_id") or card.get("topology_id") or "unknown"),
         "ending_mode": str(craft.get("ending_mode") or infer_ending_mode(text)),
+        "ending_function": str(
+            craft.get("ending_function")
+            or card.get("ending_function")
+            or ending_function(infer_ending_mode(text))
+        ),
         "scene_count": int(craft.get("scene_count") or max(1, text.count("\n---\n") + 1)),
         "dominant_scene_type": str(craft.get("dominant_scene_type") or "unreviewed"),
         "primary_story_engine": str(
@@ -237,6 +253,45 @@ def ratio_closeness(left: float, right: float, *, floor: float = 1.0) -> float:
 
 def count_patterns(text: str, patterns: tuple[str, ...]) -> int:
     return sum(text.count(pattern) for pattern in patterns)
+
+
+def infer_scene_function_chain(
+    craft: dict[str, Any], card: dict[str, Any]
+) -> list[str]:
+    for value in (
+        craft.get("scene_function_chain"),
+        card.get("scene_function_chain"),
+        card.get("scene_functions"),
+    ):
+        items = clean_strings(value)
+        if items:
+            return items[:6]
+    values = [
+        str(card.get("chapter_duty") or "").strip(),
+        str(card.get("state_change_kind") or "").strip(),
+    ]
+    return [value for value in values if value][:6] or ["unreviewed"]
+
+
+def infer_character_reaction_mode(text: str) -> str:
+    body = re.sub(r"^#.*?\n", "", text.strip(), count=1)
+    scores = {
+        "acts_under_pressure": len(re.findall(r"(抓|推|走|冲|挡|拿|放|转身|拒绝|答应)", body)),
+        "speaks_under_pressure": len(re.findall(r"[“「『].*?[”」』]", body, flags=re.S)),
+        "withholds_and_observes": len(re.findall(r"(沉默|没说|没有回答|看着|盯着|避开)", body)),
+        "internalizes": len(re.findall(r"(想到|意识到|明白|记起|心里)", body)),
+    }
+    return max(scores, key=scores.get) if any(scores.values()) else "unreviewed"
+
+
+def ending_function(mode: str) -> str:
+    return {
+        "decision": "commitment",
+        "reveal": "information_shift",
+        "threat": "pressure_escalation",
+        "question": "dramatic_question",
+        "closure": "aftereffect_or_settlement",
+    }.get(mode, "unreviewed")
 
 
 def infer_opening_mode(text: str) -> str:

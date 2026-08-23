@@ -19,18 +19,20 @@ python -m longform_engine.cli continue-write project.yaml --chapter 1
 story_engine_contract_v1
 -> reader_promise_ledger_v1
 -> human-approved arc_causal_simulation_v1
--> rolling outline / chapter_direction_candidate_v4 Markdown
+-> rolling outline / chapter_direction_candidate_v5 Markdown
 -> chapter_direction_selection_v1 / approve / semantic compile
--> chapter_contract_v3 / chapter_story_brief_v2
--> draft
--> deterministic signals + mandatory scene_prose_editor / anti_ai_editor
+-> blank human_chapter_intent_v1 / validate / human apply
+-> chapter_contract_v4 / chapter_story_brief_basis_v2 / chapter_story_brief_v4
+-> AI draft / chapter_coedit_session_v1 iterative full workbench candidates
+-> selected candidate frozen and submitted to draft
+-> deterministic signals + mandatory scene_prose_editor / anti_template_editor
 -> P0/P1 repair when required; otherwise freeze pre-revision bundle
--> human_author_revision_v1 complete candidate + prose_revision_semantic_review
+-> human_author_revision_v3 final complete candidate + final lock + prose_revision_semantic_review
 -> draft submit --agent human / full gate and independent review rerun
--> human_story_review_v4 risk-layered accept / repair / redirect
--> optional non-canonical consultation bound to the current human candidate
+-> human_story_review_v6 risk-layered accept / repair / redirect
+-> optional human_final read-only consultation bound to the locked candidate
 -> finalize / semantic apply (promise materialization) / close
--> blind_review_pack_v3 evidence outside ordinary chapter production
+-> blind_review_pack_v4 evidence outside ordinary chapter production
 ```
 
 承诺超过目标章产生 P2；超过最迟章时，下一次方向选择必须进入人工延期或改纲。因果模拟必须覆盖当前滚动窗口且 basis hashes 与故事引擎、承诺规划、角色状态和宏观纲要一致；任一依据改变都会使模拟 stale，并在 transaction v3 中同步失效下游卡片、任务和 SQLite 投影。
@@ -75,13 +77,14 @@ story_engine_contract_v1
 - chapter turn (`chapter_turn`) and reveal boundary (`reveal_boundary`)
 - primary story engine / scene carriers / state change / dramatic method
 - reader gain (`reader_gain`)
-- hook
+- ending mode / ending intent / emotional aftereffect
+- suspense protection / resolution markers
 - forbidden
 - required context files
 - reader promise actions
 - approved causal simulation reference
 
-`information_release`、`duty`、`information` 和 `reader_payoff` 不再是章节合同兼容字段；输入中出现这些遗留字段会被拒绝。
+`information_release`、`duty`、`information`、`reader_payoff`、`hook`、`hook_mode`、`plot_obligation`、`irreversible_action` 和卡片级 `dramatic_freedom` 不再是章节合同兼容字段；输入中出现这些遗留字段会被拒绝。
 
 ## Beat Sheet
 
@@ -98,18 +101,20 @@ v1 生成五段式 Beat：
 - Pressure
 - Choice
 - Turn
-- Hook
+- Exit intent
 
 ## Continue Write
 
-`continue-write` 在方向已应用且承诺/模拟引用有效后执行：
+`continue-write` 在方向已应用、当前 `human_chapter_intent_v1` 已人工 apply 且承诺/模拟引用有效后执行：
 
 ```text
 load_config / verify previous chapter closed
-verify chapter_contract_v3, promise actions and causal simulation basis
+verify chapter_contract_v4, promise actions and causal simulation basis
+verify human intent binds the current direction selection and contract
 compile internal chapter_fact_inventory
 compile planning/editor context separately
-render author-only chapter_story_brief_v2
+compile chapter_story_brief_basis_v2
+render author-only chapter_story_brief_v4
 write Agent task manifest and run report
 ```
 
@@ -120,13 +125,16 @@ write Agent task manifest and run report
 50_workbench/beats/chNNN.md
 50_workbench/writing_tasks/chNNN.json
 50_workbench/writing_tasks/chNNN.md
+50_workbench/writing_tasks/chNNN.basis.json
 50_workbench/writing_tasks/chNNN.agent_task.json
 70_runtime/run_reports/continue_write_chNNN.json
 ```
 
 注意：`continue-write` 只生成任务包，不生成正文，也不直接写入 draft/final。Agent 只能写 manifest 声明的 `50_workbench/agent_drafts/` 候选，再由 `draft submit` 进入受控 draft。定稿、门禁产物、修复计划和正式语义更新必须由对应 CLI 命令完成。
 
-作者 Markdown 只渲染 `chapter_story_brief_v2`。内部 `chapter_fact_inventory` 继续供 canonical、RAG、Graph、TCS 与语义校验使用；承诺账本、因果模拟和编辑模式使用独立的 planning/editorial context，均不作为作者工作单。全部独立审稿后必须冻结 review bundle，再执行 `chapter human-review-task / human-review-validate / human-review-apply`；只有十项全过、三类精确 span 齐全，并同时绑定候选、章节合同、承诺账本、因果模拟和 review bundle 五类 hash 的 `accept` 决定可进入 `chapter finalize`。`review serve` 只提供本地可视化校验与咨询，不能自行 apply 或 finalize。
+作者 Markdown 只渲染 `chapter_story_brief_v4`，并包含人类意图、本章必要人物声音与筛选事实。内部 `chapter_fact_inventory` 继续供 canonical、RAG、Graph、TCS 与语义校验使用；承诺账本、因果模拟、平台诊断和编辑模式不作为作者原始上下文。只有任务状态、合同、意图、basis、Markdown 和活动 manifest 全部一致时才复用旧工作单。
+
+共编阶段只保存结构化 span、方案、人工选择、修改意图和完整候选 hash；不保存完整 Prompt，不能直接写 canonical。`phase=coedit` 可从选中方案生成完整候选，`phase=human_final` 永远只读。全部独立审稿后冻结 `human_review_bundle_v2`，再完成人工终稿、最终锁、全量复审与风险分层深审；只有三组核心精确证据齐全、finding 已处置，并绑定候选、合同、人类意图、Story Brief basis、承诺账本、因果模拟、review bundle 和人工终稿八类证据的 `accept` 可进入 `chapter finalize`。
 
 ## Gate Blocking
 

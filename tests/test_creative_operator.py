@@ -5,7 +5,14 @@ import pytest
 from longform_engine.agent_tasks import load_manifest, status_summary, validate_manifest_strict
 from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import load_project_config
-from longform_engine.creative import expand_check, expand_task, humanize_check, humanize_task, style_extract
+from longform_engine.creative import (
+    detect_prose_naturalness_issues,
+    expand_check,
+    expand_task,
+    prose_naturalness_check,
+    prose_naturalness_task,
+    style_extract,
+)
 from longform_engine.gates import gate_check, pacing_review
 from longform_engine.orchestration import WorkflowError, continue_write, open_book as engine_open_book, plan_chapter
 from longform_engine.storage import init_project
@@ -114,7 +121,7 @@ def test_continue_write_blocks_missing_applied_creative_brief(tmp_path):
     assert not (root / "40_manuscript" / "draft" / "ch001.md").exists()
 
 
-def test_humanizer_task_and_check_stay_in_workbench(tmp_path):
+def test_prose_naturalness_task_and_check_stay_in_workbench(tmp_path):
     project_config = seed_project(tmp_path)
     project_config.data["quality"]["semantic_review_milestones"] = []
     project_config.data["quality"]["semantic_review_boundaries"] = False
@@ -125,35 +132,35 @@ def test_humanizer_task_and_check_stay_in_workbench(tmp_path):
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\nThis stands as a pivotal moment. TODO: keep prompt residue.\n", encoding="utf-8")
 
-    task = humanize_task(project_config, chapter_number=1, source="draft")
-    candidate = root / "50_workbench" / "repair_candidates" / "ch001.humanized_candidate.md"
+    task = prose_naturalness_task(project_config, chapter_number=1, source="draft")
+    candidate = root / "50_workbench" / "repair_candidates" / "ch001.prose_naturalness_candidate.md"
     candidate.write_text(
         "# Chapter 1\n\nThis stands as a pivotal and crucial moment, a significant tapestry that serves as a showcase.\n",
         encoding="utf-8",
     )
-    check = humanize_check(project_config, chapter_number=1, file_path=candidate)
+    check = prose_naturalness_check(project_config, chapter_number=1, file_path=candidate)
 
     assert "50_workbench" in task.task_file
-    assert Path(task.candidate_file).name == "ch001.humanized_candidate.md"
+    assert Path(task.candidate_file).name == "ch001.prose_naturalness_candidate.md"
     assert Path(task.candidate_file).parent.name == "repair_candidates"
-    manifest = load_manifest(root, "humanize:ch001:v4")
+    manifest = load_manifest(root, "prose_naturalness:ch001:v4")
     strict = validate_manifest_strict(root, manifest)
     assert strict.ok, strict.errors
     assert check.passed is True
     assert status_summary(root, chapter_number=1)["by_status"]["validated"] >= 1
-    assert any(item["code"] == "generic_ai_diction" for item in check.issues)
+    assert any(item["code"] == "template_diction_signal" for item in check.issues)
     assert all(item["severity"] == "P2" for item in check.issues)
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
 
-def test_chinese_humanizer_detects_webnovel_ai_categories(tmp_path):
+def test_chinese_prose_naturalness_detects_webnovel_ai_categories(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# 第一章\n\nTODO 写作说明：这里需要改成正文。\n", encoding="utf-8")
 
-    task = humanize_task(project_config, chapter_number=1, source="draft")
-    candidate = root / "50_workbench" / "repair_candidates" / "ch001.humanized_candidate.md"
+    task = prose_naturalness_task(project_config, chapter_number=1, source="draft")
+    candidate = root / "50_workbench" / "repair_candidates" / "ch001.prose_naturalness_candidate.md"
     candidate.write_text(
         (
             "# 第一章\n\n"
@@ -163,56 +170,56 @@ def test_chinese_humanizer_detects_webnovel_ai_categories(tmp_path):
         ),
         encoding="utf-8",
     )
-    check = humanize_check(project_config, chapter_number=1, file_path=candidate)
+    check = prose_naturalness_check(project_config, chapter_number=1, file_path=candidate)
     issues = {item["code"]: item for item in check.issues}
     report_text = Path(check.markdown_report).read_text(encoding="utf-8")
     task_text = Path(task.task_file).read_text(encoding="utf-8")
 
     assert check.passed is False
-    assert "Pass 1: 中文 AI 痕迹清理" in task_text
+    assert "Pass 1: 模板化功能清理" in task_text
     assert "Pass 2: 中文网文质感增强" in task_text
-    assert issues["humanizer_meta_residue"]["severity"] == "P0"
-    assert issues["humanizer_inflated_significance"]["category"] == "意义膨胀"
-    assert issues["humanizer_summary_voice"]["severity"] == "P2"
-    assert issues["humanizer_cliche_action"]["category"] == "套话动作"
-    assert issues["humanizer_high_frequency_words"]["severity"] == "P2"
-    assert issues["humanizer_weak_adverbs"]["category"] == "弱化副词"
-    assert issues["humanizer_template_triad"]["category"] == "模板三连"
-    assert issues["humanizer_inflated_significance"]["evidence"]
-    assert issues["humanizer_cliche_action"]["suggestion"]
+    assert issues["prose_naturalness_meta_residue"]["severity"] == "P0"
+    assert issues["prose_naturalness_inflated_significance"]["category"] == "意义膨胀"
+    assert issues["prose_naturalness_summary_voice"]["severity"] == "P2"
+    assert issues["prose_naturalness_cliche_action"]["category"] == "套话动作"
+    assert issues["prose_naturalness_high_frequency_words"]["severity"] == "P2"
+    assert issues["prose_naturalness_weak_adverbs"]["category"] == "弱化副词"
+    assert issues["prose_naturalness_template_triad"]["category"] == "模板三连"
+    assert issues["prose_naturalness_inflated_significance"]["evidence"]
+    assert issues["prose_naturalness_cliche_action"]["suggestion"]
     assert "Evidence:" in report_text
     assert "Fix:" in report_text
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
 
-def test_chinese_humanizer_detects_uniform_sentence_length(tmp_path):
+def test_chinese_prose_naturalness_detects_uniform_sentence_length(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    candidate = root / "50_workbench" / "repair_candidates" / "ch001.humanized_candidate.md"
+    candidate = root / "50_workbench" / "repair_candidates" / "ch001.prose_naturalness_candidate.md"
     candidate.parent.mkdir(parents=True, exist_ok=True)
     candidate.write_text("# 第一章\n\n他推门。她回头。他停步。钟声响。雨落下。火光动。刀出鞘。门合上。", encoding="utf-8")
 
-    check = humanize_check(project_config, chapter_number=1, file_path=candidate)
+    check = prose_naturalness_check(project_config, chapter_number=1, file_path=candidate)
 
-    assert any(item["code"] == "humanizer_uniform_sentence_length" and item["category"] == "等长句" for item in check.issues)
+    assert any(item["code"] == "prose_naturalness_uniform_sentence_length" and item["category"] == "等长句" for item in check.issues)
 
 
-def test_humanizer_v4_rejects_empty_text_and_counts_repeated_same_pattern(tmp_path):
+def test_prose_naturalness_v4_rejects_empty_text_and_counts_repeated_same_pattern(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    candidate = root / "50_workbench" / "repair_candidates" / "ch001.humanized_candidate.md"
+    candidate = root / "50_workbench" / "repair_candidates" / "ch001.prose_naturalness_candidate.md"
     candidate.parent.mkdir(parents=True, exist_ok=True)
     candidate.write_text(" \n\t", encoding="utf-8")
 
-    empty = humanize_check(project_config, chapter_number=1, file_path=candidate)
-    assert any(item["code"] == "humanizer_empty_candidate" for item in empty.issues)
+    empty = prose_naturalness_check(project_config, chapter_number=1, file_path=candidate)
+    assert any(item["code"] == "prose_naturalness_empty_candidate" for item in empty.issues)
 
     candidate.write_text(
         "# 第一章\n\n雨仿佛压低了城门，林远仿佛忘了自己为何而来。",
         encoding="utf-8",
     )
-    repeated = humanize_check(project_config, chapter_number=1, file_path=candidate)
-    issue = next(item for item in repeated.issues if item["code"] == "humanizer_high_frequency_words")
+    repeated = prose_naturalness_check(project_config, chapter_number=1, file_path=candidate)
+    issue = next(item for item in repeated.issues if item["code"] == "prose_naturalness_high_frequency_words")
     assert issue["evidence"][0]["pattern"] == "仿佛"
     assert issue["evidence"][0]["count"] == 2
 
@@ -227,12 +234,37 @@ def test_gate_keeps_isolated_significance_language_as_nonblocking_p2_signal(tmp_
 
     gate = gate_check(project_config, chapter_number=1)
     artifact_dir = root / "50_workbench" / "gate_artifacts" / "ch001"
-    humanize_report = (artifact_dir / "humanize_report.md").read_text(encoding="utf-8")
+    prose_naturalness_report = (artifact_dir / "prose_naturalness_report.md").read_text(encoding="utf-8")
 
-    assert not any(item["code"] == "humanizer_inflated_significance" for item in gate.failures)
-    assert "意义膨胀" in humanize_report
+    assert not any(item["code"] == "prose_naturalness_inflated_significance" for item in gate.failures)
+    assert "意义膨胀" in prose_naturalness_report
     assert not (artifact_dir / "repair_plan.md").exists()
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
+
+
+def test_slow_scene_without_dialogue_or_cliffhanger_is_not_a_deterministic_blocker():
+    text = """# 第一章
+
+林远沿着雨后的石阶慢慢下山，鞋底沾着祠堂前新翻的泥。
+
+他在旧桥边停了一会儿，把昨夜记下的药名逐一同野草核对。
+
+河水没有异象，只有上游漂来的松针贴着桥墩打转。
+
+等雾气散开，他才发现背篓里的布包被潮气浸湿了一角。
+
+那封没有寄出的家书仍在原处，墨迹却比清晨更淡了些。
+
+他重新包好纸页，没有催促同行人，也没有为沉默寻找解释。
+
+午后的山风吹干衣袖时，远处村庄已经升起平常的炊烟。
+
+林远记住药草生长的位置，随后踏上回程，准备先救眼前的病人。
+"""
+
+    issues, _warnings = detect_prose_naturalness_issues(text)
+
+    assert not any(str(issue.get("severity") or "").upper() in {"P0", "P1"} for issue in issues)
 
 
 def test_expand_task_and_check_repair_short_chapter_without_pollution(tmp_path):

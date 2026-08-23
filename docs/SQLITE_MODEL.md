@@ -28,7 +28,7 @@ python -m longform_engine.cli db query project.yaml schema_meta
 - `events`: 事件、参与者、后果和打开/关闭线程。
 - `outline_anchors`: 主线锚点、卷锚点和伏笔回收点。
 - `gate_results`: 每章门禁结果和失败后允许动作。
-- `pacing_history`: 节奏档位、事件类型和 A/B/C 配额使用。
+- `pacing_history`: 节奏档位、已选事件类型和 fast-event 窗口使用；不保存 A/B/C 关键词配额。
 - `rag_queries`: query cache 和命中片段。
 - `embeddings`: 可选向量缓存。
 - `audit_events`: DB init/sync/rebuild 等审计事件。

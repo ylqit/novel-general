@@ -138,26 +138,26 @@ writing:
 
 超限时按“去重 -> 移除 calibration/reference -> 移除未触发模块 -> 编辑任务移除已解决/抑制模式 -> 低优先级证据按需读取 -> 范围任务顺序拆分”处理。作者任务从一开始就不接收编辑模式。章节正文始终只有一个作者输出；核心事实仍放不下时返回 `prompt_budget_exceeded` 和 `need-human`，不会静默截断。
 
-会话策略由角色注册表控制：开书与卷级规划可继续项目协调会话；每章作者新开会话，repair 可继续该章作者会话；Humanizer、独立审稿和 final 后语义档案均新开隔离会话。CLI 只在 `production next` 与 `agent-task brief` 中声明动作、范围和第一条命令。
+会话策略由角色注册表控制：开书与卷级规划可继续项目协调会话；每章作者新开会话，repair 可继续该章作者会话；`prose_naturalness`、独立审稿和 final 后语义档案均新开隔离会话。CLI 只在 `production next` 与 `agent-task brief` 中声明动作、范围和第一条命令。
 
 ## 每章人工方向
 
-每章方向选择是 schema v4 的固定工作流，不提供跳过开关。每章写作前，`chapter_direction_candidate_v4` 必须引用覆盖当前章节、basis hash 有效且经人工批准的因果模拟，并为相关读者承诺声明 setup/escalate/partial_payoff/payoff/defer 动作。Markdown 必须提供 2–3 个稳定 option ID；用户选择另存为 `chapter_direction_selection_v1`，绑定文档 hash、选项、调整和重复载体理由。方向合同同时包含目标阶梯、当下欲望、对抗力量、最早失败、不可逆选择、`chapter_turn`、逐场行动/反应/离场状态、故事引擎、场景载体、状态变化和最近五章重复理由。
+每章方向选择是 schema v5 的固定工作流，不提供跳过开关。每章写作前，`chapter_direction_candidate_v5` 必须引用覆盖当前章节、basis hash 有效且经人工批准的因果模拟，并为相关读者承诺声明 setup/escalate/partial_payoff/payoff/defer 动作。Markdown 必须提供 2–3 个稳定 option ID；用户选择另存为 `chapter_direction_selection_v1`。方向应用后还必须由空白表单完成 `human_chapter_intent_v1`，绑定选择与合同，记录故事意图、关键人物选择、情绪真相、POV 声音意图和保护项；前端不得代填。
 
-用户选择后，CLI 才能生成章节卡、beat 和 writing task。普通章节也不跳过此步骤。
+用户选择后，CLI 才能生成章节卡；人工意图 apply 后才能编译 beat 和 writing task。普通章节也不跳过这些步骤。
 
 ## 平台证据注册表
 
-`config/quality_profiles/market_evidence_registry.yaml` 使用 `market_evidence_registry_v2`，是起点、番茄画像观察的唯一证据索引。每条证据必须声明具体 `claims`、`source_type`、`publisher`、发布日期、`verified_at`、`applicability`、证据等级与执行级别。跨平台共同叙事核心仍由 `chapter_contract_v3` 约束；`qidian_male` 是主合同，`fanqie_free` 只提供 P2 非阻断兼容观察。禁止从公开经验推断推荐算法、留存或真实读者行为。
+`config/quality_profiles/market_evidence_registry.yaml` 使用 `market_evidence_registry_v2`，是起点、番茄画像观察的唯一证据索引。每条证据必须声明具体 `claims`、`source_type`、`publisher`、发布日期、`verified_at`、`applicability`、证据等级与执行级别。跨平台共同叙事核心由 `chapter_contract_v4` 约束；`qidian_male` 是主合同，`fanqie_free` 只提供 P2 非阻断兼容观察。禁止从公开经验推断推荐算法、留存或真实读者行为。
 
 官方发布治理使用独立的 `config/platform_publication_policy_registry.json`（`platform_publication_policy_registry_v1`），不读取项目 YAML 覆盖，也不把市场启发式升级为违规规则。每条记录包含 claim、未知项、发布者、适用范围、核验日和 `next_review_at`；到期后 `publication preflight` 返回 `policy_verification_required`。所有平台预检固定非阻断。
 
-人工作者修订、v4 深审和作者声音没有可跳过配置：
+人类意图、人工终稿、v6 深审和作者声音没有可跳过配置：
 
-- 每章 final 前必须有当前 `human_author_revision_v1` 与独立双稿语义复核。
-- `scene_prose_editor` 和 `anti_ai_editor` 固定每章必审；`editorial.review_mode=off` 只关闭附加风险角色。
+- 每章写作前必须有当前 `human_chapter_intent_v1`；final 前必须有当前 `human_author_revision_v3`、人工终稿锁、Story Brief basis 与独立双稿语义复核。
+- `scene_prose_editor` 和 `anti_template_editor` 固定每章必审；`editorial.review_mode=off` 只关闭附加风险角色。
 - 词语、句长、对白率、感官密度、慢章和尾钩不提供 P1 配额配置。
-- 作者声音 bank 最多 12 个 active pair；第一至第三章关闭前每章必须人工批准一个真实修改 pair，替换由人显式选择。
+- 作者声音 bank 最多 12 个 active pair；第一至第三章每章、以后每十个关闭章节及卷边界必须批准一个真实修改 pair，替换由人显式选择。
 
 本地审稿台没有远程监听配置。`review serve` 固定绑定 `127.0.0.1`，使用一次性 token、Host/Origin/CSRF/CSP 和预期 hash；网页不能直接写 canonical、批准章节或 finalize。`quality status --json` 分开报告 `protocol_ready`、`author_acceptance_ready` 与 `literary_evidence_ready`。
 
@@ -192,7 +192,7 @@ fanfiction:
 - `quality.profile.strictness` 使用 `light|balanced|strict`，控制风险型语义审稿。
 - `quality.semantic_pacing.review_mode` 使用 `off|risk_based|required`；`pacing.default_mode` 使用 `balanced|fast|measured`。
 - `gates.forbidden_reveals` 和 `gates.mainline_reveal_warning_hits` 分别定义项目级禁揭示词与主线揭示密度警告阈值。
-- `editorial.review_mode=off` 只关闭附加风险策略，不会跳过每章必需的 `scene_prose_editor` 与 `anti_ai_editor`；开篇三章、重大兑现、同人事件与载体重复仍会追加对应审稿角色。
+- `editorial.review_mode=off` 只关闭附加风险策略，不会跳过每章必需的 `scene_prose_editor` 与 `anti_template_editor`；开篇三章、重大兑现、同人事件与载体重复仍会追加对应审稿角色。
 - 人工批准风格样本通过 quality baseline CLI 管理，不在项目 YAML 中维护重复章节列表。
 - repair 正文候选固定最多两轮，研究提升固定要求显式批准，这些安全边界不可配置。
 
@@ -209,4 +209,6 @@ python -m longform_engine.cli init-project --template qidian-longform --output n
 python -m longform_engine.cli quality story-profile novels/demo/project.yaml --json
 ```
 
-当前公开稳定配置是 v0.7.0，验收记录见 [`V0_7_0_RELEASE_CHECKLIST.md`](V0_7_0_RELEASE_CHECKLIST.md)；v0.6.0 仅保留为历史发布事实。
+共同作者工作单不携带“前三章/前两章、每 1–2 章收益、慢章最多两章”等平台固定数值。起点与番茄差异只进入 P2 非阻断诊断，不进入作者 Prompt，也不推断推荐或内部 AI 判断算法。
+
+当前公开稳定配置是 v0.9.0，并明确拒绝旧项目。实施与发布例外见 [`V0_9_0_RELEASE_CHECKLIST.md`](V0_9_0_RELEASE_CHECKLIST.md)，历史事实统一由 [`RELEASE_HISTORY.md`](RELEASE_HISTORY.md) 索引。

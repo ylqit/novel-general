@@ -1,14 +1,15 @@
 # Creative Operator Protocol
 
-This protocol applies when Codex or ClaudeCode writes, repairs, humanizes, or reviews a chapter in `longform-novel-engine`.
+This protocol applies when Codex or ClaudeCode writes, coedits, repairs, revises prose naturalness, or reviews a chapter in `longform-novel-engine`.
 
 ## Non-Negotiable Boundary
 
 Agents may create prose and review artifacts only in workbench lanes:
 
 - `50_workbench/agent_drafts/`
+- `50_workbench/chapter_coedit/`
 - `50_workbench/repair_candidates/`
-- `50_workbench/humanizer_tasks/`
+- `50_workbench/prose_naturalness_tasks/`
 - `50_workbench/editorial_reviews/`
 
 Agents must not directly edit:
@@ -26,6 +27,7 @@ Canonical state changes must go through CLI commands: `draft submit`, `chapter f
 - After `open-book`, follow `production next` through `book_ideation`. Each work order asks one core question and offers two or three options with tradeoffs. Do not infer a selection from silence.
 - Write only `book_ideation_candidate_v1`; the CLI saves one explicitly selected/provided answer through `intelligence apply --approved-by human`.
 - Every unapplied chapter reaches `chapter_direction` before prose: offer two or three causally distinct directions with stable option IDs and costs. Record the user's explicit selection in `chapter_direction_selection_v1`; approval and semantic compilation consume both Markdown and sidecar. Do not write chapter prose in this task.
+- After direction apply, the human completes the blank `human_chapter_intent_v1` form. Do not prefill story intent, key choice, emotional truth, POV voice intent, or protected items; writing cannot start until the record binds the current selection and contract.
 - Read the `effective_quality_contract_v1` embedded in the chapter card/writing brief. It combines market, genre, phase, approved baseline, and project overrides, but is not a universal sentence-length, dialogue-density, pace, or cliffhanger template.
 - Never add a finalized chapter to the approved style baseline automatically. Only the explicit `quality baseline-approve` CLI command may add its prose-free craft fingerprint.
 
@@ -33,21 +35,22 @@ Canonical state changes must go through CLI commands: `draft submit`, `chapter f
 
 Use this guide before writing any new chapter draft. `/工程续章` is the primary Chinese engineering entry for continuing a chapter; it maps to `longform-engine continue-write project.yaml --chapter N`.
 
-Before prose is written, the author Agent reads only `50_workbench/writing_tasks/chNNN.md`, the rendered `chapter_story_brief_v2`. The paired JSON, fact inventory, reader-promise ledger, causal simulation, editorial-pattern registry and retrieval/control-plane packets are CLI/editor inputs, not author inputs.
+Before prose is written, the author Agent reads only `50_workbench/writing_tasks/chNNN.md`, the rendered `chapter_story_brief_v4`. The paired JSON, `chapter_story_brief_basis_v2`, fact inventory, reader-promise ledger, causal simulation, editorial-pattern registry and raw retrieval/control-plane packets are CLI/editor inputs, not author inputs. The Markdown already contains the bounded character-voice and story-fact projections needed for this chapter.
 
 - Story pressure: confirm what is happening, what the protagonist wants, who or what refuses, the earliest failure, irreversible choice and visible cost.
 - Scene execution: follow each declared action, reaction, choice, cost and exit state; fully dramatize the required turns and compress only the allowed connective process.
 - Story boundaries: preserve protected outcomes, obey prohibited drift, deliver the declared reader gain, emotional aftereffect and relationship change.
 - Carrier variation: use the recent-five-chapter carrier warning to change pressure, character ownership or dramatic method when needed; an approved repetition reason is authority, not a quota exemption invented by the author.
 - Ending condition: land on the declared changed state and chapter pressure without forcing a universal cliffhanger.
-- Failure repair path: follow `production next` until semantic, payoff, pacing and editorial reviews all bind to the same candidate hash. `scene_prose_editor` and `anti_ai_editor` are mandatory; P0/P1 enters immutable repair before author acceptance. With no blockers, complete `human_author_revision_v1`, independent dual-prose semantic review, human submit and full re-review. Then run `human_story_review_v4`: three human core evidence kinds and explicit finding dispositions are required; repair needs structured annotations; redirect returns to direction or outline revision.
+- Coedit path: a selected span may receive two or three advisor options with consequences. Only a recorded human selection can create a new complete workbench candidate. Coedit never writes draft/final/canonical and cannot bypass an active repair plan.
+- Failure repair path: follow `production next` until semantic, payoff, pacing and editorial reviews all bind to the same candidate and Story Brief basis. `scene_prose_editor` and `anti_template_editor` are mandatory; P0/P1 enters immutable repair before author acceptance. With no blockers, complete the human final candidate, `human_author_revision_v3`, final lock, independent dual-prose semantic review, human submit and full re-review. Then run `human_story_review_v6`: three human core evidence kinds, eight current evidence bindings and explicit finding dispositions are required.
 
 Required production closed loop:
 
 1. Generate or read the `continue-write` task package.
 2. Agent writes only to `50_workbench/agent_drafts/chNNN.codex.md` or `chNNN.claude.md`.
 3. Submit the candidate with `draft submit`.
-4. Run or inspect `gate-check`, including pacing, reverse brake, style, humanizer, graph, memory, and semantic checks when enabled.
+4. Run or inspect `gate-check`, including pacing, reverse brake, style, prose naturalness, graph, memory, and semantic checks when enabled.
 5. Finalize only through `chapter finalize`; a chapter with findings completes the review barrier, repair synthesis and a full re-review before it can finalize.
 6. After finalize, complete exactly one `canonical_delta_v1`, validate it, explicitly apply the CLI-normalized semantic ledger, and run `chapter close`. Do not start the next chapter before close succeeds.
 
@@ -58,14 +61,14 @@ Required production closed loop:
 3. Apply the `/工程续章` Pre-Write Guide to the Story Brief's desire, opposition, failure, choice, cost, scene actions, protected outcomes and carrier warning.
 4. If the Story Brief lacks a required story pressure or protected boundary, stop and return to CLI validation instead of reconstructing control-plane context yourself.
 5. Write the draft only to `50_workbench/agent_drafts/chNNN.codex.md` or `chNNN.claude.md`.
-6. Before submit, run the Humanizer v4 two-pass self-check mentally:
+6. Before submit, make a two-pass prose-naturalness check:
    - Pass 1 removes meta residue, AI templates, generic significance language, summary lecture, and same-shape paragraphs.
    - Pass 2 preserves each declared perception/decision bias and social mask while strengthening opposing wants, subtext, embodied presence, relationship movement, and emotional aftereffect.
    - Do not manufacture difference with a universal dialogue quota, catchphrases, forced dialect, or fixed appearance paragraphs.
    - Preserve numeric facts, named characters, chapter duty, reader gain, cost, promise payoff, and declared canon/divergence constraints.
    - Do not force every platform into short sentences, dense dialogue, fast pacing, or a cliffhanger; follow the task's market profile.
 7. Submit with `longform-engine draft submit project.yaml --chapter N --file 50_workbench/agent_drafts/chNNN.codex.md --agent codex`.
-8. After all independent reviews, freeze the bundle and complete `chapter human-review-task`, `human-review-validate`, and `human-review-apply`. Finalize only after a current five-hash-bound v3 `accept` decision. Optional consultation remains non-canonical and can only be converted to an annotation by a human.
+8. After all independent reviews, freeze `human_review_bundle_v2`, complete and lock the human final candidate, then submit it and rerun all reviews. Finalize only after a current eight-evidence-bound v6 `accept`. `phase=human_final` consultation is read-only; any later AI prose transform invalidates the final lock.
 9. Follow `production next` into `chapter semantic-task`; read the final once, write only the declared semantic JSON, then run validate and wait for explicit apply.
 10. Close the chapter only with `longform-engine chapter close project.yaml --chapter N --approved-by human` after all materialized views verify.
 11. If the gate or semantic validation fails, stop the next-chapter flow and repair the current chapter or semantic candidate.
@@ -81,13 +84,13 @@ Required production closed loop:
 7. Rerun the complete review barrier. Invalid review JSON or task regeneration does not consume a round; after two submitted rounds with P0/P1, stop at `repair_budget_exhausted` without a third repair command.
 8. A human may edit only the complete candidate file for this validated plan. Submit it as `agent=human`; never edit managed draft/final directly, and rerun the same complete review barrier.
 
-## Humanize A Draft
+## Revise Prose Naturalness
 
-1. Run `longform-engine creative humanize-task project.yaml --chapter N --source draft`.
+1. Run `longform-engine creative prose-naturalness-task project.yaml --chapter N --source draft`.
 2. Write the candidate only to the path named in `50_workbench/repair_candidates/`.
-3. Run `longform-engine creative humanize-check project.yaml --chapter N --file ...`.
+3. Run `longform-engine creative prose-naturalness-check project.yaml --chapter N --file ...`.
 4. If it passes, submit it with `draft submit --overwrite`.
-5. If it fails, repeat the humanizer task or write a repair candidate.
+5. If it fails, repeat the prose-naturalness task or write a repair candidate. This transformation is AI work and therefore cannot satisfy or preserve a human final lock.
 
 ## Review A Chapter
 
@@ -95,13 +98,13 @@ Use `editorial review` or `editorial batch-review` for formal review artifacts. 
 
 - planning_chief_editor / 策划主编,
 - scene_prose_editor / 场景与正文编辑,
-- anti_ai_editor / 反 AI 编辑,
+- anti_template_editor / 反模板编辑,
 - reader_experience_editor / 读者体验编辑,
 - canon_fidelity_reviewer / 同人还原编辑（仅同人项目）.
 
 Fanfiction adds `canon_fidelity_reviewer / 同人还原审查员`, which checks voice, relationship stage, ability and world rules, declared divergence causality, canon-character agency, original contribution, collective irrationality, and character-skin-only writing. AU or canon divergence is not an error when the declared change and its consequences support it.
 
-`scene_prose_editor` is selected for every chapter. Other roles remain risk-selected: AI-flavor recurrence adds anti-ai, continuity risk adds planning, opening chapters/major payoff/volume boundaries/carrier repetition add reader experience or planning, and fanfiction adds canon fidelity.
+`scene_prose_editor` and `anti_template_editor` are selected independently for every chapter. Other roles remain additive: continuity risk adds planning, opening chapters/major payoff/volume boundaries/carrier repetition add reader experience or planning, and fanfiction adds canon fidelity.
 
 Each selected role receives an isolated manifest and `editorial_context_isolation_v1` metadata file. `editorial_role_review_v2` records `reviewer_instance_id`, host/model identifiers, `context_digest_hash`, `independence_mode`, `review_round`, and confidence. P0/P1 items must cite exact current-chapter excerpts. A role must not read peer results before submission. The aggregate phase alone may read normalized results, and it must retain consensus, conflicts, evidence overlap, severity differences, validated minority P0/P1 findings, and human decisions.
 

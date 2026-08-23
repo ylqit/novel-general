@@ -21,18 +21,20 @@ longform-engine benchmark report project.yaml --run-id candidate-qidian-3
 
 ## 匿名盲评
 
-每组两次运行必须使用相同宿主、模型、宿主版本、工作流/生成条件、场景、创作模式和章节数，并且恰好是一组 v0.7.0 候选与一组 v0.6.0 基线。既有 v0.6.0/v0.5.0 结果不构成 v0.7.0 文学证据。分别附加只读来源目录，再生成匿名包：
+每组两次运行必须使用相同宿主、模型、宿主版本、工作流/生成条件、场景、创作模式和章节数，并且恰好是一组 v0.9.0 候选与一组 v0.8.0 基线。场景必须声明非空 `genre_id`；三个 scope 使用三个不同题材。既有 v0.8.0/v0.7.0 结果不能单独构成 v0.9.0 文学证据。分别附加只读来源目录，再生成匿名包：
 
 ```powershell
 longform-engine benchmark source-attach project.yaml --run-id candidate-qidian-3 --source-dir SOURCE_A
 longform-engine benchmark source-attach project.yaml --run-id baseline-qidian-3 --source-dir SOURCE_B
-longform-engine benchmark blind-pack project.yaml --comparison-id qidian-opening-v070 --run-id candidate-qidian-3 --run-id baseline-qidian-3 --review-scope qidian_opening_3 --seed PRIVATE_SEED
-longform-engine benchmark blind-template project.yaml --comparison-id qidian-opening-v070 --judge-id reviewer-a
-longform-engine benchmark blind-submit project.yaml --comparison-id qidian-opening-v070 --judge-id reviewer-a --file REVIEW_A
-longform-engine benchmark blind-aggregate project.yaml --comparison-id qidian-opening-v070
+longform-engine benchmark blind-pack project.yaml --comparison-id qidian-opening-v090 --run-id candidate-qidian-3 --run-id baseline-qidian-3 --review-scope qidian_opening_3 --seed PRIVATE_SEED
+longform-engine benchmark blind-template project.yaml --comparison-id qidian-opening-v090 --judge-id reviewer-a
+longform-engine benchmark blind-submit project.yaml --comparison-id qidian-opening-v090 --judge-id reviewer-a --file REVIEW_A
+longform-engine benchmark blind-aggregate project.yaml --comparison-id qidian-opening-v090
 ```
 
-对 `qidian_opening_3`、`fanqie_opening_3` 和 `serial_arc_15` 各执行一组。至少需要三名相互独立并完成声明的人工评审；公开包不得泄露 run id、宿主、模型或工作流身份。候选须获得不少于三分之二总体偏好，关键转折、人物主动性和读者收益中位提升至少 1 分，连续性与人物一致性不得下降；十五章组中任何长期失败模式被两人确认即失败。
+对 `qidian_opening_3`、`fanqie_opening_3` 和 `serial_arc_15` 各执行一组。每组至少三名相互独立并完成声明的人工评审；外部 Agent 分数只能作观察，不能计入人数。公开包不得泄露 run id、宿主、模型或工作流身份。
+
+所有指标方向统一为越高越好，以“文字自然度”替代含义容易反转的“AI 味分数”。候选须获得不少于三分之二总体偏好；关键转折、人物主体性、读者收益、连续性、人物一致性和文字自然度的候选中位数均不得低于 7/10。关键转折、主体性、收益和自然度须较 v0.8 基线提升至少 1 分，连续性和人物一致性不得下降。十五章组中任一长期失败模式被两名评审确认即失败。
 
 ## RAG 数据逻辑
 

@@ -28,6 +28,14 @@ from longform_engine.blind_review import (
 )
 from longform_engine.character_expression import approve_voice_samples
 from longform_engine.author_voice import approve_author_voice_edit_pair
+from longform_engine.chapter_coedit import (
+    coedit_status,
+    create_chapter_coedit_rewrite_task,
+    create_chapter_coedit_turn,
+    record_chapter_coedit_response,
+    validate_chapter_coedit_candidate,
+    validate_chapter_coedit_response,
+)
 from longform_engine.cli_recovery import register_recovery_commands
 
 from longform_engine.agent_pipeline import validate_production_agent_result
@@ -52,10 +60,10 @@ from longform_engine.completion import approve_completion, completion_status
 from longform_engine.creative import (
     expand_check,
     expand_task,
-    humanize_check,
-    humanize_semantic_task,
-    humanize_semantic_validate,
-    humanize_task,
+    prose_naturalness_check,
+    prose_naturalness_semantic_task,
+    prose_naturalness_semantic_validate,
+    prose_naturalness_task,
     init_creative_brief,
     style_extract,
     validate_creative_brief,
@@ -98,6 +106,11 @@ from longform_engine.human_story_review import (
 from longform_engine.human_author_revision import (
     create_human_author_revision_task,
     validate_human_author_revision,
+)
+from longform_engine.human_chapter_intent import (
+    apply_human_chapter_intent,
+    create_human_chapter_intent_task,
+    validate_human_chapter_intent,
 )
 from longform_engine.human_review_consultation import (
     consultation_status,
@@ -364,7 +377,14 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_record.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     benchmark_record.add_argument("--run-id", required=True)
     benchmark_record.add_argument("--chapter", type=positive_int_arg, required=True)
-    for metric in ("continuity", "character-consistency", "foreshadowing-control", "pacing", "reader-payoff", "ai-taste"):
+    for metric in (
+        "continuity",
+        "character-consistency",
+        "foreshadowing-control",
+        "pacing",
+        "reader-payoff",
+        "prose-naturalness",
+    ):
         benchmark_record.add_argument(f"--{metric}", type=score_arg, required=True)
     for metric in (
         "canon-fidelity",
@@ -391,7 +411,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_record.add_argument("--judge", action="append", default=[], help="Repeat for each blinded evaluator id.")
     benchmark_record.add_argument("--character-drift", action="append", default=[])
     benchmark_record.add_argument("--foreshadowing-leak", action="append", default=[])
-    benchmark_record.add_argument("--ai-taste-issue", action="append", default=[])
+    benchmark_record.add_argument("--prose-naturalness-issue", action="append", default=[])
     benchmark_record.add_argument("--notes", default="")
     benchmark_record.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     benchmark_record.set_defaults(func=cmd_benchmark_record)
@@ -979,7 +999,9 @@ def build_parser() -> argparse.ArgumentParser:
     vector_rebuild_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     vector_rebuild_cmd.set_defaults(func=cmd_vector_store_rebuild)
 
-    creative = subparsers.add_parser("creative", help="Manage creative brief, style playbooks, and Humanizer tasks.")
+    creative = subparsers.add_parser(
+        "creative", help="Manage creative briefs, style playbooks, and prose-naturalness tasks."
+    )
     creative_subparsers = creative.add_subparsers(dest="creative_command", required=True)
 
     creative_brief = creative_subparsers.add_parser("brief", help="Initialize or validate the canonical creative brief.")
@@ -1010,39 +1032,87 @@ def build_parser() -> argparse.ArgumentParser:
     author_voice_approve_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     author_voice_approve_cmd.set_defaults(func=cmd_creative_author_voice_approve)
 
-    humanize_task_cmd = creative_subparsers.add_parser("humanize-task", help="Generate a Humanizer v4 workbench task.")
+    humanize_task_cmd = creative_subparsers.add_parser(
+        "humanize-task", help="Removed in v0.9; use prose-naturalness-task."
+    )
     humanize_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     humanize_task_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
     humanize_task_cmd.add_argument("--source", choices=["draft", "repair-candidate"], default="draft", help="Source lane.")
     humanize_task_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    humanize_task_cmd.set_defaults(func=cmd_creative_humanize_task)
+    humanize_task_cmd.set_defaults(func=cmd_creative_retired_humanizer)
 
-    humanize_check_cmd = creative_subparsers.add_parser("humanize-check", help="Check a Humanizer v4 candidate.")
+    humanize_check_cmd = creative_subparsers.add_parser(
+        "humanize-check", help="Removed in v0.9; use prose-naturalness-check."
+    )
     humanize_check_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     humanize_check_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
     humanize_check_cmd.add_argument("--file", required=True, help="Candidate file to check.")
     humanize_check_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    humanize_check_cmd.set_defaults(func=cmd_creative_humanize_check)
+    humanize_check_cmd.set_defaults(func=cmd_creative_retired_humanizer)
 
     humanize_semantic_task_cmd = creative_subparsers.add_parser(
         "humanize-semantic-task",
-        help="Generate an independent Humanizer semantic-preservation review task.",
+        help="Removed in v0.9; use prose-naturalness-semantic-task.",
     )
     humanize_semantic_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     humanize_semantic_task_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
-    humanize_semantic_task_cmd.add_argument("--file", help="Humanized candidate path; defaults to the managed candidate.")
+    humanize_semantic_task_cmd.add_argument("--file", help="Retired candidate argument.")
     humanize_semantic_task_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    humanize_semantic_task_cmd.set_defaults(func=cmd_creative_humanize_semantic_task)
+    humanize_semantic_task_cmd.set_defaults(func=cmd_creative_retired_humanizer)
 
     humanize_semantic_validate_cmd = creative_subparsers.add_parser(
         "humanize-semantic-validate",
-        help="Validate Humanizer source/candidate semantic-preservation evidence.",
+        help="Removed in v0.9; use prose-naturalness-semantic-validate.",
     )
     humanize_semantic_validate_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     humanize_semantic_validate_cmd.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
     humanize_semantic_validate_cmd.add_argument("--file", required=True, help="Semantic review JSON path.")
     humanize_semantic_validate_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    humanize_semantic_validate_cmd.set_defaults(func=cmd_creative_humanize_semantic_validate)
+    humanize_semantic_validate_cmd.set_defaults(func=cmd_creative_retired_humanizer)
+
+    prose_naturalness_task_cmd = creative_subparsers.add_parser(
+        "prose-naturalness-task", help="Generate a prose-naturalness workbench task."
+    )
+    prose_naturalness_task_cmd.add_argument("config", nargs="?", default="project.yaml")
+    prose_naturalness_task_cmd.add_argument("--chapter", type=int, required=True)
+    prose_naturalness_task_cmd.add_argument(
+        "--source", choices=["draft", "repair-candidate"], default="draft"
+    )
+    prose_naturalness_task_cmd.add_argument("--json", action="store_true")
+    prose_naturalness_task_cmd.set_defaults(func=cmd_creative_prose_naturalness_task)
+
+    prose_naturalness_check_cmd = creative_subparsers.add_parser(
+        "prose-naturalness-check", help="Check one prose-naturalness candidate."
+    )
+    prose_naturalness_check_cmd.add_argument("config", nargs="?", default="project.yaml")
+    prose_naturalness_check_cmd.add_argument("--chapter", type=int, required=True)
+    prose_naturalness_check_cmd.add_argument("--file", required=True)
+    prose_naturalness_check_cmd.add_argument("--json", action="store_true")
+    prose_naturalness_check_cmd.set_defaults(func=cmd_creative_prose_naturalness_check)
+
+    prose_naturalness_semantic_task_cmd = creative_subparsers.add_parser(
+        "prose-naturalness-semantic-task",
+        help="Generate an independent semantic-preservation review for a naturalness candidate.",
+    )
+    prose_naturalness_semantic_task_cmd.add_argument("config", nargs="?", default="project.yaml")
+    prose_naturalness_semantic_task_cmd.add_argument("--chapter", type=int, required=True)
+    prose_naturalness_semantic_task_cmd.add_argument("--file")
+    prose_naturalness_semantic_task_cmd.add_argument("--json", action="store_true")
+    prose_naturalness_semantic_task_cmd.set_defaults(
+        func=cmd_creative_prose_naturalness_semantic_task
+    )
+
+    prose_naturalness_semantic_validate_cmd = creative_subparsers.add_parser(
+        "prose-naturalness-semantic-validate",
+        help="Validate source/candidate semantic-preservation evidence.",
+    )
+    prose_naturalness_semantic_validate_cmd.add_argument("config", nargs="?", default="project.yaml")
+    prose_naturalness_semantic_validate_cmd.add_argument("--chapter", type=int, required=True)
+    prose_naturalness_semantic_validate_cmd.add_argument("--file", required=True)
+    prose_naturalness_semantic_validate_cmd.add_argument("--json", action="store_true")
+    prose_naturalness_semantic_validate_cmd.set_defaults(
+        func=cmd_creative_prose_naturalness_semantic_validate
+    )
 
     expand_task_cmd = creative_subparsers.add_parser("expand-task", help="Generate a content expansion workbench task.")
     expand_task_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
@@ -1158,6 +1228,9 @@ def build_parser() -> argparse.ArgumentParser:
     review_consult_task.add_argument("--start", type=non_negative_int_arg, required=True)
     review_consult_task.add_argument("--end", type=positive_int_arg, required=True)
     review_consult_task.add_argument("--question", required=True)
+    review_consult_task.add_argument(
+        "--phase", choices=("coedit", "human_final"), default="human_final"
+    )
     review_consult_task.add_argument("--json", action="store_true")
     review_consult_task.set_defaults(func=cmd_review_consult_task)
 
@@ -1167,6 +1240,9 @@ def build_parser() -> argparse.ArgumentParser:
     review_consult_validate.add_argument("config", nargs="?", default="project.yaml")
     review_consult_validate.add_argument("--chapter", type=positive_int_arg, required=True)
     review_consult_validate.add_argument("--file", required=True)
+    review_consult_validate.add_argument(
+        "--phase", choices=("coedit", "human_final"), default="human_final"
+    )
     review_consult_validate.add_argument("--json", action="store_true")
     review_consult_validate.set_defaults(func=cmd_review_consult_validate)
 
@@ -1176,6 +1252,9 @@ def build_parser() -> argparse.ArgumentParser:
     review_consult_record.add_argument("config", nargs="?", default="project.yaml")
     review_consult_record.add_argument("--chapter", type=positive_int_arg, required=True)
     review_consult_record.add_argument("--file", required=True)
+    review_consult_record.add_argument(
+        "--phase", choices=("coedit", "human_final"), default="human_final"
+    )
     review_consult_record.add_argument("--json", action="store_true")
     review_consult_record.set_defaults(func=cmd_review_consult_record)
 
@@ -1381,6 +1460,89 @@ def build_parser() -> argparse.ArgumentParser:
     chapter_finalize.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     chapter_finalize.set_defaults(func=cmd_chapter_finalize)
 
+    chapter_human_intent_task = chapter_subparsers.add_parser(
+        "human-intent-task",
+        help="Create the blank human_chapter_intent_v1 form required before prose generation.",
+    )
+    chapter_human_intent_task.add_argument("config", nargs="?", default="project.yaml")
+    chapter_human_intent_task.add_argument("--chapter", type=positive_int_arg, required=True)
+    chapter_human_intent_task.add_argument("--json", action="store_true")
+    chapter_human_intent_task.set_defaults(func=cmd_chapter_human_intent_task)
+
+    chapter_human_intent_validate = chapter_subparsers.add_parser(
+        "human-intent-validate",
+        help="Validate a human-completed chapter intent without writing canonical outline state.",
+    )
+    chapter_human_intent_validate.add_argument("config", nargs="?", default="project.yaml")
+    chapter_human_intent_validate.add_argument("--chapter", type=positive_int_arg, required=True)
+    chapter_human_intent_validate.add_argument("--file", required=True)
+    chapter_human_intent_validate.add_argument("--json", action="store_true")
+    chapter_human_intent_validate.set_defaults(func=cmd_chapter_human_intent_validate)
+
+    chapter_human_intent_apply = chapter_subparsers.add_parser(
+        "human-intent-apply",
+        help="Transactionally apply a validated human chapter intent.",
+    )
+    chapter_human_intent_apply.add_argument("config", nargs="?", default="project.yaml")
+    chapter_human_intent_apply.add_argument("--chapter", type=positive_int_arg, required=True)
+    chapter_human_intent_apply.add_argument("--file", required=True)
+    chapter_human_intent_apply.add_argument("--approved-by", required=True)
+    chapter_human_intent_apply.add_argument("--json", action="store_true")
+    chapter_human_intent_apply.set_defaults(func=cmd_chapter_human_intent_apply)
+
+    chapter_coedit_start = chapter_subparsers.add_parser(
+        "coedit-start",
+        help="Create one human-directed advisor turn against the current workbench candidate.",
+    )
+    chapter_coedit_start.add_argument("config", nargs="?", default="project.yaml")
+    chapter_coedit_start.add_argument("--chapter", type=positive_int_arg, required=True)
+    chapter_coedit_start.add_argument("--start", type=non_negative_int_arg, required=True)
+    chapter_coedit_start.add_argument("--end", type=positive_int_arg, required=True)
+    chapter_coedit_start.add_argument("--question", required=True)
+    chapter_coedit_start.add_argument("--json", action="store_true")
+    chapter_coedit_start.set_defaults(func=cmd_chapter_coedit_start)
+
+    chapter_coedit_record = chapter_subparsers.add_parser(
+        "coedit-record",
+        help="Record one independently validated coedit advisor response.",
+    )
+    chapter_coedit_record.add_argument("config", nargs="?", default="project.yaml")
+    chapter_coedit_record.add_argument("--chapter", type=positive_int_arg, required=True)
+    chapter_coedit_record.add_argument("--file", required=True)
+    chapter_coedit_record.add_argument("--json", action="store_true")
+    chapter_coedit_record.set_defaults(func=cmd_chapter_coedit_record)
+
+    chapter_coedit_rewrite = chapter_subparsers.add_parser(
+        "coedit-rewrite-task",
+        help="Turn one human-selected advisor option into a full non-canonical rewrite task.",
+    )
+    chapter_coedit_rewrite.add_argument("config", nargs="?", default="project.yaml")
+    chapter_coedit_rewrite.add_argument("--chapter", type=positive_int_arg, required=True)
+    chapter_coedit_rewrite.add_argument("--session", required=True)
+    chapter_coedit_rewrite.add_argument("--turn", type=positive_int_arg, required=True)
+    chapter_coedit_rewrite.add_argument("--option-id", required=True)
+    chapter_coedit_rewrite.add_argument("--adjustment", default="")
+    chapter_coedit_rewrite.add_argument("--json", action="store_true")
+    chapter_coedit_rewrite.set_defaults(func=cmd_chapter_coedit_rewrite_task)
+
+    chapter_coedit_candidate_validate = chapter_subparsers.add_parser(
+        "coedit-candidate-validate",
+        help="Validate a complete conversational rewrite in the workbench.",
+    )
+    chapter_coedit_candidate_validate.add_argument("config", nargs="?", default="project.yaml")
+    chapter_coedit_candidate_validate.add_argument("--chapter", type=positive_int_arg, required=True)
+    chapter_coedit_candidate_validate.add_argument("--file", required=True)
+    chapter_coedit_candidate_validate.add_argument("--json", action="store_true")
+    chapter_coedit_candidate_validate.set_defaults(func=cmd_chapter_coedit_candidate_validate)
+
+    chapter_coedit_status = chapter_subparsers.add_parser(
+        "coedit-status", help="Inspect conversational edit sessions without mutating them."
+    )
+    chapter_coedit_status.add_argument("config", nargs="?", default="project.yaml")
+    chapter_coedit_status.add_argument("--chapter", type=positive_int_arg, required=True)
+    chapter_coedit_status.add_argument("--json", action="store_true")
+    chapter_coedit_status.set_defaults(func=cmd_chapter_coedit_status)
+
     chapter_human_review_task = chapter_subparsers.add_parser(
         "human-review-task",
         help="Create the mandatory hash-bound human story review task.",
@@ -1406,13 +1568,13 @@ def build_parser() -> argparse.ArgumentParser:
     chapter_human_revision_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     chapter_human_revision_validate.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
     chapter_human_revision_validate.add_argument("--file", required=True, help="Complete human candidate under 50_workbench/.")
-    chapter_human_revision_validate.add_argument("--record", required=True, help="human_author_revision_v1 record JSON.")
+    chapter_human_revision_validate.add_argument("--record", required=True, help="human_author_revision_v3 record JSON.")
     chapter_human_revision_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     chapter_human_revision_validate.set_defaults(func=cmd_chapter_human_revision_validate)
 
     chapter_human_review_validate = chapter_subparsers.add_parser(
         "human-review-validate",
-        help="Validate a human_story_review_v4 decision against the human revision and frozen review bundle.",
+        help="Validate a human_story_review_v6 decision against the human revision and frozen review bundle.",
     )
     chapter_human_review_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     chapter_human_review_validate.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
@@ -1774,6 +1936,10 @@ def build_parser() -> argparse.ArgumentParser:
         humanize_check_cmd,
         humanize_semantic_task_cmd,
         humanize_semantic_validate_cmd,
+        prose_naturalness_task_cmd,
+        prose_naturalness_check_cmd,
+        prose_naturalness_semantic_task_cmd,
+        prose_naturalness_semantic_validate_cmd,
         expand_task_cmd,
         expand_check_cmd,
         rag_build,
@@ -1796,6 +1962,13 @@ def build_parser() -> argparse.ArgumentParser:
         auto_report,
         draft_submit,
         chapter_finalize,
+        chapter_human_intent_task,
+        chapter_human_intent_validate,
+        chapter_human_intent_apply,
+        chapter_coedit_start,
+        chapter_coedit_record,
+        chapter_coedit_rewrite,
+        chapter_coedit_candidate_validate,
         chapter_human_revision_task,
         chapter_human_revision_validate,
         chapter_human_review_task,
@@ -2334,7 +2507,7 @@ def cmd_benchmark_record(args: argparse.Namespace) -> int:
             "foreshadowing_control": args.foreshadowing_control,
             "pacing": args.pacing,
             "reader_payoff": args.reader_payoff,
-            "ai_taste": args.ai_taste,
+            "prose_naturalness": args.prose_naturalness,
         },
         gate_passed=args.gate_passed,
         repair_count=args.repair_count,
@@ -2346,7 +2519,7 @@ def cmd_benchmark_record(args: argparse.Namespace) -> int:
         judge_ids=args.judge,
         character_drift=args.character_drift,
         foreshadowing_leaks=args.foreshadowing_leak,
-        ai_taste_issues=args.ai_taste_issue,
+        prose_naturalness_issues=args.prose_naturalness_issue,
         notes=args.notes,
         fanfiction_scores={
             "canon_fidelity": args.canon_fidelity,
@@ -2898,7 +3071,7 @@ def cmd_production_board(args: argparse.Namespace) -> int:
                 f"final={row.get('final_status')} "
                 f"gate={gate.get('status')} "
                 f"repair={(row.get('repair_status') or {}).get('status')} "
-                f"humanize={(row.get('humanize_status') or {}).get('status')} "
+                f"prose_naturalness={(row.get('prose_naturalness_status') or {}).get('status')} "
                 f"expand={(row.get('expand_status') or {}).get('status')} "
                 f"semantic={(row.get('chapter_semantic_status') or {}).get('status')} "
                 f"pacing={(row.get('semantic_pacing_status') or {}).get('status')} "
@@ -3510,13 +3683,20 @@ def cmd_creative_author_voice_approve(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_creative_humanize_task(args: argparse.Namespace) -> int:
+def cmd_creative_retired_humanizer(_args: argparse.Namespace) -> int:
+    raise ConfigError(
+        "The Humanizer CLI was removed in v0.9; use creative prose-naturalness-* commands. "
+        "No silent compatibility alias is provided."
+    )
+
+
+def cmd_creative_prose_naturalness_task(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = humanize_task(config, chapter_number=args.chapter, source=args.source)
+    result = prose_naturalness_task(config, chapter_number=args.chapter, source=args.source)
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
-        print("OK: Humanizer v4 task written")
+        print("OK: prose-naturalness task written")
         print(f"Chapter: {result.chapter_number}")
         print(f"Source: {result.source_file}")
         print(f"Task: {result.task_file}")
@@ -3526,13 +3706,13 @@ def cmd_creative_humanize_task(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_creative_humanize_check(args: argparse.Namespace) -> int:
+def cmd_creative_prose_naturalness_check(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = humanize_check(config, chapter_number=args.chapter, file_path=args.file)
+    result = prose_naturalness_check(config, chapter_number=args.chapter, file_path=args.file)
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
-        print("OK: Humanizer v4 check completed")
+        print("OK: prose-naturalness check completed")
         print(f"Chapter: {result.chapter_number}")
         print(f"Passed: {result.passed}")
         print(f"Report: {result.report_file}")
@@ -3543,9 +3723,9 @@ def cmd_creative_humanize_check(args: argparse.Namespace) -> int:
     return 0 if result.passed else 1
 
 
-def cmd_creative_humanize_semantic_task(args: argparse.Namespace) -> int:
+def cmd_creative_prose_naturalness_semantic_task(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = humanize_semantic_task(
+    result = prose_naturalness_semantic_task(
         config,
         chapter_number=args.chapter,
         candidate_file=args.file,
@@ -3553,7 +3733,7 @@ def cmd_creative_humanize_semantic_task(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
-        print("OK: Humanizer semantic review task written")
+        print("OK: prose-naturalness semantic review task written")
         print(f"Chapter: {result.chapter_number}")
         print(f"Source: {result.source_file}")
         print(f"Candidate: {result.candidate_file}")
@@ -3565,9 +3745,9 @@ def cmd_creative_humanize_semantic_task(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_creative_humanize_semantic_validate(args: argparse.Namespace) -> int:
+def cmd_creative_prose_naturalness_semantic_validate(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = humanize_semantic_validate(
+    result = prose_naturalness_semantic_validate(
         config,
         chapter_number=args.chapter,
         file_path=args.file,
@@ -3575,7 +3755,7 @@ def cmd_creative_humanize_semantic_validate(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
-        print("OK: Humanizer semantic review validated" if result.ok else "ERROR: Humanizer semantic review is invalid")
+        print("OK: prose-naturalness semantic review validated" if result.ok else "ERROR: prose-naturalness semantic review is invalid")
         print(f"Chapter: {result.chapter_number}")
         print(f"Structurally valid: {result.ok}")
         print(f"Candidate passed: {result.passed}")
@@ -3726,12 +3906,22 @@ def cmd_quality_payoff_validate(args: argparse.Namespace) -> int:
 
 def cmd_review_consult_task(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = create_human_review_consult_task(
-        config,
-        chapter_number=args.chapter,
-        start=args.start,
-        end=args.end,
-        question=args.question,
+    result = (
+        create_chapter_coedit_turn(
+            config,
+            chapter_number=args.chapter,
+            start=args.start,
+            end=args.end,
+            question=args.question,
+        )
+        if args.phase == "coedit"
+        else create_human_review_consult_task(
+            config,
+            chapter_number=args.chapter,
+            start=args.start,
+            end=args.end,
+            question=args.question,
+        )
     )
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
@@ -3739,7 +3929,10 @@ def cmd_review_consult_task(args: argparse.Namespace) -> int:
         print("OK: human review consultation task written")
         print(f"Session: {result.session_id}")
         print(f"Turn: {result.turn_number}")
-        print(f"Manifest: {result.manifest_file}")
+        if hasattr(result, "manifest_file"):
+            print(f"Manifest: {result.manifest_file}")
+        else:
+            print(f"Task: {result.task_file}")
         print(f"Response: {result.response_file}")
         print(f"Next command: {result.next_command}")
     return 0
@@ -3747,8 +3940,14 @@ def cmd_review_consult_task(args: argparse.Namespace) -> int:
 
 def cmd_review_consult_validate(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = validate_human_review_consultation(
-        config, chapter_number=args.chapter, file_path=args.file
+    result = (
+        validate_chapter_coedit_response(
+            config, chapter_number=args.chapter, file_path=args.file
+        )
+        if args.phase == "coedit"
+        else validate_human_review_consultation(
+            config, chapter_number=args.chapter, file_path=args.file
+        )
     )
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
@@ -3763,8 +3962,14 @@ def cmd_review_consult_validate(args: argparse.Namespace) -> int:
 
 def cmd_review_consult_record(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = record_human_review_consultation(
-        config, chapter_number=args.chapter, file_path=args.file
+    result = (
+        record_chapter_coedit_response(
+            config, chapter_number=args.chapter, file_path=args.file
+        )
+        if args.phase == "coedit"
+        else record_human_review_consultation(
+            config, chapter_number=args.chapter, file_path=args.file
+        )
     )
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
@@ -3772,7 +3977,10 @@ def cmd_review_consult_record(args: argparse.Namespace) -> int:
         print("OK: consultation advice recorded as non-canonical history")
         print(f"Session: {result.session_id}")
         print(f"Turn: {result.turn_number}")
-        print(f"Record: {result.record_file}")
+        if hasattr(result, "record_file"):
+            print(f"Record: {result.record_file}")
+        else:
+            print(f"Options: {', '.join(result.option_ids)}")
         print(f"Next: {result.next_command}")
     return 0
 
@@ -4345,6 +4553,115 @@ def cmd_chapter_finalize(args: argparse.Namespace) -> int:
         print(f"SQLite synced: {result.db_synced}")
         print(f"Next command: {result.next_command}")
         print(f"Run report: {result.run_report}")
+    return 0
+
+
+def cmd_chapter_human_intent_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = create_human_chapter_intent_task(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: blank human chapter intent form written")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Task: {result.task_file}")
+        print(f"Candidate: {result.candidate_file}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_chapter_human_intent_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = validate_human_chapter_intent(
+        config,
+        chapter_number=args.chapter,
+        file_path=args.file,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: human chapter intent validated" if result.ok else "BLOCKED: human chapter intent is invalid")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Validation: {result.report_file}")
+        print(f"Errors: {len(result.errors)}")
+        print(f"Next command: {result.next_command}")
+    return 0 if result.ok else 1
+
+
+def cmd_chapter_human_intent_apply(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = apply_human_chapter_intent(
+        config,
+        chapter_number=args.chapter,
+        file_path=args.file,
+        approved_by=args.approved_by,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: human chapter intent applied")
+        print(f"Chapter: {result.chapter_number}")
+        print(f"Intent: {result.intent_file}")
+        print(f"SHA-256: {result.intent_sha256}")
+        print(f"Transaction: {result.transaction_report}")
+        print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_chapter_coedit_start(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = create_chapter_coedit_turn(
+        config,
+        chapter_number=args.chapter,
+        start=args.start,
+        end=args.end,
+        question=args.question,
+    )
+    print(json.dumps(asdict(result), ensure_ascii=False, indent=2) if args.json else result.next_command)
+    return 0
+
+
+def cmd_chapter_coedit_record(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = record_chapter_coedit_response(
+        config, chapter_number=args.chapter, file_path=args.file
+    )
+    print(json.dumps(asdict(result), ensure_ascii=False, indent=2) if args.json else result.next_command)
+    return 0
+
+
+def cmd_chapter_coedit_rewrite_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = create_chapter_coedit_rewrite_task(
+        config,
+        chapter_number=args.chapter,
+        session_id=args.session,
+        turn_number=args.turn,
+        option_id=args.option_id,
+        adjustment=args.adjustment,
+    )
+    print(json.dumps(asdict(result), ensure_ascii=False, indent=2) if args.json else result.next_command)
+    return 0
+
+
+def cmd_chapter_coedit_candidate_validate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = validate_chapter_coedit_candidate(
+        config, chapter_number=args.chapter, file_path=args.file
+    )
+    print(json.dumps(asdict(result), ensure_ascii=False, indent=2) if args.json else result.next_command)
+    return 0 if result.ok else 1
+
+
+def cmd_chapter_coedit_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = coedit_status(config, chapter_number=args.chapter)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Coedit sessions: {len(payload['sessions'])}")
+        for item in payload["sessions"]:
+            print(f"- {item.get('session_id')}: {item.get('effective_status')}")
     return 0
 
 

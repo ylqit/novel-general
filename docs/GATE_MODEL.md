@@ -22,9 +22,9 @@ longform-engine review serve project.yaml --chapter 12 --port 8765
 
 `gate-check` 在通过时返回 0；失败时仍会完整落盘产物，但 CLI 返回 1，方便 Agent 和 CI 判断阻断状态。
 
-gate 的 P0/P1 只是一类已验证 finding，不会跳过其他独立审稿。`scene_prose_editor` 与 `anti_ai_editor` 每章必审；全部审稿绑定同一候选后，任何 P0/P1 直接进入不可变 repair bundle。`repair synthesis-task` 编排根因、依赖、最小修改半径与保护项，验证后再创建完整替代稿任务。
+gate 的 P0/P1 只是一类已验证 finding，不会跳过其他独立审稿。`scene_prose_editor` 与 `anti_template_editor` 每章必审；全部审稿绑定同一候选后，任何 P0/P1 直接进入不可变 repair bundle。`repair synthesis-task` 编排根因、依赖、最小修改半径与保护项，验证后再创建完整替代稿任务。
 
-无 P0/P1 时冻结人工修订前 bundle。每章必须完成人类完整修订、独立双稿语义复核、`agent=human` 提交和全量复审，之后才能创建 `human_story_review_v4`。accept 需要关键转折、人物选择/情绪和读者收益三类精确 span，并处置所有 finding；repair 需要结构化批注；redirect 必须选择回到章节方向或改纲。任何六类绑定 hash 漂移都使决定失效，未完成修订和深审绝不能 finalize。
+无 P0/P1 时冻结 `human_review_bundle_v2`。每章必须完成人类完整修订、独立双稿语义复核、`agent=human` 提交和全量复审，之后才能创建 `human_story_review_v6`。accept 需要关键转折、人物选择/情绪和读者收益三类精确 span，并处置所有 finding；repair 需要结构化批注；redirect 必须选择回到章节方向或改纲。候选、合同、Story Brief basis、承诺账本、因果模拟、review bundle 或人工修订任一 hash 漂移都使决定失效，未完成修订和深审绝不能 finalize。
 
 ## 3. 产物契约
 
@@ -67,7 +67,7 @@ gate 的 P0/P1 只是一类已验证 finding，不会跳过其他独立审稿。
 - 正文字符硬阈值：根据 `length.chapter.hard_min` 和 `hard_max`，使用 `content_characters_v1` 判断 P1；标题、空白、标点和 Markdown 标记不计入生产规模。
 - 章节卡完整性：检查欲望、阻力、失败、不可逆选择、`chapter_turn`、`reveal_boundary`、`reader_gain`、载体与状态变化；发现 `information_release` 或任何 v1 别名时直接返回 `chapter_contract_inconsistent`。
 - 图谱一致性：复用 `graph check` 的人物位置、能力边界、时间线等冲突报告。
-- 节奏失衡：检测连续快章、A/B/C 重大事件超配额、核心秘密过早完整揭露风险。
+- 节奏失衡：检测连续快章、基于已选事件类型的 fast-event 过密，以及核心秘密过早完整揭露风险；不会按“主线、关系、秘密”等词频推断事件配额。
 
 ## 5. Severity
 

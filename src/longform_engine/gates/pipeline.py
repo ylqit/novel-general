@@ -33,11 +33,16 @@ from longform_engine.agent_tasks import (
 )
 from longform_engine.config import ConfigDocument
 from longform_engine.character_expression import character_expression_diagnostics
-from longform_engine.creative import detect_humanizer_issues, reader_experience_review
+from longform_engine.creative import detect_prose_naturalness_issues, reader_experience_review
 from longform_engine.db import database_path, sync_database
 from longform_engine.graph import check_graph
 from longform_engine.memory import deterministic_evidence_gate_findings
-from longform_engine.planning import evaluate_event_matrix, event_type_marker_count, infer_event_types_from_text
+from longform_engine.planning import (
+    evaluate_event_matrix,
+    event_tier_for_types,
+    event_type_marker_count,
+    infer_event_types_from_text,
+)
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import (
@@ -530,7 +535,7 @@ def gate_check(
     reverse_failures, reverse_warnings, reverse_brake = check_reverse_brake(config, root, chapter_number, text)
     failures.extend(reverse_failures)
     warnings.extend(reverse_warnings)
-    style_failures, style_warnings = check_style_and_humanizer(config, text)
+    style_failures, style_warnings = check_style_and_prose_naturalness(config, text)
     failures.extend(style_failures)
     warnings.extend(style_warnings)
     fanfiction_failures, fanfiction_warnings = check_fanfiction_source_reproduction(config, root, text)
@@ -1062,31 +1067,9 @@ def pacing_review(
     artifact_dir = gate_artifact_dir(root, chapter_number)
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    tier = infer_pacing_tier(text)
     issues: list[str] = []
     warnings: list[str] = []
     pacing_config = config.data.get("pacing", {})
-    history = load_json(root / "30_state" / "pacing_history.json", default=[])
-    if not isinstance(history, list):
-        history = []
-    fast_cooldown = int(pacing_config.get("fast_chapter_cooldown") or 1)
-    recent_fast = [
-        item for item in history
-        if isinstance(item, dict)
-        and item.get("tier") == "fast"
-        and chapter_number - int(item.get("chapter_number") or item.get("chapter") or 0) <= fast_cooldown
-    ]
-    if tier == "fast" and recent_fast:
-        issues.append("fast chapter cooldown violated")
-
-    quota = detect_quota_usage(text)
-    if sum(1 for value in quota.values() if value) > int(pacing_config.get("max_major_quota_triggers_per_chapter") or 1):
-        issues.append("A/B/C major quota overflow")
-    if len(text) < 120:
-        warnings.append("chapter is very short; pacing signal may be unreliable")
-    if complete_core_reveal_detected(text):
-        warnings.append("possible complete core secret reveal")
-
     card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
     event_recommendation = card.get("event_recommendation") if isinstance(card, dict) and isinstance(card.get("event_recommendation"), dict) else {}
     detected_event_types = infer_event_types_from_text(text)
@@ -1101,6 +1084,29 @@ def pacing_review(
         event_type for event_type in detected_event_types if event_type not in strong_detected_event_types
     )
     active_event_types = strong_detected_event_types or tuple(recommended_event_types[:1])
+    default_tier = {
+        "fast": "fast",
+        "measured": "slow",
+    }.get(str(pacing_config.get("default_mode") or "balanced"), "medium")
+    tier = event_tier_for_types(tuple(active_event_types), default_tier)
+    history = load_json(root / "30_state" / "pacing_history.json", default=[])
+    if not isinstance(history, list):
+        history = []
+    fast_cooldown = int(pacing_config.get("fast_chapter_cooldown") or 1)
+    recent_fast = [
+        item for item in history
+        if isinstance(item, dict)
+        and item.get("tier") == "fast"
+        and chapter_number - int(item.get("chapter_number") or item.get("chapter") or 0) <= fast_cooldown
+    ]
+    if tier == "fast" and recent_fast:
+        issues.append("fast chapter cooldown violated")
+
+    if len(text) < 120:
+        warnings.append("chapter is very short; pacing signal may be unreliable")
+    if complete_core_reveal_detected(text):
+        warnings.append("possible complete core secret reveal")
+
     if weak_detected_event_types:
         warnings.append(
             "weak lexical event hints did not override the chapter plan: "
@@ -1142,7 +1148,6 @@ def pacing_review(
                 f"- Tier: {tier}",
                 f"- Semantic reader review: {'enabled' if semantic_reader else 'disabled'}",
                 f"- Reader experience report: {reader_report or 'none'}",
-                f"- Quota used: {json.dumps(quota, ensure_ascii=False)}",
                 f"- Detected event types: {', '.join(active_event_types) or 'none'}",
                 f"- Matrix constraints: {', '.join(matrix.constraints) or 'none'}",
                 "",
@@ -1705,7 +1710,7 @@ def check_reverse_brake(
         }
     )
 
-    resolution_markers = normalize_strings(anchor.get("resolution_markers")) or default_resolution_markers()
+    resolution_markers = normalize_strings(anchor.get("resolution_markers"))
     resolution_hits = [marker for marker in resolution_markers if marker and marker.lower() in text.lower()]
     if not closure_allowed and resolution_hits:
         failures.append(
@@ -1741,28 +1746,6 @@ def check_reverse_brake(
             "status": "fail" if complete_reveal and not closure_allowed and allowed_reveal_level != "full" else "pass",
             "detected": complete_reveal,
             "allowed_reveal_level": allowed_reveal_level,
-        }
-    )
-
-    quota = detect_quota_usage(text)
-    active_quota = [key for key, value in quota.items() if value]
-    max_quota = int(config.data.get("pacing", {}).get("max_major_quota_triggers_per_chapter") or 1)
-    if len(active_quota) > max_quota:
-        failures.append(
-            {
-                "code": "plot_quota_overflow",
-                "severity": "P1",
-                "message": f"A/B/C plot acceleration quota overflow: {len(active_quota)} > {max_quota}.",
-                "repair_action": "keep only one major acceleration lane and defer the others",
-            }
-        )
-    checks.append(
-        {
-            "name": "abc_plot_quota",
-            "status": "fail" if len(active_quota) > max_quota else "pass",
-            "quota": quota,
-            "active": active_quota,
-            "limit": max_quota,
         }
     )
 
@@ -1817,7 +1800,6 @@ def check_reverse_brake(
             "forbidden_hits": len(forbidden_hits),
             "resolution_hits": len(resolution_hits),
             "complete_reveal": complete_reveal,
-            "active_quota": active_quota,
             "mainline_reveal_hits": reveal_markers["hits"],
             "tail_suspense_detected": tail_ok,
         },
@@ -1833,58 +1815,6 @@ def check_anchor_resolution(
 ) -> tuple[list[dict[str, Any]], list[str]]:
     failures, warnings, _ = check_reverse_brake(config, root, chapter_number, text)
     return failures, warnings
-
-    anchor = current_outline_anchor(root, chapter_number)
-    if not anchor:
-        return [], []
-    failures: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    closure_allowed = bool(anchor.get("closure_allowed") or str(anchor.get("status") or "").lower() in {"closure", "closing", "finale"})
-
-    forbidden_reveals = normalize_strings(anchor.get("forbidden_reveals"))
-    forbidden_reveals.extend(normalize_strings(config.data.get("gates", {}).get("forbidden_reveals")))
-    for item in dedupe_strings(forbidden_reveals):
-        if item and item in text:
-            failures.append(
-                {
-                    "code": "anchor_forbidden_reveal",
-                    "severity": "P1",
-                    "message": f"outline anchor forbids revealing `{item}` before the planned closure.",
-                }
-            )
-
-    resolution_markers = normalize_strings(anchor.get("resolution_markers")) or [
-        "core conflict resolved",
-        "final truth",
-        "ultimate secret",
-        "everything is solved",
-        "核心矛盾解决",
-        "最终真相",
-        "终极秘密",
-        "一切都解决",
-    ]
-    if not closure_allowed and any(marker and marker.lower() in text.lower() for marker in resolution_markers):
-        failures.append(
-            {
-                "code": "premature_resolution",
-                "severity": "P1",
-                "message": "chapter appears to resolve a core conflict before the active outline anchor allows closure.",
-            }
-        )
-
-    if anchor.get("requires_tail_suspense") is True and not closure_allowed and not has_tail_suspense(text):
-        failures.append(
-            {
-                "code": "missing_tail_suspense",
-                "severity": "P1",
-                "message": "active outline anchor requires tail suspense for this chapter.",
-            }
-        )
-    elif not closure_allowed and not has_tail_suspense(text):
-        warnings.append("tail suspense signal is weak for the active outline anchor.")
-
-    return failures, warnings
-
 
 def current_outline_anchor(root: Path, chapter_number: int) -> dict[str, Any]:
     payload = load_json(root / "20_outline" / "outline_anchors.json", default=[])
@@ -1913,11 +1843,8 @@ def normalize_reverse_brake_anchor(config: ConfigDocument, chapter_number: int, 
         normalize_strings(anchor.get("forbidden_reveals"))
         + normalize_strings(config.data.get("gates", {}).get("forbidden_reveals"))
     )
-    resolution_markers = normalize_strings(anchor.get("resolution_markers")) or default_resolution_markers()
-    preserve = normalize_strings(anchor.get("must_preserve_suspense")) or [
-        "core longform mystery",
-        "main volume conflict",
-    ]
+    resolution_markers = normalize_strings(anchor.get("resolution_markers"))
+    preserve = normalize_strings(anchor.get("must_preserve_suspense"))
     return {
         **anchor,
         "chapter_number": int(anchor.get("chapter_number") or anchor.get("chapter") or chapter_number),
@@ -1930,21 +1857,6 @@ def normalize_reverse_brake_anchor(config: ConfigDocument, chapter_number: int, 
         "must_preserve_suspense": preserve,
         "closure_allowed": closure_allowed,
     }
-
-
-def default_resolution_markers() -> list[str]:
-    return [
-        "core conflict resolved",
-        "final truth",
-        "ultimate secret",
-        "everything is solved",
-        "core secret",
-        "complete truth",
-        "最终真相",
-        "终极秘密",
-        "核心秘密",
-        "一切都解决",
-    ]
 
 
 def complete_core_reveal_detected(text: str) -> bool:
@@ -2036,9 +1948,11 @@ def has_tail_suspense(text: str) -> bool:
     return any(marker in tail for marker in markers)
 
 
-def check_style_and_humanizer(config: ConfigDocument, text: str) -> tuple[list[dict[str, Any]], list[str]]:
+def check_style_and_prose_naturalness(
+    config: ConfigDocument, text: str
+) -> tuple[list[dict[str, Any]], list[str]]:
     metrics = style_fingerprint(text)
-    humanize = humanizer_metrics(text)
+    naturalness = prose_naturalness_metrics(text)
     root = resolve_project_root(config)
     characters = load_json(root / "10_bible" / "characters.json", default=[])
     character_names = [
@@ -2047,39 +1961,36 @@ def check_style_and_humanizer(config: ConfigDocument, text: str) -> tuple[list[d
         if isinstance(item, dict) and str(item.get("name") or "").strip()
     ] if isinstance(characters, list) else []
     expression_diagnostics = character_expression_diagnostics(text, character_names=character_names)
-    humanizer_issues, humanizer_warnings = detect_humanizer_issues(text)
+    naturalness_issues, naturalness_warnings = detect_prose_naturalness_issues(text)
     failures: list[dict[str, Any]] = []
-    warnings: list[str] = list(humanizer_warnings)
+    warnings: list[str] = list(naturalness_warnings)
 
-    for issue in humanizer_issues:
+    for issue in naturalness_issues:
         severity = str(issue.get("severity") or "P2").upper()
         if severity in {"P0", "P1"}:
             failures.append(issue)
             continue
         warnings.append(
-            f"{issue.get('code', 'humanizer_signal')}: "
+            f"{issue.get('code', 'prose_naturalness_signal')}: "
             f"{issue.get('message', 'review the located prose signal')}"
         )
-    if humanize["meta_pollution_hits"]:
+    if naturalness["meta_pollution_hits"]:
         failures.append(
             {
-                "code": "humanizer_meta_pollution",
+                "code": "prose_naturalness_meta_pollution",
                 "severity": "P0",
-                "message": "humanizer detected prompt/meta residue in manuscript prose",
+                "message": "deterministic prose check found prompt/meta residue in manuscript prose",
             }
         )
-    if humanize["duplicate_paragraph_ratio"] >= 0.45 and metrics["paragraph_count"] >= 3:
-        failures.append(
-            {
-                "code": "duplicate_paragraphs",
-                "severity": "P1",
-                "message": f"duplicate paragraph ratio too high: {humanize['duplicate_paragraph_ratio']:.2f}",
-            }
+    if naturalness["summary_heavy_ratio"] >= 0.35:
+        warnings.append(
+            f"summary-heavy prose ratio is high: {naturalness['summary_heavy_ratio']:.2f}"
         )
-    if humanize["summary_heavy_ratio"] >= 0.35:
-        warnings.append(f"summary-heavy prose ratio is high: {humanize['summary_heavy_ratio']:.2f}")
-    if humanize["template_repetition_score"] >= 0.35:
-        warnings.append(f"repeated sentence/template score is high: {humanize['template_repetition_score']:.2f}")
+    if naturalness["template_repetition_score"] >= 0.35:
+        warnings.append(
+            "repeated sentence/template score is high: "
+            f"{naturalness['template_repetition_score']:.2f}"
+        )
     expression_profile = load_json(root / "10_bible" / "character_expression.json", default={})
     narrative_profile = (
         expression_profile.get("narrative_expression_profile")
@@ -2348,7 +2259,7 @@ def current_pov_label(text: str) -> str:
     return max(counts, key=lambda key: counts[key])
 
 
-def humanizer_metrics(text: str) -> dict[str, Any]:
+def prose_naturalness_metrics(text: str) -> dict[str, Any]:
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", text) if part.strip()]
     unique = set(paragraphs)
     duplicate_ratio = 0.0 if not paragraphs else 1 - (len(unique) / len(paragraphs))
@@ -2396,7 +2307,7 @@ def write_artifact_reports(
     style = style_fingerprint(text)
     active_style = load_active_style_profile(artifact_dir.parents[2]) if len(artifact_dir.parents) >= 3 else {}
     style_issues = [failure for failure in failures if failure.get("code") == "style_drift"]
-    humanize = humanizer_metrics(text)
+    naturalness = prose_naturalness_metrics(text)
     characters = load_json(artifact_dir.parents[2] / "10_bible" / "characters.json", default={}) if len(artifact_dir.parents) >= 3 else []
     character_names = [
         str(item.get("name"))
@@ -2404,10 +2315,10 @@ def write_artifact_reports(
         if isinstance(item, dict) and str(item.get("name") or "").strip()
     ] if isinstance(characters, list) else []
     expression_diagnostics = character_expression_diagnostics(text, character_names=character_names)
-    humanize["character_expression"] = expression_diagnostics
-    humanizer_issues, humanizer_warnings = detect_humanizer_issues(text)
-    humanize["issues"] = humanizer_issues
-    humanize["warnings"] = humanizer_warnings
+    naturalness["character_expression"] = expression_diagnostics
+    naturalness_issues, naturalness_warnings = detect_prose_naturalness_issues(text)
+    naturalness["issues"] = naturalness_issues
+    naturalness["warnings"] = naturalness_warnings
     write_reverse_brake_report(artifact_dir / "reverse_brake_report.md", reverse_brake)
     atomic_write_text(
         artifact_dir / "consistency_report.md",
@@ -2465,12 +2376,12 @@ def write_artifact_reports(
         ),
     )
     atomic_write_text(
-        artifact_dir / "humanize_report.md",
+        artifact_dir / "prose_naturalness_report.md",
         "\n".join(
             [
                 f"# Humanize Report ch{chapter_number:03d}",
                 "",
-                f"```json\n{json.dumps(humanize, ensure_ascii=False, indent=2)}\n```",
+                f"```json\n{json.dumps(naturalness, ensure_ascii=False, indent=2)}\n```",
                 "",
                 "## Deterministic Checks",
                 "",
@@ -2994,31 +2905,6 @@ def chapter_text_path(root: Path, chapter_number: int, *, source: str) -> Path |
 
 def gate_artifact_dir(root: Path, chapter_number: int) -> Path:
     return root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}"
-
-
-def infer_pacing_tier(text: str) -> str:
-    markers = ("决战", "爆发", "杀", "秘密", "真相", "突破", "反杀", "危机")
-    count = sum(text.count(marker) for marker in markers)
-    if count >= 4:
-        return "fast"
-    if count <= 1:
-        return "slow"
-    return "medium"
-
-
-def detect_quota_usage(text: str) -> dict[str, bool]:
-    lower = text.lower()
-    return {
-        "A": any(marker in lower for marker in ("mainline", "core conflict", "old order", "countermove", "主线", "核心矛盾", "旧秩序", "反制", "涓荤嚎", "鏍稿績鐭涚浘")),
-        "B": any(marker in lower for marker in ("relationship", "bond", "alliance", "betrayal", "breakup", "关系", "背叛", "结盟", "决裂", "鍏崇郴", "鑳屽彌", "缁撶洘", "鍐宠")),
-        "C": any(marker in lower for marker in ("secret", "truth", "reveal", "revealed", "complete", "秘密", "真相", "揭露", "全部", "绉樺瘑", "鐪熺浉", "鎻湶", "鍏ㄩ儴")),
-    }
-
-    return {
-        "A": any(marker in text for marker in ("主线", "核心矛盾", "旧秩序", "反制")),
-        "B": any(marker in text for marker in ("关系", "背叛", "结盟", "决裂")),
-        "C": any(marker in text for marker in ("秘密", "真相", "揭露", "全部")),
-    }
 
 
 def max_severity(failures: list[dict[str, Any]]) -> str:

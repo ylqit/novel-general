@@ -214,8 +214,8 @@ def test_author_markdown_is_story_brief_and_fact_inventory_stays_internal(tmp_pa
     markdown = (root / task.writing_task_markdown).read_text(encoding="utf-8")
     payload = json.loads((root / task.writing_task_json).read_text(encoding="utf-8"))
 
-    assert payload["schema"] == "chapter_writing_task_v4"
-    assert payload["story_brief"]["schema"] == "chapter_story_brief_v2"
+    assert payload["schema"] == "chapter_writing_task_v6"
+    assert payload["story_brief"]["schema"] == "chapter_story_brief_v4"
     manifest = json.loads((root / payload["agent_task_manifest"]).read_text(encoding="utf-8"))
     assert [item["path"] for item in manifest["io"]["inputs"]] == [
         "50_workbench/writing_tasks/ch001.md"
@@ -241,7 +241,7 @@ def test_author_markdown_is_story_brief_and_fact_inventory_stays_internal(tmp_pa
         assert forbidden not in markdown
 
 
-def test_chapter_contract_v3_rejects_removed_information_release(tmp_path):
+def test_chapter_contract_v4_rejects_removed_information_release(tmp_path):
     _config, root, _payload = seed_direction_contract(tmp_path)
     card = json.loads(
         (root / "20_outline" / "chapter_cards" / "ch001.json").read_text(encoding="utf-8")
@@ -531,13 +531,13 @@ def test_human_accept_is_hash_bound_and_unlocks_review_barrier(tmp_path):
     assert human_story_review_status(config, chapter_number=1)["status"] == "stale"
 
 
-def test_human_review_v4_freezes_revision_and_bundle_without_prefilled_human_reasons(tmp_path):
+def test_human_review_v5_freezes_revision_and_bundle_without_prefilled_human_reasons(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
 
     task = create_human_story_review_task(config, chapter_number=1)
     payload = json.loads((root / task.template_file).read_text(encoding="utf-8"))
 
-    assert payload["schema"] == "human_story_review_v4"
+    assert payload["schema"] == "human_story_review_v6"
     assert payload["review_bundle_sha256"] == task.review_bundle_sha256
     assert payload["human_author_revision_sha256"] == task.human_author_revision_sha256
     assert (root / task.review_bundle_file).is_file()
@@ -562,19 +562,19 @@ def test_human_review_v4_freezes_revision_and_bundle_without_prefilled_human_rea
     assert "checks" not in payload
 
 
-def test_human_review_v4_rejects_v3_and_requires_three_accept_evidence_kinds(tmp_path):
+def test_human_review_v6_rejects_v5_and_requires_three_accept_evidence_kinds(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
     task = create_human_story_review_task(config, chapter_number=1)
     review = root / task.template_file
     payload = json.loads(review.read_text(encoding="utf-8"))
-    payload["schema"] = "human_story_review_v3"
+    payload["schema"] = "human_story_review_v5"
     review.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     rejected = validate_human_story_review(config, chapter_number=1, file_path=review)
     assert not rejected.ok
-    assert any("human_story_review_v3 is rejected in v0.7" in error for error in rejected.errors)
+    assert any("human_story_review_v5 is rejected in v0.9" in error for error in rejected.errors)
 
-    payload["schema"] = "human_story_review_v4"
+    payload["schema"] = "human_story_review_v6"
     review.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     review = write_review(root, task.template_file, decision="accept")
     payload = json.loads(review.read_text(encoding="utf-8"))
@@ -587,7 +587,7 @@ def test_human_review_v4_rejects_v3_and_requires_three_accept_evidence_kinds(tmp
     assert "accept/repair requires human key_turn, character_choice_or_emotion, and reader_gain spans" in missing.errors
 
 
-def test_human_review_v4_rejects_review_bundle_hash_drift(tmp_path):
+def test_human_review_v5_rejects_review_bundle_hash_drift(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
     task = create_human_story_review_task(config, chapter_number=1)
     review = root / task.template_file

@@ -50,7 +50,9 @@ AGENT_TASK_STATUSES = (
     "rolled_back",
 )
 TERMINAL_TASK_STATUSES = frozenset({"invalid", "applied", "superseded", "rolled_back"})
-CHAPTER_CANDIDATE_TASK_TYPES = frozenset({"chapter_write", "repair", "humanize", "content_expand"})
+CHAPTER_CANDIDATE_TASK_TYPES = frozenset(
+    {"chapter_write", "chapter_coedit_rewrite", "repair", "prose_naturalness", "content_expand"}
+)
 DEFAULT_FORBIDDEN_CONTEXT = (
     "40_manuscript/final/",
     "50_workbench/agent_drafts/ (except the declared output)",
@@ -163,6 +165,14 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "apply_prefixes": ("longform-engine chapter finalize ",),
         "failure_prefixes": ("longform-engine production next ",),
     },
+    "chapter_coedit_rewrite": {
+        "scope_kinds": ("chapter",),
+        "schemas": (output_protocol_for_task("chapter_coedit_rewrite"),),
+        "output_prefixes": ("50_workbench/agent_drafts/",),
+        "validate_prefixes": ("longform-engine chapter coedit-candidate-validate ",),
+        "apply_prefixes": ("longform-engine draft submit ",),
+        "failure_prefixes": ("longform-engine chapter coedit-rewrite-task ",),
+    },
     "repair": {
         "scope_kinds": ("chapter",),
         "schemas": (output_protocol_for_task("repair"),),
@@ -193,32 +203,41 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "scope_kinds": ("chapter",),
         "schemas": (output_protocol_for_task("human_review_consult"),),
         "output_prefixes": ("50_workbench/human_story_reviews/consultations/",),
-        "validate_prefixes": ("longform-engine review consult-validate ",),
-        "apply_prefixes": ("longform-engine review consult-record ",),
-        "failure_prefixes": ("longform-engine review consult-task ",),
+        "validate_prefixes": (
+            "longform-engine review consult-validate ",
+            "longform-engine chapter coedit-record ",
+        ),
+        "apply_prefixes": (
+            "longform-engine review consult-record ",
+            "longform-engine chapter coedit-rewrite-task ",
+        ),
+        "failure_prefixes": (
+            "longform-engine review consult-task ",
+            "longform-engine chapter coedit-start ",
+        ),
     },
-    "humanize": {
+    "prose_naturalness": {
         "scope_kinds": ("chapter",),
-        "schemas": (output_protocol_for_task("humanize"),),
+        "schemas": (output_protocol_for_task("prose_naturalness"),),
         "output_prefixes": ("50_workbench/repair_candidates/",),
-        "validate_prefixes": ("longform-engine creative humanize-check ",),
+        "validate_prefixes": ("longform-engine creative prose-naturalness-check ",),
         "apply_prefixes": ("longform-engine draft submit ",),
-        "failure_prefixes": ("longform-engine creative humanize-task ",),
+        "failure_prefixes": ("longform-engine creative prose-naturalness-task ",),
     },
     "prose_revision_semantic_review": {
         "scope_kinds": ("chapter",),
         "schemas": (output_protocol_for_task("prose_revision_semantic_review"),),
         "output_prefixes": (
-            "50_workbench/humanizer_tasks/",
+            "50_workbench/prose_naturalness_tasks/",
             "50_workbench/human_author_revisions/",
         ),
         "validate_prefixes": (
-            "longform-engine creative humanize-semantic-validate ",
+            "longform-engine creative prose-naturalness-semantic-validate ",
             "longform-engine chapter human-revision-validate ",
         ),
         "apply_prefixes": ("longform-engine draft submit ",),
         "failure_prefixes": (
-            "longform-engine creative humanize-task ",
+            "longform-engine creative prose-naturalness-task ",
             "longform-engine chapter human-revision-validate ",
             "longform-engine editorial need-human ",
         ),

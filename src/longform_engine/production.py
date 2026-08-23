@@ -37,7 +37,11 @@ from longform_engine.arc_simulation import (
 )
 from longform_engine.config import ConfigDocument
 from longform_engine.completion import fast_completion_marker
-from longform_engine.creative import expand_check, humanize_check, humanize_semantic_validate
+from longform_engine.creative import (
+    expand_check,
+    prose_naturalness_check,
+    prose_naturalness_semantic_validate,
+)
 from longform_engine.editorial import (
     editorial_aggregate,
     editorial_review,
@@ -52,6 +56,7 @@ from longform_engine.gates import (
     semantic_review_validate,
 )
 from longform_engine.human_author_revision import validate_human_author_revision_semantic_result
+from longform_engine.human_chapter_intent import human_chapter_intent_status
 from longform_engine.intelligence import (
     assess_chapter_direction,
     assess_project_readiness,
@@ -102,7 +107,7 @@ TASK_WAITING_FOR = {
     "chapter_write": "agent_draft",
     "repair_plan_synthesis": "repair_plan_markdown",
     "repair": "repair_candidate",
-    "humanize": "humanized_candidate",
+    "prose_naturalness": "prose_naturalness_candidate",
     "prose_revision_semantic_review": "prose_revision_semantic_review_json",
     "reader_payoff_review": "reader_payoff_review_json",
     "content_expand": "expanded_candidate",
@@ -127,7 +132,7 @@ TASK_PRIORITY = {
     "chapter_write": 10,
     "repair_plan_synthesis": 19,
     "repair": 20,
-    "humanize": 21,
+    "prose_naturalness": 21,
     "prose_revision_semantic_review": 22,
     "content_expand": 23,
     "semantic_review": 29,
@@ -212,6 +217,7 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
         or arc_simulation_action(config, root)
         or rolling_outline_action(config, root)
         or chapter_direction_action(config, root)
+        or human_chapter_intent_action(root)
         or first_active_agent_task(root)
         or first_draft_without_gate_action(root)
         or first_writing_task_action(root)
@@ -616,7 +622,7 @@ def loop_decision(root: Path, action: dict[str, Any], *, no_apply: bool) -> dict
 LOOP_OUTPUT_VALIDATORS = {
     "chapter_write": "draft_submit_existing_agent_output",
     "repair": "draft_submit_existing_agent_output",
-    "humanize": "humanize_check",
+    "prose_naturalness": "prose_naturalness_check",
     "prose_revision_semantic_review": "prose_revision_semantic_validate",
     "reader_payoff_review": "reader_payoff_validate",
     "content_expand": "expand_check",
@@ -698,13 +704,13 @@ def execute_loop_decision(
                 overwrite=overwrite,
             )
         )
-    if command == "humanize_check":
-        return serialize_loop_result(root, humanize_check(config, chapter_number=chapter_number, file_path=require_loop_output_path(output_path)))
+    if command == "prose_naturalness_check":
+        return serialize_loop_result(root, prose_naturalness_check(config, chapter_number=chapter_number, file_path=require_loop_output_path(output_path)))
     if command == "prose_revision_semantic_validate":
         source = require_loop_output_path(output_path)
-        humanizer_root = (root / "50_workbench" / "humanizer_tasks").resolve()
+        naturalness_root = (root / "50_workbench" / "prose_naturalness_tasks").resolve()
         try:
-            Path(source).resolve().relative_to(humanizer_root)
+            Path(source).resolve().relative_to(naturalness_root)
         except ValueError:
             result = validate_human_author_revision_semantic_result(
                 config,
@@ -712,7 +718,7 @@ def execute_loop_decision(
                 semantic_output=source,
             )
         else:
-            result = humanize_semantic_validate(
+            result = prose_naturalness_semantic_validate(
                 config,
                 chapter_number=chapter_number,
                 file_path=source,
@@ -866,15 +872,15 @@ def chapter_board_row(root: Path, chapter_number: int) -> dict[str, Any]:
         "final_status": final_status,
         "gate_status": gate,
         "repair_status": task_lane_status(root, chapter_number, tasks, ("repair",), ("50_workbench/repair_candidates/ch{chapter}.repair*", "50_workbench/repair_candidates/ch{chapter}.*repair_candidate.md")),
-        "humanize_status": task_lane_status(root, chapter_number, tasks, ("humanize",), ("50_workbench/repair_candidates/ch{chapter}.humanized_candidate.md", "50_workbench/humanizer_tasks/ch{chapter}*")),
-        "humanize_semantic_status": task_lane_status(
+        "prose_naturalness_status": task_lane_status(root, chapter_number, tasks, ("prose_naturalness",), ("50_workbench/repair_candidates/ch{chapter}.prose_naturalness_candidate.md", "50_workbench/prose_naturalness_tasks/ch{chapter}*")),
+        "prose_naturalness_semantic_status": task_lane_status(
             root,
             chapter_number,
             tasks,
             ("prose_revision_semantic_review",),
             (
-                "50_workbench/humanizer_tasks/ch{chapter}.semantic_review.json",
-                "50_workbench/humanizer_tasks/ch{chapter}.semantic_review.validation.json",
+                "50_workbench/prose_naturalness_tasks/ch{chapter}.semantic_review.json",
+                "50_workbench/prose_naturalness_tasks/ch{chapter}.semantic_review.validation.json",
             ),
         ),
         "reader_payoff_status": task_lane_status(
@@ -1564,6 +1570,30 @@ def chapter_direction_action(config: ConfigDocument, root: Path) -> dict[str, An
     )
 
 
+def human_chapter_intent_action(root: Path) -> dict[str, Any] | None:
+    """Require human creative intent after direction approval and before prose."""
+
+    chapter_number = highest_finalized_chapter(root) + 1
+    status = human_chapter_intent_status(root, chapter_number)
+    if status.get("status") == "current":
+        return None
+    command = f"longform-engine chapter human-intent-task project.yaml --chapter {chapter_number}"
+    return base_action(
+        status="awaiting_human_chapter_intent",
+        chapter_number=chapter_number,
+        task_type="human_chapter_intent",
+        blocked_by="human_chapter_intent_required",
+        waiting_for="human_intent",
+        next_command=command,
+        failure_next_command=command,
+        human_summary=(
+            f"ch{chapter_number:03d} direction is approved; the human must state the story intent, "
+            "character choice, emotional truth, POV voice intent, and protected items."
+        ),
+        sources=[str(status.get("intent_file") or "")],
+    )
+
+
 def first_need_human_action(root: Path) -> dict[str, Any] | None:
     candidates: list[tuple[int, str, Path, dict[str, Any]]] = []
     for path in (root / "50_workbench" / "editorial_reviews").glob("ch*.aggregate.json"):
@@ -1686,7 +1716,7 @@ def agent_task_action(root: Path, task: dict[str, Any]) -> dict[str, Any]:
         validation = read_json(
             root
             / "50_workbench"
-            / "humanizer_tasks"
+            / "prose_naturalness_tasks"
             / f"ch{chapter_number:03d}.semantic_review.validation.json"
         )
         if isinstance(validation, dict) and validation.get("next_command"):
@@ -2160,7 +2190,7 @@ def chapter_stage_task_types(stage: str) -> set[str]:
         "repair_lifecycle_reconciliation_required": set(),
         "repair_candidate_pending": {"repair"},
         "repair_budget_exhausted": set(),
-        "repair_pending": {"repair", "humanize", "content_expand", "prose_revision_semantic_review"},
+        "repair_pending": {"repair", "prose_naturalness", "content_expand", "prose_revision_semantic_review"},
         "semantic_review_pending": {"semantic_review"},
         "payoff_pending": {"reader_payoff_review"},
         "pacing_pending": {"pacing_review"},
@@ -2366,7 +2396,7 @@ def first_gate_action(root: Path) -> dict[str, Any] | None:
             validated_candidates = active_chapter_tasks(
                 root,
                 chapter_number,
-                {"chapter_write", "repair", "humanize", "content_expand"},
+                {"chapter_write", "chapter_coedit_rewrite", "repair", "prose_naturalness", "content_expand"},
             )
             validated_candidates = [
                 task for task in validated_candidates if str(task.get("status") or "") == "validated"

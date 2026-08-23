@@ -18,9 +18,19 @@ from longform_engine.reader_promises import (
 )
 
 
-CONTRACT_SCHEMA = "chapter_contract_v3"
+CONTRACT_SCHEMA = "chapter_contract_v4"
 REMOVED_ALIAS_FIELDS = frozenset(
-    {"duty", "information", "information_release", "reader_payoff"}
+    {
+        "duty",
+        "information",
+        "information_release",
+        "reader_payoff",
+        "hook",
+        "hook_mode",
+        "plot_obligation",
+        "irreversible_action",
+        "dramatic_freedom",
+    }
 )
 CONTRACT_FIELDS = (
     "chapter_number",
@@ -38,6 +48,9 @@ CONTRACT_FIELDS = (
     "irreversible_choice",
     "chapter_turn",
     "reveal_boundary",
+    "emotional_aftereffect",
+    "ending_mode",
+    "ending_intent",
     "scene_chain",
     "must_dramatize",
     "may_summarize",
@@ -56,6 +69,8 @@ CONTRACT_FIELDS = (
     "world_rule_refs",
     "foreshadow_refs",
     "forbidden_reveals",
+    "must_preserve_suspense",
+    "resolution_markers",
     "reader_promise_actions",
     "arc_simulation_ref",
 )
@@ -72,6 +87,8 @@ LIST_FIELDS = frozenset(
         "world_rule_refs",
         "foreshadow_refs",
         "forbidden_reveals",
+        "must_preserve_suspense",
+        "resolution_markers",
         "reader_promise_actions",
     }
 )
@@ -201,6 +218,7 @@ def chapter_contract_hash(contract: dict[str, Any]) -> str:
 
 def stamp_chapter_contract(card: dict[str, Any]) -> dict[str, Any]:
     contract = project_chapter_contract(card)
+    card["chapter_contract_schema"] = CONTRACT_SCHEMA
     card["chapter_contract_hash"] = chapter_contract_hash(contract)
     return contract
 
@@ -213,6 +231,11 @@ def load_verified_chapter_contract(root: Path, chapter_number: int) -> tuple[dic
         raise ChapterContractError(f"chapter_contract_inconsistent:{exc}") from exc
     if not isinstance(card, dict) or card.get("chapter_number") != chapter_number:
         raise ChapterContractError("chapter_contract_inconsistent:chapter_number")
+    if card.get("chapter_contract_schema") != CONTRACT_SCHEMA:
+        raise ChapterContractError(
+            "chapter_contract_incompatible: v0.7 chapter cards are rejected; create a v0.8 "
+            "project and manually import authoritative Bible and outline material"
+        )
     contract = project_chapter_contract(card)
     digest = chapter_contract_hash(contract)
     if card.get("chapter_contract_hash") != digest:

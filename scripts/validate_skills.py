@@ -130,7 +130,14 @@ def validate_skill(name: str, platform: str, forbidden_platform: str) -> list[st
         "research_canon.jsonl",
         "fanfiction canon-task",
         "fanfiction design-task",
-        "human_author_revision_v1",
+        "human_chapter_intent_v1",
+        "chapter_story_brief_v4",
+        "chapter_story_brief_basis_v2",
+        "human_review_bundle_v2",
+        "chapter_coedit_session_v1",
+        "human_author_revision_v3",
+        "human_story_review_v6",
+        "anti_template_editor",
         "prose_revision_semantic_review",
         "character_expression_packet_v1",
         "reader_payoff_review",
@@ -157,46 +164,27 @@ def validate_readme() -> list[str]:
         f"git+https://github.com/ylqit/novel-general.git@v{stable_version}",
         version,
         "longform-novel-engine[semantic]",
-        "PIPX_BIN_DIR",
-        "longform-engine skills install --tool all",
-        "longform-engine skills update --tool all",
-        "longform-engine skills uninstall --tool all --yes",
-        "longform-engine doctor --tool all",
-        "longform-engine release check --repository . --check-remote",
-        "longform-engine benchmark record",
-        "longform-engine benchmark compare",
-        "/工程下一步",
-        "/工程工单",
+        "longform-engine skills install --tool codex",
+        "longform-engine doctor --tool codex",
         "production next",
         "agent-task brief",
         "40_manuscript/final/",
-        "60_rag/",
-        "30_state/story_graph.json",
-        "30_state/tcs/",
-        "70_runtime/db/",
         "10_bible/",
         "20_outline/",
-        "research_canon.jsonl",
         "literary_evidence_ready=false",
-        "creation.mode",
-        "fanfiction canon-task",
-        "fanfiction design-task",
-        "publication report",
-        "publication export",
-        "human_author_revision_v1",
+        "chapter_contract_v4",
+        "human_chapter_intent_v1",
+        "chapter_story_brief_v4",
+        "chapter_story_brief_basis_v2",
+        "chapter_writing_task_v6",
+        "human_review_bundle_v2",
+        "chapter_coedit_session_v1",
+        "human_author_revision_v3",
+        "human_story_review_v6",
         "prose_revision_semantic_review",
-        "design_document_v1",
         "canonical_delta_v1",
-        "content_characters_v1",
-        "character audit-task",
-        "reader_payoff_review",
-        "rights_status",
-        "commercial_intent",
-        "只生成提示",
-        "多个 JSON 字段",
-        "V0_5_0_RELEASE_CHECKLIST.md",
-        "V0_6_0_RELEASE_CHECKLIST.md",
-        "V0_7_0_RELEASE_CHECKLIST.md",
+        "RELEASE_HISTORY.md",
+        "V0_9_0_RELEASE_CHECKLIST.md",
     )
     for term in required:
         if term.lower() not in readme.lower():
@@ -204,8 +192,11 @@ def validate_readme() -> list[str]:
     for forbidden in ("<owner>", "README.zh-CN.md", "curl | bash", "clone 到临时目录"):
         if forbidden.lower() in readme.lower():
             errors.append(f"README.md: forbidden public-install text {forbidden!r}")
-    if len(re.findall(r"(?m)^## 安装\s*$", readme)) != 1:
-        errors.append("README.md: public install must use exactly one '## 安装' section")
+    if len(re.findall(r"(?m)^## 安装稳定版\s*$", readme)) != 1:
+        errors.append("README.md: public install must use exactly one '## 安装稳定版' section")
+    readme_lines = len(readme.splitlines())
+    if not 280 <= readme_lines <= 320:
+        errors.append(f"README.md: expected about 280-320 lines, found {readme_lines}")
     if (ROOT / "README.zh-CN.md").exists():
         errors.append("README.zh-CN.md must not be added; Chinese public content belongs in README.md")
     return errors

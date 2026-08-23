@@ -69,14 +69,14 @@ def test_plan_chapter_and_beat_sheet(tmp_path):
     assert card_payload["chapter_duty"]
     assert card_payload["conflict"]
     assert card_payload["chapter_turn"]
-    assert not {"duty", "information", "reader_payoff"} & set(card_payload)
-    assert card_payload["hook"]
+    assert not {"duty", "information", "reader_payoff", "hook"} & set(card_payload)
+    assert card_payload["ending_intent"]
     assert beat.chapter_number == 12
     assert len(beat_payload["beats"]) == 5
     assert all(item["chapter_duty"] == card_payload["chapter_duty"] for item in beat_payload["beats"])
     assert all(item["reader_gain"] == card_payload["reader_gain"] for item in beat_payload["beats"])
     assert all(item["chapter_turn"] for item in beat_payload["beats"])
-    assert all(not {"duty", "information", "reader_payoff"} & set(item) for item in beat_payload["beats"])
+    assert all(not {"duty", "information", "reader_payoff", "hook"} & set(item) for item in beat_payload["beats"])
 
 
 def test_plan_chapter_event_matrix_requires_soft_event_after_fast_gap(tmp_path):
@@ -588,17 +588,17 @@ def test_continue_write_does_not_leak_previous_editorial_findings_to_author(tmp_
         "# Repair Plan\n\n- Strengthen motive before the next conflict.\n",
         encoding="utf-8",
     )
-    humanizer_dir = root / "50_workbench" / "humanizer_tasks"
-    humanizer_dir.mkdir(parents=True, exist_ok=True)
-    (humanizer_dir / "ch001.humanize_check.json").write_text(
+    prose_naturalness_dir = root / "50_workbench" / "prose_naturalness_tasks"
+    prose_naturalness_dir.mkdir(parents=True, exist_ok=True)
+    (prose_naturalness_dir / "ch001.prose_naturalness_check.json").write_text(
         json.dumps(
             {
                 "schema_version": 1,
                 "chapter_number": 1,
                 "passed": False,
-                "issues": [{"code": "humanizer_summary_voice", "severity": "P1", "message": "too much summary"}],
+                "issues": [{"code": "prose_naturalness_summary_voice", "severity": "P1", "message": "too much summary"}],
                 "warnings": [],
-                "next_command": "longform-engine creative humanize-task project.yaml --chapter 1 --source draft",
+                "next_command": "longform-engine creative prose-naturalness-task project.yaml --chapter 1 --source draft",
             },
             ensure_ascii=False,
             indent=2,
@@ -654,6 +654,13 @@ def test_continue_write_does_not_leak_previous_editorial_findings_to_author(tmp_
         json.dumps(chapter_two_card, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    chapter_two_intent_path = root / "20_outline" / "chapter_intents" / "ch002.json"
+    chapter_two_intent = json.loads(chapter_two_intent_path.read_text(encoding="utf-8"))
+    chapter_two_intent["chapter_contract_sha256"] = chapter_two_card["chapter_contract_hash"]
+    chapter_two_intent_path.write_text(
+        json.dumps(chapter_two_intent, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     result = continue_write(project_config, chapter_number=2)
 
@@ -665,7 +672,7 @@ def test_continue_write_does_not_leak_previous_editorial_findings_to_author(tmp_
     assert "feedback" not in task["fact_inventory_summary"]["categories"]
     assert "pattern" not in task["fact_inventory_summary"]["categories"]
     assert "未解决反馈" not in task_md
-    assert "humanizer_summary_voice" not in task_md
+    assert "prose_naturalness_summary_voice" not in task_md
     assert "motive_gap" not in task_md
     assert "story graph must remain frozen" not in task_md
     assert "graph update waits for chapter finalize" not in task_md

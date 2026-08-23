@@ -1,6 +1,6 @@
 # Storage Model
 
-本文定义公开稳定版 v0.7.0 的项目落盘合同、事务恢复语义和派生数据边界。
+本文定义 v0.9.0 公开稳定版的项目落盘合同、事务恢复语义和派生数据边界。
 
 ## 1. 标准目录
 
@@ -16,10 +16,12 @@
 | `40_manuscript/draft/` | submitted working state | draft submit | 可替换，不能冒充 final |
 | `40_manuscript/final/` | canonical prose | chapter finalize | hash 审批与事务回滚 |
 | `50_workbench/` | non-canonical evidence | Agent + CLI | 可归档；不得被查询层当 canonical |
+| `20_outline/chapter_intents/` | canonical human writing intent | CLI + human apply | 空白填写的 v1 意图绑定当前方向选择与合同；漂移后不能编译写作任务 |
+| `50_workbench/chapter_coedit/` | non-canonical coedit sessions/turns | CLI + human + advisor | 保存 span、2–3 个方案、选择、意图和完整候选 hash；不能直接写 draft/final |
 | `50_workbench/human_story_reviews/bundles/` | immutable review evidence | CLI | 冻结当前候选的完整独立审稿；hash 漂移使决定失效 |
-| `50_workbench/human_author_revisions/` | pre-final human authorship evidence | CLI + human + isolated reviewer | 源候选、修订前 bundle、人工完整候选、冻结记录、双稿复核和 validation 均以 hash 绑定 |
-| `50_workbench/human_story_reviews/` | six-hash-bound human evidence | CLI + human | v4 风险分层决定按候选 hash 不可变保留；latest 仅指向当前决定 |
-| `50_workbench/human_story_reviews/consultations/` | non-canonical advisory records | CLI + human | 同候选复用会话；候选变化后全部 stale；永不写 final/canonical |
+| `50_workbench/human_author_revisions/` | pre-final human authorship evidence | CLI + human + isolated reviewer | 源候选、意图、共编来源、人工完整候选、最终锁和双稿复核均以 hash 绑定 |
+| `50_workbench/human_story_reviews/` | eight-evidence-bound human review | CLI + human | v6 决定按候选、意图与 Story Brief basis 不可变保留；latest 仅指当前决定 |
+| `50_workbench/human_story_reviews/consultations/` | non-canonical advisory records | CLI + human | coedit 可创建完整改写任务，human_final 只读；候选变化后全部 stale |
 | `50_workbench/intelligence_selections/` | hash-bound human selection | CLI + human | `chapter_direction_selection_v1` 与方向 Markdown 联合批准和编译 |
 | `10_bible/style_profiles/author_voice_edit_pairs.json` | human-approved style evidence | CLI + human | 只引用真实人工修改与 final 的重合 span；最多 12 个 active，不自动淘汰 |
 | `80_exports/platform/` | derived publication advisory | publication subsystem | 政策预检与 provenance 可重建；不保存正文、Prompt 或检测器结论 |
@@ -43,7 +45,9 @@
 
 Agent 只能写 manifest 中唯一声明的 `io.output.path`。它不能直接写 Bible、outline、state、final、RAG 或 runtime DB。CLI 在 validate 成功后才可通过 apply/finalize 将候选物化到 canonical 路径。
 
-网页审稿和咨询记录都属于 non-canonical evidence。人工正文修改不能直接编辑 draft/final：普通修订与 repair 绑定修订都只能写 `50_workbench` 的完整候选，经 `human_author_revision_v1`、双稿语义复核和 `agent=human` 提交。普通修订不消耗 repair 额度；repair 绑定候选消费对应轮次。提交后旧 gate、bundle、咨询、接受和平台预检全部 stale，并重跑全量 gate 与独立审稿。
+网页审稿、共编与咨询记录都属于 non-canonical evidence。人工正文修改不能直接编辑 draft/final：普通修订与 repair 绑定修订都只能写 `50_workbench` 的完整候选，经 `human_author_revision_v3`、最终锁、双稿语义复核和 `agent=human` 提交。普通修订不消耗 repair 额度；repair 绑定候选消费对应轮次。提交后旧 gate、bundle、咨询、接受和平台预检全部 stale，并重跑全量 gate 与独立审稿。人工锁定后的 AI 正文变换会使锁失效。
+
+`50_workbench/writing_tasks/chNNN.basis.json` 保存 `chapter_story_brief_basis_v2`。它不是新的 canonical 事实源，而是作者工作单的不可变编译依据：合同、人类意图、因果模拟、筛选事实、人物/作者声音、最近五章结构历史、质量合同和 renderer 任一投影变化都会生成新 basis，并使旧工作单、共编会话与下游人工证据 stale。
 
 `reader_promise_ledger_v1` 是作者向读者建立的期待窗口，不是实际读者行为；`arc_causal_simulation_v1` 是经人工批准的滚动规划约束，不是世界事实；`editorial_pattern_item_v1` 是无正文的编辑复发诊断，不是事实或作者提示。这三个层面禁止相互混写。因果模拟的角色状态 basis 直接哈希 semantic apply 维护的 `60_rag/memory/characters/`，不再读取旧的单文件 character-memory 投影。
 

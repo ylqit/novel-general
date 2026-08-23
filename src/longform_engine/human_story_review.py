@@ -11,13 +11,15 @@ import json
 from longform_engine.chapter_contract import load_verified_chapter_contract
 from longform_engine.arc_simulation import SIMULATION_DIR, load_active_arc_simulation, mark_overlapping_arc_simulations_stale
 from longform_engine.config import ConfigDocument
+from longform_engine.human_chapter_intent import require_current_human_chapter_intent
 from longform_engine.quality import truncate_editorial_pattern_registry
 from longform_engine.reader_promises import reader_promise_ledger_hash
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import manuscript_chapter_path
+from longform_engine.story_brief import load_current_story_brief_binding
 
 
-SCHEMA = "human_story_review_v4"
+SCHEMA = "human_story_review_v6"
 DECISIONS = {"accept", "repair", "redirect"}
 ANNOTATION_ACTIONS = {
     "preserve",
@@ -64,6 +66,8 @@ class HumanStoryReviewTaskResult:
     template_file: str
     candidate_sha256: str
     chapter_contract_sha256: str
+    story_brief_basis_sha256: str
+    human_chapter_intent_sha256: str
     reader_promise_ledger_sha256: str
     arc_causal_simulation_sha256: str
     review_bundle_file: str
@@ -97,29 +101,41 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
     if not draft.is_file():
         return {"required": True, "status": "pending", "reason": "current draft is missing"}
     candidate_hash = sha256(draft.read_bytes()).hexdigest()
+    latest_path = review_root(root) / f"ch{chapter_number:03d}.latest.json"
+    latest = load_json(latest_path)
+    dependency_drift_status = "stale" if isinstance(latest, dict) else "pending"
     from longform_engine.human_author_revision import human_author_revision_status
 
     revision = human_author_revision_status(config, chapter_number=chapter_number)
     if revision.get("status") != "complete":
         return {
             "required": True,
-            "status": "pending",
-            "reason": "current candidate has no validated human_author_revision_v1 binding",
+            "status": dependency_drift_status,
+            "reason": "current candidate has no validated human_author_revision_v3 binding",
             "candidate_sha256": candidate_hash,
             "human_author_revision_status": revision.get("status") or "pending",
         }
     revision_hash = str(revision.get("validation_sha256") or "")
     try:
+        intent_hash = str(require_current_human_chapter_intent(root, chapter_number)["sha256"])
+    except ValueError as exc:
+        return {"required": True, "status": dependency_drift_status, "reason": str(exc)}
+    try:
         _contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
     except ValueError as exc:
-        return {"required": True, "status": "pending", "reason": str(exc)}
+        return {"required": True, "status": dependency_drift_status, "reason": str(exc)}
+    try:
+        story_brief = load_current_story_brief_binding(root, chapter_number)
+        story_brief_basis_hash = str(story_brief["story_brief_basis_sha256"])
+    except ValueError as exc:
+        return {"required": True, "status": dependency_drift_status, "reason": str(exc)}
     try:
         promise_hash = reader_promise_ledger_hash(root)
         _simulation, _simulation_path, simulation_hash = load_active_arc_simulation(
             root, chapter_number=chapter_number
         )
     except ValueError as exc:
-        return {"required": True, "status": "pending", "reason": str(exc)}
+        return {"required": True, "status": dependency_drift_status, "reason": str(exc)}
     from longform_engine.repair_coordination import human_review_bundle_binding
 
     try:
@@ -129,16 +145,16 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
             freeze=False,
         )
     except ValueError as exc:
-        return {"required": True, "status": "pending", "reason": str(exc)}
+        return {"required": True, "status": dependency_drift_status, "reason": str(exc)}
     review_bundle_hash = str(bundle_binding["review_bundle_sha256"])
-    latest_path = review_root(root) / f"ch{chapter_number:03d}.latest.json"
-    latest = load_json(latest_path)
     if not isinstance(latest, dict):
         return {
             "required": True,
             "status": "pending",
             "candidate_sha256": candidate_hash,
             "chapter_contract_sha256": contract_hash,
+            "story_brief_basis_sha256": story_brief_basis_hash,
+            "human_chapter_intent_sha256": intent_hash,
             "reader_promise_ledger_sha256": promise_hash,
             "arc_causal_simulation_sha256": simulation_hash,
             "review_bundle_sha256": review_bundle_hash,
@@ -164,8 +180,12 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
     if (
         str(latest.get("candidate_sha256") or "") != candidate_hash
         or str(latest.get("chapter_contract_sha256") or "") != contract_hash
+        or str(latest.get("story_brief_basis_sha256") or "") != story_brief_basis_hash
+        or str(latest.get("human_chapter_intent_sha256") or "") != intent_hash
         or str(decision_record.get("candidate_sha256") or "") != candidate_hash
         or str(decision_record.get("chapter_contract_sha256") or "") != contract_hash
+        or str(decision_record.get("story_brief_basis_sha256") or "") != story_brief_basis_hash
+        or str(decision_record.get("human_chapter_intent_sha256") or "") != intent_hash
         or str(latest.get("reader_promise_ledger_sha256") or "") != promise_hash
         or str(latest.get("arc_causal_simulation_sha256") or "") != simulation_hash
         or str(decision_record.get("reader_promise_ledger_sha256") or "") != promise_hash
@@ -181,6 +201,8 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
             "status": "stale",
             "candidate_sha256": candidate_hash,
             "chapter_contract_sha256": contract_hash,
+            "story_brief_basis_sha256": story_brief_basis_hash,
+            "human_chapter_intent_sha256": intent_hash,
             "reader_promise_ledger_sha256": promise_hash,
             "arc_causal_simulation_sha256": simulation_hash,
             "review_bundle_sha256": review_bundle_hash,
@@ -194,6 +216,8 @@ def human_story_review_status(config: ConfigDocument, *, chapter_number: int) ->
         "decision": decision,
         "candidate_sha256": candidate_hash,
         "chapter_contract_sha256": contract_hash,
+        "story_brief_basis_sha256": story_brief_basis_hash,
+        "human_chapter_intent_sha256": intent_hash,
         "reader_promise_ledger_sha256": promise_hash,
         "arc_causal_simulation_sha256": simulation_hash,
         "review_bundle_sha256": review_bundle_hash,
@@ -257,6 +281,10 @@ def create_human_story_review_task(
         )
     candidate_hash = sha256(draft.read_bytes()).hexdigest()
     _contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
+    story_brief_binding = load_current_story_brief_binding(root, chapter_number)
+    story_brief_basis_hash = str(story_brief_binding["story_brief_basis_sha256"])
+    intent_binding = require_current_human_chapter_intent(root, chapter_number)
+    intent_hash = str(intent_binding["sha256"])
     promise_hash = reader_promise_ledger_hash(root)
     _simulation, _simulation_path, simulation_hash = load_active_arc_simulation(
         root, chapter_number=chapter_number
@@ -269,14 +297,17 @@ def create_human_story_review_task(
         freeze=True,
     )
     review_bundle_hash = str(bundle_binding["review_bundle_sha256"])
-    task_path = review_root(root) / f"ch{chapter_number:03d}.{candidate_hash[:12]}.task.md"
-    template_path = review_root(root) / f"ch{chapter_number:03d}.{candidate_hash[:12]}.candidate.json"
+    review_token = f"{candidate_hash[:12]}.{story_brief_basis_hash[:12]}"
+    task_path = review_root(root) / f"ch{chapter_number:03d}.{review_token}.task.md"
+    template_path = review_root(root) / f"ch{chapter_number:03d}.{review_token}.candidate.json"
     story_brief = root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.md"
     lines = [
         f"# ch{chapter_number:03d} 人工故事深审",
         "",
         f"- 正文：`{relative_path(root, draft)}`",
         f"- 故事工作单：`{relative_path(root, story_brief)}`",
+        f"- Story Brief basis SHA-256：`{story_brief_basis_hash}`",
+        f"- 人类创作意图 SHA-256：`{intent_hash}`",
         "",
         f"- 冻结审稿包：`{bundle_binding['review_bundle']}`",
         f"- 审稿包 SHA-256：`{review_bundle_hash}`",
@@ -297,6 +328,8 @@ def create_human_story_review_task(
         "chapter_number": chapter_number,
         "candidate_sha256": candidate_hash,
         "chapter_contract_sha256": contract_hash,
+        "story_brief_basis_sha256": story_brief_basis_hash,
+        "human_chapter_intent_sha256": intent_hash,
         "reader_promise_ledger_sha256": promise_hash,
         "arc_causal_simulation_sha256": simulation_hash,
         "review_bundle_sha256": review_bundle_hash,
@@ -318,6 +351,8 @@ def create_human_story_review_task(
         template_file=relative_path(root, template_path),
         candidate_sha256=candidate_hash,
         chapter_contract_sha256=contract_hash,
+        story_brief_basis_sha256=story_brief_basis_hash,
+        human_chapter_intent_sha256=intent_hash,
         reader_promise_ledger_sha256=promise_hash,
         arc_causal_simulation_sha256=simulation_hash,
         review_bundle_file=str(bundle_binding["review_bundle"]),
@@ -351,7 +386,7 @@ def validate_human_story_review(
     decision = str(payload.get("decision") or "") if isinstance(payload, dict) else ""
     report_path = path.with_suffix(".validation.json")
     report = {
-        "schema": "human_story_review_validation_v4",
+        "schema": "human_story_review_validation_v6",
         "chapter_number": chapter_number,
         "candidate_file": relative_path(root, path),
         "ok": not errors,
@@ -400,17 +435,23 @@ def apply_human_story_review(
     if approved_by != "human":
         raise HumanStoryReviewError("human story review apply requires approved_by=human")
     candidate_hash = str(payload["candidate_sha256"])
-    decision_path = review_root(root) / f"ch{chapter_number:03d}.{candidate_hash[:12]}.decision.json"
+    basis_hash = str(payload["story_brief_basis_sha256"])
+    decision_path = (
+        review_root(root)
+        / f"ch{chapter_number:03d}.{candidate_hash[:12]}.{basis_hash[:12]}.decision.json"
+    )
     if decision_path.exists():
         raise HumanStoryReviewError("this candidate already has an immutable human story decision")
     latest_path = review_root(root) / f"ch{chapter_number:03d}.latest.json"
     record = {**payload, "approved_by": approved_by, "source_file": relative_path(root, path)}
     record_text = json.dumps(record, ensure_ascii=False, indent=2) + "\n"
     latest = {
-        "schema": "human_story_review_latest_v4",
+        "schema": "human_story_review_latest_v6",
         "chapter_number": chapter_number,
         "candidate_sha256": candidate_hash,
         "chapter_contract_sha256": payload["chapter_contract_sha256"],
+        "story_brief_basis_sha256": payload["story_brief_basis_sha256"],
+        "human_chapter_intent_sha256": payload["human_chapter_intent_sha256"],
         "reader_promise_ledger_sha256": payload["reader_promise_ledger_sha256"],
         "arc_causal_simulation_sha256": payload["arc_causal_simulation_sha256"],
         "review_bundle_sha256": payload["review_bundle_sha256"],
@@ -521,17 +562,24 @@ def human_story_review_errors(
     errors: list[str] = []
     required = {
         "schema", "chapter_number", "candidate_sha256", "chapter_contract_sha256",
+        "story_brief_basis_sha256",
+        "human_chapter_intent_sha256",
         "reader_promise_ledger_sha256", "arc_causal_simulation_sha256",
         "review_bundle_sha256", "human_author_revision_sha256", "dimension_coverage",
         "decision", "evidence_spans", "reader_gain_note", "finding_resolutions",
         "annotations", "redirect_scope", "reason",
     }
-    if isinstance(payload, dict) and payload.get("schema") == "human_story_review_v3":
+    if isinstance(payload, dict) and payload.get("schema") in {
+        "human_story_review_v3",
+        "human_story_review_v4",
+        "human_story_review_v5",
+    }:
         return [
-            "human_story_review_v3 is rejected in v0.7; create a new v0.7 project and import authoritative material manually"
+            f"{payload.get('schema')} is rejected in v0.9; create a new v0.9 project and "
+            "import authoritative material manually"
         ]
     if not isinstance(payload, dict) or set(payload) != required:
-        return ["review must contain exactly the human_story_review_v4 fields"]
+        return ["review must contain exactly the human_story_review_v6 fields"]
     if payload.get("schema") != SCHEMA:
         errors.append(f"schema must be {SCHEMA}")
     if payload.get("chapter_number") != chapter_number:
@@ -548,6 +596,21 @@ def human_story_review_errors(
         contract_hash = ""
     if payload.get("chapter_contract_sha256") != contract_hash:
         errors.append("chapter_contract_sha256 is stale")
+    try:
+        story_brief = load_current_story_brief_binding(root, chapter_number)
+        story_brief_basis_hash = story_brief["story_brief_basis_sha256"]
+    except ValueError as exc:
+        errors.append(str(exc))
+        story_brief_basis_hash = ""
+    if payload.get("story_brief_basis_sha256") != story_brief_basis_hash:
+        errors.append("story_brief_basis_sha256 is stale")
+    try:
+        intent_hash = require_current_human_chapter_intent(root, chapter_number)["sha256"]
+    except ValueError as exc:
+        errors.append(str(exc))
+        intent_hash = ""
+    if payload.get("human_chapter_intent_sha256") != intent_hash:
+        errors.append("human_chapter_intent_sha256 is stale")
     if payload.get("reader_promise_ledger_sha256") != reader_promise_ledger_hash(root):
         errors.append("reader_promise_ledger_sha256 is stale")
     try:
@@ -563,7 +626,7 @@ def human_story_review_errors(
 
     revision = human_author_revision_status(config, chapter_number=chapter_number)
     if revision.get("status") != "complete":
-        errors.append("current candidate has no validated human_author_revision_v1 binding")
+        errors.append("current candidate has no validated human_author_revision_v3 binding")
     elif payload.get("human_author_revision_sha256") != revision.get("validation_sha256"):
         errors.append("human_author_revision_sha256 is stale")
     bundle_payload: dict[str, Any] = {}
@@ -821,13 +884,15 @@ def review_root(root: Path) -> Path:
 def resolve_decision_pointer(root: Path, chapter_number: int, latest: dict[str, Any]) -> Path | None:
     expected = {
         "schema", "chapter_number", "candidate_sha256", "chapter_contract_sha256",
+        "story_brief_basis_sha256",
+        "human_chapter_intent_sha256",
         "reader_promise_ledger_sha256", "arc_causal_simulation_sha256",
         "review_bundle_sha256", "human_author_revision_sha256",
         "decision_file", "decision_sha256",
     }
     if (
         set(latest) != expected
-        or latest.get("schema") != "human_story_review_latest_v4"
+        or latest.get("schema") != "human_story_review_latest_v6"
         or latest.get("chapter_number") != chapter_number
     ):
         return None
@@ -836,7 +901,12 @@ def resolve_decision_pointer(root: Path, chapter_number: int, latest: dict[str, 
         path.relative_to(review_root(root).resolve())
     except (HumanStoryReviewError, ValueError):
         return None
-    if path.name != f"ch{chapter_number:03d}.{str(latest.get('candidate_sha256') or '')[:12]}.decision.json":
+    expected_name = (
+        f"ch{chapter_number:03d}."
+        f"{str(latest.get('candidate_sha256') or '')[:12]}."
+        f"{str(latest.get('story_brief_basis_sha256') or '')[:12]}.decision.json"
+    )
+    if path.name != expected_name:
         return None
     return path
 

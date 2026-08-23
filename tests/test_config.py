@@ -21,8 +21,8 @@ def test_template_config_loads_with_defaults():
     assert "models" not in config.data
     assert config.data["quality"]["profile"]["strictness"] == "balanced"
     assert config.data["quality"]["reader_payoff"]["review_mode"] == "risk_based"
-    assert config.data["quality"]["humanizer"]["semantic_review_mode"] == "risk_based"
-    assert "semantic_review_change_ratio" not in config.data["quality"]["humanizer"]
+    assert config.data["quality"]["prose_naturalness"]["semantic_review_mode"] == "risk_based"
+    assert "semantic_review_change_ratio" not in config.data["quality"]["prose_naturalness"]
     assert config.data["semantic"]["vector_store"]["backend"] == "local_hnsw"
     assert config.data["semantic"]["vector_store"]["hnsw_threshold"] == 10000
     assert config.data["semantic"]["vector_store"]["hnsw_ef_search"] == 80
@@ -66,16 +66,24 @@ def test_database_path_is_canonical_and_vector_paths_cannot_escape_project_root(
     "overrides, message",
     [
         ({"quality": {"profile": {"strictness": "unsafe"}}}, "quality.profile.strictness"),
-        ({"quality": {"humanizer": {"semantic_review_mode": "skip"}}}, "semantic_review_mode"),
+        ({"quality": {"prose_naturalness": {"semantic_review_mode": "skip"}}}, "semantic_review_mode"),
         ({"quality": {"reader_payoff": {"review_mode": "skip"}}}, "reader_payoff.review_mode"),
         ({"quality": {"reader_payoff": {"structure_window": 9}}}, "Removed config field"),
+        (
+            {"quality": {"humanizer": {"semantic_review_mode": "risk_based"}}},
+            "does not retain a silent Humanizer alias",
+        ),
+        (
+            {"pacing": {"max_major_quota_triggers_per_chapter": 1}},
+            "A/B/C keyword quota gate was removed",
+        ),
         ({"semantic": {"vector_store": {"backend": "fake"}}}, "semantic.vector_store.backend"),
         ({"semantic": {"vector_store": {"backend": "remote_backend"}}}, "must be one of"),
         ({"semantic": {"vector_store": {"hnsw_threshold": 0}}}, "hnsw_threshold"),
         (
             {
                 "quality": {
-                    "humanizer": {
+                    "prose_naturalness": {
                         "semantic_review_change_ratio": 0.7,
                         "changed_character_human_ratio": 0.6,
                     }
@@ -85,7 +93,7 @@ def test_database_path_is_canonical_and_vector_paths_cannot_escape_project_root(
         ),
     ],
 )
-def test_invalid_humanizer_semantic_review_config_fails(overrides, message):
+def test_invalid_prose_naturalness_semantic_review_config_fails(overrides, message):
     with pytest.raises(ConfigError, match=message):
         load_project_config(template="qidian-longform", cli_overrides=overrides)
 

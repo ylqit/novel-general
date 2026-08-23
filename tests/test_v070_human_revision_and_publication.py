@@ -4,7 +4,7 @@ from hashlib import sha256
 import pytest
 
 from longform_engine.author_voice import AuthorVoiceError, approve_author_voice_edit_pair
-from longform_engine.creative import humanize_check, humanize_task
+from longform_engine.creative import prose_naturalness_check, prose_naturalness_task
 from longform_engine.human_author_revision import (
     create_human_author_revision_task,
     human_author_revision_status,
@@ -26,7 +26,10 @@ from longform_engine.quality.status import quality_status
 from longform_engine.review_server import review_page_html
 from longform_engine.semantic import chapter_close, semantic_apply
 from tests.project_fixtures import approve_author_voice_fixture, prepare_unified_semantic_bundle
-from tests.test_humanizer_semantic_review import validate_humanizer_output, write_semantic_result
+from tests.test_humanizer_semantic_review import (
+    validate_prose_naturalness_output,
+    write_semantic_result,
+)
 from tests.test_story_architecture_v050 import seed_candidate, write_review
 
 
@@ -98,7 +101,7 @@ def test_human_revision_rejects_punctuation_only_changes_and_cannot_submit(tmp_p
             agent="human",
             overwrite=True,
         )
-    with pytest.raises(HumanStoryReviewError, match="human_author_revision_v1"):
+    with pytest.raises(HumanStoryReviewError, match="human_author_revision_v3"):
         create_human_story_review_task(config, chapter_number=1)
 
 
@@ -142,6 +145,9 @@ def test_platform_preflight_is_officially_sourced_advisory_without_detector_clai
     assert any("全面 AI 禁令" in item for item in qidian["unknowns"])
     assert any("粗制滥造" in item["claim"] for item in fanqie["policy_sources"])
     assert all(item["source_url"].startswith("https://") for item in fanqie["policy_sources"])
+    fanqie_urls = {item["source_url"] for item in fanqie["policy_sources"]}
+    assert "https://fanqienovel.com/writer/zone/article/7327136545129906238" in fanqie_urls
+    assert "https://fanqienovel.com/writer/zone/article/7198471813561581605" in fanqie_urls
     assert risk_payload["schema"] == "publication_risk_report_v2"
     assert manifest["schema"] == "creation_provenance_manifest_v1"
     for forbidden in (
@@ -180,6 +186,11 @@ def test_quality_status_reports_revision_coverage_and_nonblocking_platform_state
 
     assert payload["schema"] == "quality_status_v2"
     assert payload["human_author_revision_coverage"]["complete"] is False
+    assert payload["story_brief_currentness"]["contract_current"] is True
+    assert payload["story_brief_currentness"]["human_chapter_intent_current"] is True
+    assert payload["story_brief_currentness"]["basis_current"] is True
+    assert payload["story_brief_currentness"]["manifest_current"] is True
+    assert [item["chapter_number"] for item in payload["story_brief_currentness"]["chapters"]] == [1]
     assert set(payload["platform_preflights"]) == {"qidian_male", "fanqie_free"}
     assert all(item["blocking"] is False for item in payload["platform_preflights"].values())
     assert all(
@@ -199,18 +210,18 @@ def test_review_desk_has_no_prefilled_human_pass_reason_or_direct_repair_submit_
 
 def test_agent_change_after_human_revision_requires_a_new_human_phase(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
-    humanize_task(config, chapter_number=1, source="draft")
-    candidate = root / "50_workbench" / "repair_candidates" / "ch001.humanized_candidate.md"
+    prose_naturalness_task(config, chapter_number=1, source="draft")
+    candidate = root / "50_workbench" / "repair_candidates" / "ch001.prose_naturalness_candidate.md"
     candidate.write_text(
         (root / "40_manuscript" / "draft" / "ch001.md").read_text(encoding="utf-8").strip()
         + "\n\nAgent 又调整了场内动作，因此旧人工修订不能继续证明最终候选。\n",
         encoding="utf-8",
         newline="\n",
     )
-    check = humanize_check(config, chapter_number=1, file_path=candidate)
+    check = prose_naturalness_check(config, chapter_number=1, file_path=candidate)
     assert check.semantic_review_required
     semantic_output = write_semantic_result(root)
-    assert validate_humanizer_output(config, root, semantic_output).passed
+    assert validate_prose_naturalness_output(config, root, semantic_output).passed
 
     submitted = submit_agent_draft(
         config,
@@ -222,7 +233,7 @@ def test_agent_change_after_human_revision_requires_a_new_human_phase(tmp_path):
 
     assert submitted.passed
     assert human_author_revision_status(config, chapter_number=1)["status"] == "pending"
-    with pytest.raises(HumanStoryReviewError, match="human_author_revision_v1"):
+    with pytest.raises(HumanStoryReviewError, match="human_author_revision_v3"):
         create_human_story_review_task(config, chapter_number=1)
 
 
@@ -239,7 +250,7 @@ def test_early_chapter_voice_pair_requires_real_edit_and_explicit_limit_replacem
     finalized = finalize_chapter(config, chapter_number=1, approved_by="human")
     semantic_output = prepare_unified_semantic_bundle(root, config, 1)
     semantic_apply(config, chapter_number=1, file_path=semantic_output)
-    with pytest.raises(ValueError, match="chapters 1-3 require one approved"):
+    with pytest.raises(ValueError, match="opening_chapter requires one approved"):
         chapter_close(config, chapter_number=1, approved_by="human")
 
     approve_author_voice_fixture(root, config, chapter_number=1)

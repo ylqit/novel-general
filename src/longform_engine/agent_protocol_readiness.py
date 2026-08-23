@@ -232,7 +232,7 @@ def check_agent_data_pipeline_readiness(
             "book_design": "project_coordinator",
             "chapter_write": "chapter_author",
             "repair": "chapter_author",
-            "humanize": "isolated_revision",
+            "prose_naturalness": "isolated_revision",
             "semantic_review": "isolated_review",
             "chapter_semantic": "isolated_archival",
             "design_semantic_compile": "isolated_archival",
@@ -322,8 +322,8 @@ def check_agent_data_pipeline_readiness(
     )
 
     protocol_errors: list[str] = []
-    if len(TASK_CONTRACTS) != 27:
-        protocol_errors.append(f"expected 27 task contracts, got {len(TASK_CONTRACTS)}")
+    if len(TASK_CONTRACTS) != 28:
+        protocol_errors.append(f"expected 28 task contracts, got {len(TASK_CONTRACTS)}")
     mapped_protocols: set[str] = set()
     for task_type, contract in TASK_CONTRACTS.items():
         schemas = tuple(contract.get("schemas") or ())
@@ -365,14 +365,14 @@ def check_agent_data_pipeline_readiness(
                 if forbidden:
                     selection_errors.append(f"{role_id}: runtime selected {forbidden}")
                 modes = {source.section_modes[section] for section in selected.sections}
-                if task_type in {"repair", "humanize"} and "task" in modes:
+                if task_type in {"repair", "prose_naturalness"} and "task" in modes:
                     selection_errors.append(f"{role_id}: repair task loaded a creation/review lane")
                 if registry.roles[role_id].role_family == "review" and "trigger" in modes:
                     selection_errors.append(f"{role_id}: review task loaded a repair lane")
         author = registry.resolve("chapter_write")
-        humanizer = registry.resolve("humanize")
-        if author.contract_hash == humanizer.contract_hash or author.required_playbook_ids == humanizer.required_playbook_ids:
-            selection_errors.append("chapter author and Humanizer are not professionally differentiated")
+        naturalness = registry.resolve("prose_naturalness")
+        if author.contract_hash == naturalness.contract_hash or author.required_playbook_ids == naturalness.required_playbook_ids:
+            selection_errors.append("chapter author and prose-naturalness editor are not professionally differentiated")
     add_check(
         checks,
         "progressive_prompt_selection",

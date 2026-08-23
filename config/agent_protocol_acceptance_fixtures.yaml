@@ -9,7 +9,7 @@ shared:
     - dialogue_attribution
     - scene_causality
     - reader_payoff
-    - anti_ai_expression
+    - anti_template_expression
 
 original_scenarios:
   - id: eastern_fantasy_progression
@@ -71,7 +71,7 @@ fanfiction_scenario:
     - character_expression
     - semantic_continuity
     - reader_payoff
-    - anti_ai_expression
+    - anti_template_expression
 
 prompt_selection_cases:
   - task_type: chapter_write
@@ -135,9 +135,9 @@ professional_prompt_calibration:
       positive: "从样本归纳出倒计时如何改变角色选择，并说明迁移到慢节奏题材时需要替换压力载体。"
       negative: "复述来源剧情并把角色名替换成新名字。"
       boundary: "通用三幕结构可记录，但只有与样本证据和适用条件绑定时才算可迁移技法。"
-    anti_ai_editor:
+    anti_template_editor:
       positive: "指出两处动作后重复总结，并引用两段证据说明它们如何抹平人物差异。"
-      negative: "因为出现常见连接词就判定整章具有 AI 味。"
+      negative: "因为出现常见连接词就判定整章模板化。"
       boundary: "卷首必要回顾若恢复关键前置状态且不重复后文，不构成功能重复。"
     book_architect:
       positive: "把生存卖点连接到主角控制欲缺陷、反复冲突来源和结局中的选择权。"
@@ -191,15 +191,15 @@ professional_prompt_calibration:
       positive: "区分原著与补充作品命名空间，记录截止点、来源 hash、span 和冲突事实。"
       negative: "凭百科印象补齐来源没有出现的角色动机。"
       boundary: "多个来源互相冲突时并列保存并标记 unresolved，不擅自裁定。"
-    humanizer:
+    prose_naturalness_editor:
       positive: "将抽象紧张改为角色反复确认门闩并缩短回答，同时保持线索和选择不变。"
       negative: "随机替换同义词、拆短句并新增戏剧性背叛。"
-      boundary: "有意整齐或抒情的段落不是天然 AI 味，只有遮蔽人物与场景功能时才改。"
+      boundary: "有意整齐或抒情的段落不是天然模板，只有遮蔽人物与场景功能时才改。"
     prose_revision_semantic_reviewer:
       positive: "逐项核对双稿中的人物知识、关系结果、能力代价和受保护线索。"
       negative: "只因两稿主题相似就认定语义等价。"
       boundary: "等价走位和感官替换可接受，但改变谁看见证据会改变知识状态。"
-    human_review_advisor:
+    human_author_advisor:
       positive: "用选中 span 证明转折来自人物主动选择，并列出扩场与保持克制两种修法的风险和保护项。"
       negative: "不经人工决定直接重写正文并宣布章节可以定稿。"
       boundary: "证据不足时可以列出需要核对的相邻因果，但不能补造角色动机或把平台观察升级为规则。"
@@ -284,7 +284,7 @@ professional_prompt_calibration:
       positive: "战后慢章通过伤员分配改变队伍权力，并兑现战斗留下的代价。"
       negative: "每章末尾突然出现更大敌人，旧承诺从不兑现。"
       boundary: "连续慢章可以承担不同职责，不能仅凭速度相似判重复。"
-    anti_ai_expression:
+    anti_template_expression:
       positive: "删除动作后的同义总结，让角色不同的信息策略承担紧张感。"
       negative: "随机拆短句、替换连接词并给所有人增加口语病。"
       boundary: "排比和总结句可有意使用，只有重复替代新信息或人物时才修复。"

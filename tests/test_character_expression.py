@@ -15,7 +15,7 @@ from longform_engine.character_expression import (
 )
 from longform_engine.config import load_project_config
 from longform_engine.editorial import editorial_review, editorial_submit_review
-from longform_engine.gates.pipeline import check_style_and_humanizer
+from longform_engine.gates.pipeline import check_style_and_prose_naturalness
 from longform_engine.intelligence import (
     apply_intelligence_candidate,
     create_intelligence_task,
@@ -86,12 +86,16 @@ def test_chapter_work_order_compiles_character_packet_inside_existing_budget(tmp
             "opposing_wants": ["verification versus immediate access"],
             "hidden_agenda": ["Ari recognizes his father's filing mark"],
             "relationship_move": "move from procedural tolerance to bounded trust",
-            "irreversible_action": "sign a joint evidence receipt",
+            "irreversible_choice": "sign a joint evidence receipt",
             "emotional_aftereffect": "both lose the option to deny cooperation",
         }
     )
     stamp_chapter_contract(card)
     card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    intent_path = root / "20_outline" / "chapter_intents" / "ch001.json"
+    intent = json.loads(intent_path.read_text(encoding="utf-8"))
+    intent["chapter_contract_sha256"] = card["chapter_contract_hash"]
+    intent_path.write_text(json.dumps(intent, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     continue_write(config, chapter_number=1)
 
@@ -174,7 +178,7 @@ def test_sparse_dialogue_profile_does_not_create_universal_low_dialogue_warning(
     profile["narrative_expression_profile"]["dialogue_mode"] = "sparse"
     profile_path.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    _failures, warnings = check_style_and_humanizer(
+    _failures, warnings = check_style_and_prose_naturalness(
         config,
         "雨水沿石阶落下。阿里核对封泥，把错误的编号压在掌下，然后独自走进档案室。",
     )

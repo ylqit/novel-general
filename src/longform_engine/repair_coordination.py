@@ -31,10 +31,11 @@ from longform_engine.human_story_review import human_story_review_status
 from longform_engine.quality import payoff_review_required_reasons, reader_payoff_review_status
 from longform_engine.storage import atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import manuscript_chapter_path
+from longform_engine.story_brief import load_current_story_brief_binding
 
 
 REVIEW_BUNDLE_SCHEMA = "repair_review_bundle_v1"
-HUMAN_REVIEW_BUNDLE_SCHEMA = "human_review_bundle_v1"
+HUMAN_REVIEW_BUNDLE_SCHEMA = "human_review_bundle_v2"
 REPAIR_ATTEMPTS_SCHEMA = "repair_attempts_v1"
 REPAIR_PLAN_VALIDATION_SCHEMA = "validation_report_v1"
 BLOCKING_SEVERITIES = frozenset({"P0", "P1"})
@@ -61,12 +62,11 @@ REPAIR_CARD_FIELDS = (
     "state_change_kind",
     "dramatic_method",
     "exposition_carrier",
-    "hook",
+    "ending_intent",
+    "ending_mode",
     "reader_gain",
     "cost",
     "platform_promise",
-    "plot_obligation",
-    "dramatic_freedom",
     "pov_character_id",
     "featured_character_ids",
     "scene_wants",
@@ -76,8 +76,9 @@ REPAIR_CARD_FIELDS = (
     "voice_state",
     "embodiment_strategy",
     "summary_scene_policy",
-    "irreversible_action",
     "emotional_aftereffect",
+    "must_preserve_suspense",
+    "resolution_markers",
     "forbidden_reveals",
     "canon_refs",
     "divergence_effects",
@@ -217,11 +218,14 @@ def human_review_bundle_binding(
             "independent reviews are not ready for a frozen human review bundle: "
             + "; ".join(str(item) for item in state.get("blockers") or [state.get("status")])
         )
+    story_brief = load_current_story_brief_binding(root, chapter_number)
     bundle = {
         "schema": HUMAN_REVIEW_BUNDLE_SCHEMA,
         "chapter_number": chapter_number,
         "candidate_path": state["candidate_path"],
         "candidate_sha256": state["candidate_sha256"],
+        "chapter_contract_sha256": story_brief["chapter_contract_sha256"],
+        "story_brief_basis_sha256": story_brief["story_brief_basis_sha256"],
         "required_reviews": [name for name in REVIEW_ORDER[:-1] if state["stages"][name]["required"]],
         "completed_reviews": [name for name in REVIEW_ORDER[:-1] if state["stages"][name]["complete"]],
         "review_stages": state["stages"],
@@ -245,9 +249,11 @@ def human_review_bundle_binding(
             atomic_write_text(bundle_file, rendered)
     actual_hash = _file_hash(bundle_file) if bundle_file.is_file() else ""
     return {
-        "schema": "human_review_bundle_binding_v1",
+        "schema": "human_review_bundle_binding_v2",
         "chapter_number": chapter_number,
         "candidate_sha256": state["candidate_sha256"],
+        "chapter_contract_sha256": story_brief["chapter_contract_sha256"],
+        "story_brief_basis_sha256": story_brief["story_brief_basis_sha256"],
         "review_bundle": relative_path(root, bundle_file),
         "review_bundle_sha256": digest,
         "actual_sha256": actual_hash,
@@ -696,7 +702,7 @@ def create_repair_candidate_task(
                 "只改计划允许的最小范围，保留 preservation ledger 中已经通过的内容。",
                 "不得新增计划外剧情、改写 canonical 事实或用解释性段落掩盖机制冲突。",
                 *(
-                    ["人工完成全文后必须建立 human_author_revision_v1 记录并通过双稿语义复核；不得直接提交。"]
+                    ["人工完成全文后必须建立 human_author_revision_v3 记录、锁定终稿并通过双稿语义复核；不得直接提交。"]
                     if safe_agent == "human"
                     else []
                 ),

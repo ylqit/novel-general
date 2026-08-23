@@ -118,7 +118,7 @@ def test_revise_outline_blocks_until_db_rebuild(tmp_path):
     assert ready.status == "task_ready"
 
 
-def test_gate_writes_style_humanizer_copyedit_and_memory_artifacts(tmp_path):
+def test_gate_writes_style_prose_naturalness_copyedit_and_memory_artifacts(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
     plan_chapter(config, chapter_number=1)
@@ -132,7 +132,7 @@ def test_gate_writes_style_humanizer_copyedit_and_memory_artifacts(tmp_path):
     assert result.passed is False
     assert any(failure["code"] == "duplicate_paragraphs" for failure in result.failures)
     assert (artifact_dir / "style_review.md").exists()
-    assert (artifact_dir / "humanize_report.md").exists()
+    assert (artifact_dir / "prose_naturalness_report.md").exists()
     assert (artifact_dir / "copyedit_report.md").exists()
     assert (artifact_dir / "memory_update.md").exists()
     gate_payload = json.loads((artifact_dir / "gate_result.json").read_text(encoding="utf-8"))
@@ -161,7 +161,7 @@ def test_editorial_research_gap_and_batch_agent_mode(tmp_path):
     role_ids = {role["id"] for role in review_payload["editorial_team"]}
     assert role_ids == {
         "scene_prose_editor",
-        "anti_ai_editor",
+        "anti_template_editor",
         "character_editor",
         "reader_experience_editor",
     }
@@ -201,16 +201,16 @@ def test_editorial_batch_review_generates_editorial_team_health_reports(tmp_path
     assert batch.need_human is True
     assert status.conditional_pass_streak == 10
     assert any(reason.startswith("conditional_pass_streak") for reason in status.need_human_reasons)
-    assert set(batch.health_report_files) == {"pacing", "logic", "ai_taste"}
+    assert set(batch.health_report_files) == {"pacing", "logic", "prose_naturalness"}
     for path in batch.health_report_files.values():
         assert (root / path).exists()
     report_text = "\n".join((root / path).read_text(encoding="utf-8") for path in batch.health_report_files.values())
     assert "Pacing Health Report" in report_text
     assert "Logic Health Report" in report_text
-    assert "AI Taste Report" in report_text
+    assert "Prose Naturalness Report" in report_text
     finding_codes = {item["code"] for item in batch_payload["cross_chapter_findings"]}
     assert "repeated_conditional_pass" in finding_codes
-    assert "batch_ai_taste_cluster" in finding_codes
+    assert "batch_template_cluster" in finding_codes
 
 
 def test_baseline_fixture_markers_and_relationship_extraction(tmp_path):

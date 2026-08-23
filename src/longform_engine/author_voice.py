@@ -121,13 +121,15 @@ def author_voice_chapter_status(root: Path, chapter_number: int) -> dict[str, An
         and item.get("chapter_number") == chapter_number
         and item.get("final_sha256") == final_hash
     ]
-    required = 1 <= chapter_number <= 3
+    requirement_reason = author_voice_requirement_reason(root, chapter_number)
+    required = bool(requirement_reason)
     return {
         "required": required,
         "status": "complete" if pairs or not required else "pending",
         "chapter_number": chapter_number,
         "active_pair_count": len(pairs),
         "pair_ids": [str(item.get("pair_id") or "") for item in pairs],
+        "requirement_reason": requirement_reason,
         "next_command": (
             f"longform-engine creative author-voice-approve project.yaml --chapter {chapter_number} "
             "--record 50_workbench/human_author_revisions/chNNN/voice_pair.json --approved-by human"
@@ -141,10 +143,40 @@ def require_author_voice_pair_for_close(root: Path, chapter_number: int) -> dict
     status = author_voice_chapter_status(root, chapter_number)
     if status["required"] and status["status"] != "complete":
         raise AuthorVoiceError(
-            f"Cannot close ch{chapter_number:03d}: chapters 1-3 require one approved author_voice_edit_pair_v1 "
-            "from the current human revision and final prose."
+            f"Cannot close ch{chapter_number:03d}: {status['requirement_reason']} requires one approved "
+            "author_voice_edit_pair_v1 from the current human revision and final prose."
         )
     return status
+
+
+def author_voice_requirement_reason(root: Path, chapter_number: int) -> str:
+    if 1 <= chapter_number <= 3:
+        return "opening_chapter"
+    if chapter_number > 3 and chapter_number % 10 == 0:
+        return "ten_closed_chapter_refresh"
+    plan = load_json(root / "20_outline" / "chapter_plan.json")
+    if isinstance(plan, list):
+        rows = {
+            int(item.get("chapter_number") or 0): item
+            for item in plan
+            if isinstance(item, dict) and int(item.get("chapter_number") or 0) > 0
+        }
+        current = rows.get(chapter_number, {})
+        next_row = rows.get(chapter_number + 1, {})
+        current_volume = str(current.get("volume_id") or "")
+        next_volume = str(next_row.get("volume_id") or "")
+        if current_volume and next_row and next_volume != current_volume:
+            return "volume_boundary"
+    card = load_json(
+        root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    )
+    if isinstance(card, dict) and str(card.get("ending_mode") or "") in {
+        "volume_close",
+        "volume_climax",
+        "arc_close",
+    }:
+        return "volume_boundary"
+    return ""
 
 
 def relevant_author_voice_examples(
@@ -344,6 +376,7 @@ __all__ = [
     "SCHEMA",
     "approve_author_voice_edit_pair",
     "author_voice_chapter_status",
+    "author_voice_requirement_reason",
     "relevant_author_voice_examples",
     "require_author_voice_pair_for_close",
 ]

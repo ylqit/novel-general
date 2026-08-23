@@ -44,7 +44,7 @@ def test_consultation_uses_existing_design_protocol_and_cannot_write_canonical(t
     manifest = load_manifest(root, task.task_id)
     assert len(AGENT_OUTPUT_PROTOCOLS) == 4
     assert manifest["io"]["output"]["protocol"] == "design_document_v1"
-    assert manifest["role"]["id"] == "human_review_advisor"
+    assert manifest["role"]["id"] == "human_author_advisor"
     assert manifest["policy"]["canonical_targets"] == []
     assert manifest["policy"]["requires_human_apply"] is False
     assert review_task.review_bundle_file in [item["path"] for item in manifest["io"]["inputs"]]

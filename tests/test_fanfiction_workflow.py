@@ -11,7 +11,7 @@ from longform_engine.agent_protocols import (
 from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
 from longform_engine.arc_simulation import current_basis_hashes, load_active_arc_simulation, write_arc_causal_simulation
 from longform_engine.config import load_project_config
-from longform_engine.creative import humanize_check, humanize_task
+from longform_engine.creative import prose_naturalness_check, prose_naturalness_task
 from longform_engine.editorial import editorial_review
 from longform_engine.gates.pipeline import check_fanfiction_source_reproduction
 from longform_engine.intelligence import (
@@ -32,7 +32,7 @@ from longform_engine.orchestration import continue_write, open_book
 from longform_engine.orchestration.pipeline import load_fanfiction_writing_contract
 from longform_engine.publication import export_publication_bundle, publication_risk_report
 from longform_engine.storage import init_project
-from tests.project_fixtures import build_outline_candidate
+from tests.project_fixtures import build_outline_candidate, write_json
 
 
 def seed_fanfiction_project(tmp_path: Path):
@@ -760,6 +760,10 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
         "foreshadow_move": "The hidden controller remains protected while its method appears.",
         "relationship_move": card_payload["relationship_move"],
         "ending_mode": "changed_problem",
+        "ending_intent": "The bounded duty changes the gate problem while leaving the controller unknown.",
+        "emotional_aftereffect": "Lin Zhou accepts responsibility without yielding the rest of his agency.",
+        "must_preserve_suspense": ["identity of the original gate controller"],
+        "resolution_markers": [],
         "main_risks": ["Canon terminology could replace visible consequence."],
         "canon_refs": ["classic:event_warning"],
         "world_rule_refs": ["classic:rule_fire"],
@@ -794,7 +798,7 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
         "to_chapter": current_simulation["to_chapter"],
     }
     direction_payload = {
-        "schema": "chapter_direction_candidate_v4",
+        "schema": "chapter_direction_candidate_v5",
         "chapter_number": 1,
         "chapter_card_sha256": sha256(card_path.read_bytes()).hexdigest(),
         "trigger_reasons": reasons,
@@ -809,6 +813,27 @@ def apply_fanfiction_foundation(config, root: Path, source_path: Path) -> None:
         direction_payload,
     )
     apply_design_output(config, root, "chapter_direction", direction_candidate, direction_payload)
+
+    applied_card = json.loads(card_path.read_text(encoding="utf-8"))
+    direction_selection = applied_card["direction_selection"]
+    write_json(
+        root / "20_outline" / "chapter_intents" / "ch001.json",
+        {
+            "schema": "human_chapter_intent_v1",
+            "chapter_number": 1,
+            "chapter_contract_sha256": applied_card["chapter_contract_hash"],
+            "direction_selection_sha256": direction_selection["selection_sha256"],
+            "story_intent": "Make the alternate gate test become a costly human choice.",
+            "key_character_choice": "Lin Zhou accepts one bounded duty and refuses the open oath.",
+            "emotional_truth": "Responsibility is accepted without surrendering the rest of his agency.",
+            "pov_voice_intent": "Lin Zhou narrows claims and reveals distrust through concrete conditions.",
+            "protected_items": ["The original gate controller remains unknown."],
+            "completed_by": "human",
+            "status": "approved",
+            "approved_by": "human",
+            "approved_at": "fixture",
+        },
+    )
 
     readiness = assess_project_readiness(config)
     assert readiness.ready
@@ -970,20 +995,20 @@ def test_fanfiction_similarity_excludes_names_but_detects_continuous_source_pros
     assert any(item["code"] == "fanfiction_source_prose_reproduction" for item in failures)
 
 
-def test_humanizer_v4_blocks_fact_drift_without_rewrite_percentage(tmp_path):
+def test_prose_naturalness_v4_blocks_fact_drift_without_rewrite_percentage(tmp_path):
     config, root, source_path = seed_fanfiction_project(tmp_path)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# 第一章\n\n林舟在第12层青铜门前握住星纹钥匙。\n", encoding="utf-8")
-    task = humanize_task(config, chapter_number=1)
+    task = prose_naturalness_task(config, chapter_number=1)
     candidate = Path(task.candidate_file)
     candidate.write_text("# 第一章\n\n守门人在第13层转身离开，另一场战争已经开始。\n", encoding="utf-8")
 
-    result = humanize_check(config, chapter_number=1, file_path=candidate)
+    result = prose_naturalness_check(config, chapter_number=1, file_path=candidate)
     report = json.loads(Path(result.report_file).read_text(encoding="utf-8"))
     assert result.passed is False
     assert result.need_human is True
-    assert report["schema"] == "humanizer_check_v3"
-    assert {item["code"] for item in result.issues} == {"humanizer_number_drift"}
+    assert report["schema"] == "prose_naturalness_check_v1"
+    assert {item["code"] for item in result.issues} == {"prose_naturalness_number_drift"}
     assert "rewrite_ratio" not in json.dumps(report, ensure_ascii=False)
 
 

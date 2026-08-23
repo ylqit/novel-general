@@ -1,0 +1,185 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from longform_engine.agent_tasks import load_manifest, update_task_status
+from longform_engine.chapter_contract import (
+    ChapterContractError,
+    load_verified_chapter_contract,
+    stamp_chapter_contract,
+)
+from longform_engine.config import load_project_config
+from longform_engine.human_review_consultation import (
+    consultation_status,
+    create_human_review_consult_task,
+    mark_stale_human_consultations,
+)
+from longform_engine.human_story_review import (
+    apply_human_story_review,
+    create_human_story_review_task,
+    human_story_review_status,
+    validate_human_story_review,
+)
+from longform_engine.orchestration import continue_write, open_book
+from longform_engine.storage import init_project
+from longform_engine.story_brief import (
+    load_current_story_brief_binding,
+    story_brief_paths,
+    story_brief_status,
+)
+from tests.project_fixtures import mark_project_ready
+from tests.test_story_architecture_v050 import seed_candidate, write_review
+
+
+def seed_story_brief(tmp_path: Path):
+    template = load_project_config(template="qidian-longform")
+    project = init_project(template, output=tmp_path / "novel")
+    config = load_project_config(project.project_config)
+    root = tmp_path / "novel"
+    open_book(config)
+    mark_project_ready(root, config)
+    continue_write(config, chapter_number=1)
+    return config, root
+
+
+def read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path: Path, payload: dict) -> None:
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_contract_v4_obligation_changes_contract_and_story_brief_basis(tmp_path: Path):
+    config, root = seed_story_brief(tmp_path)
+    before = load_current_story_brief_binding(root, 1)
+    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
+    card = read_json(card_path)
+
+    card["emotional_aftereffect"] = "胜利感被失去退路的愧疚压住。"
+    stamp_chapter_contract(card)
+    write_json(card_path, card)
+
+    stale = story_brief_status(root, 1)
+    assert stale["status"] == "stale"
+    assert stale["contract_current"] is True
+    assert stale["human_chapter_intent_current"] is False
+
+    intent_path = root / "20_outline" / "chapter_intents" / "ch001.json"
+    intent = read_json(intent_path)
+    intent["chapter_contract_sha256"] = card["chapter_contract_hash"]
+    intent["approved_at"] = "fixture-reapproved-after-contract-change"
+    write_json(intent_path, intent)
+
+    continue_write(config, chapter_number=1)
+    after = load_current_story_brief_binding(root, 1)
+    assert after["chapter_contract_sha256"] != before["chapter_contract_sha256"]
+    assert after["story_brief_basis_sha256"] != before["story_brief_basis_sha256"]
+    markdown = story_brief_paths(root, 1)["markdown"].read_text(encoding="utf-8")
+    assert "胜利感被失去退路的愧疚压住" in markdown
+
+
+def test_voice_projection_changes_only_basis_and_rebuilds_author_brief(tmp_path: Path):
+    config, root = seed_story_brief(tmp_path)
+    before = load_current_story_brief_binding(root, 1)
+    expression_path = root / "10_bible" / "character_expression.json"
+    expression = read_json(expression_path)
+    expression["character_expression_contracts"][0]["speech_register"] = (
+        "先指出可见证据，再用半句反问掩住不安。"
+    )
+    write_json(expression_path, expression)
+
+    stale = story_brief_status(root, 1)
+    assert stale["status"] == "stale"
+    assert stale["contract_current"] is True
+    assert stale["human_chapter_intent_current"] is True
+    assert stale["basis_current"] is False
+
+    continue_write(config, chapter_number=1)
+    after = load_current_story_brief_binding(root, 1)
+    assert after["chapter_contract_sha256"] == before["chapter_contract_sha256"]
+    assert after["story_brief_basis_sha256"] != before["story_brief_basis_sha256"]
+    markdown = story_brief_paths(root, 1)["markdown"].read_text(encoding="utf-8")
+    assert "先指出可见证据，再用半句反问掩住不安" in markdown
+    lowered = markdown.casefold()
+    for internal_token in ("sha256", "finding_code", "fact_id", "promise_id"):
+        assert internal_token not in lowered
+
+
+def test_superseded_writer_manifest_is_rebuilt_instead_of_reused(tmp_path: Path):
+    config, root = seed_story_brief(tmp_path)
+    paths = story_brief_paths(root, 1)
+    manifest = load_manifest(root, paths["manifest"])
+    update_task_status(
+        root,
+        str(manifest["task_id"]),
+        to_status="superseded",
+        command="test stale Story Brief",
+        artifact=paths["manifest"],
+    )
+    assert load_manifest(root, paths["manifest"])["status"] == "superseded"
+
+    continue_write(config, chapter_number=1)
+
+    assert load_manifest(root, paths["manifest"])["status"] == "awaiting_agent"
+    assert story_brief_status(root, 1)["status"] == "current"
+
+
+def test_v07_chapter_card_is_explicitly_rejected(tmp_path: Path):
+    _config, root = seed_story_brief(tmp_path)
+    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
+    card = read_json(card_path)
+    card["chapter_contract_schema"] = "chapter_contract_v3"
+    write_json(card_path, card)
+
+    with pytest.raises(ChapterContractError) as exc_info:
+        load_verified_chapter_contract(root, 1)
+
+    message = str(exc_info.value)
+    assert "v0.7" in message
+    assert "v0.8" in message
+    assert "manually import" in message
+
+
+def test_basis_only_drift_stales_acceptance_and_consultation(tmp_path: Path):
+    config, root, _task = seed_candidate(tmp_path)
+    review_task = create_human_story_review_task(config, chapter_number=1)
+    review = write_review(root, review_task.template_file, decision="accept")
+    validated = validate_human_story_review(config, chapter_number=1, file_path=review)
+    assert validated.ok, validated.errors
+    apply_human_story_review(
+        config,
+        chapter_number=1,
+        file_path=review,
+        approved_by="human",
+    )
+    draft = root / "40_manuscript" / "draft" / "ch001.md"
+    draft_text = draft.read_text(encoding="utf-8")
+    create_human_review_consult_task(
+        config,
+        chapter_number=1,
+        start=0,
+        end=min(40, len(draft_text)),
+        question="人物声音的压力来源是否清楚？",
+    )
+    before = load_current_story_brief_binding(root, 1)
+
+    expression_path = root / "10_bible" / "character_expression.json"
+    expression = read_json(expression_path)
+    expression["character_expression_contracts"][0]["speech_register"] = (
+        "只在看见对方退路时压低声音，并用具体代价结束争论。"
+    )
+    write_json(expression_path, expression)
+
+    assert human_story_review_status(config, chapter_number=1)["status"] == "stale"
+    stale_sessions = mark_stale_human_consultations(root, chapter_number=1)
+    assert stale_sessions
+    consult = consultation_status(config, chapter_number=1)
+    assert consult["sessions"][0]["status"] == "stale"
+    assert consult["sessions"][0]["story_brief_basis_sha256"] == before[
+        "story_brief_basis_sha256"
+    ]

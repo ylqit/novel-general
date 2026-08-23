@@ -52,7 +52,7 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
             "isolated_archival",
             "candidate_consultation",
         }
-    assert len(TASK_CONTRACTS) == 27
+    assert len(TASK_CONTRACTS) == 28
     assert {contract["schemas"][0] for contract in TASK_CONTRACTS.values()} == set(AGENT_OUTPUT_PROTOCOLS)
     assert all(len(contract["schemas"]) == 1 for contract in TASK_CONTRACTS.values())
     facet_registries = load_facet_registries()
@@ -257,7 +257,7 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
                 assert source.sections[section] not in brief["work_order_markdown"]
 
     repair_selection = registry.select_prompt("repair")
-    humanize_selection = registry.select_prompt("humanize")
+    humanize_selection = registry.select_prompt("prose_naturalness")
     review_selection = registry.select_prompt("semantic_review")
     for selection in (repair_selection, humanize_selection):
         for selected in selection.playbooks:
@@ -338,7 +338,7 @@ def test_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
         "book_design": "continue_project_session",
         "chapter_write": "new_session_required",
         "repair": "continue_chapter_session",
-        "humanize": "new_session_required",
+        "prose_naturalness": "new_session_required",
         "semantic_review": "new_session_required",
         "chapter_semantic": "new_session_required",
     }
@@ -375,9 +375,9 @@ def test_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
     assert {item["aggregation"] for item in batches} == {"deterministic_source_hash_and_evidence_id"}
 
 
-def test_release_guard_tracks_current_v060_contracts():
+def test_release_guard_tracks_current_v090_contracts():
     guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_6_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_9_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
     production = (ROOT / "src" / "longform_engine" / "production.py").read_text(encoding="utf-8")
 
     for marker in (
@@ -391,12 +391,13 @@ def test_release_guard_tracks_current_v060_contracts():
     ):
         assert marker in guard
     for section in (
-        "市场证据与质量合同",
-        "人工深审 v3",
-        "章节方向人工选择",
-        "本地可视化审稿台",
-        "本地验证证据",
-        "远程发布证据",
+        "章节合同与 Story Brief",
+        "人工修订、审稿与咨询",
+        "过时代码",
+        "README 与活动文档",
+        "回归测试",
+        "单进程验证",
+        "发布授权与无测试例外",
     ):
         assert section in checklist
     for marker in (

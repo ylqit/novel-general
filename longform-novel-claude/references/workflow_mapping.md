@@ -27,35 +27,38 @@ open-book
 -> mandatory chapter_direction with 2–3 stable option IDs
 -> chapter_direction_selection_v1 binds the Markdown hash and explicit human selection
 -> direction approve and semantic compile consume Markdown plus selection sidecar
+-> blank human_chapter_intent_v1 / validate / human apply binds selection and contract
 -> continue-write
--> chapter_story_brief_v2 author work order; facts, promises, simulation and editorial patterns remain separated
+-> chapter_contract_v4 and chapter_story_brief_basis_v2
+-> chapter_story_brief_v4 author work order; bounded character voice and relevant facts are compiled, while raw packets remain separated
 -> /工程续章 pre-write guide:
    current desire, opposition, earliest failure, irreversible choice, visible cost, scene chain, protected outcomes, repetition risk
 -> plan-chapter
 -> beat
 -> CLI compiles canonical constraints and retrieval evidence into the internal fact inventory and author Story Brief
--> author reads only chapter_story_brief_v2, never control-plane packets or the task JSON
+-> author reads only chapter_story_brief_v4, never control-plane packets, basis JSON or the task JSON
 -> Agent writes 50_workbench/agent_drafts/chNNN.codex.md or chNNN.claude.md
 -> Agent runs a bounded natural-prose self-check without detector tricks or word quotas
+-> optional chapter_coedit_session_v1: selected span / 2–3 options / human selection / complete workbench candidate
 -> draft submit
 -> gate-check
 -> complete semantic / payoff / pacing / editorial reviews for the same candidate hash
--> scene_prose_editor and anti_ai_editor are mandatory; risk roles are additive
+-> scene_prose_editor and anti_template_editor are mandatory; risk roles are additive
 -> repair synthesis-task when the CLI review barrier freezes blocking findings
 -> Agent repair coordinator writes and validates one immutable rNN plan
--> creative humanize-task / humanize-check when prose cleanup is needed
--> conditional humanize-semantic-task / humanize-semantic-validate
+-> creative prose-naturalness-task / prose-naturalness-check when prose cleanup is needed
+-> conditional prose-naturalness-semantic-task / prose-naturalness-semantic-validate
 -> draft submit only when current source/candidate hashes pass required semantic review
 -> repair candidate-task --agent codex when the repair plan is validated
 -> submit the immutable rNN replacement and rerun the complete review barrier
 -> quality payoff-task / payoff-validate after gate pass when required
--> freeze the pre-revision review bundle
--> chapter human-revision-task / validate with exact before-after spans and independent semantic review
+-> freeze human_review_bundle_v2
+-> chapter human-revision-task / validate as human_author_revision_v3 with intent refs, reader effects, exact spans, final lock and independent semantic review
 -> submit the complete human candidate as agent=human, invalidating old review evidence
 -> rerun the complete gate and independent-review barrier
--> optional review consult-task / validate / record; advice remains non-canonical and candidate-bound
--> chapter human-review-task / validate / apply for risk-layered v4 accept, repair, or redirect
--> chapter finalize only after current six-hash-bound v4 acceptance
+-> optional human_final review consultation; advice remains read-only and candidate-and-basis-bound
+-> chapter human-review-task / validate / apply for risk-layered v6 accept, repair, or redirect
+-> chapter finalize only after current eight-evidence-bound v6 acceptance
 -> reward_ledger v2 / structure_history written only inside finalize
 -> chapter semantic-task: Agent reads final once and writes canonical_delta_v1
 -> chapter semantic-validate / explicit semantic-apply
@@ -97,21 +100,21 @@ Rights status and commercial intent are advisory only. Names, relationships, wor
 -> apply/finalize/semantic-apply/chapter-close only after explicit user command
 ```
 
-`production next` 与 `agent-task brief` 会返回 `session.policy/action/scope/first_command`。开书和卷级规划可继续项目协调会话；每章 `chapter_write` 必须新开作者会话，`repair` 可继续本章作者会话；Humanizer、所有独立审稿和 final 后语义档案必须新开隔离会话。CLI 不自动创建 Codex/Claude 子进程，也不读取聊天历史作为 canonical。
+`production next` 与 `agent-task brief` 会返回 `session.policy/action/scope/first_command`。开书和卷级规划可继续项目协调会话；每章 `chapter_write` 必须新开作者会话，`repair` 可继续本章作者会话；自然度修订、所有独立审稿和 final 后语义档案必须新开隔离会话。CLI 不自动创建 Codex/Claude 子进程，也不读取聊天历史作为 canonical。
 
 上下文预算按项目 `writing.agent.context` 自适应。文件数和字符数只用于诊断；工作单显示 engine unit 估算、顺序读取批次与阻断原因。范围/项目证据可以顺序拆分，章节正文始终由一个作者任务完整输出；核心事实无法装入时停止在 `prompt_budget_exceeded`，不得静默截断。
 
 ## Chapter Loop
 
 ```text
-1. /工程续章 -> continue-write task package
-2. Agent draft -> 50_workbench/agent_drafts/chNNN.codex.md or chNNN.claude.md
-3. /工程提交稿 -> draft submit
-4. /工程验稿 -> gate-check, including pacing precheck artifacts and reverse_brake_report.md
-5. /工程收益审稿 -> payoff-task / payoff-validate when production next requires it
-6. /工程故事简审 -> human-review-task / validate / apply; accept, repair, or redirect
+1. /工程章节意图 -> blank intent task / validate / human apply
+2. /工程续章 -> continue-write task package
+3. Agent draft and optional coedit full candidates in workbench
+4. /工程提交稿 -> draft submit; /工程验稿 -> full review barrier
+5. /工程人工终稿 -> revision v3 / final lock / human submit / full re-review
+6. /工程故事简审 -> v6 accept, repair, or redirect
 7. /工程定稿 -> chapter finalize only after current human accept
-8. /工程章节语义任务 -> one final read and one canonical_delta_v1; CLI materializes the internal semantic ledger
+8. /工程章节语义任务 -> one final read and one canonical_delta_v1
 9. /工程章节语义应用 -> atomically materialize knowledge, then /工程关闭章节
 ```
 
@@ -122,7 +125,7 @@ creative brief --init/--validate
 -> continue-write task package
 -> /工程续章 pre-write guide
 -> write draft in workbench only
--> humanizer v4 self-check
+-> prose-naturalness self-check
 -> draft submit
 -> pacing-review --semantic-reader / gate-check --semantic when needed
 -> repair plan or finalize
@@ -132,12 +135,12 @@ creative brief --init/--validate
 
 ```text
 editorial review
--> planning_chief_editor / scene_prose_editor / character_editor / anti_ai_editor / reader_experience_editor / canon_fidelity_reviewer task files
--> scene_prose_editor and anti_ai_editor on every chapter; other roles are additive
+-> planning_chief_editor / scene_prose_editor / character_editor / anti_template_editor / reader_experience_editor / canon_fidelity_reviewer task files
+-> scene_prose_editor and anti_template_editor on every chapter; other roles are additive
 -> canon_fidelity_reviewer task for fanfiction
 -> record severity_counts, review_round, unresolved_items, conditional_pass_streak, need_human_reasons
 -> editorial batch-review every configured range
--> batch pacing / logic / AI taste health reports
+-> batch pacing / logic / prose-naturalness health reports
 -> need-human when repeated conditional passes or unresolved P0/P1 issues accumulate
 ```
 

@@ -2,14 +2,14 @@
 
 中文斜杠指令只用于 Codex App、Codex CLI 和 ClaudeCode 的交互层。所有正式执行必须落到 `longform-engine ...` CLI；Agent 只能写入 `50_workbench/agent_drafts/`，不能直接写 final、RAG、story graph、memory、TCS 或 SQLite。
 
-当前运行时合同固定为 29 个角色、27 类任务、4 类 Agent 输出协议和单进程顺序执行。
+当前运行时合同固定为 29 个角色、28 类任务、4 类 Agent 输出协议和单进程顺序执行。
 
 ## 使用规则
 
 - `project.yaml` 表示当前小说项目配置文件。
 - `N` 表示章节号，`A/B` 表示章节范围。
 - `/工程开书` 是用户侧唯一新书启动入口：没有项目配置时进入创建向导并随后开书；已有项目配置时只执行开书初始化。
-- 候选稿、修复稿、Humanizer 输出和审稿输出都是 workbench 产物，必须重新经过 `draft submit` 和 `chapter finalize` 才能进入正式正文。
+- 候选稿、共编稿、修复稿、自然度修订和审稿输出都是 workbench 产物，必须重新经过 `draft submit` 和 `chapter finalize` 才能进入正式正文。
 
 ## 项目与配置
 
@@ -34,13 +34,16 @@
 | `/工程滚动扩纲` | `longform-engine intelligence task project.yaml --task-type outline_extension --from-chapter A --to-chapter B` | 已批准且完整覆盖同一范围的因果模拟 | workbench 候选 | 直接 CLI 与 `production next` 都会拒绝缺失、过期或不覆盖的模拟；扩纲上下文实际携带其因果义务。 |
 | `/工程章节方向` | `longform-engine intelligence task project.yaml --task-type chapter_direction --chapter N` | `--chapter N` | workbench 候选 | 每个尚未应用方向的章节都生成 2–3 个带稳定 option ID、因果不同且有代价的方向。 |
 | `/工程选择方向` | `longform-engine intelligence direction-select project.yaml --chapter N --option OPTION_ID` | 章节、option ID；可选调整/载体理由 | `50_workbench/intelligence_selections/` | 写入绑定 Markdown hash 的 `chapter_direction_selection_v1`；批准和语义编译必须同时消费 sidecar。 |
-| `/工程人工修订任务` | `longform-engine chapter human-revision-task project.yaml --chapter N` | `--chapter N` | `50_workbench/human_author_revisions/` | 冻结 AI 源稿与修订前 bundle，建立人工完整候选和记录。 |
-| `/工程人工修订校验` | `longform-engine chapter human-revision-validate project.yaml --chapter N --file ... --record ...` | 章节、候选、记录 | validation 与双稿语义工单 | 校验真实影响维度、精确前后 span、保护项及独立语义复核。 |
-| `/工程故事深审任务` | `longform-engine chapter human-review-task project.yaml --chapter N` | `--chapter N` | `50_workbench/human_story_reviews/` | 人工候选全量复审后冻结 bundle，生成绑定六类 hash 的 v4 风险分层深审。 |
+| `/工程章节意图任务` | `longform-engine chapter human-intent-task project.yaml --chapter N` | `--chapter N` | `50_workbench/human_chapter_intents/` | 生成空白表单；前端和 CLI 不代填故事意图、关键选择、情绪真相、POV 声音或保护项。 |
+| `/工程章节意图应用` | `longform-engine chapter human-intent-validate ...` / `human-intent-apply ... --approved-by human` | 当前表单与人工确认 | `20_outline/chapter_intents/` | 事务绑定当前方向选择和合同；缺失或漂移时禁止写作。 |
+| `/工程共编会话` | `longform-engine chapter coedit-start project.yaml --chapter N` | 当前候选 | `50_workbench/chapter_coedit/` | non-canonical 会话；advisor 每轮给 2–3 个方案及影响。人工选择后才能创建完整改写任务。 |
+| `/工程人工修订任务` | `longform-engine chapter human-revision-task project.yaml --chapter N` | `--chapter N` | `50_workbench/human_author_revisions/` | 冻结 AI 源稿、意图、共编来源与修订前 bundle，建立人工完整终稿和锁。 |
+| `/工程人工修订校验` | `longform-engine chapter human-revision-validate project.yaml --chapter N --file ... --record ...` | 章节、候选、记录 | validation 与双稿语义工单 | 校验 impact、`intent_ref`、读者影响、前后 span、保护项、最终锁及独立复核。 |
+| `/工程故事深审任务` | `longform-engine chapter human-review-task project.yaml --chapter N` | `--chapter N` | `50_workbench/human_story_reviews/` | 人工终稿全量复审后冻结 bundle，生成绑定八类当前证据的 v6 风险分层深审。 |
 | `/工程故事深审校验` | `longform-engine chapter human-review-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | validation 报告 | 校验三组人工核心证据、独立覆盖、finding 处置及 accept/repair/redirect。 |
 | `/工程故事深审应用` | `longform-engine chapter human-review-apply project.yaml --chapter N --file ... --approved-by human` | `--chapter N`、`--file`、人工确认 | 决定工件；redirect 使用 transaction v3 | accept 解锁 finalize；repair 进入两轮修章预算；redirect 返回方向或人工改纲。 |
 | `/工程审稿台` | `longform-engine review serve project.yaml --chapter N --port 8765` | 章节；可选 `--no-open` | loopback 本地 UI / non-canonical 工件 | 展示 AI 源稿、人工完整稿、diff、风险分层深审与咨询；不代填理由，不能直接 finalize 或写 canonical。 |
-| `/工程审稿咨询` | `longform-engine review consult-task project.yaml --chapter N --question ...` | 章节、问题；可选选中 span | non-canonical Agent task | 依次使用 `consult-validate`、`consult-record`；建议只能由人工转换为批注。 |
+| `/工程审稿咨询` | `longform-engine review consult-task project.yaml --chapter N --phase coedit|human_final --question ...` | 章节、阶段、问题；可选 span | non-canonical Agent task | coedit 方案可经人工选择生成完整候选；human_final 永远只读。 |
 | `/工程人物设计` | `longform-engine character design-task project.yaml` | `project.yaml` | workbench 候选 | 生成 `character_expression_profile_v1` 工单；旧 Book Design v1 会在写第一章前进入此补全步骤。 |
 | `/工程人物设计校验` | `longform-engine character design-validate project.yaml --file ...` | `--file` | validation 报告 | 校验叙事表达画像、人物覆盖、声音/行为/身体/面具/反差合同，不写 Bible。 |
 | `/工程人物设计应用` | `longform-engine character design-apply project.yaml --file ... --approved-by human` | `--file`、人工确认 | `10_bible/character_expression.json` | 事务应用人物表达合同；Agent 不能直接写 Bible。 |
@@ -82,7 +85,7 @@
 | --- | --- | --- | --- | --- |
 | `/工程章节卡` | `longform-engine plan-chapter project.yaml --chapter N` | `--chapter N` | `20_outline/chapter_cards/` | 生成或刷新章节卡。 |
 | `/工程分镜` | `longform-engine beat project.yaml --chapter N` | `--chapter N` | `50_workbench/beats/` | 生成 Beat Sheet。 |
-| `/工程续章` | `longform-engine continue-write project.yaml --chapter N` | `--chapter N` | `50_workbench/writing_tasks/` | 生成 `chapter_story_brief_v2` 作者任务；事实、承诺 ID、因果模拟和编辑模式不进入作者 Markdown。 |
+| `/工程续章` | `longform-engine continue-write project.yaml --chapter N` | `--chapter N` | `50_workbench/writing_tasks/` | 生成 `chapter_story_brief_basis_v2` 与 `chapter_story_brief_v4`；必要人物声音和筛选事实进入作者 Markdown，内部 ID、hash 与原始控制包不进入。 |
 | `/工程批量续章` | `longform-engine batch-write project.yaml --chapters N --stop-on-gate-failure` | `--chapters N` | `50_workbench/writing_tasks/`、run reports | 安全调度多章任务，遇到门禁失败停止。 |
 
 ## 草稿与门禁
@@ -188,10 +191,10 @@
 | `/工程创作简报` | `longform-engine creative brief project.yaml --init` | `project.yaml` | `10_bible/creative_brief.json` | 初始化创作简报。 |
 | `/工程校验创作简报` | `longform-engine creative brief project.yaml --validate` | `project.yaml` | 只读 | 校验创作简报。 |
 | `/工程风格档案` | `longform-engine creative style-profile project.yaml --genre "..." --target-audience "..."` | `--genre`、`--target-audience` | `10_bible/style_profiles/` | 写入题材风格矩阵。 |
-| `/工程润色任务` | `longform-engine creative humanize-task project.yaml --chapter N --source draft` | `--chapter N`、`--source` | `50_workbench/humanizer_tasks/` | 生成 Humanizer 任务。 |
-| `/工程润色检查` | `longform-engine creative humanize-check project.yaml --chapter N --file ...` | `--chapter N`、`--file` | `50_workbench/gate_artifacts/` | 检查润色候选稿。 |
-| `/工程润色语义审稿` | `longform-engine creative humanize-semantic-task project.yaml --chapter N` | `--chapter N`、可选 `--file` | `50_workbench/humanizer_tasks/` | 生成来源稿与润色候选的独立语义保真审稿任务。 |
-| `/工程校验润色语义` | `longform-engine creative humanize-semantic-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | `50_workbench/humanizer_tasks/` | 校验双侧 hash/span、事实维度、人物声音和阻断 finding；通过后仍需 `draft submit`。 |
+| `/工程润色任务` | `longform-engine creative prose-naturalness-task project.yaml --chapter N --source draft` | `--chapter N`、`--source` | `50_workbench/prose_naturalness_tasks/` | 生成自然度修订任务；不输出检测分或规避声明。 |
+| `/工程润色检查` | `longform-engine creative prose-naturalness-check project.yaml --chapter N --file ...` | `--chapter N`、`--file` | `50_workbench/gate_artifacts/` | 检查润色候选稿。 |
+| `/工程润色语义审稿` | `longform-engine creative prose-naturalness-semantic-task project.yaml --chapter N` | `--chapter N`、可选 `--file` | `50_workbench/prose_naturalness_tasks/` | 生成来源稿与润色候选的独立语义保真审稿任务。 |
+| `/工程校验润色语义` | `longform-engine creative prose-naturalness-semantic-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | `50_workbench/prose_naturalness_tasks/` | 校验双侧 hash/span、事实维度、人物声音和阻断 finding；通过后仍需 `draft submit`。 |
 | `/工程收益审稿` | `longform-engine quality payoff-task project.yaml --chapter N` | `--chapter N` | `50_workbench/quality_reviews/` | 在 gate 通过后生成读者收益、代价、承诺进度与章节结构观察工作单。 |
 | `/工程校验收益` | `longform-engine quality payoff-validate project.yaml --chapter N --file ...` | `--chapter N`、`--file` | `50_workbench/quality_reviews/` | 校验当前 draft hash、计划字段、精确 span、伪兑现 finding 与结构重复；通过后仍需显式 finalize。 |
 | `/工程编辑模式状态` | `longform-engine editorial pattern-status project.yaml --chapter N` | 可选观察边界 `--chapter N` | `50_workbench/editorial_patterns/` | 查看结构化审稿 finding 的跨章复发与证据状态；P2 仅在其后已有三个 chapter closure 时过期，参数本身不能推进完成度；不代表读者行为。 |
@@ -209,7 +212,7 @@ Editorial review contract:
 - `editorial_role_review_v2` records reviewer instance, Agent product/version, context digest, independence mode, round, and confidence; P0/P1 must cite exact current-chapter excerpts.
 - Roles cannot read peer review results before submission; aggregate is the first stage allowed to compare normalized results.
 - Aggregate preserves consensus, conflicts, evidence overlap, severity differences, minority P0/P1 findings, and human decisions.
-- `editorial batch-review` writes pacing, logic, and AI taste health reports for the selected chapter range.
+- `editorial batch-review` writes pacing, logic, and prose-naturalness health reports for the selected chapter range.
 - `editorial need-human` records an escalation request only; it does not mutate final/RAG/graph/memory/TCS/SQLite.
 
 ## SQLite
@@ -226,7 +229,7 @@ Editorial review contract:
 
 `/工程续章` 是续写章节的主入口，对应 `longform-engine continue-write project.yaml --chapter N`。它只生成或刷新 Agent 写作任务包，不直接写 final、RAG、story graph、memory、TCS 或 SQLite；中文工程命令保持为唯一主入口。
 
-执行 `/工程续章` 前，作者 Agent 只读取 `50_workbench/writing_tasks/chNNN.md` 中的 `chapter_story_brief_v2`。配对 JSON、fact inventory、承诺账本、因果模拟、编辑模式、RAG、Graph、TCS 和数据库工件属于 CLI/规划/编辑/语义档案控制面，不得作为作者上下文直接加载。作者必须完成以下预检：
+执行 `/工程续章` 前，作者 Agent 只读取 `50_workbench/writing_tasks/chNNN.md` 中的 `chapter_story_brief_v4`。该 Markdown 已编译本章必要人物声音与相关事实；配对 task/basis JSON、fact inventory、承诺账本、因果模拟、编辑模式、原始 RAG、Graph、TCS 和数据库工件属于 CLI/规划/编辑/语义档案控制面，不得作为作者上下文直接加载。作者必须完成以下预检：
 
 1. 故事压力：确认本章正在发生什么、主角要什么、谁或什么拒绝、最早失败、不可逆选择和可见代价。
 2. 场景链：逐场确认行动、反应、选择、代价和离场状态；关键转折必须完整演出，只压缩 Brief 允许压缩的过程。
@@ -237,12 +240,12 @@ Editorial review contract:
 
 五步闭环：
 
-1. `/工程续章` -> `continue-write` 生成作者可读的 `chNNN.md` Story Brief 和 CLI 内部 JSON/fact inventory；作者只读 Markdown。
+1. `/工程续章` -> `continue-write` 生成作者可读的 `chNNN.md` Story Brief、basis 和 CLI 内部 JSON/fact inventory；作者只读 Markdown。
 2. Agent 只写 `50_workbench/agent_drafts/chNNN.codex.md` 或 `chNNN.claude.md`。
 3. `/工程提交稿` -> `draft submit` 把候选稿送入受控 draft。
-4. `/工程验稿` -> `gate-check` 检查节奏、反向刹车、风格、Humanizer、图谱、记忆和语义风险。
-5. `/工程审稿` -> 每章必做 `scene_prose_editor`，风险角色追加；所有独立审稿必须绑定当前候选 hash。
-6. `/工程故事简审` -> 人工选择 accept、repair 或 redirect；只有当前 hash 的 accept 才允许定稿。
+4. `/工程验稿` -> `gate-check` 检查节奏、反向刹车、风格、自然度、图谱、记忆和语义风险。
+5. `/工程审稿` -> 每章必做 `scene_prose_editor` 与 `anti_template_editor`，其他风险角色追加；所有独立审稿必须绑定当前候选和 basis。
+6. `/工程故事简审` -> 完成人工终稿锁与全量复审后选择 accept、repair 或 redirect；只有当前八类证据的 v6 accept 才允许定稿。
 7. `/工程定稿` -> `chapter finalize --approved-by human` 写入正式正文、收益和结构观察；失败则修章、改向、改纲或回滚。
 8. `/工程章节语义任务` -> Agent 对 final 做一次证据化统一抽取，CLI validate 后由用户显式 `/工程章节语义应用`。
 9. `/工程关闭章节` -> 验证图谱、角色当前状态、伏笔、TCS 与派生索引完整后关闭；关闭前不得续写下一章。

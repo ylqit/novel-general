@@ -1,4 +1,4 @@
-"""Creative operator protocol, humanizer, and style playbook helpers."""
+"""Creative operator protocol, prose-naturalness, and style playbook helpers."""
 
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ EXPANSION_TYPES = ("scene", "dialogue", "psychology", "action", "transition")
 
 CHINESE_HUMANIZER_CATALOG: tuple[dict[str, Any], ...] = (
     {
-        "code": "humanizer_meta_residue",
+        "code": "prose_naturalness_meta_residue",
         "category": "TODO/占位符",
         "severity": "P0",
         "patterns": ("TODO", "写作说明", "作者按", "角色定位", "占位", "待补", "as an ai", "language model", "prompt:"),
@@ -63,7 +63,7 @@ CHINESE_HUMANIZER_CATALOG: tuple[dict[str, Any], ...] = (
         "suggestion": "删除所有写作指令、占位符和 AI 自述，只保留世界内正文。",
     },
     {
-        "code": "humanizer_inflated_significance",
+        "code": "prose_naturalness_inflated_significance",
         "category": "意义膨胀",
         "severity": "P2",
         "patterns": ("意义深远", "深远意义", "不言而喻", "命运的齿轮", "历史性的时刻", "至关重要", "举足轻重"),
@@ -71,7 +71,7 @@ CHINESE_HUMANIZER_CATALOG: tuple[dict[str, Any], ...] = (
         "suggestion": "把抽象拔高改成角色能看见、付出或误判的具体后果。",
     },
     {
-        "code": "humanizer_summary_voice",
+        "code": "prose_naturalness_summary_voice",
         "category": "总结腔",
         "severity": "P2",
         "patterns": ("总之", "由此可见", "可以看出", "这意味着", "接下来", "本章", "这一刻标志着"),
@@ -79,7 +79,7 @@ CHINESE_HUMANIZER_CATALOG: tuple[dict[str, Any], ...] = (
         "suggestion": "删掉作者总结，把信息压回动作、对白、选择或场景变化里。",
     },
     {
-        "code": "humanizer_cliche_action",
+        "code": "prose_naturalness_cliche_action",
         "category": "套话动作",
         "severity": "P2",
         "patterns": ("嘴角微扬", "眼神复杂", "身体一僵", "瞳孔微缩", "倒吸一口凉气", "攥紧拳头", "眼底闪过"),
@@ -87,7 +87,7 @@ CHINESE_HUMANIZER_CATALOG: tuple[dict[str, Any], ...] = (
         "suggestion": "替换成和人物目标、场景道具、身体代价绑定的独有动作。",
     },
     {
-        "code": "humanizer_high_frequency_words",
+        "code": "prose_naturalness_high_frequency_words",
         "category": "高频词",
         "severity": "P2",
         "patterns": ("仿佛", "不禁", "瞬间", "顿时", "猛地", "显然", "整个人"),
@@ -95,7 +95,7 @@ CHINESE_HUMANIZER_CATALOG: tuple[dict[str, Any], ...] = (
         "suggestion": "保留少量必要语气词，其余改成可见动作或明确因果。",
     },
     {
-        "code": "humanizer_weak_adverbs",
+        "code": "prose_naturalness_weak_adverbs",
         "category": "弱化副词",
         "severity": "P2",
         "patterns": ("似乎", "好像", "微微", "有些", "莫名", "隐隐", "略微", "下意识"),
@@ -103,7 +103,7 @@ CHINESE_HUMANIZER_CATALOG: tuple[dict[str, Any], ...] = (
         "suggestion": "减少模糊副词，改写为明确感知、判断证据或动作反应。",
     },
     {
-        "code": "humanizer_information_dump",
+        "code": "prose_naturalness_information_dump",
         "category": "信息轰炸",
         "severity": "P2",
         "patterns": ("众所周知", "需要说明的是", "简单来说", "换句话说", "值得一提的是", "关于这一点"),
@@ -111,7 +111,7 @@ CHINESE_HUMANIZER_CATALOG: tuple[dict[str, Any], ...] = (
         "suggestion": "把背景信息拆进冲突、误判、代价和角色当前需要，不要连续讲解设定。",
     },
     {
-        "code": "humanizer_upgrade_log",
+        "code": "prose_naturalness_upgrade_log",
         "category": "流水账升级",
         "severity": "P2",
         "patterns": ("然后他", "接着他", "随后他", "第一步", "第二步", "第三步", "经验值", "属性提升"),
@@ -119,7 +119,7 @@ CHINESE_HUMANIZER_CATALOG: tuple[dict[str, Any], ...] = (
         "suggestion": "保留真正改变选择或关系的升级节点，删掉过程清单和无代价数值播报。",
     },
     {
-        "code": "humanizer_emotion_label",
+        "code": "prose_naturalness_emotion_label",
         "category": "情绪标签",
         "severity": "P2",
         "patterns": ("他很愤怒", "她很愤怒", "他很悲伤", "她很悲伤", "感到十分", "内心充满", "心中涌起"),
@@ -127,7 +127,7 @@ CHINESE_HUMANIZER_CATALOG: tuple[dict[str, Any], ...] = (
         "suggestion": "先写动作、判断、身体代价和选择，再决定是否需要命名情绪。",
     },
     {
-        "code": "humanizer_forced_hook",
+        "code": "prose_naturalness_forced_hook",
         "category": "强制钩子",
         "severity": "P2",
         "patterns": ("欲知后事如何", "一场更大的风暴", "真正的挑战才刚刚开始", "这只是开始", "未完待续"),
@@ -142,19 +142,9 @@ CHINESE_TEMPLATE_TRIO_REGEXES = (
     r"有[^。！？!?]{0,18}有[^。！？!?]{0,18}还有",
 )
 
-HUMANIZER_FACT_DIMENSIONS = (
-    "actor_action_object",
-    "event_outcome",
-    "causality",
-    "chronology",
-    "relationship_state",
-    "ability_cost",
-    "forbidden_reveals",
-)
 FINAL_LANE = "fin" + "al"
 RAG_LANE = "60_" + "rag"
 RUNTIME_DB_LANE = "70_runtime/" + "db"
-STORY_GRAPH_NAME = "story_" + "graph.json"
 
 
 @dataclass(frozen=True)
@@ -179,7 +169,7 @@ class StyleExtractResult:
 
 
 @dataclass(frozen=True)
-class HumanizeTaskResult:
+class ProseNaturalnessTaskResult:
     chapter_number: int
     source: str
     source_file: str
@@ -190,7 +180,7 @@ class HumanizeTaskResult:
 
 
 @dataclass(frozen=True)
-class HumanizeCheckResult:
+class ProseNaturalnessCheckResult:
     chapter_number: int
     file: str
     report_file: str
@@ -207,7 +197,7 @@ class HumanizeCheckResult:
 
 
 @dataclass(frozen=True)
-class HumanizeSemanticTaskResult:
+class ProseNaturalnessSemanticTaskResult:
     chapter_number: int
     source_file: str
     candidate_file: str
@@ -219,7 +209,7 @@ class HumanizeSemanticTaskResult:
 
 
 @dataclass(frozen=True)
-class HumanizeSemanticValidateResult:
+class ProseNaturalnessSemanticValidateResult:
     chapter_number: int
     ok: bool
     passed: bool
@@ -746,7 +736,11 @@ def writer_craft_brief(
 ) -> dict[str, Any]:
     creative = load_creative_brief(resolve_project_root(config))
     beats = beat.get("beats") if isinstance(beat.get("beats"), list) else []
-    beat_hooks = [str(item.get("hook") or "") for item in beats if isinstance(item, dict) and item.get("hook")]
+    beat_endings = [
+        str(item.get("ending_intent") or item.get("beat_exit_intent") or "")
+        for item in beats
+        if isinstance(item, dict) and (item.get("ending_intent") or item.get("beat_exit_intent"))
+    ]
     return {
         "schema_version": 1,
         "chapter_number": chapter_number,
@@ -766,7 +760,9 @@ def writer_craft_brief(
             "use detail only when it affects perception, judgment, action, cost, or relationship",
             "let action carry psychology when that is truer to the current character and scene",
         ],
-        "ending_state": card.get("hook") or (beat_hooks[-1] if beat_hooks else "leave a changed situation or emotional aftereffect"),
+        "ending_state": card.get("ending_intent") or (
+            beat_endings[-1] if beat_endings else "leave a changed situation or emotional aftereffect"
+        ),
         "forbidden_reveals": as_list(card.get("forbidden_reveals")),
         "natural_prose_priorities": [
             "put the declared desire, resistance, choice, cost, gain, and protected outcome into the scene",
@@ -779,11 +775,11 @@ def writer_craft_brief(
     }
 
 
-def humanizer_rules() -> dict[str, Any]:
+def prose_naturalness_rules() -> dict[str, Any]:
     return {
         "schema_version": 4,
         "two_pass_workflow": {
-            "pass_1_remove_ai_templates": [
+            "pass_1_remove_template_residue": [
                 "删除 TODO、写作说明、作者按、角色定位、prompt 残留和 AI 自述。",
                 "压缩“总之/由此可见/可以看出/这意味着/本章”等总结腔。",
                 "删改“意义深远/至关重要/命运的齿轮”等意义膨胀句。",
@@ -813,7 +809,7 @@ def humanizer_rules() -> dict[str, Any]:
             for rule in CHINESE_HUMANIZER_CATALOG
         ],
         "hard_boundaries": [
-            "humanizer output is a candidate only",
+            "prose-naturalness output is a candidate only",
             "candidate must be submitted with draft submit",
             "candidate cannot write final/RAG/graph/memory/db directly",
             "platform guidance is not a sentence-length, dialogue-ratio, payoff, or cliffhanger quota",
@@ -821,7 +817,7 @@ def humanizer_rules() -> dict[str, Any]:
     }
 
 
-def author_natural_prose_policy() -> dict[str, Any]:
+def author_prose_naturalness_policy() -> dict[str, Any]:
     """Return writer-facing principles without detector labels, codes, quotas, or word lists."""
 
     return {
@@ -990,8 +986,8 @@ def expand_check(
         selected_types,
         minimum_content_characters,
     )
-    humanizer_issues, humanizer_warnings = detect_humanizer_issues(text)
-    for item in humanizer_issues:
+    naturalness_issues, naturalness_warnings = detect_prose_naturalness_issues(text)
+    for item in naturalness_issues:
         if item.get("severity") in {"P0", "P1"}:
             issues.append(
                 {
@@ -1000,7 +996,7 @@ def expand_check(
                     "message": item.get("message"),
                 }
             )
-    warnings.extend(humanizer_warnings)
+    warnings.extend(naturalness_warnings)
 
     report_dir = root / "50_workbench" / "repair_candidates"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -1078,20 +1074,22 @@ def expand_check(
     )
 
 
-def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = "draft") -> HumanizeTaskResult:
+def prose_naturalness_task(
+    config: ConfigDocument, *, chapter_number: int, source: str = "draft"
+) -> ProseNaturalnessTaskResult:
     root = resolve_project_root(config)
-    source_path = resolve_humanizer_source(root, chapter_number, source)
+    source_path = resolve_prose_naturalness_source(root, chapter_number, source)
     if not source_path.exists():
-        raise ValueError(f"Humanizer source not found: {source_path}")
-    task_dir = root / "50_workbench" / "humanizer_tasks"
+        raise ValueError(f"Prose-naturalness source not found: {source_path}")
+    task_dir = root / "50_workbench" / "prose_naturalness_tasks"
     candidate_dir = root / "50_workbench" / "repair_candidates"
     task_dir.mkdir(parents=True, exist_ok=True)
     candidate_dir.mkdir(parents=True, exist_ok=True)
-    task_file = task_dir / f"ch{chapter_number:03d}.{source.replace('-', '_')}.humanize_task.md"
-    manifest_file = task_dir / f"ch{chapter_number:03d}.{source.replace('-', '_')}.humanize_task.agent_task.json"
-    candidate_file = candidate_dir / f"ch{chapter_number:03d}.humanized_candidate.md"
+    task_file = task_dir / f"ch{chapter_number:03d}.{source.replace('-', '_')}.prose_naturalness_task.md"
+    manifest_file = task_dir / f"ch{chapter_number:03d}.{source.replace('-', '_')}.prose_naturalness_task.agent_task.json"
+    candidate_file = candidate_dir / f"ch{chapter_number:03d}.prose_naturalness_candidate.md"
     next_command = (
-        f"longform-engine creative humanize-check project.yaml --chapter {chapter_number} "
+        f"longform-engine creative prose-naturalness-check project.yaml --chapter {chapter_number} "
         f"--file {relative_path(root, candidate_file)}"
     )
     quality_contract = compact_effective_quality_contract(
@@ -1107,13 +1105,13 @@ def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = 
         task_file,
         "\n".join(
             [
-                f"# Humanizer v4 Task ch{chapter_number:03d}",
+                f"# Prose Naturalness Task ch{chapter_number:03d}",
                 "",
                 f"- Source: `{relative_path(root, source_path)}`",
                 f"- Candidate output: `{relative_path(root, candidate_file)}`",
                 f"- Next command: `{next_command}`",
                 "",
-                "Write a repair/humanized candidate only. Do not edit final manuscripts, RAG, graph, memory, or SQLite.",
+                "Write a complete prose-naturalness candidate only. Do not edit final manuscripts, RAG, graph, memory, or SQLite.",
                 "",
                 "## Platform Writing Boundary",
                 "",
@@ -1129,27 +1127,37 @@ def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = 
                     if isinstance(item, dict)
                 ],
                 "",
-                "## Pass 1: 中文 AI 痕迹清理",
+                "## Pass 1: 模板化功能清理",
                 "",
-                *[f"- {item}" for item in humanizer_rules()["two_pass_workflow"]["pass_1_remove_ai_templates"]],
+                *[
+                    f"- {item}"
+                    for item in prose_naturalness_rules()["two_pass_workflow"][
+                        "pass_1_remove_template_residue"
+                    ]
+                ],
                 "",
                 "## Pass 2: 中文网文质感增强",
                 "",
-                *[f"- {item}" for item in humanizer_rules()["two_pass_workflow"]["pass_2_strengthen_voice"]],
+                *[
+                    f"- {item}"
+                    for item in prose_naturalness_rules()["two_pass_workflow"][
+                        "pass_2_strengthen_voice"
+                    ]
+                ],
                 "",
                 "## Chinese Issue Catalog",
                 "",
                 *[
                     f"- [{item['severity']}] {item['category']} / {item['code']}: {', '.join(item['patterns'][:6])}"
-                    for item in humanizer_rules()["chinese_issue_catalog"]
+                    for item in prose_naturalness_rules()["chinese_issue_catalog"]
                 ],
                 "",
                 "## Submission Contract",
                 "",
                 "- Save the candidate at the candidate output path.",
                 "- Preserve names, numbers, chronology, abilities, relationship state, and scene outcome.",
-                "- Do not maximize surface difference. A rewrite over the configured change ratio requires human review.",
-                "- Then run humanize-check.",
+                "- Do not maximize surface difference or use a change ratio as proof of quality.",
+                "- Then run prose-naturalness-check.",
                 "- If accepted, submit it with `draft submit`; only `chapter finalize` can enter canonical final/RAG/graph/memory.",
                 "",
             ]
@@ -1160,23 +1168,27 @@ def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = 
         for path in (
             root / "10_bible" / "style_bible.md",
             root / "10_bible" / "creative_brief.json",
-            root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "humanize_report.md",
+            root
+            / "50_workbench"
+            / "gate_artifacts"
+            / f"ch{chapter_number:03d}"
+            / "prose_naturalness_report.md",
         )
         if path.is_file()
     ]
     manifest = build_manifest(
         root,
-        task_type="humanize",
+        task_type="prose_naturalness",
         chapter_number=chapter_number,
         input_files=[task_file, source_path, *optional_inputs],
         allowed_output_paths=[candidate_file],
-        output_schema=output_protocol_for_task("humanize"),
+        output_schema=output_protocol_for_task("prose_naturalness"),
         validate_command=next_command,
         apply_command=(
             f"longform-engine draft submit project.yaml --chapter {chapter_number} "
             f"--file {relative_path(root, candidate_file)} --agent codex --overwrite"
         ),
-        failure_next_command=f"longform-engine creative humanize-task project.yaml --chapter {chapter_number} --source {source}",
+        failure_next_command=f"longform-engine creative prose-naturalness-task project.yaml --chapter {chapter_number} --source {source}",
         context_policy={
             "required_files": [task_file, source_path],
             "optional_files": optional_inputs,
@@ -1185,7 +1197,7 @@ def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = 
         },
     )
     write_manifest(root, manifest, manifest_file)
-    return HumanizeTaskResult(
+    return ProseNaturalnessTaskResult(
         chapter_number=chapter_number,
         source=source,
         source_file=str(source_path),
@@ -1196,26 +1208,32 @@ def humanize_task(config: ConfigDocument, *, chapter_number: int, source: str = 
     )
 
 
-def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: str | Path) -> HumanizeCheckResult:
+def prose_naturalness_check(
+    config: ConfigDocument, *, chapter_number: int, file_path: str | Path
+) -> ProseNaturalnessCheckResult:
     root = resolve_project_root(config)
     target = resolve_input_file(root, file_path)
     if not target.exists():
-        raise ValueError(f"Humanizer candidate not found: {target}")
+        raise ValueError(f"Prose-naturalness candidate not found: {target}")
     text = safe_read_text(target)
-    issues, warnings = detect_humanizer_issues(text)
-    source = humanizer_source_for_candidate(root, chapter_number, target)
+    issues, warnings = detect_prose_naturalness_issues(text)
+    source = prose_naturalness_source_for_candidate(root, chapter_number, target)
     source_text = safe_read_text(source) if source is not None and source.exists() else ""
-    fact_issues, fact_warnings = humanizer_fact_drift(root, source_text, text)
+    fact_issues, fact_warnings = prose_naturalness_fact_drift(root, source_text, text)
     issues.extend(fact_issues)
     warnings.extend(fact_warnings)
-    report_dir = root / "50_workbench" / "humanizer_tasks"
+    report_dir = root / "50_workbench" / "prose_naturalness_tasks"
     report_dir.mkdir(parents=True, exist_ok=True)
-    report_file = report_dir / f"ch{chapter_number:03d}.humanize_check.json"
-    md_file = report_dir / f"ch{chapter_number:03d}.humanize_check.md"
-    need_human = any(item.get("code") in {"humanizer_number_drift", "humanizer_character_drift"} for item in issues)
+    report_file = report_dir / f"ch{chapter_number:03d}.prose_naturalness_check.json"
+    md_file = report_dir / f"ch{chapter_number:03d}.prose_naturalness_check.md"
+    need_human = any(
+        item.get("code")
+        in {"prose_naturalness_number_drift", "prose_naturalness_character_drift"}
+        for item in issues
+    )
     passed = not any(item.get("severity") in {"P0", "P1"} for item in issues)
     semantic_reasons = (
-        humanize_semantic_review_reasons(
+        prose_naturalness_semantic_review_reasons(
             config,
             chapter_number=chapter_number,
         )
@@ -1229,7 +1247,7 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
         f"--file {relative_path(root, target)} --agent codex --overwrite"
     )
     if passed and semantic_required:
-        semantic_status = humanize_semantic_submission_status(
+        semantic_status = prose_naturalness_semantic_submission_status(
             config,
             chapter_number=chapter_number,
             candidate_file=target,
@@ -1237,7 +1255,7 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
         if semantic_status["passed"]:
             next_command = submit_command
         else:
-            semantic_task = humanize_semantic_task(
+            semantic_task = prose_naturalness_semantic_task(
                 config,
                 chapter_number=chapter_number,
                 candidate_file=target,
@@ -1246,7 +1264,7 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
             semantic_task_file = semantic_task.task_file
             next_command = (
                 "longform-engine agent-task brief project.yaml "
-                f"--task-id prose_revision_semantic_review:ch{chapter_number:03d}:humanizer:v4"
+                f"--task-id prose_revision_semantic_review:ch{chapter_number:03d}:prose_naturalness:v1"
             )
     elif passed:
         next_command = submit_command
@@ -1256,19 +1274,19 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
             chapter_number=chapter_number,
             task_types=("prose_revision_semantic_review",),
             to_status="superseded",
-            command="creative humanize-check",
+            command="creative prose-naturalness-check",
             artifact=target,
             result=report_file,
             from_statuses=("awaiting_agent", "submitted", "validated", "invalid"),
         )
         next_command = (
-            f"longform-engine editorial need-human project.yaml --chapter {chapter_number} --reason humanizer_fact_or_rewrite_risk"
+            f"longform-engine editorial need-human project.yaml --chapter {chapter_number} --reason prose_naturalness_fact_or_rewrite_risk"
             if need_human
-            else f"longform-engine creative humanize-task project.yaml --chapter {chapter_number} --source draft"
+            else f"longform-engine creative prose-naturalness-task project.yaml --chapter {chapter_number} --source draft"
         )
     payload = {
-        "schema": "humanizer_check_v3",
-        "schema_version": 3,
+        "schema": "prose_naturalness_check_v1",
+        "schema_version": 1,
         "chapter_number": chapter_number,
         "file": relative_path(root, target),
         "source_file": relative_path(root, source) if source is not None else "",
@@ -1279,7 +1297,7 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
         "semantic_review_required": semantic_required,
         "semantic_review_reasons": list(semantic_reasons),
         "semantic_task_file": relative_path(root, Path(semantic_task_file)) if semantic_task_file else "",
-        "issue_summary": humanizer_issue_summary(issues),
+        "issue_summary": prose_naturalness_issue_summary(issues),
         "issues": issues,
         "warnings": warnings,
         "next_command": next_command,
@@ -1291,7 +1309,7 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
         chapter_number=chapter_number,
         output_path=target,
         to_status="validated" if passed else "invalid",
-        command="creative humanize-check",
+        command="creative prose-naturalness-check",
         result=report_file,
         from_statuses=("awaiting_agent", "submitted"),
     )
@@ -1299,7 +1317,7 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
         md_file,
         "\n".join(
             [
-                f"# Humanizer v4 Check ch{chapter_number:03d}",
+                f"# Prose Naturalness Check ch{chapter_number:03d}",
                 "",
                 f"- File: `{relative_path(root, target)}`",
                 f"- Passed: {passed}",
@@ -1310,7 +1328,7 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
                 "",
                 "## Issues",
                 "",
-                *humanizer_issue_lines(issues),
+                *prose_naturalness_issue_lines(issues),
                 "",
                 "## Warnings",
                 "",
@@ -1319,14 +1337,14 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
             ]
         ),
     )
-    return HumanizeCheckResult(
+    return ProseNaturalnessCheckResult(
         chapter_number=chapter_number,
         file=str(target),
         report_file=str(report_file),
         markdown_report=str(md_file),
         passed=passed,
         need_human=need_human,
-        issue_summary=humanizer_issue_summary(issues),
+        issue_summary=prose_naturalness_issue_summary(issues),
         issues=tuple(issues),
         warnings=tuple(warnings),
         semantic_review_required=semantic_required,
@@ -1336,18 +1354,22 @@ def humanize_check(config: ConfigDocument, *, chapter_number: int, file_path: st
     )
 
 
-def humanize_semantic_review_reasons(
+def prose_naturalness_semantic_review_reasons(
     config: ConfigDocument,
     *,
     chapter_number: int,
 ) -> tuple[str, ...]:
-    """Return deterministic reasons that require an independent Humanizer semantic review."""
+    """Return reasons that require an independent prose-naturalness semantic review."""
 
     quality = config.data.get("quality", {}) if isinstance(config.data.get("quality"), dict) else {}
-    humanizer = quality.get("humanizer", {}) if isinstance(quality.get("humanizer"), dict) else {}
+    naturalness = (
+        quality.get("prose_naturalness", {})
+        if isinstance(quality.get("prose_naturalness"), dict)
+        else {}
+    )
     profile = quality.get("profile") if isinstance(quality.get("profile"), dict) else {}
     assurance_mode = str(profile.get("strictness") or "balanced")
-    review_mode = str(humanizer.get("semantic_review_mode") or "risk_based")
+    review_mode = str(naturalness.get("semantic_review_mode") or "risk_based")
     reasons: list[str] = ["dual_prose_semantic_review"]
     if assurance_mode == "strict" or review_mode == "always":
         reasons.append("strict_or_always_mode")
@@ -1360,7 +1382,7 @@ def humanize_semantic_review_reasons(
     }
     if chapter_number in milestones:
         reasons.append("semantic_review_milestone")
-    if bool(quality.get("semantic_review_boundaries", True)) and humanizer_volume_boundary(config, chapter_number):
+    if bool(quality.get("semantic_review_boundaries", True)) and prose_naturalness_volume_boundary(config, chapter_number):
         reasons.append("volume_boundary")
     root = resolve_project_root(config)
     card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
@@ -1388,7 +1410,7 @@ def humanize_semantic_review_reasons(
     return tuple(dict.fromkeys(reasons))
 
 
-def humanizer_volume_boundary(config: ConfigDocument, chapter_number: int) -> bool:
+def prose_naturalness_volume_boundary(config: ConfigDocument, chapter_number: int) -> bool:
     if chapter_number <= 0:
         return False
     root = resolve_project_root(config)
@@ -1412,37 +1434,37 @@ def humanizer_volume_boundary(config: ConfigDocument, chapter_number: int) -> bo
     )
 
 
-def humanize_semantic_task(
+def prose_naturalness_semantic_task(
     config: ConfigDocument,
     *,
     chapter_number: int,
     candidate_file: str | Path | None = None,
     reasons: tuple[str, ...] | list[str] | None = None,
-) -> HumanizeSemanticTaskResult:
+) -> ProseNaturalnessSemanticTaskResult:
     """Create a source-versus-candidate semantic preservation review task."""
 
     if chapter_number <= 0:
         raise ValueError("chapter_number must be positive.")
     root = resolve_project_root(config)
-    expected_candidate = root / "50_workbench" / "repair_candidates" / f"ch{chapter_number:03d}.humanized_candidate.md"
+    expected_candidate = root / "50_workbench" / "repair_candidates" / f"ch{chapter_number:03d}.prose_naturalness_candidate.md"
     candidate = resolve_input_file(root, candidate_file or expected_candidate)
     if candidate.resolve() != expected_candidate.resolve():
         raise ValueError(
-            "Humanizer semantic review candidate must be "
-            f"50_workbench/repair_candidates/ch{chapter_number:03d}.humanized_candidate.md."
+            "Prose-naturalness semantic review candidate must be "
+            f"50_workbench/repair_candidates/ch{chapter_number:03d}.prose_naturalness_candidate.md."
         )
     if not candidate.exists() or not candidate.is_file():
-        raise ValueError(f"Humanizer candidate not found: {candidate}")
-    source = humanizer_source_for_candidate(root, chapter_number, candidate)
+        raise ValueError(f"Prose-naturalness candidate not found: {candidate}")
+    source = prose_naturalness_source_for_candidate(root, chapter_number, candidate)
     if source is None or not source.exists():
-        raise ValueError("Humanizer source could not be resolved from the active humanize task.")
+        raise ValueError("Prose-naturalness source could not be resolved from the active task.")
     source_text = safe_read_text(source)
     candidate_text = safe_read_text(candidate)
-    review_reasons = tuple(reasons or humanize_semantic_review_reasons(
+    review_reasons = tuple(reasons or prose_naturalness_semantic_review_reasons(
         config,
         chapter_number=chapter_number,
     ))
-    task_dir = root / "50_workbench" / "humanizer_tasks"
+    task_dir = root / "50_workbench" / "prose_naturalness_tasks"
     task_dir.mkdir(parents=True, exist_ok=True)
     task_file = task_dir / f"ch{chapter_number:03d}.semantic_review.md"
     manifest_file = task_dir / f"ch{chapter_number:03d}.semantic_review.agent_task.json"
@@ -1455,7 +1477,7 @@ def humanize_semantic_task(
     write_json(
         contract_context,
         {
-            "schema": "humanizer_contract_context_v1",
+            "schema": "prose_naturalness_contract_context_v1",
             "chapter_contract": chapter_contract,
             "chapter_contract_hash": contract_hash,
             "allowed_canonical_refs": [
@@ -1476,14 +1498,14 @@ def humanize_semantic_task(
             selected_context.append(path)
         if len(selected_context) >= 3:
             break
-    source_lane = humanizer_source_lane(root, source)
+    source_lane = prose_naturalness_source_lane(root, source)
     agent = str(
         config.data.get("writing", {}).get("agent", {}).get("default_agent")
         if isinstance(config.data.get("writing", {}).get("agent"), dict)
         else ""
     ) or "codex"
     validate_command = (
-        f"longform-engine creative humanize-semantic-validate project.yaml --chapter {chapter_number} "
+        f"longform-engine creative prose-naturalness-semantic-validate project.yaml --chapter {chapter_number} "
         f"--file {relative_path(root, output_file)}"
     )
     apply_command = (
@@ -1491,13 +1513,13 @@ def humanize_semantic_task(
         f"--file {relative_path(root, candidate)} --agent {agent} --overwrite"
     )
     failure_command = (
-        f"longform-engine creative humanize-task project.yaml --chapter {chapter_number} --source {source_lane}"
+        f"longform-engine creative prose-naturalness-task project.yaml --chapter {chapter_number} --source {source_lane}"
     )
     atomic_write_text(
         task_file,
         "\n".join(
             [
-                f"# Humanizer Semantic Preservation Review ch{chapter_number:03d}",
+                f"# Prose Naturalness Semantic Preservation Review ch{chapter_number:03d}",
                 "",
                 "## Role And Objective",
                 "",
@@ -1520,7 +1542,7 @@ def humanize_semantic_task(
                 "- `protected_outcome_preservation`",
                 "- `revision_goal_achievement`",
                 "- Preserve chapter duty, reader gain, cost, forbidden reveals, and each declared character voice.",
-                "- Report P0/P1 AI-taste or semantic findings even when the prose sounds smoother.",
+                "- Report P0/P1 semantic drift even when the prose sounds smoother; template observations remain evidence-bound.",
                 "",
                 "## Output Contract",
                 "",
@@ -1550,7 +1572,7 @@ def humanize_semantic_task(
         validate_command=validate_command,
         apply_command=apply_command,
         failure_next_command=failure_command,
-        task_id=f"prose_revision_semantic_review:ch{chapter_number:03d}:humanizer:v4",
+        task_id=f"prose_revision_semantic_review:ch{chapter_number:03d}:prose_naturalness:v1",
         context_policy={
             "required_files": required_inputs,
             "optional_files": optional_inputs,
@@ -1566,7 +1588,7 @@ def humanize_semantic_task(
         },
     )
     write_manifest(root, manifest, manifest_file)
-    return HumanizeSemanticTaskResult(
+    return ProseNaturalnessSemanticTaskResult(
         chapter_number=chapter_number,
         source_file=str(source),
         candidate_file=str(candidate),
@@ -1578,22 +1600,22 @@ def humanize_semantic_task(
     )
 
 
-def humanize_semantic_validate(
+def prose_naturalness_semantic_validate(
     config: ConfigDocument,
     *,
     chapter_number: int,
     file_path: str | Path,
-) -> HumanizeSemanticValidateResult:
-    """Validate Humanizer semantic preservation evidence without modifying manuscript lanes."""
+) -> ProseNaturalnessSemanticValidateResult:
+    """Validate prose-naturalness semantic evidence without modifying manuscript lanes."""
 
     root = resolve_project_root(config)
-    task_dir = root / "50_workbench" / "humanizer_tasks"
+    task_dir = root / "50_workbench" / "prose_naturalness_tasks"
     expected = (task_dir / f"ch{chapter_number:03d}.semantic_review.json").resolve()
     target = resolve_input_file(root, file_path)
     if target.resolve() != expected:
         raise ValueError(
-            "Humanizer semantic result must be "
-            f"50_workbench/humanizer_tasks/ch{chapter_number:03d}.semantic_review.json."
+            "Prose-naturalness semantic result must be "
+            f"50_workbench/prose_naturalness_tasks/ch{chapter_number:03d}.semantic_review.json."
         )
     payload = load_json(target, default={})
     errors: list[str] = []
@@ -1634,17 +1656,17 @@ def humanize_semantic_validate(
             allowed_finding_codes=allowed_codes,
         )
     )
-    candidate = root / "50_workbench" / "repair_candidates" / f"ch{chapter_number:03d}.humanized_candidate.md"
-    source = humanizer_source_for_candidate(root, chapter_number, candidate)
+    candidate = root / "50_workbench" / "repair_candidates" / f"ch{chapter_number:03d}.prose_naturalness_candidate.md"
+    source = prose_naturalness_source_for_candidate(root, chapter_number, candidate)
     source_text = safe_read_text(source) if source is not None and source.exists() else ""
     candidate_text = safe_read_text(candidate) if candidate.exists() else ""
     if source is None or not source.exists():
-        errors.append("Humanizer source could not be resolved from the active task.")
+        errors.append("Prose-naturalness source could not be resolved from the active task.")
     if not candidate.exists():
-        errors.append("Humanizer candidate is missing.")
+        errors.append("Prose-naturalness candidate is missing.")
     manifest = load_json(task_dir / f"ch{chapter_number:03d}.semantic_review.agent_task.json", default={})
     if not isinstance(manifest, dict) or manifest.get("task_type") != "prose_revision_semantic_review":
-        errors.append("Humanizer semantic Agent task manifest is missing or invalid.")
+        errors.append("Prose-naturalness semantic Agent task manifest is missing or invalid.")
         manifest = {}
     source_key = relative_path(root, source) if source is not None else ""
     candidate_key = relative_path(root, candidate)
@@ -1660,7 +1682,7 @@ def humanize_semantic_validate(
         if not isinstance(finding, dict):
             continue
         if finding.get("code") not in allowed_codes:
-            errors.append(f"findings[{index}].code is outside Humanizer semantic scope.")
+            errors.append(f"findings[{index}].code is outside prose-naturalness semantic scope.")
         if finding.get("severity") in {"P0", "P1"}:
             blockers.append(str(finding.get("code") or f"finding_{index + 1}"))
         if finding.get("certainty") == "insufficient_evidence":
@@ -1676,7 +1698,7 @@ def humanize_semantic_validate(
         warnings.append("repair verdict has no structured blocking finding.")
     ok = not errors
     passed = ok and verdict == "pass" and not blockers
-    source_lane = humanizer_source_lane(root, source) if source is not None else "draft"
+    source_lane = prose_naturalness_source_lane(root, source) if source is not None else "draft"
     if passed:
         next_command = (
             f"longform-engine draft submit project.yaml --chapter {chapter_number} "
@@ -1685,21 +1707,21 @@ def humanize_semantic_validate(
     elif need_human and ok:
         next_command = (
             f"longform-engine editorial need-human project.yaml --chapter {chapter_number} "
-            "--reason humanizer_semantic_uncertainty"
+            "--reason prose_naturalness_semantic_uncertainty"
         )
     elif ok:
         next_command = (
-            f"longform-engine creative humanize-task project.yaml --chapter {chapter_number} --source {source_lane}"
+            f"longform-engine creative prose-naturalness-task project.yaml --chapter {chapter_number} --source {source_lane}"
         )
     else:
         next_command = (
-            f"longform-engine creative humanize-semantic-task project.yaml --chapter {chapter_number} "
+            f"longform-engine creative prose-naturalness-semantic-task project.yaml --chapter {chapter_number} "
             f"--file {relative_path(root, candidate)}"
         )
     report_file = task_dir / f"ch{chapter_number:03d}.semantic_review.validation.json"
     report = build_validation_report(
         ok=ok,
-        stage="humanizer_semantic_validate",
+        stage="prose_naturalness_semantic_validate",
         subject=relative_path(root, target),
         errors=errors,
         warnings=warnings,
@@ -1721,11 +1743,11 @@ def humanize_semantic_validate(
         chapter_number=chapter_number,
         output_path=target,
         to_status="validated" if passed else "invalid",
-        command="creative humanize-semantic-validate",
+        command="creative prose-naturalness-semantic-validate",
         result=report_file,
         from_statuses=("awaiting_agent", "submitted", "validated", "invalid"),
     )
-    return HumanizeSemanticValidateResult(
+    return ProseNaturalnessSemanticValidateResult(
         chapter_number=chapter_number,
         ok=ok,
         passed=passed,
@@ -1739,7 +1761,7 @@ def humanize_semantic_validate(
     )
 
 
-def humanize_semantic_submission_status(
+def prose_naturalness_semantic_submission_status(
     config: ConfigDocument,
     *,
     chapter_number: int,
@@ -1749,12 +1771,12 @@ def humanize_semantic_submission_status(
 
     root = resolve_project_root(config)
     candidate = resolve_input_file(root, candidate_file)
-    source = humanizer_source_for_candidate(root, chapter_number, candidate)
+    source = prose_naturalness_source_for_candidate(root, chapter_number, candidate)
     if source is None or not source.exists() or not candidate.exists():
         return {"required": True, "passed": False, "reason": "source_or_candidate_missing"}
     source_text = safe_read_text(source)
     candidate_text = safe_read_text(candidate)
-    reasons = humanize_semantic_review_reasons(
+    reasons = prose_naturalness_semantic_review_reasons(
         config,
         chapter_number=chapter_number,
     )
@@ -1763,7 +1785,7 @@ def humanize_semantic_submission_status(
     report_file = (
         root
         / "50_workbench"
-        / "humanizer_tasks"
+        / "prose_naturalness_tasks"
         / f"ch{chapter_number:03d}.semantic_review.validation.json"
     )
     report = load_json(report_file, default={})
@@ -1787,27 +1809,27 @@ def humanize_semantic_submission_status(
     }
 
 
-def humanize_candidate_submission_guard(
+def prose_naturalness_candidate_submission_guard(
     config: ConfigDocument,
     *,
     chapter_number: int,
     candidate_file: str | Path,
 ) -> dict[str, Any]:
-    """Enforce current deterministic and semantic Humanizer checks before draft submit."""
+    """Enforce current deterministic and semantic naturalness checks before draft submit."""
 
     root = resolve_project_root(config)
     candidate = resolve_input_file(root, candidate_file)
-    expected = root / "50_workbench" / "repair_candidates" / f"ch{chapter_number:03d}.humanized_candidate.md"
+    expected = root / "50_workbench" / "repair_candidates" / f"ch{chapter_number:03d}.prose_naturalness_candidate.md"
     if candidate.resolve() != expected.resolve():
-        return {"required": False, "allowed": True, "reason": "not_humanizer_candidate"}
+        return {"required": False, "allowed": True, "reason": "not_prose_naturalness_candidate"}
     candidate_text = safe_read_text(candidate) if candidate.exists() else ""
-    source = humanizer_source_for_candidate(root, chapter_number, candidate)
+    source = prose_naturalness_source_for_candidate(root, chapter_number, candidate)
     source_text = safe_read_text(source) if source is not None and source.exists() else ""
-    check_file = root / "50_workbench" / "humanizer_tasks" / f"ch{chapter_number:03d}.humanize_check.json"
+    check_file = root / "50_workbench" / "prose_naturalness_tasks" / f"ch{chapter_number:03d}.prose_naturalness_check.json"
     check = load_json(check_file, default={})
     deterministic_passed = (
         isinstance(check, dict)
-        and check.get("schema") == "humanizer_check_v3"
+        and check.get("schema") == "prose_naturalness_check_v1"
         and check.get("passed") is True
         and str(check.get("file") or "") == relative_path(root, candidate)
         and str(check.get("candidate_sha256") or "") == sha256_text(candidate_text)
@@ -1816,8 +1838,8 @@ def humanize_candidate_submission_guard(
         and str(check.get("source_sha256") or "") == sha256_text(source_text)
     )
     if not deterministic_passed:
-        return {"required": True, "allowed": False, "reason": "humanizer_check_missing_failed_or_stale"}
-    semantic = humanize_semantic_submission_status(
+        return {"required": True, "allowed": False, "reason": "prose_naturalness_check_missing_failed_or_stale"}
+    semantic = prose_naturalness_semantic_submission_status(
         config,
         chapter_number=chapter_number,
         candidate_file=candidate,
@@ -1830,209 +1852,7 @@ def humanize_candidate_submission_guard(
     }
 
 
-def validate_humanizer_file_identity(
-    value: Any,
-    *,
-    label: str,
-    expected_path: Path | None,
-    expected_text: str,
-    root: Path,
-    errors: list[str],
-) -> None:
-    if not isinstance(value, dict) or set(value) != {"path", "sha256"}:
-        errors.append(f"{label} must contain exactly path and sha256.")
-        return
-    expected_rel = relative_path(root, expected_path) if expected_path is not None else ""
-    if str(value.get("path") or "") != expected_rel:
-        errors.append(f"{label}.path does not match the active Humanizer task.")
-    if str(value.get("sha256") or "") != sha256_text(expected_text):
-        errors.append(f"{label}.sha256 does not match the current file.")
-
-
-def validate_humanizer_fact_item(
-    value: Any,
-    *,
-    index: int,
-    source_text: str,
-    candidate_text: str,
-    allowed_refs: set[str],
-    known_entities: set[str],
-    errors: list[str],
-) -> tuple[str, str]:
-    expected = {
-        "dimension",
-        "status",
-        "source_span",
-        "candidate_span",
-        "canonical_refs",
-        "entity_ids",
-        "message",
-    }
-    if not isinstance(value, dict):
-        errors.append(f"fact_preservation[{index}] must be an object.")
-        return "", ""
-    if set(value) != expected:
-        errors.append(f"fact_preservation[{index}] keys must be exactly {sorted(expected)}.")
-    dimension = str(value.get("dimension") or "")
-    if dimension not in HUMANIZER_FACT_DIMENSIONS:
-        errors.append(f"fact_preservation[{index}].dimension is invalid.")
-    status = str(value.get("status") or "").lower()
-    if status not in {"preserved", "changed", "uncertain"}:
-        errors.append(f"fact_preservation[{index}].status must be preserved, changed, or uncertain.")
-    validate_humanizer_span(
-        value.get("source_span"),
-        text=source_text,
-        label=f"fact_preservation[{index}].source_span",
-        errors=errors,
-    )
-    validate_humanizer_span(
-        value.get("candidate_span"),
-        text=candidate_text,
-        label=f"fact_preservation[{index}].candidate_span",
-        errors=errors,
-    )
-    validate_humanizer_refs_and_entities(
-        value,
-        label=f"fact_preservation[{index}]",
-        allowed_refs=allowed_refs,
-        known_entities=known_entities,
-        errors=errors,
-    )
-    if not str(value.get("message") or "").strip():
-        errors.append(f"fact_preservation[{index}].message is required.")
-    return dimension, status
-
-
-def validate_humanizer_voice_check(
-    value: Any,
-    *,
-    index: int,
-    candidate_text: str,
-    known_entities: set[str],
-    errors: list[str],
-) -> str:
-    expected = {"character_id", "status", "candidate_spans", "message"}
-    if not isinstance(value, dict):
-        errors.append(f"voice_checks[{index}] must be an object.")
-        return ""
-    if set(value) != expected:
-        errors.append(f"voice_checks[{index}] keys must be exactly {sorted(expected)}.")
-    character_id = str(value.get("character_id") or "")
-    if character_id not in known_entities:
-        errors.append(f"voice_checks[{index}] references unknown character_id: {character_id}.")
-    status = str(value.get("status") or "").lower()
-    if status not in {"preserved", "changed", "uncertain"}:
-        errors.append(f"voice_checks[{index}].status must be preserved, changed, or uncertain.")
-    spans = value.get("candidate_spans")
-    if not isinstance(spans, list):
-        errors.append(f"voice_checks[{index}].candidate_spans must be a list.")
-    else:
-        for span_index, span in enumerate(spans):
-            validate_humanizer_span(
-                span,
-                text=candidate_text,
-                label=f"voice_checks[{index}].candidate_spans[{span_index}]",
-                errors=errors,
-            )
-    if not str(value.get("message") or "").strip():
-        errors.append(f"voice_checks[{index}].message is required.")
-    return status
-
-
-def validate_humanizer_ai_finding(
-    value: Any,
-    *,
-    index: int,
-    candidate_text: str,
-    errors: list[str],
-) -> str:
-    expected = {"code", "severity", "message", "candidate_span", "recommendation"}
-    if not isinstance(value, dict):
-        errors.append(f"ai_taste_findings[{index}] must be an object.")
-        return ""
-    if set(value) != expected:
-        errors.append(f"ai_taste_findings[{index}] keys must be exactly {sorted(expected)}.")
-    if not str(value.get("code") or "").strip():
-        errors.append(f"ai_taste_findings[{index}].code is required.")
-    severity = str(value.get("severity") or "").upper()
-    if severity not in {"P0", "P1", "P2"}:
-        errors.append(f"ai_taste_findings[{index}].severity must be P0, P1, or P2.")
-    validate_humanizer_span(
-        value.get("candidate_span"),
-        text=candidate_text,
-        label=f"ai_taste_findings[{index}].candidate_span",
-        errors=errors,
-    )
-    if not str(value.get("message") or "").strip() or not str(value.get("recommendation") or "").strip():
-        errors.append(f"ai_taste_findings[{index}] requires message and recommendation.")
-    return severity
-
-
-def validate_humanizer_span(value: Any, *, text: str, label: str, errors: list[str]) -> None:
-    if not isinstance(value, dict) or set(value) != {"start", "end", "text"}:
-        errors.append(f"{label} must contain exactly start, end, text.")
-        return
-    start = value.get("start")
-    end = value.get("end")
-    quoted = value.get("text")
-    if not isinstance(start, int) or isinstance(start, bool) or not isinstance(end, int) or isinstance(end, bool):
-        errors.append(f"{label} start/end must be integers.")
-    elif not (0 <= start < end <= len(text)):
-        errors.append(f"{label} is outside the declared file.")
-    elif quoted != text[start:end]:
-        errors.append(f"{label}.text does not match the declared file slice.")
-
-
-def validate_humanizer_refs_and_entities(
-    value: dict[str, Any],
-    *,
-    label: str,
-    allowed_refs: set[str],
-    known_entities: set[str],
-    errors: list[str],
-) -> None:
-    refs = value.get("canonical_refs")
-    if not isinstance(refs, list):
-        errors.append(f"{label}.canonical_refs must be a list.")
-    else:
-        for ref in refs:
-            normalized = str(ref).replace("\\", "/")
-            if normalized not in allowed_refs:
-                errors.append(f"{label} references undeclared canonical file: {normalized}.")
-    entity_ids = value.get("entity_ids")
-    if not isinstance(entity_ids, list):
-        errors.append(f"{label}.entity_ids must be a list.")
-    else:
-        for entity_id in entity_ids:
-            if str(entity_id) not in known_entities:
-                errors.append(f"{label} references unknown entity_id: {entity_id}.")
-
-
-def humanizer_semantic_known_entities(root: Path) -> set[str]:
-    ids: set[str] = set()
-    for path in (
-        root / "10_bible" / "characters.json",
-        root / "30_state" / STORY_GRAPH_NAME,
-        root / "10_bible" / "fanfiction" / "source_canon.json",
-    ):
-        collect_humanizer_entity_ids(load_json(path, default={}), ids)
-    return ids
-
-
-def collect_humanizer_entity_ids(value: Any, ids: set[str]) -> None:
-    if isinstance(value, dict):
-        for key in ("id", "entity_id", "character_id"):
-            item = str(value.get(key) or "").strip()
-            if item:
-                ids.add(item)
-        for item in value.values():
-            collect_humanizer_entity_ids(item, ids)
-    elif isinstance(value, list):
-        for item in value:
-            collect_humanizer_entity_ids(item, ids)
-
-
-def humanizer_source_lane(root: Path, source: Path) -> str:
+def prose_naturalness_source_lane(root: Path, source: Path) -> str:
     normalized = relative_path(root, source)
     return "draft" if normalized.startswith("40_manuscript/draft/") else "repair-candidate"
 
@@ -2041,7 +1861,7 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def humanizer_issue_summary(issues: list[dict[str, Any]]) -> dict[str, Any]:
+def prose_naturalness_issue_summary(issues: list[dict[str, Any]]) -> dict[str, Any]:
     by_severity: dict[str, int] = {}
     by_category: dict[str, int] = {}
     for issue in issues:
@@ -2052,7 +1872,7 @@ def humanizer_issue_summary(issues: list[dict[str, Any]]) -> dict[str, Any]:
     return {"by_severity": by_severity, "by_category": by_category, "total": len(issues)}
 
 
-def humanizer_issue_lines(issues: list[dict[str, Any]]) -> list[str]:
+def prose_naturalness_issue_lines(issues: list[dict[str, Any]]) -> list[str]:
     if not issues:
         return ["- None"]
     lines: list[str] = []
@@ -2073,7 +1893,7 @@ def humanizer_issue_lines(issues: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def detect_humanizer_issues(text: str) -> tuple[list[dict[str, Any]], list[str]]:
+def detect_prose_naturalness_issues(text: str) -> tuple[list[dict[str, Any]], list[str]]:
     """Detect formulaic prose and prompt residue in a chapter candidate."""
 
     lower = text.lower()
@@ -2082,12 +1902,12 @@ def detect_humanizer_issues(text: str) -> tuple[list[dict[str, Any]], list[str]]
     if not re.sub(r"\s+", "", text):
         return [
             {
-                "code": "humanizer_empty_candidate",
+                "code": "prose_naturalness_empty_candidate",
                 "severity": "P0",
                 "category": "空文本",
-                "message": "humanizer candidate is empty",
+                "message": "prose-naturalness candidate is empty",
                 "evidence": [],
-                "suggestion": "生成完整候选正文后重新运行 humanize-check。",
+                "suggestion": "生成完整候选正文后重新运行 prose-naturalness-check。",
             }
         ], []
 
@@ -2114,7 +1934,7 @@ def detect_humanizer_issues(text: str) -> tuple[list[dict[str, Any]], list[str]]
     if trio_hits:
         issues.append(
             {
-                "code": "humanizer_template_triad",
+                "code": "prose_naturalness_template_triad",
                 "severity": "P2",
                 "category": "模板三连",
                 "message": "template triple structure remains",
@@ -2128,7 +1948,7 @@ def detect_humanizer_issues(text: str) -> tuple[list[dict[str, Any]], list[str]]
     if marker_hits:
         issues.append(
             {
-                "code": "generic_ai_diction",
+                "code": "template_diction_signal",
                 "severity": "P2",
                 "category": "英文抽象表达定位信号",
                 "message": f"abstract diction signal: {', '.join(marker_hits[:5])}",
@@ -2161,7 +1981,7 @@ def detect_humanizer_issues(text: str) -> tuple[list[dict[str, Any]], list[str]]
     if lengths and max(lengths) - min(lengths) < 8 and len(lengths) >= 8:
         issues.append(
             {
-                "code": "humanizer_uniform_sentence_length",
+                "code": "prose_naturalness_uniform_sentence_length",
                 "severity": "P2",
                 "category": "等长句",
                 "message": "sentence lengths are too uniform; vary pressure and release",
@@ -2295,11 +2115,11 @@ def creative_repair_guidance(failure: dict[str, Any], chapter_number: int) -> di
         "delete_or_reduce": [],
         "add_evidence": [],
         "character_state_adjustment": [],
-        "humanizer_target": ["remove summary lecture", "vary sentence and paragraph rhythm"],
+        "prose_naturalness_target": ["remove summary lecture", "vary sentence and paragraph rhythm"],
         "rewrite_goal": "repair the failed gate and keep the chapter in the same canonical lane",
     }
-    if code in {"meta_pollution", "humanizer_meta_pollution", "humanizer_meta_residue"}:
-        base["delete_or_reduce"] = ["TODO/prompt labels", "AI self-reference", "author instructions"]
+    if code in {"meta_pollution", "prose_naturalness_meta_pollution", "prose_naturalness_meta_residue"}:
+        base["delete_or_reduce"] = ["TODO/prompt labels", "out-of-world self-reference", "author instructions"]
         base["rewrite_goal"] = "turn all instruction residue into clean in-world prose or remove it"
     elif code == "content_character_count":
         base["add_evidence"] = ["one extra conflict beat", "one consequence beat", "one sensory anchor"]
@@ -2307,19 +2127,19 @@ def creative_repair_guidance(failure: dict[str, Any], chapter_number: int) -> di
     elif code == "pacing":
         base["delete_or_reduce"] = ["stacked major reveals", "consecutive high-intensity events without cost"]
         base["add_evidence"] = ["cooldown beat", "reader payoff", "tail hook with unresolved pressure"]
-    elif code in {"duplicate_paragraphs", "generic_ai_diction"}:
+    elif code in {"duplicate_paragraphs", "template_diction_signal"}:
         base["delete_or_reduce"] = ["repeated templates", "generic significance words", "same-shape paragraphs"]
-        base["humanizer_target"] = ["differentiate scene purpose", "replace abstraction with action"]
-    elif code in {"humanizer_inflated_significance", "humanizer_summary_voice"}:
+        base["prose_naturalness_target"] = ["differentiate scene purpose", "replace abstraction with action"]
+    elif code in {"prose_naturalness_inflated_significance", "prose_naturalness_summary_voice"}:
         base["delete_or_reduce"] = ["abstract significance claims", "author summary voice", "chapter-level explanation"]
         base["add_evidence"] = ["visible consequence", "scene decision", "dialogue pressure"]
-        base["humanizer_target"] = ["convert commentary into action", "replace summary with scene evidence"]
+        base["prose_naturalness_target"] = ["convert commentary into action", "replace summary with scene evidence"]
         base["rewrite_goal"] = "turn inflated or summary prose into concrete web-novel scene pressure"
-    elif code in {"humanizer_cliche_action", "humanizer_high_frequency_words", "humanizer_weak_adverbs", "humanizer_template_triad", "humanizer_uniform_sentence_length"}:
+    elif code in {"prose_naturalness_cliche_action", "prose_naturalness_high_frequency_words", "prose_naturalness_weak_adverbs", "prose_naturalness_template_triad", "prose_naturalness_uniform_sentence_length"}:
         base["delete_or_reduce"] = ["template gestures", "weak adverb stacks", "rule-of-three phrasing", "same-length sentences"]
         base["add_evidence"] = ["character-specific action", "sensory anchor", "varied sentence rhythm"]
-        base["humanizer_target"] = ["make body language specific", "break uniform cadence", "reduce high-frequency filler"]
-        base["rewrite_goal"] = "restore human-feeling Chinese web-novel texture without changing canon facts"
+        base["prose_naturalness_target"] = ["make body language specific", "break uniform cadence", "reduce high-frequency filler"]
+        base["rewrite_goal"] = "restore specific Chinese web-novel texture without changing canon facts"
     elif code == "style_drift":
         base["delete_or_reduce"] = ["sentence rhythm that ignores the active sample", "paragraph scale drift", "POV switches"]
         base["add_evidence"] = ["sample-matched sentence cadence", "dialogue density aligned to current_style_profile", "paragraph rhythm variation from style fingerprint"]
@@ -2330,7 +2150,7 @@ def creative_repair_guidance(failure: dict[str, Any], chapter_number: int) -> di
     return base
 
 
-def resolve_humanizer_source(root: Path, chapter_number: int, source: str) -> Path:
+def resolve_prose_naturalness_source(root: Path, chapter_number: int, source: str) -> Path:
     if source == "draft":
         return manuscript_chapter_path(root, chapter_number, lane="draft")
     if source == "repair-candidate":
@@ -2348,10 +2168,12 @@ def resolve_humanizer_source(root: Path, chapter_number: int, source: str) -> Pa
     raise ValueError("source must be draft or repair-candidate.")
 
 
-def humanizer_source_for_candidate(root: Path, chapter_number: int, candidate: Path) -> Path | None:
+def prose_naturalness_source_for_candidate(
+    root: Path, chapter_number: int, candidate: Path
+) -> Path | None:
     candidate_rel = relative_path(root, candidate)
     for entry in reversed(list_manifests(root, chapter_number=chapter_number)):
-        if entry.get("task_type") != "humanize" or candidate_rel != manifest_output(entry).get("path"):
+        if entry.get("task_type") != "prose_naturalness" or candidate_rel != manifest_output(entry).get("path"):
             continue
         for item in manifest_input_paths(entry):
             path = root / str(item)
@@ -2372,13 +2194,15 @@ def humanizer_source_for_candidate(root: Path, chapter_number: int, candidate: P
     return draft if draft.exists() else None
 
 
-def humanizer_fact_drift(
+def prose_naturalness_fact_drift(
     root: Path,
     source: str,
     candidate: str,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     if not source:
-        return [], ["humanizer source could not be resolved; fact-preservation comparison was skipped"]
+        return [], [
+            "prose-naturalness source could not be resolved; fact-preservation comparison was skipped"
+        ]
     issues: list[dict[str, Any]] = []
     warnings: list[str] = []
     source_numbers = set(re.findall(r"(?<!\d)\d+(?:\.\d+)?(?!\d)", source))
@@ -2386,7 +2210,7 @@ def humanizer_fact_drift(
     if source_numbers != candidate_numbers:
         issues.append(
             {
-                "code": "humanizer_number_drift",
+                "code": "prose_naturalness_number_drift",
                 "severity": "P1",
                 "category": "事实漂移",
                 "message": (
@@ -2394,7 +2218,7 @@ def humanizer_fact_drift(
                     f"added={sorted(candidate_numbers - source_numbers)}"
                 ),
                 "evidence": [],
-                "suggestion": "恢复来源稿中的数值事实；如剧情事实确需变化，应回到修章而非 Humanizer。",
+                "suggestion": "恢复来源稿中的数值事实；如剧情事实确需变化，应回到修章而非自然度编辑。",
             }
         )
     characters = load_json(root / "10_bible" / "characters.json", default=[])
@@ -2407,7 +2231,7 @@ def humanizer_fact_drift(
     if removed_names:
         issues.append(
             {
-                "code": "humanizer_character_drift",
+                "code": "prose_naturalness_character_drift",
                 "severity": "P1",
                 "category": "角色漂移",
                 "message": f"source character references disappeared: {', '.join(removed_names[:8])}",

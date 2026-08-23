@@ -42,7 +42,7 @@ DEFAULT_EDITORIAL_TEAM: tuple[dict[str, str], ...] = (
     {
         "id": "planning_chief_editor",
         "display_name": "策划主编",
-        "focus": "outline duty, longform promise, payoff timing, A/B/C quota discipline",
+        "focus": "outline duty, longform promise, payoff timing, scene-evidence pacing",
     },
     {
         "id": "scene_prose_editor",
@@ -55,9 +55,9 @@ DEFAULT_EDITORIAL_TEAM: tuple[dict[str, str], ...] = (
         "focus": "voice fit, dialogue swapability, private wants, social masks, embodied presence, relationship movement",
     },
     {
-        "id": "anti_ai_editor",
-        "display_name": "反 AI 编辑",
-        "focus": "AI diction, template paragraphs, summary-heavy prose, meta residue",
+        "id": "anti_template_editor",
+        "display_name": "反模板编辑",
+        "focus": "repeated narrative function, template paragraphs, summary-heavy prose, meta residue",
     },
     {
         "id": "reader_experience_editor",
@@ -701,7 +701,7 @@ def deterministic_editorial_items(
                 "meta_residue",
                 "P0",
                 "meta or prompt residue remains in prose",
-                role_id="anti_ai_editor",
+                role_id="anti_template_editor",
             )
         )
     if any(marker in lower_text for marker in ("plot_hole", "logic break", "contradiction")) or any(
@@ -721,17 +721,17 @@ def deterministic_editorial_items(
                 "repetition",
                 "P2",
                 "sentence repetition is high",
-                role_id="anti_ai_editor",
+                role_id="anti_template_editor",
             )
         )
     ai_markers = [marker for marker in ("不禁", "仿佛", "意义深远", "嘴角微扬") if marker in text]
     if len(ai_markers) >= 2:
         items.append(
             review_item(
-                "ai_diction_cluster",
+                "template_diction_cluster",
                 "P2",
                 f"AI-flavored diction cluster: {', '.join(ai_markers[:4])}",
-                role_id="anti_ai_editor",
+                role_id="anti_template_editor",
             )
         )
     expression = character_expression_diagnostics(text, character_names=character_names)
@@ -1055,9 +1055,9 @@ def editorial_role_source_inputs(
             root / "10_bible" / "character_expression.json",
             root / "10_bible" / "characters.json",
         ],
-        "anti_ai_editor": [
+        "anti_template_editor": [
             chapter,
-            root / "50_workbench" / "humanizer_tasks" / f"ch{chapter_number:03d}.humanize_check.json",
+            root / "50_workbench" / "prose_naturalness_tasks" / f"ch{chapter_number:03d}.prose_naturalness_check.json",
             card,
             root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json",
         ],
@@ -1290,8 +1290,8 @@ def role_instruction(role_id: str) -> str:
             "测试对白互换后是否仍无差别。通过结论同样必须有正文证据，不设置统一对白、外貌或心理描写配额；"
             "材料不足时返回 unknown 或 insufficient_evidence。"
         ),
-        "anti_ai_editor": (
-            "检查模板词、填充句、同构段落、过度总结、句式齐整、可互换对白和写作说明残留。"
+        "anti_template_editor": (
+            "检查功能重复、填充句、同构段落、过度总结、可互换对白和写作说明残留；孤立词语或比例不得独立阻断。"
         ),
         "reader_experience_editor": (
             "检查章节职责是否真正完成、读者是否获得具体信息或情绪收益、收益是否伴随成立的代价，场景是否"
@@ -1340,13 +1340,13 @@ def cross_chapter_findings(root: Path, chapter_start: int, chapter_end: int) -> 
                 "message": f"{short_count} chapters are short; run pacing and expansion checks before serial continuation",
             }
         )
-    ai_count = count_item_code(reviews, "ai_diction_cluster") + count_item_code(reviews, "repetition")
-    if ai_count >= 2:
+    template_count = count_item_code(reviews, "template_diction_cluster") + count_item_code(reviews, "repetition")
+    if template_count >= 2:
         findings.append(
             {
-                "code": "batch_ai_taste_cluster",
+                "code": "batch_template_cluster",
                 "severity": "P2",
-                "message": f"{ai_count} AI-taste or repetition findings across the batch",
+                "message": f"{template_count} template-function or repetition findings across the batch",
             }
         )
     logic_count = count_item_code(reviews, "logic_continuity_risk")
@@ -1436,7 +1436,7 @@ def write_batch_health_reports(
     specs = {
         "pacing": ("Pacing Health Report", ("short_chapter", "repeated_conditional_pass", "batch_pacing_thin_chapters")),
         "logic": ("Logic Health Report", ("logic_continuity_risk", "batch_blocking_revisions", "batch_logic_risk")),
-        "ai_taste": ("AI Taste Report", ("ai_diction_cluster", "repetition", "batch_ai_taste_cluster")),
+        "prose_naturalness": ("Prose Naturalness Report", ("template_diction_cluster", "repetition", "batch_template_cluster")),
     }
     files: dict[str, str] = {}
     for key, (title, codes) in specs.items():
@@ -1555,21 +1555,21 @@ def validate_editorial_result_payload(
         if code not in contract.finding_codes:
             errors.append(f"findings[{index}].code is outside {role_id} scope.")
         evidence_ids = [str(item) for item in finding.get("evidence_ids") or []]
-        if role_id == "anti_ai_editor" and finding.get("severity") == "P1":
+        if role_id == "anti_template_editor" and finding.get("severity") == "P1":
             if len(set(evidence_ids)) < 2:
                 errors.append(
-                    f"findings[{index}] anti_ai_editor P1 requires at least two distinct exact spans."
+                    f"findings[{index}] anti_template_editor P1 requires at least two distinct exact spans."
                 )
             if not str(finding.get("diagnosis") or "").strip() or not str(
                 finding.get("reader_impact") or ""
             ).strip():
                 errors.append(
-                    f"findings[{index}] anti_ai_editor P1 must explain the repeated function and reader harm."
+                    f"findings[{index}] anti_template_editor P1 must explain the repeated function and reader harm."
                 )
             preserve = finding.get("preserve")
             if not isinstance(preserve, list) or not any(str(item).strip() for item in preserve):
                 errors.append(
-                    f"findings[{index}] anti_ai_editor P1 must declare at least one protected element."
+                    f"findings[{index}] anti_template_editor P1 must declare at least one protected element."
                 )
         items.append(
             {
@@ -1909,7 +1909,7 @@ def editorial_team(
     """Select only roles justified by current chapter risk."""
 
     configured = configured_editorial_roles(config)
-    selected: set[str] = {"scene_prose_editor", "anti_ai_editor", *configured}
+    selected: set[str] = {"scene_prose_editor", "anti_template_editor", *configured}
     payoff_file = (
         root
         / "50_workbench"
@@ -1927,8 +1927,8 @@ def editorial_team(
         if str(item.get("role_id") or "")
     )
     signals = set(risk_signals)
-    if "ai_flavor_recurrence" in signals:
-        selected.add("anti_ai_editor")
+    if "template_recurrence" in signals:
+        selected.add("anti_template_editor")
     if "character_expression_risk" in signals:
         selected.add("character_editor")
     if "continuity_or_relationship_risk" in signals:
@@ -1960,7 +1960,7 @@ def editorial_review_required_reasons(
     if not isinstance(editorial_config, dict):
         editorial_config = {}
     review_mode = str(editorial_config.get("review_mode") or "risk_based")
-    reasons: list[str] = ["mandatory_scene_prose_review", "mandatory_anti_ai_review"]
+    reasons: list[str] = ["mandatory_scene_prose_review", "mandatory_anti_template_review"]
     quality = config.data.get("quality")
     if not isinstance(quality, dict):
         quality = {}
@@ -2016,7 +2016,7 @@ def expected_editorial_roles(
     configured = configured_editorial_roles(config)
     return [
         role_definition(role)["id"]
-        for role in dedupe(["scene_prose_editor", "anti_ai_editor", *configured])
+        for role in dedupe(["scene_prose_editor", "anti_template_editor", *configured])
     ]
 
 
@@ -2031,8 +2031,8 @@ def editorial_risk_signals(
     issue_codes = {str(item.get("code") or "") for item in deterministic_items}
     roles = {str(item.get("role_id") or "") for item in deterministic_items}
     severities = {str(item.get("severity") or "") for item in deterministic_items}
-    if "anti_ai_editor" in roles or any("ai_" in code or "repetition" in code for code in issue_codes):
-        signals.append("ai_flavor_recurrence")
+    if "anti_template_editor" in roles or any("template" in code or "repetition" in code for code in issue_codes):
+        signals.append("template_recurrence")
     if "planning_chief_editor" in roles or any(
         token in code
         for code in issue_codes
@@ -2111,9 +2111,9 @@ def editorial_risk_signals(
         if any(
             token in str(item.get("finding_code") or "").lower()
             for item in active
-            for token in ("ai_", "dialogue", "repetition", "formula")
+            for token in ("template", "dialogue", "repetition", "formula")
         ):
-            signals.append("ai_flavor_recurrence")
+            signals.append("template_recurrence")
         if any(
             token in str(item.get("finding_code") or "").lower()
             for item in active

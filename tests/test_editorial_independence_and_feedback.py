@@ -355,12 +355,12 @@ def test_anti_ai_p1_requires_two_exact_spans_reader_harm_and_protection(tmp_path
     )
     draft.write_text(text, encoding="utf-8")
     review = editorial_review(config, chapter_number=1)
-    assert {"scene_prose_editor", "anti_ai_editor"} <= set(review.selected_roles)
-    role_id = "anti_ai_editor"
+    assert {"scene_prose_editor", "anti_template_editor"} <= set(review.selected_roles)
+    role_id = "anti_template_editor"
     first_start = text.index("Ari explains")
     second_start = text.index("Mira later")
     finding = {
-        "code": "AI_SUMMARY_LOOP",
+        "code": "TEMPLATE_SUMMARY_LOOP",
         "severity": "P1",
         "certainty": "confirmed",
         "diagnosis": "Both spans repeat explanation in place of a character-owned choice or emotional consequence.",
@@ -369,7 +369,7 @@ def test_anti_ai_p1_requires_two_exact_spans_reader_harm_and_protection(tmp_path
         "repair_target": "Dramatize one choice and one distinct emotional response.",
         "preserve": ["accepted scene outcome"],
     }
-    result_file = root / "50_workbench" / "editorial_reviews" / "results" / "ch001.anti_ai_editor.json"
+    result_file = root / "50_workbench" / "editorial_reviews" / "results" / "ch001.anti_template_editor.json"
     result_file.parent.mkdir(parents=True, exist_ok=True)
     result_file.write_text(
         json.dumps(editorial_payload(root, draft, role_id, findings=[finding]), ensure_ascii=False),

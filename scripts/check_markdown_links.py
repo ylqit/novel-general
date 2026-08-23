@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 import re
@@ -30,11 +31,16 @@ REFERENCE_LINK = re.compile(r"^\s*\[[^\]\n]+\]:\s*(<[^>\n]+>|\S+)")
 
 
 def markdown_files(root: Path) -> list[Path]:
-    return sorted(
-        path
-        for path in root.rglob("*.md")
-        if not EXCLUDED_PARTS.intersection(path.relative_to(root).parts)
-    )
+    documents: list[Path] = []
+    for current, directories, files in os.walk(root, topdown=True):
+        directories[:] = sorted(
+            name for name in directories if name not in EXCLUDED_PARTS
+        )
+        current_path = Path(current)
+        documents.extend(
+            current_path / name for name in files if Path(name).suffix.casefold() == ".md"
+        )
+    return sorted(documents)
 
 
 def local_targets(text: str) -> list[tuple[int, str]]:

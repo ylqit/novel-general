@@ -79,18 +79,19 @@ Semantic RAG now has a graph-aware path in addition to chunk and memory retrieva
 
 ## Creative Operator Inputs
 
-`continue-write` now treats RAG as one part of a larger Agent writing package. The writing task also includes:
+`continue-write` treats RAG as one internal input to Story Brief compilation. The author sees only the bounded projection in `chapter_story_brief_v4`; control-plane inputs include:
 
 - `10_bible/creative_brief.json`,
 - Writer Craft Brief,
-- Humanizer v4 rules,
+- current `human_chapter_intent_v1`,
+- prose-naturalness quality rules,
 - Style Memory,
 - TCS,
 - Character Memory,
 - graph constraints and traversal-derived context,
 - recent gate history.
 
-This does not change canonical RAG safety. Humanizer output, repair candidates, and editorial review notes remain workbench artifacts until `draft submit` and `chapter finalize` approve them.
+This does not change canonical RAG safety. Coedit/naturalness outputs, repair candidates, and editorial notes remain workbench artifacts until validated submission and finalization approve them.
 
 ## Context
 

@@ -171,6 +171,11 @@ def refresh_arc_simulation_fixture(root: Path) -> Path:
         card["arc_simulation_ref"] = simulation_ref
         stamp_chapter_contract(card)
         write_json(card_path, card)
+        intent_path = root / "20_outline" / "chapter_intents" / f"ch{chapter_number:03d}.json"
+        if intent_path.is_file():
+            intent = json.loads(intent_path.read_text(encoding="utf-8"))
+            intent["chapter_contract_sha256"] = card["chapter_contract_hash"]
+            write_json(intent_path, intent)
     return simulation_path
 
 
@@ -414,6 +419,11 @@ def mark_project_ready(
                 "irreversible_choice": "Ari gives Mira the only copy of the route and follows her plan.",
                 "chapter_turn": row["chapter_turn"],
                 "reveal_boundary": "Reveal the internal route but not the editor's identity.",
+                "emotional_aftereffect": "The shared risk leaves Ari wary but newly responsible for Mira.",
+                "ending_mode": row["ending_mode"],
+                "ending_intent": row["ending_intent"],
+                "must_preserve_suspense": list(row.get("must_preserve_suspense") or []),
+                "resolution_markers": list(row.get("resolution_markers") or []),
                 "reader_gain": row["reader_gain"],
                 "cost": "The chosen gain narrows the protagonist's next safe option.",
                 "must_dramatize": ["the failed pursuit", "Ari's trust choice", "the suspect gaining distance"],
@@ -468,8 +478,55 @@ def mark_project_ready(
                     "approved_by": "human",
                 },
             }
+            selection_path = (
+                root
+                / "50_workbench"
+                / "intelligence_selections"
+                / f"ch{chapter_number:03d}.fixture.selection.json"
+            )
+            write_json(
+                selection_path,
+                {
+                    "schema": "chapter_direction_selection_v1",
+                    "task_id": f"fixture-direction-ch{chapter_number:03d}",
+                    "chapter_number": chapter_number,
+                    "document_path": f"50_workbench/intelligence_candidates/ch{chapter_number:03d}.fixture.md",
+                    "document_sha256": "a" * 64,
+                    "option_ids": ["OPTION-A", "OPTION-B"],
+                    "selected_option_id": "OPTION-A",
+                    "user_adjustments": {},
+                    "repetition_reason": "",
+                    "selected_by": "human",
+                    "selected_at": "fixture",
+                },
+            )
+            card["direction_selection"].update(
+                {
+                    "selection_file": selection_path.relative_to(root).as_posix(),
+                    "selection_sha256": sha256(selection_path.read_bytes()).hexdigest(),
+                    "document_sha256": "a" * 64,
+                }
+            )
             stamp_chapter_contract(card)
             write_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", card)
+            write_json(
+                root / "20_outline" / "chapter_intents" / f"ch{chapter_number:03d}.json",
+                {
+                    "schema": "human_chapter_intent_v1",
+                    "chapter_number": chapter_number,
+                    "chapter_contract_sha256": card["chapter_contract_hash"],
+                    "direction_selection_sha256": card["direction_selection"]["selection_sha256"],
+                    "story_intent": "Make the pursuit become a human choice with a visible cost.",
+                    "key_character_choice": "Ari entrusts the only route copy to Mira instead of controlling it alone.",
+                    "emotional_truth": "Trust feels like losing control before it feels like alliance.",
+                    "pov_voice_intent": "Ari notices concrete evidence first and admits fear only through shortened choices.",
+                    "protected_items": ["The final editor identity remains concealed."],
+                    "completed_by": "human",
+                    "status": "approved",
+                    "approved_by": "human",
+                    "approved_at": "fixture",
+                },
+            )
             (root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.md").write_text(
                 f"# Chapter Card ch{chapter_number:03d}\n\nHuman-approved fixture direction.\n",
                 encoding="utf-8",
@@ -568,7 +625,7 @@ def complete_human_author_revision(root: Path, config, *, chapter_number: int = 
 
     from longform_engine.agent_pipeline import validate_production_agent_result
     from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
-    from longform_engine.agent_tasks import load_manifest
+    from longform_engine.agent_tasks import list_manifests, manifest_output
     from longform_engine.human_author_revision import (
         SEMANTIC_DIMENSIONS,
         create_human_author_revision_task,
@@ -615,7 +672,9 @@ def complete_human_author_revision(root: Path, config, *, chapter_number: int = 
                         "end": first_after_start + len(first_addition),
                         "text": first_addition,
                     },
+                    "intent_ref": "key_character_choice",
                     "intent": "把人物为行动承担代价的选择落到场内，而不是留作概括。",
+                    "reader_effect": "读者能看见选择发生及其即时代价，而不是只收到结果摘要。",
                     "must_preserve": ["章节合同", "既定离场结果"],
                 },
                 {
@@ -631,7 +690,9 @@ def complete_human_author_revision(root: Path, config, *, chapter_number: int = 
                         "end": second_after_start + len(second_addition),
                         "text": second_addition,
                     },
+                    "intent_ref": "emotional_truth",
                     "intent": "让犹疑归属于人物声音，并留下可感的关系余波。",
+                    "reader_effect": "读者能把情绪余波归属于人物，而不是读到通用抒情总结。",
                     "must_preserve": ["人物知识边界", "关系阶段"],
                 },
             ],
@@ -642,6 +703,10 @@ def complete_human_author_revision(root: Path, config, *, chapter_number: int = 
             "human_confirmation": {
                 "confirmed_by": "human",
                 "statement": "我完成并核对了这份完整章节修订及其保护项。",
+            },
+            "final_lock_confirmation": {
+                "locked_by": "human",
+                "statement": "我确认这是 AI 协作结束后由我完成并准备锁定的最终正文。",
             },
         }
     )
@@ -661,6 +726,12 @@ def complete_human_author_revision(root: Path, config, *, chapter_number: int = 
     candidate_key = candidate.relative_to(root).as_posix()
     source_end = min(max(len(source_text), 1), 48)
     candidate_end = min(max(len(candidate_text), 1), 48)
+    revision_goal_ids = [
+        f"{source_key}@{first_source_start}:{first_source_end}",
+        f"{candidate_key}@{first_after_start}:{first_after_start + len(first_addition)}",
+        f"{source_key}@{second_source_start}:{second_source_end}",
+        f"{candidate_key}@{second_after_start}:{second_after_start + len(second_addition)}",
+    ]
     write_json(
         semantic_output,
         {
@@ -669,10 +740,14 @@ def complete_human_author_revision(root: Path, config, *, chapter_number: int = 
             "coverage": {
                 dimension: {
                     "status": "checked",
-                    "evidence_ids": [
-                        f"{source_key}@0:{source_end}",
-                        f"{candidate_key}@0:{candidate_end}",
-                    ],
+                    "evidence_ids": (
+                        revision_goal_ids
+                        if dimension == "revision_goal_achievement"
+                        else [
+                            f"{source_key}@0:{source_end}",
+                            f"{candidate_key}@0:{candidate_end}",
+                        ]
+                    ),
                     "canonical_refs": [],
                 }
                 for dimension in SEMANTIC_DIMENSIONS
@@ -680,9 +755,12 @@ def complete_human_author_revision(root: Path, config, *, chapter_number: int = 
             "findings": [],
         },
     )
-    manifest = load_manifest(
-        root,
-        f"prose_revision_semantic_review:ch{chapter_number:03d}:human_author_revision:{task.source_sha256[:12]}:v4",
+    manifest = next(
+        item
+        for item in list_manifests(root, chapter_number=chapter_number)
+        if item.get("task_type") == "prose_revision_semantic_review"
+        and str(manifest_output(item).get("path") or "")
+        == semantic_output.relative_to(root).as_posix()
     )
     control = validate_production_agent_result(root, manifest, result_file=semantic_output)
     if not control.ok:
@@ -942,7 +1020,11 @@ def build_outline_candidate(config, *, characters: list[dict] | None = None) -> 
                 "chapter_duty": "Advance the active investigation.",
                 "conflict": "Ari must choose between speed and verified evidence.",
                 "chapter_turn": "Ari's pursuit proves the saboteur has internal access and binds Mira to the next move.",
-                "hook": "The clue points to a larger contradiction.",
+                "ending_mode": "changed_condition",
+                "ending_intent": "The clue points to a larger contradiction without forcing a cliffhanger.",
+                "emotional_aftereffect": "Ari carries wary responsibility for the alliance he just deepened.",
+                "must_preserve_suspense": ["final editor identity"],
+                "resolution_markers": [],
                 "reader_gain": "A prior detail gains a concrete new meaning.",
                 "volume_id": f"vol_{volume_number:02d}", "arc_id": f"arc_{arc_number:02d}",
                 "featured_character_ids": [characters[0]["id"], characters[1]["id"]],

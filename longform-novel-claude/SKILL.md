@@ -17,15 +17,15 @@ description: Claude Code 中文长篇小说生产 Skill；用户说“/工程下
 
 完整中文命令映射见 `references/command_protocol.md`，任务顺序见 `references/workflow_mapping.md`，写作操作见 `references/creative_operator_protocol.md`。
 
-严格执行工作单的 `session`：项目开书/卷级规划可继续协调会话；每章 `chapter_write` 新开作者会话；`repair` 可继续本章作者会话；Humanizer、人物/节奏/收益/连贯/同人审稿与 final 后语义档案均新开隔离会话。CLI 不会自动开子进程，必须由用户或宿主显式开启新会话，并以 `session.first_command` 为第一条命令。
+严格执行工作单的 `session`：项目开书/卷级规划可继续协调会话；每章 `chapter_write` 新开作者会话；`repair` 可继续本章作者会话；自然度修订、人物/节奏/收益/连贯/同人审稿与 final 后语义档案均新开隔离会话。CLI 不会自动开子进程，必须由用户或宿主显式开启新会话，并以 `session.first_command` 为第一条命令。
 
 上下文采用 `compact/standard/large` 自适应容量。字符数和文件数只是诊断；遇到顺序批次时按清单读取，不把范围证据一次塞满。章节正文始终一次输出完整正文；工作单出现 `prompt_budget_exceeded` 或 `need_human` 时停止，不静默截断核心事实。
 
-开书阶段按 `book_ideation -> book_design -> outline_design` 推进。Book Design 必须建立 `story_engine_contract_v1`，纲要建立 `reader_promise_ledger_v1`，滚动窗口在章节方向前必须有人工批准且 basis hash 有效的 `arc_causal_simulation_v1`。每个尚未应用方向的章节都必须先完成 `chapter_direction`，提供 2–3 个稳定 option ID，并通过 `chapter_direction_selection_v1` 记录人工选择；方向批准与语义编译必须同时消费 Markdown 和 sidecar。作者只读取 `chapter_story_brief_v2`；事实 ID、promise ID、模式代码、hash、RAG、Graph 与 SQLite 词汇留在 CLI/规划/编辑控制面。写正文时遵守质量合同，但不能把平台画像机械化为统一短句、对白率、快节奏或悬崖结尾。
+开书阶段按 `book_ideation -> book_design -> outline_design` 推进。Book Design 必须建立 `story_engine_contract_v1`，纲要建立 `reader_promise_ledger_v1`，滚动窗口在章节方向前必须有人工批准且 basis hash 有效的 `arc_causal_simulation_v1`。每章先完成带 2–3 个稳定 option ID 的 `chapter_direction` 和 `chapter_direction_selection_v1`，方向应用后再由人从空白表单填写并应用 `human_chapter_intent_v1`；不得代填。作者只读取 `chapter_story_brief_v4`；`chapter_story_brief_basis_v2` 绑定合同、人类意图、筛选事实、人物声音、最近五章结构与 renderer。内部 ID、hash、原始 RAG、平台诊断和编辑代码不得进入作者工作单。
 
-同人项目允许使用 manifest 声明来源中的角色名、关系、世界观、能力和时间线。先完成 `fanfiction canon-task` 与 `fanfiction design-task`，再进入纲要和章节；不得扫描未声明原作，也不得在 canon JSON 或正文中搬运、拆分重构连续 `source prose`。`rights status` 只记录和提示，不由 Agent 擅自阻断工作流。正文与修章遵守 `character_expression_packet_v1`；人物差异来自感知、决策、欲望、面具、身体和关系压力，不得强制统一对白或外貌配额。Humanizer、人工修订或其他双稿变换触发 `prose_revision_semantic_review` 时，必须由独立审稿角色比较来源稿与候选稿并通过 CLI 校验，不能由改稿者自审放行。gate 通过后若出现 `reader_payoff_review`，必须按 span 证明实际收益与代价，再等待显式 finalize。
+同人项目允许使用 manifest 声明来源中的角色名、关系、世界观、能力和时间线。先完成 `fanfiction canon-task` 与 `fanfiction design-task`，再进入纲要和章节；不得扫描未声明原作，也不得在 canon JSON 或正文中搬运、拆分重构连续 `source prose`。`rights status` 只记录和提示，不由 Agent 擅自阻断工作流。正文与修章遵守 `character_expression_packet_v1`。自然度、人工修订或其他双稿变换触发 `prose_revision_semantic_review` 时，必须由独立角色比较来源稿与候选稿并通过 CLI 校验，不能由改稿者自审放行。
 
-每章必须由 `scene_prose_editor` 和 `anti_ai_editor` 独立审稿。单词、句长、对白率、感官密度、慢章或尾钩只能是 P2 信号；模板化 P1 必须给出至少两个精确 span、重复功能、读者损害与保护项。P0/P1 先进入当前候选的不可变 repair bundle。无阻断后执行 `chapter human-revision-task / validate`，人类完成全文修订、记录至少两个真实影响维度并通过双稿语义复核；随后以 `agent=human` 提交并重跑全量审稿。最终 `human_story_review_v4` 绑定六类 hash，强制三组核心证据并显式处置 finding，前端不得代填理由。`review serve` 与咨询只写 non-canonical 工件；任一新候选都会使旧修订、咨询和接受 stale。两轮替代稿均失败时停止在 `repair_budget_exhausted`。
+AI 初稿可通过 `chapter_coedit_session_v1` 反复共编：顾问给 2–3 个方案及影响，人类记录选择后才生成新的完整 workbench 候选；不得直接写 canonical，也不得绕过 P0/P1 repair。每章由 `scene_prose_editor` 和 `anti_template_editor` 独立审稿，阻断项进入不可变 `human_review_bundle_v2`；`reader_payoff_review` 用当前 span 证明实际收益。无阻断后，人类完成最终全文修改并锁定，以 `human_author_revision_v3` 绑定意图、共编来源、前后 span、读者影响和保护项；独立双稿复核后以 `agent=human` 提交并全量复审。`human_story_review_v6` 绑定八类当前证据。人工锁定后 AI 仅可只读咨询；任何 AI 正文变换都会让终稿、咨询和接受 stale。
 
 ## 写入边界
 
@@ -47,10 +47,11 @@ production next
 -> agent-task brief
 -> Claude Code output
 -> validate / draft submit
--> mandatory scene / anti-AI reviews and P0/P1 repair
--> human_author_revision_v1 / prose_revision_semantic_review / human submit / full re-review
--> optional non-canonical consultation
--> mandatory human_story_review_v4 accept / repair / redirect
+-> mandatory scene / anti-template reviews and P0/P1 repair
+-> coedit options / human selection / complete workbench candidate
+-> human_author_revision_v3 / final lock / semantic review / human submit / full re-review
+-> optional human-final read-only consultation
+-> mandatory human_story_review_v6 accept / repair / redirect
 -> explicit apply or chapter finalize --approved-by human after accept
 -> chapter semantic-task / Agent unified JSON / semantic-validate
 -> explicit semantic-apply / chapter close --approved-by human

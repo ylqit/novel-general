@@ -378,11 +378,44 @@ def human_revision_coverage(root: Path, corpus: dict[str, Any]) -> dict[str, Any
         else:
             payload = read_json(root / "40_manuscript" / "draft" / f"ch{number:03d}.submission.json")
         binding = payload.get("human_author_revision") if isinstance(payload, dict) else None
-        if isinstance(binding, dict) and str(binding.get("validation_sha256") or ""):
+        expected_schema = (
+            "human_author_revision_finalization_binding_v3"
+            if chapter["lane"] == "final"
+            else "human_author_revision_submission_binding_v3"
+        )
+        validation = project_artifact(
+            root, str((binding or {}).get("validation_file") or "")
+        )
+        final_lock = project_artifact(
+            root, str((binding or {}).get("final_lock_file") or "")
+        )
+        current = bool(
+            isinstance(binding, dict)
+            and binding.get("schema") == expected_schema
+            and binding.get("revision_candidate_sha256") == chapter["sha256"]
+            and validation is not None
+            and validation.is_file()
+            and binding.get("validation_sha256") == file_hash(validation)
+            and final_lock is not None
+            and final_lock.is_file()
+            and binding.get("final_lock_sha256") == file_hash(final_lock)
+        )
+        if current:
             covered.append(number)
         else:
             missing.append(number)
     return {"complete": bool(corpus["chapters"]) and not missing, "covered_chapters": covered, "missing_chapters": missing}
+
+
+def project_artifact(root: Path, relative_path: str) -> Path | None:
+    if not relative_path:
+        return None
+    path = (root / relative_path).resolve()
+    try:
+        path.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return path
 
 
 def voice_pair_ids(root: Path, chapter_number: int, final_hash: str) -> list[str]:

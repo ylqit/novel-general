@@ -32,7 +32,10 @@ def seed_formal_pair(tmp_path: Path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
     scenario = tmp_path / "scenario.json"
-    scenario.write_text('{"schema":"quality_scenario_v1","id":"shared"}\n', encoding="utf-8")
+    scenario.write_text(
+        '{"schema":"quality_scenario_v1","id":"shared","genre_id":"xuanhuan"}\n',
+        encoding="utf-8",
+    )
     for run_id, host in (
         ("codex-current-3", "codex"),
         ("codex-baseline-3", "codex"),
@@ -51,7 +54,7 @@ def seed_formal_pair(tmp_path: Path):
         if run_id == "codex-baseline-3":
             run_file = root / "70_runtime" / "benchmarks" / run_id / "run.json"
             run_payload = json.loads(run_file.read_text(encoding="utf-8"))
-            run_payload["engine_version"] = "0.6.0"
+            run_payload["engine_version"] = "0.8.0"
             run_file.write_text(json.dumps(run_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         source_dir = tmp_path / run_id
         source_dir.mkdir()
@@ -89,8 +92,20 @@ def add_literary_scope_pair(
 ):
     config.data["story_profile"]["market"]["primary"] = market
     scenario = tmp_path / f"{review_scope}.scenario.json"
+    genres = {
+        "qidian_opening_3": "xuanhuan",
+        "fanqie_opening_3": "urban_suspense",
+        "serial_arc_15": "science_fiction",
+    }
     scenario.write_text(
-        json.dumps({"schema": "quality_scenario_v1", "id": review_scope}) + "\n",
+        json.dumps(
+            {
+                "schema": "quality_scenario_v1",
+                "id": review_scope,
+                "genre_id": genres[review_scope],
+            }
+        )
+        + "\n",
         encoding="utf-8",
     )
     candidate_id = f"candidate-{review_scope.replace('_', '-')}"
@@ -110,7 +125,7 @@ def add_literary_scope_pair(
         if run_id == baseline_id:
             run_file = root / "70_runtime" / "benchmarks" / run_id / "run.json"
             run_payload = json.loads(run_file.read_text(encoding="utf-8"))
-            run_payload["engine_version"] = "0.6.0"
+            run_payload["engine_version"] = "0.8.0"
             run_file.write_text(json.dumps(run_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         source_dir = tmp_path / f"source-{run_id}"
         source_dir.mkdir()
@@ -198,10 +213,7 @@ def complete_submission(
         candidate = private_mapping[entry["blind_id"]] == candidate_id
         for chapter in entry["chapters"]:
             literary_score = 9 if candidate else 7
-            chapter["scores"] = {
-                metric: (2 if candidate else 3) if metric == "ai_taste" else literary_score
-                for metric in chapter["scores"]
-            }
+            chapter["scores"] = {metric: literary_score for metric in chapter["scores"]}
             chapter["confidence"] = 0.9
             chapter["notes"] = "Independent blind score."
         if candidate:
@@ -481,7 +493,8 @@ def test_three_literary_scopes_build_tamper_sensitive_manifest(tmp_path):
     manifest_path = root / "70_runtime" / "literary_evidence" / "manifest.json"
     original_manifest = manifest_path.read_bytes()
     manifest = json.loads(original_manifest)
-    assert manifest["schema"] == "literary_evidence_manifest_v1"
+    assert manifest["schema"] == "literary_evidence_manifest_v2"
+    assert len(set(manifest["scenario_genres"])) == 3
     assert {item["review_scope"] for item in manifest["scopes"]} == {
         "qidian_opening_3", "fanqie_opening_3", "serial_arc_15",
     }

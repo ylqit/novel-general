@@ -20,11 +20,11 @@ from longform_engine.storage import atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import manuscript_chapter_relative_path
 
 
-BENCHMARK_SCHEMA = "quality_benchmark_run_v3"
-BENCHMARK_VALIDATION_SCHEMA = "quality_benchmark_validation_v3"
-BENCHMARK_REPORT_SCHEMA = "quality_benchmark_report_v3"
-BENCHMARK_RECORD_SCHEMA = "quality_benchmark_record_result_v3"
-BENCHMARK_COMPARISON_SCHEMA = "quality_benchmark_comparison_v3"
+BENCHMARK_SCHEMA = "quality_benchmark_run_v4"
+BENCHMARK_VALIDATION_SCHEMA = "quality_benchmark_validation_v4"
+BENCHMARK_REPORT_SCHEMA = "quality_benchmark_report_v4"
+BENCHMARK_RECORD_SCHEMA = "quality_benchmark_record_result_v4"
+BENCHMARK_COMPARISON_SCHEMA = "quality_benchmark_comparison_v4"
 RAG_BENCHMARK_SCHEMA = "rag_scale_evidence_v1"
 HOST_PRODUCTS = ("codex", "claude-code")
 SCORE_METRICS = (
@@ -33,7 +33,7 @@ SCORE_METRICS = (
     "foreshadowing_control",
     "pacing",
     "reader_payoff",
-    "ai_taste",
+    "prose_naturalness",
 )
 FANFICTION_SCORE_METRICS = (
     "canon_fidelity",
@@ -57,7 +57,7 @@ QUALITY_WEIGHTS = {
     "foreshadowing_control": 0.10,
     "pacing": 0.15,
     "reader_payoff": 0.10,
-    "ai_taste": 0.15,
+    "prose_naturalness": 0.15,
 }
 RAG_QUALITY_THRESHOLDS = {
     "scale_chapters": 500,
@@ -173,12 +173,23 @@ def init_benchmark(
     normalized_host_product = clean_metadata(host_product, field="host_product")
     scenario_sha256 = ""
     scenario_source = ""
+    scenario_genre = ""
     if scenario_file:
         scenario_path = Path(scenario_file).expanduser().resolve()
         if not scenario_path.is_file():
             raise ValueError(f"Benchmark scenario file does not exist: {scenario_path}")
         scenario_sha256 = sha256(scenario_path.read_bytes()).hexdigest()
         scenario_source = scenario_path.name
+        try:
+            scenario_payload = json.loads(scenario_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            raise ValueError("Benchmark scenario file must be valid UTF-8 JSON.") from exc
+        if not isinstance(scenario_payload, dict):
+            raise ValueError("Benchmark scenario file must contain a JSON object.")
+        scenario_genre = clean_metadata(
+            str(scenario_payload.get("genre_id") or ""),
+            field="scenario.genre_id",
+        )
     run_dir = benchmark_dir(root, normalized_id)
     if run_dir.exists() and any(run_dir.iterdir()):
         raise ValueError(f"Benchmark run already exists: {run_dir}")
@@ -201,13 +212,18 @@ def init_benchmark(
         "scenario_id": normalized_scenario_id,
         "scenario_sha256": scenario_sha256,
         "scenario_source": scenario_source,
+        "scenario_genre": scenario_genre,
         "source_state": capture_source_state(config, host_product=normalized_host_product),
         "chapter_count": chapters,
         "creation_mode": str(config.data.get("creation", {}).get("mode") or "original"),
         "market_profile": str(config.data.get("story_profile", {}).get("market", {}).get("primary") or ""),
         "review_protocol": "blind_engine_identity",
         "stores_manuscript_body": False,
-        "score_scale": {"min": 1, "max": 10, "ai_taste": "1=low AI taste, 10=high AI taste"},
+        "score_scale": {
+            "min": 1,
+            "max": 10,
+            "prose_naturalness": "1=mechanical or template-like, 10=natural and text-specific",
+        },
         "required_metrics": [
             *SCORE_METRICS,
             *(
@@ -317,7 +333,7 @@ def record_benchmark_chapter(
     judge_ids: list[str] | None = None,
     character_drift: list[str] | None = None,
     foreshadowing_leaks: list[str] | None = None,
-    ai_taste_issues: list[str] | None = None,
+    prose_naturalness_issues: list[str] | None = None,
     notes: str = "",
     fanfiction_scores: dict[str, int | float] | None = None,
     review_status: str = "diagnostic",
@@ -370,7 +386,9 @@ def record_benchmark_chapter(
         "review_status": review_status,
         "character_drift": clean_annotations(character_drift or [], field="character_drift"),
         "foreshadowing_leaks": clean_annotations(foreshadowing_leaks or [], field="foreshadowing_leaks"),
-        "ai_taste_issues": clean_annotations(ai_taste_issues or [], field="ai_taste_issues"),
+        "prose_naturalness_issues": clean_annotations(
+            prose_naturalness_issues or [], field="prose_naturalness_issues"
+        ),
         "artifact_hashes": artifact_hashes,
         "notes": clean_annotation(notes, field="notes", max_length=1000),
         "recorded_at": utc_now(),
@@ -667,8 +685,7 @@ def compare_benchmarks(
             if isinstance(report.get("scores"), dict) and report["scores"].get(metric) is not None
         ]
         if scored:
-            reverse = metric != "ai_taste"
-            best_by_metric[metric] = sorted(scored, key=lambda item: item[0], reverse=reverse)[0][1]
+            best_by_metric[metric] = sorted(scored, key=lambda item: item[0], reverse=True)[0][1]
 
     quality_evidence_complete, evidence_gaps, evidence_assessments = assess_quality_evidence(
         runs,
@@ -731,7 +748,7 @@ def empty_chapter_record(chapter: int) -> dict[str, Any]:
         "review_status": "pending",
         "character_drift": [],
         "foreshadowing_leaks": [],
-        "ai_taste_issues": [],
+        "prose_naturalness_issues": [],
         "artifact_hashes": {},
         "notes": "",
     }
@@ -775,7 +792,7 @@ def validate_record(record: Any, *, expected_chapter: int) -> list[str]:
             value = record.get(metric)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 errors.append(f"{metric} must be a non-negative integer for a generated chapter.")
-    for field in ("character_drift", "foreshadowing_leaks", "ai_taste_issues"):
+    for field in ("character_drift", "foreshadowing_leaks", "prose_naturalness_issues"):
         if not isinstance(record.get(field), list):
             errors.append(f"{field} must be a list.")
     artifact_hashes = record.get("artifact_hashes", {})
@@ -803,7 +820,7 @@ def validate_record(record: Any, *, expected_chapter: int) -> list[str]:
     notes = record.get("notes")
     if not isinstance(notes, str) or len(notes) > 1000:
         errors.append("notes must be a string with at most 1000 characters.")
-    for field in ("character_drift", "foreshadowing_leaks", "ai_taste_issues"):
+    for field in ("character_drift", "foreshadowing_leaks", "prose_naturalness_issues"):
         values = record.get(field)
         if isinstance(values, list) and (len(values) > 20 or any(not isinstance(value, str) or len(value) > 300 for value in values)):
             errors.append(f"{field} must contain at most 20 strings of at most 300 characters.")
@@ -892,11 +909,7 @@ def composite_score(record: dict[str, Any]) -> float:
     scores: dict[str, Any] = raw_scores if isinstance(raw_scores, dict) else {}
     total = 0.0
     for metric in SCORE_METRICS:
-        total += QUALITY_WEIGHTS[metric] * (
-            11.0 - float(scores.get(metric) or 0)
-            if metric == "ai_taste"
-            else float(scores.get(metric) or 0)
-        )
+        total += QUALITY_WEIGHTS[metric] * float(scores.get(metric) or 0)
     return total
 
 
@@ -1158,7 +1171,7 @@ def render_comparison(payload: dict[str, Any]) -> str:
         f"- Chapters per run: `{payload.get('chapter_count')}`",
         f"- Provisional: `{payload.get('allow_incomplete')}`",
         "",
-        "| Run | Host | Recorded | Gate failure | Repairs | Need human | Context files | Continuity | Character | Foreshadowing | Pacing | Payoff | AI taste |",
+        "| Run | Host | Recorded | Gate failure | Repairs | Need human | Context files | Continuity | Character | Foreshadowing | Pacing | Payoff | Prose naturalness |",
         "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for report in payload.get("runs", []):
@@ -1166,7 +1179,7 @@ def render_comparison(payload: dict[str, Any]) -> str:
         lines.append(
             "| {run_id} | {host_product} | {chapters_recorded}/{chapters_planned} | {gate_failure_rate} | "
             "{repair_count} | {need_human_count} | {average_context_file_count} | {continuity} | "
-            "{character_consistency} | {foreshadowing_control} | {pacing} | {reader_payoff} | {ai_taste} |".format(
+            "{character_consistency} | {foreshadowing_control} | {pacing} | {reader_payoff} | {prose_naturalness} |".format(
                 **report,
                 **scores,
             )

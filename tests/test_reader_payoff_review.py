@@ -8,7 +8,13 @@ from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
 from longform_engine.agent_tasks import load_manifest, validate_manifest_strict
 from longform_engine.config import load_project_config
-from longform_engine.orchestration import WorkflowError, finalize_chapter, open_book, plan_chapter
+from longform_engine.orchestration import (
+    WorkflowError,
+    continue_write,
+    finalize_chapter,
+    open_book,
+    plan_chapter,
+)
 from longform_engine.production import production_loop, production_next
 from longform_engine.quality import (
     build_structure_observation,
@@ -170,7 +176,7 @@ def test_payoff_finalize_records_observed_reward_and_structure_atomically(tmp_pa
     assert rewards[0]["planned_gain"] == card["reader_gain"]
     assert rewards[0]["observed_cost"] == positive_diagnosis(current_payload, "COST_VISIBLE")
     assert rewards[0]["evidence_source_hash"] == hashlib.sha256(current_draft.read_bytes()).hexdigest()
-    assert structures[0]["schema"] == "structure_observation_v2"
+    assert structures[0]["schema"] == "structure_observation_v3"
     assert structures[0]["chapter_number"] == 1
     assert structures[0]["opening_mode"] == "discovery"
     assert structures[0]["language_metrics"]["ngram_signature"]
@@ -349,6 +355,8 @@ def seed_payoff_project(tmp_path, *, chapter_number=1):
     config.data.setdefault("editorial", {})["review_mode"] = "off"
     config.data["length"]["chapter"]["hard_min"] = 20
     plan_chapter(config, chapter_number=chapter_number)
+    if chapter_number == 1:
+        continue_write(config, chapter_number=chapter_number)
     text = (
         f"# 第{chapter_number}章 旧账的新缺口\n\n"
         "沈阙在封泥背面发现一道逆着指纹生长的裂纹。他没有宣布答案，只把军粮车的交接时辰重新排了一遍。\n\n"

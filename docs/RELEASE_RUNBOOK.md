@@ -1,6 +1,6 @@
 # Public Release Runbook
 
-公开源固定为 `https://github.com/ylqit/novel-general`，默认分支为 `master`。发布工具只负责诊断，不会自动 commit、push、tag、创建 Release 或覆盖全局 Skill。v0.7.0 的仓库内门禁记录在 `V0_7_0_RELEASE_CHECKLIST.md`；发布提交切换稳定元数据后，仍须等待远程 Actions 与 Release assets 完成，才可宣告公开发布成功。
+公开源固定为 `https://github.com/ylqit/novel-general`，默认分支为 `master`。发布工具只负责诊断，不会自动 commit、push、tag、创建 Release 或覆盖全局 Skill。v0.9.0 的实现证据与用户授权的无测试发布例外记录在 `V0_9_0_RELEASE_CHECKLIST.md`。
 
 ## 1. 完成实现
 
@@ -15,11 +15,11 @@ python scripts/build_resource_manifest.py --write
 
 ## 2. 一次单进程定向本地验证
 
-所有实现和资源同步结束后，运行覆盖 v0.7.0 改动面的单进程测试与验证；禁止 xdist：
+所有实现和资源同步结束后，运行覆盖当前版本改动面的单进程测试与验证；禁止 xdist：
 
 ```powershell
 python -m ruff check src tests
-python -m mypy --follow-imports=skip src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/storage/recovery.py src/longform_engine/human_author_revision.py src/longform_engine/human_story_review.py src/longform_engine/author_voice.py src/longform_engine/publication.py
+python -m mypy --follow-imports=skip src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/story_brief.py src/longform_engine/storage/recovery.py src/longform_engine/human_author_revision.py src/longform_engine/human_story_review.py src/longform_engine/human_review_consultation.py src/longform_engine/author_voice.py src/longform_engine/publication.py
 python -m pytest -q -p no:xdist
 python scripts/validate_skills.py
 python scripts/sync_skill_references.py --check
@@ -30,7 +30,7 @@ python scripts/release_surface_guards.py
 longform-engine release check --repository . --channel rc --json
 ```
 
-本机可以构建并审计候选分发包，但不安装或修改用户全局 Skill。Pull Request CI 负责完整跨平台矩阵；tag Release workflow 负责重新测试、构建、wheel/sdist 审计和校验和。把实际命令、退出码和测试数写回清单。
+常规发布应构建并审计候选分发包，且不在实现阶段修改用户全局 Skill。v0.9.0 已在实现阶段留下对应证据，但本次发布按明确授权不重跑。Pull Request 和主分支 CI 仍提供独立观察，不是 tag 发布器的依赖。
 
 ## 3. 发布提交与主分支
 
@@ -38,37 +38,30 @@ longform-engine release check --repository . --channel rc --json
 
 ```powershell
 git add --all
-git commit -m "release: publish v0.7.0"
+git commit -m "release: publish v<VERSION>"
 git switch master
 # 若候选位于独立分支，再执行：git merge --ff-only <reviewed-release-branch>
 longform-engine release check --repository . --channel public --json
 git push origin master
 ```
 
-等待 `master` 的 GitHub Actions 全部成功。任何失败都必须先在主分支修复并重新通过 CI，不能提前创建 tag。
+常规发布应等待 `master` 的 GitHub Actions 成功。v0.9.0 采用清单记录的显式例外：推送后直接创建 tag，不等待或以 CI 结果阻断发布。
 
 ## 4. 不可变 Tag 与 GitHub Release
 
-主分支 CI 成功后执行：
+常规发布在主分支 CI 成功后执行；v0.9.0 按已记录例外直接执行：
 
 ```powershell
-git tag -a v0.7.0 -m "longform-novel-engine v0.7.0"
-longform-engine release check --repository . --channel public --tag v0.7.0 --json
-git push origin v0.7.0
-longform-engine release check --repository . --channel public --check-remote --tag v0.7.0 --json
+git tag -a v<VERSION> -m "longform-novel-engine v<VERSION>"
+longform-engine release check --repository . --channel public --tag v<VERSION> --json
+git push origin v<VERSION>
+longform-engine release check --repository . --channel public --check-remote --tag v<VERSION> --json
 ```
 
-Release workflow 必须从 tag 重新运行验证、构建 wheel/sdist、执行分发审计，并上传两个包及 `SHA256SUMS`。tag 不得移动或覆盖；发布后缺陷使用新的补丁版本。
+Release workflow 从 tag 构建 wheel/sdist、生成 `SHA256SUMS` 并上传三个制品。它不运行测试、Skill/Markdown 守卫、分发审计或安装 smoke。tag 不得移动或覆盖；发布后缺陷使用新的补丁版本。
 
-## 5. 远程 Tag Smoke 与证据
+## 5. Release 证据与本机更新
 
-从远程 tag 在新临时环境安装，执行：
+等待 tag 的制品发布任务成功，并确认 GitHub Release 包含 wheel、sdist 与 `SHA256SUMS`。Actions run、不可变 tag 和 Release assets 是发布事实；不追加发布后证据提交，也不移动 tag。
 
-```powershell
-longform-engine --version
-longform-engine validate-config --template qidian-longform --explain
-longform-engine skills status --tool all --json
-longform-engine doctor --tool all --json
-```
-
-Skill 状态和 doctor 使用临时目录环境变量，不写用户全局目录。确认 GitHub Release、wheel、sdist 与校验信息后，以 Actions run、不可变 tag 和 Release assets 作为权威证据；v0.7.0 不追加发布后证据提交，也不移动 tag 回写事后事实。只有公开发布完成后，才由用户显式决定是否同步全局 CLI 与 Skill。
+只有用户显式授权时才更新全局 CLI 与 Skill。v0.9.0 使用 Python 3.12 的 pipx 从不可变 tag 安装 `[semantic]`，再执行 `longform-engine skills update --tool codex`。本次授权明确跳过 `--version`、status、doctor、semantic smoke 和临时安装验证；命令成功只表示更新操作完成。

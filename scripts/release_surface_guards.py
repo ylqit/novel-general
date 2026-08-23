@@ -143,14 +143,50 @@ SINGLE_PROJECT_FORBIDDEN_TERMS = tuple(
     )
 )
 
+RETIRED_ACTIVE_SCHEMA_TERMS = (
+    "chapter_contract_v3",
+    "chapter_story_brief_v2",
+    "chapter_writing_task_v4",
+    "chapter_direction_candidate_v4",
+    "human_review_bundle_v1",
+    "human_author_revision_v1",
+    "human_story_review_v3",
+    "human_story_review_v4",
+    "human_review_consult_session_v1",
+    "chapter_story_brief_basis_v1",
+    "chapter_story_brief_v3",
+    "chapter_writing_task_v5",
+    "human_author_revision_v2",
+    "human_story_review_v5",
+    "blind_review_pack_v3",
+)
+
+ACTIVE_SCHEMA_DOCUMENTS = (
+    "README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/CONFIGURATION.md",
+    "docs/GATE_MODEL.md",
+    "docs/PIPELINE_MODEL.md",
+    "docs/SQLITE_MODEL.md",
+    "docs/STORAGE_MODEL.md",
+)
+
+RETIRED_SCHEMA_SOURCE_ALLOWLIST = {
+    # These literals implement explicit, actionable rejection of old evidence.
+    "src/longform_engine/human_author_revision.py",
+    "src/longform_engine/human_story_review.py",
+    "src/longform_engine/story_brief.py",
+    "src/longform_engine/blind_review.py",
+}
+
 REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
-        "docs/V0_6_0_RELEASE_CHECKLIST.md",
+        "docs/V0_9_0_RELEASE_CHECKLIST.md",
         (
-            "市场证据与质量合同",
-            "人工深审 v3",
-            "本地可视化审稿台",
-            "本地验证证据",
+            "章节合同与 Story Brief",
+            "人工修订、审稿与咨询",
+            "过时代码",
+            "单进程验证",
             "literary_evidence_ready=false",
         ),
     ),
@@ -166,7 +202,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "src/longform_engine/chapter_contract.py",
         (
-            'CONTRACT_SCHEMA = "chapter_contract_v3"',
+            'CONTRACT_SCHEMA = "chapter_contract_v4"',
             '"chapter_turn"',
             '"reveal_boundary"',
             '"reader_gain"',
@@ -180,17 +216,30 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "src/longform_engine/orchestration/pipeline.py",
         (
-            '"schema": "chapter_writing_task_v4"',
-            '"schema": "chapter_story_brief_v2"',
+            "WRITING_TASK_SCHEMA",
+            "STORY_BRIEF_SCHEMA",
+            "build_story_brief_basis",
+            '"story_brief_basis"',
             '"schema": "chapter_fact_inventory_v1"',
             "render_chapter_story_brief_markdown",
             "require_human_story_accept",
         ),
     ),
     (
+        "src/longform_engine/story_brief.py",
+        (
+            'BASIS_SCHEMA = "chapter_story_brief_basis_v2"',
+            'STORY_BRIEF_SCHEMA = "chapter_story_brief_v4"',
+            'WRITING_TASK_SCHEMA = "chapter_writing_task_v6"',
+            'RENDERER_VERSION = "chapter_story_brief_renderer_v4"',
+            "load_current_story_brief_binding",
+            "story_brief_status",
+        ),
+    ),
+    (
         "src/longform_engine/intelligence/pipeline.py",
         (
-            '"schema": "chapter_direction_candidate_v4"',
+            '"schema": "chapter_direction_candidate_v5"',
             '"schema": "chapter_direction_selection_v1"',
             "load_chapter_direction_selection",
             '"story_engine_contract_v1"',
@@ -203,8 +252,8 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "src/longform_engine/editorial/pipeline.py",
         (
-            'selected: set[str] = {"scene_prose_editor", "anti_ai_editor", *configured}',
-            'reasons: list[str] = ["mandatory_scene_prose_review", "mandatory_anti_ai_review"]',
+            'selected: set[str] = {"scene_prose_editor", "anti_template_editor", *configured}',
+            'reasons: list[str] = ["mandatory_scene_prose_review", "mandatory_anti_template_review"]',
             '"SERIAL_CARRIER_REPETITION"',
             '"THEME_DISPLACES_EVENT"',
             '"REPORT_SUBSTITUTES_EVENT"',
@@ -214,12 +263,14 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "src/longform_engine/human_story_review.py",
         (
-            'SCHEMA = "human_story_review_v4"',
+            'SCHEMA = "human_story_review_v6"',
             'DECISIONS = {"accept", "repair", "redirect"}',
             "CHECK_FIELDS",
             "EVIDENCE_KINDS",
             "candidate_sha256",
             "chapter_contract_sha256",
+            "story_brief_basis_sha256",
+            "human_chapter_intent_sha256",
             "reader_promise_ledger_sha256",
             "arc_causal_simulation_sha256",
             "review_bundle_sha256",
@@ -271,7 +322,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "src/longform_engine/human_review_consultation.py",
         (
-            'SESSION_SCHEMA = "human_review_consult_session_v1"',
+            'SESSION_SCHEMA = "human_review_consult_session_v3"',
             "create_human_review_consult_task",
             "validate_human_review_consultation",
             "record_human_review_consultation",
@@ -308,8 +359,9 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "src/longform_engine/blind_review.py",
         (
-            'BLIND_PACK_SCHEMA = "blind_review_pack_v3"',
-            'LITERARY_MANIFEST_SCHEMA = "literary_evidence_manifest_v1"',
+            'BLIND_PACK_SCHEMA = "blind_review_pack_v4"',
+            'LITERARY_MANIFEST_SCHEMA = "literary_evidence_manifest_v2"',
+            'LITERARY_BASELINE_VERSION = "0.8.0"',
             '"qidian_opening_3"',
             '"fanqie_opening_3"',
             '"serial_arc_15"',
@@ -392,11 +444,11 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "docs/V0_6_0_RELEASE_CHECKLIST.md",
+        "docs/V0_9_0_RELEASE_CHECKLIST.md",
         (
-            "本地验证证据",
-            "远程发布证据",
-            "GitHub Release",
+            "单进程验证",
+            "发布授权与无测试例外",
+            "本次发布不重跑",
             "wheel",
             "sdist",
         ),
@@ -404,7 +456,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "tests/test_agent_skill_integrity.py",
         (
-            "test_release_guard_tracks_current_v060_contracts",
+            "test_release_guard_tracks_current_v090_contracts",
             "check_experience_layer_guards",
             "DIRECT_WRITER_PATTERNS",
         ),
@@ -622,6 +674,7 @@ def main() -> int:
     failures.extend(check_artifact_compaction_guards())
     failures.extend(check_public_distribution_guards())
     failures.extend(check_single_project_scope_guards())
+    failures.extend(check_v090_active_schema_surface())
     failures.extend(check_required_release_contract_markers())
 
     if failures:
@@ -681,6 +734,29 @@ def check_required_release_contract_markers() -> list[str]:
         for marker in markers:
             if marker not in text:
                 failures.append(f"release guard contract marker `{marker}` missing from {relative_file}")
+    return failures
+
+
+def check_v090_active_schema_surface() -> list[str]:
+    """Keep retired schemas out of active docs/code while preserving explicit rejectors."""
+
+    failures: list[str] = []
+    paths = [ROOT / relative for relative in ACTIVE_SCHEMA_DOCUMENTS]
+    paths.extend((ROOT / "shared").rglob("*.md"))
+    paths.extend((ROOT / "config" / "agent_roles" / "prompts").rglob("*.md"))
+    paths.extend(SRC.rglob("*.py"))
+    for path in paths:
+        if not path.is_file():
+            continue
+        relative = relpath(path)
+        if relative in RETIRED_SCHEMA_SOURCE_ALLOWLIST:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for term in RETIRED_ACTIVE_SCHEMA_TERMS:
+            if term in text:
+                failures.append(
+                    f"retired schema `{term}` remains on active v0.9 surface: {relative}"
+                )
     return failures
 
 

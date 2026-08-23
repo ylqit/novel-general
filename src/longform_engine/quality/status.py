@@ -5,6 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from longform_engine.agent_protocol_readiness import check_agent_data_pipeline_readiness
@@ -12,6 +13,7 @@ from longform_engine.blind_review import literary_evidence_status
 from longform_engine.config import ConfigDocument
 from longform_engine.storage import resolve_project_root
 from longform_engine.storage.layout import list_finalized_chapter_files
+from longform_engine.story_brief import story_brief_status
 
 
 def quality_status(config: ConfigDocument) -> dict[str, Any]:
@@ -32,6 +34,12 @@ def quality_status(config: ConfigDocument) -> dict[str, Any]:
         "covered_chapters": [item["chapter_number"] for item in chapters if item.get("human_revision_current")],
         "missing_chapters": [item["chapter_number"] for item in chapters if not item.get("human_revision_current")],
     }
+    story_brief_chapters = sorted(
+        int(match.group(1))
+        for path in (root / "50_workbench" / "writing_tasks").glob("ch*.json")
+        if (match := re.fullmatch(r"ch(\d+)\.json", path.name))
+    )
+    brief_chapters = [story_brief_status(root, chapter) for chapter in story_brief_chapters]
     return {
         "schema": "quality_status_v2",
         "protocol_ready": bool(protocol.get("protocol_ready")),
@@ -43,6 +51,17 @@ def quality_status(config: ConfigDocument) -> dict[str, Any]:
             "blockers": author_blockers,
         },
         "human_author_revision_coverage": revision_coverage,
+        "story_brief_currentness": {
+            "contract_current": bool(brief_chapters)
+            and all(item.get("contract_current") for item in brief_chapters),
+            "human_chapter_intent_current": bool(brief_chapters)
+            and all(item.get("human_chapter_intent_current") for item in brief_chapters),
+            "basis_current": bool(brief_chapters)
+            and all(item.get("basis_current") for item in brief_chapters),
+            "manifest_current": bool(brief_chapters)
+            and all(item.get("manifest_current") for item in brief_chapters),
+            "chapters": brief_chapters,
+        },
         "platform_preflights": platform_preflights,
         "protocol_blockers": list(protocol.get("blocking_reasons") or []),
         "literary_evidence_blockers": literary_blockers,
@@ -85,7 +104,7 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
                 revision_binding = revision_value
         decision_path = _decision_path(root, chapter_number, binding)
         decision = _read_json(decision_path) if decision_path is not None else None
-        if not isinstance(decision, dict) and binding.get("schema") == "human_story_review_finalization_binding_v1":
+        if not isinstance(decision, dict) and binding.get("schema") == "human_story_review_finalization_binding_v3":
             decision = {
                 "schema": SCHEMA,
                 "chapter_number": chapter_number,
@@ -100,6 +119,8 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
                     for field in (
                         "candidate_sha256",
                         "chapter_contract_sha256",
+                        "story_brief_basis_sha256",
+                        "human_chapter_intent_sha256",
                         "reader_promise_ledger_sha256",
                         "arc_causal_simulation_sha256",
                         "review_bundle_sha256",
@@ -108,14 +129,18 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
                 },
             }
         revision_file = _project_file(root, str(revision_binding.get("validation_file") or ""))
+        final_lock_file = _project_file(root, str(revision_binding.get("final_lock_file") or ""))
         revision_current = bool(
-            revision_binding.get("schema") == "human_author_revision_finalization_binding_v1"
+            revision_binding.get("schema") == "human_author_revision_finalization_binding_v3"
             and str(revision_binding.get("validation_sha256") or "")
             and revision_file is not None
-            and (
-                not revision_file.is_file()
-                or revision_binding.get("validation_sha256") == sha256(revision_file.read_bytes()).hexdigest()
-            )
+            and revision_file.is_file()
+            and revision_binding.get("validation_sha256")
+            == sha256(revision_file.read_bytes()).hexdigest()
+            and final_lock_file is not None
+            and final_lock_file.is_file()
+            and revision_binding.get("final_lock_sha256")
+            == sha256(final_lock_file.read_bytes()).hexdigest()
         )
         if not revision_current:
             chapter_errors.append("human_author_revision_binding_missing_or_stale")
@@ -125,7 +150,7 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
             chapter_errors.append("human_accept_decision_missing")
         else:
             if decision.get("schema") != SCHEMA:
-                chapter_errors.append("human_accept_schema_not_v4")
+                chapter_errors.append("human_accept_schema_not_v6")
             if decision.get("chapter_number") != chapter_number:
                 chapter_errors.append("human_accept_chapter_mismatch")
             if decision.get("decision") != "accept" or decision.get("approved_by") != "human":
@@ -175,23 +200,30 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
         required_hashes = (
             "candidate_sha256",
             "chapter_contract_sha256",
+            "story_brief_basis_sha256",
+            "human_chapter_intent_sha256",
             "reader_promise_ledger_sha256",
             "arc_causal_simulation_sha256",
             "review_bundle_sha256",
             "human_author_revision_sha256",
         )
-        if not binding or binding.get("schema") != "human_story_review_finalization_binding_v1":
+        if not binding or binding.get("schema") != "human_story_review_finalization_binding_v3":
             chapter_errors.append("human_accept_finalization_binding_missing")
         elif isinstance(decision, dict) and any(
             not str(binding.get(field) or "")
             or str(binding.get(field)) != str(decision.get(field) or "")
             for field in required_hashes
         ):
-            chapter_errors.append("human_accept_six_hash_binding_mismatch")
+            chapter_errors.append("human_accept_eight_hash_binding_mismatch")
         if isinstance(decision, dict) and revision_current and (
             decision.get("human_author_revision_sha256") != revision_binding.get("validation_sha256")
         ):
             chapter_errors.append("human_accept_revision_hash_mismatch")
+        if isinstance(decision, dict) and revision_current and (
+            decision.get("story_brief_basis_sha256")
+            != revision_binding.get("story_brief_basis_sha256")
+        ):
+            chapter_errors.append("human_accept_story_brief_basis_mismatch")
         record = {
             "chapter_number": chapter_number,
             "accepted": not chapter_errors,

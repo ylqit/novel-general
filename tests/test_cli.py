@@ -91,6 +91,20 @@ def test_cli_validate_template_without_api_keys():
     assert "OK: configuration is valid" in result.stdout
 
 
+def test_retired_humanizer_cli_is_an_explicit_tombstone():
+    result = run_cli(
+        "creative",
+        "humanize-task",
+        "templates/qidian-longform/project.yaml",
+        "--chapter",
+        "1",
+    )
+
+    assert result.returncode != 0
+    assert "removed in v0.9" in result.stderr
+    assert "prose-naturalness" in result.stderr
+
+
 def test_cli_mutating_commands_are_marked_for_project_lock():
     parser = build_parser()
     mutating_cases = [
@@ -130,17 +144,17 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("repair", "candidate-task", "project.yaml", "--chapter", "1"),
         ("creative", "brief", "project.yaml", "--init"),
         ("creative", "style-extract", "project.yaml", "--file", "sample.md", "--name", "sample"),
-        ("creative", "humanize-task", "project.yaml", "--chapter", "1", "--source", "draft"),
-        ("creative", "humanize-check", "project.yaml", "--chapter", "1", "--file", "50_workbench/repair_candidates/ch001.md"),
-        ("creative", "humanize-semantic-task", "project.yaml", "--chapter", "1"),
+        ("creative", "prose-naturalness-task", "project.yaml", "--chapter", "1", "--source", "draft"),
+        ("creative", "prose-naturalness-check", "project.yaml", "--chapter", "1", "--file", "50_workbench/repair_candidates/ch001.md"),
+        ("creative", "prose-naturalness-semantic-task", "project.yaml", "--chapter", "1"),
         (
             "creative",
-            "humanize-semantic-validate",
+            "prose-naturalness-semantic-validate",
             "project.yaml",
             "--chapter",
             "1",
             "--file",
-            "50_workbench/humanizer_tasks/ch001.semantic_review.json",
+            "50_workbench/prose_naturalness_tasks/ch001.semantic_review.json",
         ),
         ("quality", "payoff-task", "project.yaml", "--chapter", "1"),
         (
@@ -165,7 +179,7 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("revision", "branch", "project.yaml", "--chapter", "1"),
         ("revision", "rollback", "project.yaml", "--to-chapter", "1"),
         ("revision", "snapshot", "project.yaml"),
-        ("editorial", "submit-review", "project.yaml", "--chapter", "1", "--role", "anti_ai_editor", "--file", "50_workbench/editorial_reviews/results/ch001.anti_ai_editor.json"),
+        ("editorial", "submit-review", "project.yaml", "--chapter", "1", "--role", "anti_template_editor", "--file", "50_workbench/editorial_reviews/results/ch001.anti_template_editor.json"),
         ("editorial", "aggregate", "project.yaml", "--chapter", "1"),
         ("production", "loop", "project.yaml"),
         ("intelligence", "task", "project.yaml", "--task-type", "book_design"),
@@ -179,7 +193,7 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("character", "audit-apply", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_review.ch001-ch015.candidate.json"),
         ("character", "samples-approve", "project.yaml", "--file", "50_workbench/character_reviews/voice_samples.json", "--approved-by", "human"),
         ("benchmark", "init", "project.yaml", "--run-id", "smoke-5", "--host-product", "codex", "--chapters", "5"),
-        ("benchmark", "record", "project.yaml", "--run-id", "smoke-5", "--chapter", "1", "--continuity", "4", "--character-consistency", "4", "--foreshadowing-control", "4", "--pacing", "4", "--reader-payoff", "4", "--ai-taste", "2", "--gate-passed", "--context-file-count", "6", "--context-character-count", "18000"),
+        ("benchmark", "record", "project.yaml", "--run-id", "smoke-5", "--chapter", "1", "--continuity", "4", "--character-consistency", "4", "--foreshadowing-control", "4", "--pacing", "4", "--reader-payoff", "4", "--prose-naturalness", "8", "--gate-passed", "--context-file-count", "6", "--context-character-count", "18000"),
         ("benchmark", "technical-record", "project.yaml", "--run-id", "formal-10", "--chapter", "1", "--gate-passed", "--context-file-count", "6", "--context-character-count", "18000"),
         ("benchmark", "rag-scale-run", "project.yaml", "--scale-chapters", "50", "--backend", "local_sqlite"),
         ("benchmark", "rag-production-template", "project.yaml"),
@@ -685,20 +699,20 @@ def test_cli_creative_humanize_check_chinese_json(tmp_path):
     assert init.returncode == 0
 
     project_yaml = tmp_path / "novel" / "project.yaml"
-    candidate = tmp_path / "novel" / "50_workbench" / "repair_candidates" / "ch001.humanized_candidate.md"
+    candidate = tmp_path / "novel" / "50_workbench" / "repair_candidates" / "ch001.prose_naturalness_candidate.md"
     candidate.parent.mkdir(parents=True, exist_ok=True)
     candidate.write_text(
         "# 第一章\n\nTODO：这里还没有写完。林远仿佛不禁意识到，这件事意义深远，他嘴角微扬。\n",
         encoding="utf-8",
     )
-    check = run_cli("creative", "humanize-check", str(project_yaml), "--chapter", "1", "--file", str(candidate), "--json")
+    check = run_cli("creative", "prose-naturalness-check", str(project_yaml), "--chapter", "1", "--file", str(candidate), "--json")
     payload = json.loads(check.stdout)
     codes = {item["code"] for item in payload["issues"]}
 
     assert check.returncode == 1
-    assert "humanizer_meta_residue" in codes
-    assert "humanizer_inflated_significance" in codes
-    assert "humanizer_cliche_action" in codes
+    assert "prose_naturalness_meta_residue" in codes
+    assert "prose_naturalness_inflated_significance" in codes
+    assert "prose_naturalness_cliche_action" in codes
     assert payload["issue_summary"]["by_category"]["TODO/占位符"] == 1
     assert not (tmp_path / "novel" / "40_manuscript" / "final" / "ch001.md").exists()
 

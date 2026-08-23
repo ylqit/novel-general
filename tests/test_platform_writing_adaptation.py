@@ -5,7 +5,7 @@ import pytest
 
 from longform_engine.agent_tasks import load_manifest
 from longform_engine.config import ConfigError, load_project_config
-from longform_engine.creative import humanize_task
+from longform_engine.creative import prose_naturalness_task
 import longform_engine.editorial.pipeline as editorial_pipeline
 from longform_engine.orchestration import continue_write, open_book
 from longform_engine.quality import (
@@ -144,7 +144,7 @@ def test_platform_contract_config_rejects_invalid_values(profile_override, messa
         )
 
 
-def test_chapter_card_writer_brief_and_humanizer_share_one_bounded_contract(tmp_path):
+def test_chapter_card_writer_brief_and_prose_naturalness_share_one_bounded_contract(tmp_path):
     template = load_project_config(template="qidian-longform")
     project = init_project(template, output=tmp_path / "novel")
     config = load_project_config(project.project_config)
@@ -169,6 +169,16 @@ def test_chapter_card_writer_brief_and_humanizer_share_one_bounded_contract(tmp_
     assert "reader_payoff" not in task["writer_craft_brief"]
     assert task["fact_inventory_summary"]["categories"]["methods"] >= 2
     assert "fanqie_free" not in task_markdown
+    for fixed_platform_number in (
+        "前三章",
+        "前两章",
+        "第4-30章",
+        "每1-2章",
+        "每 1–2 章",
+        "慢章最多两章",
+        "max_consecutive",
+    ):
+        assert fixed_platform_number not in task_markdown
     assert "本章正在发生" in task_markdown
     assert len(manifest["io"]["inputs"]) <= 7
     assert task["context_plan"]["budget_profile"] == "standard"
@@ -176,11 +186,11 @@ def test_chapter_card_writer_brief_and_humanizer_share_one_bounded_contract(tmp_
 
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\nA concrete scene with a consequential choice.\n", encoding="utf-8")
-    humanizer = humanize_task(config, chapter_number=1)
-    humanizer_text = Path(humanizer.task_file).read_text(encoding="utf-8")
-    assert "Primary market: qidian_male" in humanizer_text
-    assert "Advisory only [fanqie_free/" in humanizer_text
-    assert "fixed platform quotas" in humanizer_text
+    humanizer = prose_naturalness_task(config, chapter_number=1)
+    prose_naturalness_text = Path(humanizer.task_file).read_text(encoding="utf-8")
+    assert "Primary market: qidian_male" in prose_naturalness_text
+    assert "Advisory only [fanqie_free/" in prose_naturalness_text
+    assert "fixed platform quotas" in prose_naturalness_text
 
 
 def test_editorial_roles_treat_platform_fit_as_sustainable_and_advisory():

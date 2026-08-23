@@ -256,7 +256,7 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
         ),
     },
     "chapter_direction": {
-        "schema": "chapter_direction_candidate_v4",
+        "schema": "chapter_direction_candidate_v5",
         "scope": "chapter",
         "human": True,
         "targets": (),
@@ -2287,7 +2287,7 @@ def assess_chapter_direction(config: ConfigDocument, chapter_number: int) -> dic
     reasons: list[str] = ["mandatory_chapter_direction", *deadlines["warnings"]]
     text = " ".join(
         str(planned.get(key) or "")
-        for key in ("title", "chapter_duty", "conflict", "chapter_turn", "hook")
+        for key in ("title", "chapter_duty", "conflict", "chapter_turn", "ending_intent")
     ).lower()
     abstract_markers = (
         "待定",
@@ -2841,6 +2841,10 @@ def validate_chapter_direction(
         "irreversible_choice",
         "chapter_turn",
         "reveal_boundary",
+        "emotional_aftereffect",
+        "ending_intent",
+        "must_preserve_suspense",
+        "resolution_markers",
         "must_dramatize",
         "may_summarize",
         "primary_story_engine",
@@ -2900,6 +2904,7 @@ def validate_chapter_direction(
         "primary_story_engine", "state_change_kind", "dramatic_method", "exposition_carrier",
         "mainline_move",
         "character_arc_move", "foreshadow_move", "relationship_move", "ending_mode",
+        "emotional_aftereffect", "ending_intent",
     ):
         if not isinstance(direction.get(field), str) or not direction[field].strip():
             errors.append(f"selected_direction.{field} must be non-empty text.")
@@ -2907,6 +2912,7 @@ def validate_chapter_direction(
         "featured_character_ids", "canon_refs", "world_rule_refs", "foreshadow_refs",
         "forbidden_reveals", "main_risks", "must_dramatize", "may_summarize",
         "scene_carriers", "protected_story_outcomes", "prohibited_drift",
+        "must_preserve_suspense", "resolution_markers",
     ):
         values = direction.get(field)
         if not isinstance(values, list) or any(not isinstance(item, str) or not item.strip() for item in values):
@@ -4279,7 +4285,7 @@ def validate_rolling_chapter_plan(
     fanfiction_mode: bool,
 ) -> None:
     required = {
-        "chapter_number", "title", "chapter_duty", "conflict", "chapter_turn", "hook",
+        "chapter_number", "title", "chapter_duty", "conflict", "chapter_turn", "ending_intent",
         "reader_gain", "volume_id", "arc_id", "featured_character_ids", "characterization_focus",
         "scene_wants", "relationship_move", "active_facets", "forbidden_reveals",
         "primary_story_engine", "primary_scene_carrier", "state_change_kind", "dramatic_method",
@@ -4311,7 +4317,7 @@ def validate_rolling_chapter_plan(
         if str(chapter.get("volume_id") or "") not in volume_ids:
             errors.append(f"chapter_plan[{index}].volume_id must reference a declared volume.")
         for field in (
-            "title", "chapter_duty", "conflict", "chapter_turn", "hook", "reader_gain",
+            "title", "chapter_duty", "conflict", "chapter_turn", "ending_intent", "reader_gain",
             "relationship_move", "primary_story_engine", "primary_scene_carrier",
             "state_change_kind", "dramatic_method",
         ):
@@ -5062,9 +5068,13 @@ def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
             "conflict": resolved["conflict"],
             "key_failure": resolved["key_failure"],
             "irreversible_choice": resolved["irreversible_choice"],
-            "irreversible_action": resolved["irreversible_choice"],
             "chapter_turn": resolved["chapter_turn"],
             "reveal_boundary": resolved["reveal_boundary"],
+            "emotional_aftereffect": resolved["emotional_aftereffect"],
+            "ending_mode": resolved["ending_mode"],
+            "ending_intent": resolved["ending_intent"],
+            "must_preserve_suspense": resolved["must_preserve_suspense"],
+            "resolution_markers": resolved["resolution_markers"],
             "reader_gain": resolved["reader_gain"],
             "cost": resolved["cost"],
             "must_dramatize": resolved["must_dramatize"],
@@ -5086,7 +5096,6 @@ def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
             "dialogue_ownership": resolved["dialogue_ownership"],
             "embodiment_strategy": resolved["embodiment_plan"],
             "interiority_function": resolved["interiority_function"],
-            "ending_mode": resolved["ending_mode"],
             "longline_impact": resolved["mainline_move"],
             "character_arc_move": resolved["character_arc_move"],
             "foreshadow_impact": resolved["foreshadow_move"],

@@ -17,7 +17,7 @@ from longform_engine.agent_tasks import (
     write_manifest,
 )
 from longform_engine.config import load_project_config
-from longform_engine.creative import expand_task, humanize_task
+from longform_engine.creative import expand_task, prose_naturalness_task
 from longform_engine.editorial import editorial_aggregate, editorial_review, editorial_submit_review
 from longform_engine.gates import GateError, gate_check, semantic_pacing_apply, semantic_pacing_task, semantic_pacing_validate
 from longform_engine.orchestration import WorkflowError, continue_write, finalize_chapter, open_book, submit_agent_draft
@@ -128,7 +128,7 @@ def test_finalize_applies_submitted_candidate_and_supersedes_unused_repair(tmp_p
     assert next_action["task_type"] == "chapter_semantic"
 
 
-def test_agent_task_manifests_for_repair_humanizer_and_unified_semantic(tmp_path):
+def test_agent_task_manifests_for_repair_prose_naturalness_and_unified_semantic(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
     open_book(config)
@@ -164,7 +164,7 @@ def test_agent_task_manifests_for_repair_humanizer_and_unified_semantic(tmp_path
     )
     write_manifest(root, repair_manifest_payload, repair_manifest_path)
     repair = {"manifest_file": str(repair_manifest_path)}
-    humanizer = humanize_task(config, chapter_number=1, source="draft")
+    humanizer = prose_naturalness_task(config, chapter_number=1, source="draft")
     expand = expand_task(config, chapter_number=1, source="draft")
 
     (root / "40_manuscript" / "final" / "ch001.md").write_text(
@@ -175,7 +175,7 @@ def test_agent_task_manifests_for_repair_humanizer_and_unified_semantic(tmp_path
     task_types = {item["task_type"] for item in list_manifests(root, chapter_number=1)}
 
     assert Path(repair["manifest_file"]).exists()
-    assert (root / "50_workbench" / "humanizer_tasks" / "ch001.draft.humanize_task.agent_task.json").exists()
+    assert (root / "50_workbench" / "prose_naturalness_tasks" / "ch001.draft.prose_naturalness_task.agent_task.json").exists()
     assert (root / "50_workbench" / "repair_candidates" / "ch001.expand_task.agent_task.json").exists()
     assert (root / "50_workbench" / "semantic_tasks" / "ch001.semantic.agent_task.json").exists()
     assert semantic.manifest_file.endswith("ch001.semantic.agent_task.json")
@@ -183,9 +183,9 @@ def test_agent_task_manifests_for_repair_humanizer_and_unified_semantic(tmp_path
     semantic_task_text = Path(semantic.task_file).read_text(encoding="utf-8")
     assert '"delta_type": "chapter_semantic"' in semantic_task_text
     assert "40_manuscript/final/ch001.md@0:1" in semantic_task_text
-    assert humanizer.candidate_file.endswith("ch001.humanized_candidate.md")
+    assert humanizer.candidate_file.endswith("ch001.prose_naturalness_candidate.md")
     assert expand.candidate_file.endswith("ch001.expanded_candidate.md")
-    assert {"repair", "humanize", "content_expand", "chapter_semantic"}.issubset(task_types)
+    assert {"repair", "prose_naturalness", "content_expand", "chapter_semantic"}.issubset(task_types)
     expand_manifest = load_manifest(root, expand.manifest_file)
     assert expand_manifest["task_type"] == "content_expand"
     assert expand_manifest["io"]["inputs"]
@@ -194,9 +194,9 @@ def test_agent_task_manifests_for_repair_humanizer_and_unified_semantic(tmp_path
     assert expand_manifest["commands"]["apply"].startswith("longform-engine draft submit ")
     assert "--overwrite" in expand_manifest["commands"]["apply"]
     assert expand_manifest["commands"]["failure"].startswith("longform-engine creative expand-task ")
-    humanize_manifest = load_manifest(root, "humanize:ch001:v4")
+    humanize_manifest = load_manifest(root, "prose_naturalness:ch001:v4")
     repair_manifest = load_manifest(root, "repair:ch001:r01:v4")
-    assert humanize_manifest["commands"]["failure"].startswith("longform-engine creative humanize-task ")
+    assert humanize_manifest["commands"]["failure"].startswith("longform-engine creative prose-naturalness-task ")
     assert repair_manifest["commands"]["failure"].startswith("longform-engine agent-task brief ")
     for item in list_manifests(root, chapter_number=1):
         result = validate_manifest_strict(root, load_manifest(root, item["task_id"]))
@@ -363,7 +363,7 @@ def test_editorial_aggregate_reports_missing_duplicate_invalid_repeated_and_life
     config.data.setdefault("editorial", {})["review_roles"] = [
         "scene_prose_editor",
         "planning_chief_editor",
-        "anti_ai_editor",
+        "anti_template_editor",
     ]
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(
         "# Chapter 1\n\nAri keeps the gate clue alive, but the editor wants more scene pressure.\n",
@@ -375,7 +375,7 @@ def test_editorial_aggregate_reports_missing_duplicate_invalid_repeated_and_life
     anti_ai = write_editorial_role_result(
         result_dir,
         chapter_number=1,
-        role="anti_ai_editor",
+        role="anti_template_editor",
         verdict="pass",
         items=[
             {
@@ -387,7 +387,7 @@ def test_editorial_aggregate_reports_missing_duplicate_invalid_repeated_and_life
         ],
     )
     try:
-        submit_editorial_review(config, chapter_number=1, role="anti_ai_editor", file_path=anti_ai)
+        submit_editorial_review(config, chapter_number=1, role="anti_template_editor", file_path=anti_ai)
     except ValueError as exc:
         assert "verdict=pass cannot contain P0/P1 findings" in str(exc)
     else:
@@ -430,14 +430,14 @@ def test_editorial_aggregate_reports_missing_duplicate_invalid_repeated_and_life
     assert "duplicate_role_results" in aggregate.need_human_reasons
     assert "invalid_role_results" in aggregate.need_human_reasons
     assert set(aggregate.missing_roles) == {
-        "anti_ai_editor",
+        "anti_template_editor",
         "character_editor",
         "reader_experience_editor",
     }
     assert aggregate.duplicate_role_results[0]["role_id"] == "planning_chief_editor"
-    assert aggregate.invalid_results[0]["role_id"] == "anti_ai_editor"
+    assert aggregate.invalid_results[0]["role_id"] == "anti_template_editor"
     assert set(payload["missing_roles"]) == {
-        "anti_ai_editor",
+        "anti_template_editor",
         "character_editor",
         "reader_experience_editor",
     }

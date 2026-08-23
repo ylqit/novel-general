@@ -129,12 +129,15 @@ def test_manual_full_repair_submit_consumes_budget_and_stales_old_review_and_con
     original = draft.read_text(encoding="utf-8")
 
     service = ReviewDeskService(config, chapter_number=1)
-    before_hash = service.state()["draft"]["sha256"]
+    desk_state = service.state()
+    before_hash = desk_state["draft"]["sha256"]
+    consultation_hash = desk_state["consultation_candidate"]["sha256"]
     consult = service.create_consultation(
-        expected_candidate_sha256=before_hash,
+        expected_candidate_sha256=consultation_hash,
         start=0,
         end=min(40, len(original)),
         question="这个选择是否真正改变了下一步条件？",
+        phase="human_final",
     )
     assert consult["turn_number"] == 1
 
@@ -175,7 +178,7 @@ def test_manual_full_repair_submit_consumes_budget_and_stales_old_review_and_con
         expected_candidate_sha256=manual["candidate_sha256"],
         text=replacement,
     )
-    with pytest.raises(ReviewServerError, match="human_author_revision_v1"):
+    with pytest.raises(ReviewServerError, match="human_author_revision_v3"):
         service.submit_manual_repair(
             expected_draft_sha256=before_hash,
             expected_candidate_sha256=saved["candidate_sha256"],

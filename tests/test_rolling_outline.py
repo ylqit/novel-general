@@ -230,6 +230,10 @@ def direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> 
         "foreshadow_move": "The false treaty thread echoes through the matching seal cut.",
         "relationship_move": card_payload["relationship_move"],
         "ending_mode": "changed_problem",
+        "ending_intent": "The route copy makes Mira owner of the next tactical choice without resolving the editor mystery.",
+        "emotional_aftereffect": "Ari's loss of sole control leaves wary obligation between the partners.",
+        "must_preserve_suspense": ["identity of the archive editor"],
+        "resolution_markers": [],
         "main_risks": ["Too much procedural explanation could flatten the choice."],
         "canon_refs": [],
         "world_rule_refs": [],
@@ -261,7 +265,7 @@ def direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> 
         "to_chapter": simulation["to_chapter"],
     }
     return {
-        "schema": "chapter_direction_candidate_v4",
+        "schema": "chapter_direction_candidate_v5",
         "chapter_number": chapter_number,
         "chapter_card_sha256": sha256(card.read_bytes()).hexdigest(),
         "trigger_reasons": reasons,

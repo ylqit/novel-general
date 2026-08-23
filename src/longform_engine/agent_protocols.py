@@ -38,7 +38,9 @@ AGENT_OUTPUT_PROTOCOLS = frozenset(
     }
 )
 
-PROSE_TASK_TYPES = frozenset({"chapter_write", "repair", "humanize", "content_expand"})
+PROSE_TASK_TYPES = frozenset(
+    {"chapter_write", "chapter_coedit_rewrite", "repair", "prose_naturalness", "content_expand"}
+)
 DESIGN_TASK_TYPES = frozenset(
     {
         "book_ideation",
@@ -314,6 +316,7 @@ def validate_evidence_review(
     allowed_finding_codes: Iterable[str] = (),
     optional_dimensions: Iterable[str] = (),
     canonical_ref_dimensions: Iterable[str] = (),
+    evidence_id_limits: dict[str, int] | None = None,
 ) -> list[str]:
     errors: list[str] = []
     expected = {"schema", "verdict", "coverage", "findings"}
@@ -362,8 +365,15 @@ def validate_evidence_review(
             ):
                 errors.append(f"{prefix}.canonical_refs must be a list of non-empty references")
                 canonical_refs = []
-            if status == "checked" and not 1 <= len(evidence_ids) <= 2:
-                errors.append(f"{prefix} checked coverage requires one or two evidence IDs")
+            default_limit = 16 if dimension == "revision_goal_achievement" else 2
+            max_evidence = int((evidence_id_limits or {}).get(dimension, default_limit))
+            if status == "checked" and not 1 <= len(evidence_ids) <= max_evidence:
+                if max_evidence == 2:
+                    errors.append(f"{prefix} checked coverage requires one or two evidence IDs")
+                else:
+                    errors.append(
+                        f"{prefix} checked coverage requires between one and {max_evidence} evidence IDs"
+                    )
             if status != "checked" and evidence_ids:
                 errors.append(f"{prefix} may cite evidence only when status=checked")
             if status == "not_applicable" and dimension not in optional:

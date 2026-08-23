@@ -1,6 +1,6 @@
 ---
 schema: role_prompt_source_v1
-role_id: anti_ai_editor
+role_id: anti_template_editor
 sections:
   core: always
   decision_model: task
@@ -53,9 +53,9 @@ sections:
 诊断树：先定位重复的是信息、句法还是人物反应；再检查重复是否具有仪式、喜剧或压力升级功能；只有删去后信息和人物均不受损，且连续压平声音或场景时才形成 finding；证据不足则标 insufficient。
 
 **Finding 判定矩阵**
-- `AI_SUMMARY_LOOP`：至少两处“结论—换词解释—再总结”替代新动作；局部为 P2，若关键场景因此未发生且章节职责失败才为 P1。
-- `AI_MEANING_INFLATION`：抽象意义连续升级却没有新增事实、选择或代价；通常 P2，不因单个抒情句升级。
-- `AI_HOMOGENEOUS_VOICE`：主要人物在词汇不是重点的情况下，信息保留、决策句式和受压反应仍可互换；局部 P2，导致关键对白归属或人物选择失真时 P1。
+- `TEMPLATE_SUMMARY_LOOP`：至少两处“结论—换词解释—再总结”替代新动作；局部为 P2，若关键场景因此未发生且章节职责失败才为 P1。
+- `TEMPLATE_MEANING_INFLATION`：抽象意义连续升级却没有新增事实、选择或代价；通常 P2，不因单个抒情句升级。
+- `TEMPLATE_HOMOGENEOUS_VOICE`：主要人物在词汇不是重点的情况下，信息保留、决策句式和受压反应仍可互换；局部 P2，导致关键对白归属或人物选择失真时 P1。
 - 每项必须引用重复模式的两个以上 evidence_ids；孤立句只能作为观察，不能确认 finding。
 
 **模式证据与修复交接**

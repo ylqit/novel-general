@@ -45,6 +45,32 @@
       "scope": ["publication_preflight", "content_standard"]
     },
     {
+      "record_id": "fanqie_public_ai_writing_tools",
+      "platform": "fanqie_free",
+      "claim": "番茄公开提供 AI 写作辅助工具；该资料不能推导为所有 AI 辅助作品都会通过，也不能推导出内部识别标准。",
+      "unknown_items": ["工具可用性不等于作品签约或发布保证", "平台内部识别模型和阈值未公开"],
+      "source_type": "official_writer_tool_notice",
+      "publisher": "番茄小说作家专区",
+      "source_url": "https://fanqienovel.com/writer/zone/article/7327136545129906238",
+      "effective_at": "2024-01",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "scope": ["publication_preflight", "public_tooling"]
+    },
+    {
+      "record_id": "fanqie_public_signing_flow",
+      "platform": "fanqie_free",
+      "claim": "番茄公开说明签约申请与评估流程；预检只能提示材料与内容质量风险，不能替代签约评估。",
+      "unknown_items": ["内部评估权重和实时审核口径未公开", "公开流程不支持固定章数或检测词典门禁"],
+      "source_type": "official_writer_signing_guide",
+      "publisher": "番茄小说作家专区",
+      "source_url": "https://fanqienovel.com/writer/zone/article/7198471813561581605",
+      "effective_at": "2023-02",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "scope": ["publication_preflight", "signing_assessment"]
+    },
+    {
       "record_id": "yuewen_writer_assistant_public_tools",
       "platform": "qidian_male",
       "claim": "阅文公开提供作家资料查询等辅助工具；该资料不能证明平台禁止全部 AI 辅助作品。",

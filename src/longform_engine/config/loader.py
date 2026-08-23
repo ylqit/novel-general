@@ -82,6 +82,7 @@ REMOVED_CONFIG_FIELDS = {
     "quality.assurance_mode": "Use quality.profile.strictness.",
     "quality.approved_style_baseline": "Manage approved style samples with the quality baseline CLI.",
     "quality.creative_guidance": "Guided creative interaction is a schema v2 invariant.",
+    "quality.humanizer": "Use quality.prose_naturalness; v0.9 does not retain a silent Humanizer alias.",
     "quality.reader_payoff.structure_window": "The retired structure-pattern analyzer no longer consumes this field.",
     "quality.reader_payoff.language_similarity_threshold": "The retired structure-pattern analyzer no longer consumes this field.",
     "quality.repair.max_content_rounds": "The repair budget is fixed at two content rounds.",
@@ -105,6 +106,9 @@ REMOVED_CONFIG_FIELDS = {
     ),
     "pacing.event_quota_window_chapters": "Use pacing.soft_event_window_chapters.",
     "pacing.quota_types": "Event types are configured by pacing.event_types.",
+    "pacing.max_major_quota_triggers_per_chapter": (
+        "The A/B/C keyword quota gate was removed in v0.8; use scene-evidence pacing review."
+    ),
     "research.enabled": "Research commands are explicitly invoked and do not use an enable switch.",
     "research.default_ingestion": "Research ingestion is always reviewed-inbox first.",
     "research.promote_requires_approval": "Research promotion always requires explicit approval.",
@@ -126,7 +130,7 @@ CONFIG_OWNER_PREFIXES = {
     "pacing": "planning.pipeline/gates.pipeline",
     "research": "research.pipeline",
     "quality.semantic_pacing": "gates.pipeline",
-    "quality.humanizer": "creative.pipeline",
+    "quality.prose_naturalness": "creative.pipeline",
     "quality.reader_payoff": "quality.review",
     "quality.repair": "repair_coordination",
 }
@@ -455,10 +459,10 @@ def validate_config(data: dict[str, Any]) -> None:
         or len(set(selected_p2_codes)) != len(selected_p2_codes)
     ):
         raise ConfigError("quality.repair.selected_p2_codes must be a unique list of non-empty strings")
-    humanizer = _require_mapping(quality, "humanizer", "quality")
-    semantic_mode = str(humanizer.get("semantic_review_mode") or "").strip()
+    naturalness = _require_mapping(quality, "prose_naturalness", "quality")
+    semantic_mode = str(naturalness.get("semantic_review_mode") or "").strip()
     if semantic_mode not in {"risk_based", "always"}:
-        raise ConfigError("quality.humanizer.semantic_review_mode must be one of: risk_based, always")
+        raise ConfigError("quality.prose_naturalness.semantic_review_mode must be one of: risk_based, always")
     semantic_pacing = _require_mapping(quality, "semantic_pacing", "quality")
     pacing_review_mode = str(semantic_pacing.get("review_mode") or "").strip()
     if pacing_review_mode not in {"off", "risk_based", "required"}:
@@ -486,7 +490,6 @@ def validate_config(data: dict[str, Any]) -> None:
         raise ConfigError("pacing.default_mode must be one of: balanced, fast, measured")
     for field in (
         "fast_chapter_cooldown",
-        "max_major_quota_triggers_per_chapter",
         "soft_event_window_chapters",
         "max_consecutive_fast_chapters",
         "fast_chapter_quota_per_volume",

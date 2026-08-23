@@ -39,8 +39,8 @@
       "path": "config/agent_roles/playbooks/serial_pacing.md"
     },
     {
-      "playbook_id": "anti_ai_expression",
-      "path": "config/agent_roles/playbooks/anti_ai_expression.md"
+      "playbook_id": "anti_template_expression",
+      "path": "config/agent_roles/playbooks/anti_template_expression.md"
     },
     {
       "playbook_id": "ensemble_and_viewpoint",
@@ -60,14 +60,15 @@
     "chapter_semantic": "canonical_semantic_archivist",
     "design_semantic_compile": "canonical_semantic_archivist",
     "chapter_write": "chapter_author",
+    "chapter_coedit_rewrite": "chapter_author",
     "character_expression_design": "character_performance_architect",
     "character_expression_review": "character_performance_reviewer",
     "content_expand": "expansion_writer",
     "fanfiction_canon": "fanfiction_canon_archivist",
     "fanfiction_design": "fanfiction_architect",
-    "humanize": "humanizer",
+    "prose_naturalness": "prose_naturalness_editor",
     "prose_revision_semantic_review": "prose_revision_semantic_reviewer",
-    "human_review_consult": "human_review_advisor",
+    "human_review_consult": "human_author_advisor",
     "outline_design": "longform_outline_architect",
     "outline_extension": "longform_outline_architect",
     "outline_revision": "continuity_outline_editor",
@@ -80,7 +81,7 @@
     "style_analysis": "semantic_style_analyst"
   },
   "editorial_role_map": {
-    "anti_ai_editor": "anti_ai_editor",
+    "anti_template_editor": "anti_template_editor",
     "canon_fidelity_reviewer": "canon_fidelity_reviewer",
     "character_editor": "character_editor",
     "planning_chief_editor": "planning_chief_editor",
@@ -89,7 +90,7 @@
   },
   "session_policy_map": {
     "adaptation_analyst": "isolated_review",
-    "anti_ai_editor": "isolated_review",
+    "anti_template_editor": "isolated_review",
     "book_architect": "project_coordinator",
     "canon_fidelity_reviewer": "isolated_review",
     "canonical_semantic_archivist": "isolated_archival",
@@ -103,9 +104,9 @@
     "expansion_writer": "isolated_revision",
     "fanfiction_architect": "project_coordinator",
     "fanfiction_canon_archivist": "isolated_archival",
-    "humanizer": "isolated_revision",
+    "prose_naturalness_editor": "isolated_revision",
     "prose_revision_semantic_reviewer": "isolated_review",
-    "human_review_advisor": "candidate_consultation",
+    "human_author_advisor": "candidate_consultation",
     "longform_outline_architect": "project_coordinator",
     "planning_chief_editor": "isolated_review",
     "reader_experience_editor": "isolated_review",
@@ -147,16 +148,16 @@
       ],
       "optional_playbook_ids": [
         "serial_pacing",
-        "anti_ai_expression"
+        "anti_template_expression"
       ],
       "max_active_playbooks": 3,
       "review_dimensions": [],
       "finding_codes": []
     },
     {
-      "role_id": "anti_ai_editor",
-      "role_version": "3.0.0",
-      "prompt_path": "config/agent_roles/prompts/anti_ai_editor.md",
+      "role_id": "anti_template_editor",
+      "role_version": "4.0.0",
+      "prompt_path": "config/agent_roles/prompts/anti_template_editor.md",
       "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
@@ -177,7 +178,7 @@
         "ai_summary_loop": "failure_modes"
       },
       "required_playbook_ids": [
-        "anti_ai_expression"
+        "anti_template_expression"
       ],
       "optional_playbook_ids": [
         "scene_causality",
@@ -190,9 +191,9 @@
         "summary_inflation"
       ],
       "finding_codes": [
-        "AI_SUMMARY_LOOP",
-        "AI_MEANING_INFLATION",
-        "AI_HOMOGENEOUS_VOICE"
+        "TEMPLATE_SUMMARY_LOOP",
+        "TEMPLATE_MEANING_INFLATION",
+        "TEMPLATE_HOMOGENEOUS_VOICE"
       ]
     },
     {
@@ -317,7 +318,7 @@
         "opening_and_mainline",
         "dialogue_and_subtext",
         "interiority_and_emotion",
-        "anti_ai_expression"
+        "anti_template_expression"
       ],
       "max_active_playbooks": 3,
       "review_dimensions": [],
@@ -700,9 +701,9 @@
       "finding_codes": []
     },
     {
-      "role_id": "humanizer",
-      "role_version": "3.0.0",
-      "prompt_path": "config/agent_roles/prompts/humanizer.md",
+      "role_id": "prose_naturalness_editor",
+      "role_version": "4.0.0",
+      "prompt_path": "config/agent_roles/prompts/prose_naturalness_editor.md",
       "output_mode": "prose_markdown_v1",
       "independence_mode": "author_context",
       "allowed_overlay_fields": [
@@ -722,11 +723,11 @@
         "workflow"
       ],
       "trigger_sections": {
-        "humanize": "diagnostics",
-        "humanize_boundary_conflict": "failure_modes"
+        "prose_naturalness": "diagnostics",
+        "prose_naturalness_boundary_conflict": "failure_modes"
       },
       "required_playbook_ids": [
-        "anti_ai_expression"
+        "anti_template_expression"
       ],
       "optional_playbook_ids": [
         "scene_causality",
@@ -760,7 +761,7 @@
         "prose_revision_semantic_drift": "failure_modes"
       },
       "required_playbook_ids": [
-        "anti_ai_expression"
+        "anti_template_expression"
       ],
       "optional_playbook_ids": [
         "character_agency",
@@ -785,9 +786,9 @@
       ]
     },
     {
-      "role_id": "human_review_advisor",
-      "role_version": "3.0.0",
-      "prompt_path": "config/agent_roles/prompts/human_review_advisor.md",
+      "role_id": "human_author_advisor",
+      "role_version": "4.0.0",
+      "prompt_path": "config/agent_roles/prompts/human_author_advisor.md",
       "output_mode": "design_document_v1",
       "independence_mode": "isolated_review",
       "allowed_overlay_fields": [
@@ -1061,7 +1062,7 @@
       "optional_playbook_ids": [
         "character_agency",
         "dialogue_and_subtext",
-        "anti_ai_expression"
+        "anti_template_expression"
       ],
       "max_active_playbooks": 3,
       "review_dimensions": [],
@@ -1129,7 +1130,7 @@
       "optional_playbook_ids": [
         "dialogue_and_subtext",
         "interiority_and_emotion",
-        "anti_ai_expression"
+        "anti_template_expression"
       ],
       "max_active_playbooks": 2,
       "review_dimensions": [
@@ -1263,7 +1264,7 @@
         "style_evidence_gap": "failure_modes"
       },
       "required_playbook_ids": [
-        "anti_ai_expression"
+        "anti_template_expression"
       ],
       "optional_playbook_ids": [
         "scene_causality",

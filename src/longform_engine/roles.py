@@ -868,7 +868,7 @@ PLAYBOOK_SIGNAL_ALIASES: dict[str, frozenset[str]] = {
     "relationship_dynamics": frozenset({"relationship", "romance", "team", "relationship_dynamics"}),
     "foreshadow_and_mystery": frozenset({"foreshadow", "mystery", "reveal", "foreshadow_and_mystery"}),
     "serial_pacing": frozenset({"pacing", "payoff", "serial", "serial_pacing"}),
-    "anti_ai_expression": frozenset({"anti_ai", "template", "voice", "anti_ai_expression"}),
+    "anti_template_expression": frozenset({"template", "voice", "anti_template_expression"}),
     "ensemble_and_viewpoint": frozenset({"ensemble", "viewpoint", "pov", "ensemble_and_viewpoint"}),
     "fanfiction_canon": frozenset({"fanfiction", "canon", "ooc", "fanfiction_canon"}),
 }
@@ -903,7 +903,7 @@ def select_playbook_sections(
         "analysis": ("analysis", "review"),
         "archival": ("review", "false_positives"),
     }.get(role_family, ())
-    repair_task = role_family == "revision" and task_type in {"repair", "humanize"}
+    repair_task = role_family == "revision" and task_type in {"repair", "prose_naturalness"}
     if role_family == "revision":
         preferred = () if repair_task else ("creation",)
     task_sections = [section for section, mode in source.section_modes.items() if mode == "task"]
@@ -912,7 +912,7 @@ def select_playbook_sections(
         selected.extend(matched_task)
     elif task_sections and not repair_task:
         selected.append(task_sections[0])
-    repair_requested = task_type in {"repair", "humanize"} or any(
+    repair_requested = task_type in {"repair", "prose_naturalness"} or any(
         signal.startswith("repair_") or signal.endswith("_repair") for signal in signals
     )
     if repair_requested:

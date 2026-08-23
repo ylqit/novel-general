@@ -56,7 +56,7 @@ def test_benchmark_init_validate_and_report_without_manuscript_body(tmp_path):
             "foreshadowing_control": 5,
             "pacing": 3,
             "reader_payoff": 4,
-            "ai_taste": 2,
+            "prose_naturalness": 2,
         }
         record["gate_passed"] = record["chapter_number"] != 3
         record["repair_count"] = 1 if record["chapter_number"] == 3 else 0
@@ -262,7 +262,7 @@ def test_fanfiction_benchmark_requires_all_quality_dimensions_before_recording(t
         "foreshadowing_control": 8,
         "pacing": 8,
         "reader_payoff": 8,
-        "ai_taste": 2,
+        "prose_naturalness": 2,
     }
 
     with pytest.raises(ValueError, match="all six"):
@@ -302,9 +302,9 @@ def test_fanfiction_benchmark_requires_all_quality_dimensions_before_recording(t
 def test_benchmark_record_and_compare_same_scenario(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    for run_id, product, continuity, ai_taste in (
-        ("codex-quality-2", "codex", 5, 2),
-        ("claude-quality-2", "claude-code", 4, 3),
+    for run_id, product, continuity, prose_naturalness in (
+        ("codex-quality-2", "codex", 5, 8),
+        ("claude-quality-2", "claude-code", 4, 7),
     ):
         init_benchmark(
             config,
@@ -326,7 +326,7 @@ def test_benchmark_record_and_compare_same_scenario(tmp_path):
                     "foreshadowing_control": 4,
                     "pacing": 4,
                     "reader_payoff": 4,
-                    "ai_taste": ai_taste,
+                    "prose_naturalness": prose_naturalness,
                 },
                 gate_passed=True,
                 repair_count=0,
@@ -346,13 +346,13 @@ def test_benchmark_record_and_compare_same_scenario(tmp_path):
     )
     payload = json.loads((root / comparison.comparison_json).read_text(encoding="utf-8"))
 
-    assert payload["schema"] == "quality_benchmark_comparison_v3"
+    assert payload["schema"] == "quality_benchmark_comparison_v4"
     assert payload["quality_evidence_complete"] is False
     assert payload["evidence_gaps"]
     assert payload["scenario_id"] == "shared-setting-v1"
     assert payload["manuscript_bodies_included"] is False
     assert payload["best_by_metric"]["continuity"] == "codex-quality-2"
-    assert payload["best_by_metric"]["ai_taste"] == "codex-quality-2"
+    assert payload["best_by_metric"]["prose_naturalness"] == "codex-quality-2"
 
 
 def test_benchmark_compare_rejects_incomplete_or_mismatched_runs(tmp_path):
@@ -410,7 +410,7 @@ def test_benchmark_record_rejects_oversized_annotations_without_writing(tmp_path
                 "foreshadowing_control": 4,
                 "pacing": 4,
                 "reader_payoff": 4,
-                "ai_taste": 2,
+                "prose_naturalness": 2,
             },
             gate_passed=True,
             repair_count=0,
@@ -426,7 +426,7 @@ def test_quality_evidence_rejects_self_declared_judges_and_edited_rag_evidence(t
     config = seed_project(tmp_path)
     scenario = tmp_path / "formal-scenario.json"
     scenario.write_text('{"schema":"quality_scenario_v1","id":"formal-setting-v1"}', encoding="utf-8")
-    for run_id, product, score, ai_taste in (
+    for run_id, product, score, prose_naturalness in (
         ("primary-formal-10", "codex", 9, 2),
         ("secondary-formal-10", "claude-code", 8, 3),
     ):
@@ -452,7 +452,7 @@ def test_quality_evidence_rejects_self_declared_judges_and_edited_rag_evidence(t
                     "foreshadowing_control": score,
                     "pacing": score,
                     "reader_payoff": score,
-                    "ai_taste": ai_taste,
+                    "prose_naturalness": prose_naturalness,
                 },
                 gate_passed=True,
                 repair_count=0,

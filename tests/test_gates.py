@@ -228,20 +228,26 @@ def test_reverse_brake_requires_tail_hook_when_anchor_demands_it(tmp_path):
     assert (root / "50_workbench" / "gate_artifacts" / "ch001" / "reverse_brake_report.md").exists()
 
 
-def test_reverse_brake_reports_abc_quota_overflow(tmp_path):
+def test_multiple_plot_terms_do_not_create_a_keyword_quota_blocker(tmp_path):
     project_config = seed_gate_project(tmp_path)
     project_config.data["length"]["chapter"]["hard_min"] = 20
-    project_config.data["pacing"]["max_major_quota_triggers_per_chapter"] = 1
     root = tmp_path / "novel"
     plan_chapter(project_config, chapter_number=1)
-    draft = "# Chapter 1\n\n" + ("The core conflict, relationship betrayal, and secret truth all reveal at once. " * 18)
+    developments = [
+        f"At step {index}, the mainline shifts because the relationship exposes a different secret and forces a new choice."
+        for index in range(1, 19)
+    ]
+    draft = "# Chapter 1\n\n" + "\n\n".join(developments)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(draft, encoding="utf-8")
 
     result = gate_check(project_config, chapter_number=1)
     codes = {failure["code"] for failure in result.failures}
 
-    assert result.passed is False
-    assert "plot_quota_overflow" in codes
+    assert "plot_quota_overflow" not in codes
+    assert all(
+        failure["severity"] != "P1" or failure["code"] not in {"plot_quota_overflow", "keyword_quota"}
+        for failure in result.failures
+    )
 
 
 def test_continue_write_generates_gate_artifacts(tmp_path):
