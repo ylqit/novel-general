@@ -165,13 +165,26 @@ def formal_chapter_contract(
     }
 
 
+def persist_chapter_inputs(root: Path, contract: dict, card: dict) -> None:
+    chapter = int(contract["chapter_number"])
+    for path, payload in (
+        (root / "20_outline" / "chapter_contracts" / f"ch{chapter:03d}.json", contract),
+        (root / "20_outline" / "chapter_cards" / f"ch{chapter:03d}.json", card),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def assert_writing_boundaries_reject(config, root: Path, pattern: str) -> None:
+    contract = formal_chapter_contract()
+    card = {"title": "旧语义合同下游绕过"}
+    persist_chapter_inputs(root, contract, card)
     with pytest.raises(FanfictionContextError, match=pattern):
         compile_fanfiction_context(
             config,
             chapter_number=1,
-            chapter_contract=formal_chapter_contract(),
-            chapter_card={"title": "旧语义合同下游绕过"},
+            chapter_contract=contract,
+            chapter_card=card,
             character_packet={},
         )
     with pytest.raises(WorkflowError, match=pattern):
@@ -179,8 +192,8 @@ def assert_writing_boundaries_reject(config, root: Path, pattern: str) -> None:
             config,
             root,
             chapter_number=1,
-            chapter_contract=formal_chapter_contract(),
-            card={"title": "旧语义合同下游绕过"},
+            chapter_contract=contract,
+            card=card,
         )
 
 
@@ -825,14 +838,17 @@ def test_semantic_canon_compiles_to_readable_bounded_writing_context(tmp_path, m
     config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
     apply_route_design(config, root, canon)
 
+    chapter_contract = formal_chapter_contract(
+        claim_refs=["route:gate_divergence", "route:lin_voice"]
+    )
+    card = {"title": "门前谈判", "featured_character_ids": ["classic:lin_zhou"]}
+    persist_chapter_inputs(root, chapter_contract, card)
     contract = load_fanfiction_writing_contract(
         config,
         root,
         chapter_number=1,
-        chapter_contract=formal_chapter_contract(
-            claim_refs=["route:gate_divergence", "route:lin_voice"]
-        ),
-        card={"title": "门前谈判", "featured_character_ids": ["classic:lin_zhou"]},
+        chapter_contract=chapter_contract,
+        card=card,
     )
 
     assert contract["enabled"] is True
@@ -935,15 +951,16 @@ def test_event_causal_targets_join_required_cross_namespace_dependency_closure(
 ):
     config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
     causal_targets = install_cross_namespace_event_dependencies(config, root, canon)
+    chapter_contract = formal_chapter_contract(claim_refs=["route:gate_event_fate"])
+    card = {"title": "因果闭包"}
+    persist_chapter_inputs(root, chapter_contract, card)
 
     contract = load_fanfiction_writing_contract(
         config,
         root,
         chapter_number=1,
-        chapter_contract=formal_chapter_contract(
-            claim_refs=["route:gate_event_fate"]
-        ),
-        card={"title": "因果闭包"},
+        chapter_contract=chapter_contract,
+        card=card,
     )
 
     assert causal_targets <= set(contract["dependency_claim_ids"])
@@ -953,16 +970,17 @@ def test_event_causal_targets_join_required_cross_namespace_dependency_closure(
 def test_event_causal_dependency_outside_chapter_scope_blocks_context(tmp_path, monkeypatch):
     config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
     install_cross_namespace_event_dependencies(config, root, canon, out_of_scope=True)
+    chapter_contract = formal_chapter_contract(claim_refs=["route:gate_event_fate"])
+    card = {"title": "越界因果依赖"}
+    persist_chapter_inputs(root, chapter_contract, card)
 
     with pytest.raises(WorkflowError, match="fanfiction_context_dependency_out_of_scope"):
         load_fanfiction_writing_contract(
             config,
             root,
             chapter_number=1,
-            chapter_contract=formal_chapter_contract(
-                claim_refs=["route:gate_event_fate"]
-            ),
-            card={"title": "越界因果依赖"},
+            chapter_contract=chapter_contract,
+            card=card,
         )
 
 
@@ -971,26 +989,32 @@ def test_names_do_not_select_optional_claims_and_unknown_explicit_refs_block(
 ):
     config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
     apply_route_design(config, root, canon)
+    chapter_contract = formal_chapter_contract(chapter_number=2)
+    card = {"title": "林舟与守门人再次谈判"}
+    persist_chapter_inputs(root, chapter_contract, card)
 
     contract = load_fanfiction_writing_contract(
         config,
         root,
         chapter_number=2,
-        chapter_contract=formal_chapter_contract(chapter_number=2),
-        card={"title": "林舟与守门人再次谈判"},
+        chapter_contract=chapter_contract,
+        card=card,
     )
 
     assert "route:lin_voice" not in contract["included_claim_ids"]
+    unknown_contract = formal_chapter_contract(
+        chapter_number=2,
+        claim_refs=["route:unknown_claim"],
+    )
+    unknown_card = {"title": "未知依赖"}
+    persist_chapter_inputs(root, unknown_contract, unknown_card)
     with pytest.raises(WorkflowError, match="fanfiction_context_missing_claims"):
         load_fanfiction_writing_contract(
             config,
             root,
             chapter_number=2,
-            chapter_contract=formal_chapter_contract(
-                chapter_number=2,
-                claim_refs=["route:unknown_claim"],
-            ),
-            card={"title": "未知依赖"},
+            chapter_contract=unknown_contract,
+            card=unknown_card,
         )
 
 

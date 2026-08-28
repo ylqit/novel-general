@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from hashlib import sha256
 import json
 
 from longform_engine.config import load_project_config
@@ -23,7 +24,25 @@ def seed_event_project(tmp_path: Path):
     final.write_text(text, encoding="utf-8")
     write_json(
         project.root / "30_state" / "semantic_ledger" / "ch001.json",
-        {"schema": "chapter_semantic_bundle_v1", "chapter_number": 1, "canonical": True},
+        {
+            "schema": "chapter_semantic_bundle_v1",
+            "chapter_number": 1,
+            "canonical": True,
+            "source": {
+                "path": "40_manuscript/final/ch001.md",
+                "sha256": sha256(final.read_bytes()).hexdigest(),
+            },
+        },
+    )
+    plot_table = {
+        "schema": "plot_node_table_v1",
+        "chapter_number": 1,
+        "nodes": [],
+        "approval_sha256": "a" * 64,
+    }
+    plot_path = write_json(
+        project.root / "20_outline" / "plot_nodes" / "ch001.json",
+        plot_table,
     )
     write_json(
         project.root / "30_state" / "narrative_events" / "ch001.json",
@@ -44,7 +63,7 @@ def seed_event_project(tmp_path: Path):
                     "realization_evidence": None,
                 }
             ],
-            "source_plot_node_table_sha256": "0" * 64,
+            "source_plot_node_table_sha256": sha256(plot_path.read_bytes()).hexdigest(),
         },
     )
     return config, project.root, text

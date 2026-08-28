@@ -9,8 +9,15 @@ import re
 from typing import Any, Iterable, Mapping
 import unicodedata
 
-from longform_engine.config import ConfigDocument
+from longform_engine.config import ConfigDocument, load_project_config
 from longform_engine.chapter_contract import validate_chapter_contract
+from longform_engine.agent_tasks import (
+    list_manifests,
+    manifest_chapter_number,
+    manifest_input_records,
+    manifest_output,
+    validate_manifest_strict,
+)
 from longform_engine.fanfiction_contracts import (
     CurrentFanfictionDocuments,
     EVENT_CAUSAL_REFERENCE_FIELDS,
@@ -18,6 +25,7 @@ from longform_engine.fanfiction_contracts import (
     load_current_fanfiction_documents,
     load_current_fanfiction_route,
 )
+from longform_engine.fanfiction_divergence import realized_major_divergence_errors
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.rag import query as rag_query
 from longform_engine.semantic_protocols import build_workflow_record, validate_semantic_document
@@ -82,6 +90,9 @@ def compile_fanfiction_context(
 
     if chapter_number <= 0:
         raise FanfictionContextError("fanfiction context requires a positive chapter number")
+    # This parameter remains in the author-context API, but is deliberately not a
+    # semantic selector: the packet is transient and has no canonical persisted owner.
+    _ = character_packet
     contract_errors = validate_chapter_contract(chapter_contract)
     if contract_errors:
         raise FanfictionContextError(
@@ -91,31 +102,19 @@ def compile_fanfiction_context(
     if chapter_contract.get("chapter_number") != chapter_number:
         raise FanfictionContextError("fanfiction_context_chapter_contract_mismatch")
     root = resolve_project_root(config)
-    chapter_contract_path = (
-        root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
+    chapter_contract_path, persisted_contract, chapter_card_path, persisted_card = (
+        _load_persisted_chapter_inputs(root, chapter_number)
     )
-    chapter_card_path = (
-        root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-    )
-    if chapter_contract_path.is_file():
-        persisted_contract = _read_json(chapter_contract_path)
-        if not isinstance(persisted_contract, dict):
-            raise FanfictionContextError("fanfiction_context_chapter_contract_unreadable")
-        persisted_contract = {
-            key: value
-            for key, value in persisted_contract.items()
-            if key != "chapter_contract_hash"
-        }
-        if persisted_contract != chapter_contract:
-            raise FanfictionContextError("fanfiction_context_chapter_contract_stale")
-    if chapter_card_path.is_file() and _read_json(chapter_card_path) != chapter_card:
+    if persisted_contract != chapter_contract:
+        raise FanfictionContextError("fanfiction_context_chapter_contract_stale")
+    if persisted_card != chapter_card:
         raise FanfictionContextError("fanfiction_context_chapter_card_stale")
     try:
         current = load_current_fanfiction_documents(config, root)
     except FanfictionContractError as exc:
         raise FanfictionContextError(str(exc)) from exc
     knowledge_documents, knowledge_paths, knowledge_sha256 = _current_future_knowledge_documents(
-        root
+        config, root
     )
     paths = {**current.paths, **knowledge_paths}
     source_sha256 = {**current.sha256, **knowledge_sha256}
@@ -198,7 +197,6 @@ def compile_fanfiction_context(
         config,
         chapter_contract=chapter_contract,
         chapter_card=chapter_card,
-        character_packet=character_packet,
     )
     explicit_id_set = set(explicit_ids)
     out_of_scope = {
@@ -354,19 +352,10 @@ def compile_fanfiction_context(
         "namespace_collisions": collisions,
         "chapter_provenance": {
             "chapter_number": chapter_number,
-            "chapter_contract_path": (
-                chapter_contract_path.relative_to(root).as_posix()
-                if chapter_contract_path.is_file()
-                else ""
-            ),
+            "chapter_contract_path": chapter_contract_path.relative_to(root).as_posix(),
             "chapter_contract_sha256": _canonical_json_hash(chapter_contract),
-            "chapter_card_path": (
-                chapter_card_path.relative_to(root).as_posix()
-                if chapter_card_path.is_file()
-                else ""
-            ),
+            "chapter_card_path": chapter_card_path.relative_to(root).as_posix(),
             "chapter_card_sha256": _canonical_json_hash(chapter_card),
-            "character_packet_sha256": _canonical_json_hash(character_packet),
         },
         "projection_inputs": {
             "show_source_labels": (
@@ -442,6 +431,11 @@ def write_fanfiction_context_bundle(root: Path, bundle: dict[str, Any]) -> Path:
     bundle_errors = _validate_bundle_v2(bundle)
     if bundle_errors:
         raise FanfictionContextError("fanfiction_context_invalid: " + "; ".join(bundle_errors))
+    project_config = root / "project.yaml"
+    if project_config.is_file():
+        _require_bundle_matches_persisted_inputs(load_project_config(project_config), bundle)
+    elif _chapter_provenance_stale(root, bundle, chapter_number=chapter_number):
+        raise FanfictionContextError("fanfiction_context_stale: persisted chapter inputs drifted")
     target = root / "50_workbench" / "fanfiction_context" / f"ch{chapter_number:03d}.json"
     atomic_write_text(target, json.dumps(bundle, ensure_ascii=False, indent=2) + "\n")
     return target
@@ -502,7 +496,9 @@ def fanfiction_context_status(
                 "contract_errors": [str(exc)],
             },
         }
-    _documents, knowledge_paths, knowledge_sha256 = _current_future_knowledge_documents(root)
+    _documents, knowledge_paths, knowledge_sha256 = _current_future_knowledge_documents(
+        config, root
+    )
     stale_reasons = _bundle_stale_sources(
         root,
         payload,
@@ -656,7 +652,6 @@ def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
         "chapter_contract_sha256",
         "chapter_card_path",
         "chapter_card_sha256",
-        "character_packet_sha256",
     }:
         errors.append("chapter_provenance fields are invalid")
     elif provenance.get("chapter_number") != chapter:
@@ -666,7 +661,6 @@ def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
         for field in (
             "chapter_contract_sha256",
             "chapter_card_sha256",
-            "character_packet_sha256",
         )
     ):
         errors.append("chapter_provenance hashes must be SHA-256")
@@ -968,9 +962,68 @@ def _chapter_provenance_stale(
                 }
             if provenance.get(f"{kind}_sha256") != _canonical_json_hash(current):
                 stale.append(kind)
-        elif declared_path:
+        else:
             stale.append(f"{kind}_path")
     return stale
+
+
+def _load_persisted_chapter_inputs(
+    root: Path,
+    chapter_number: int,
+) -> tuple[Path, dict[str, Any], Path, dict[str, Any]]:
+    contract_path = root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
+    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    if not contract_path.is_file():
+        raise FanfictionContextError("fanfiction_context_chapter_contract_missing")
+    if not card_path.is_file():
+        raise FanfictionContextError("fanfiction_context_chapter_card_missing")
+    raw_contract = _read_json(contract_path)
+    card = _read_json(card_path)
+    if not isinstance(raw_contract, dict):
+        raise FanfictionContextError("fanfiction_context_chapter_contract_unreadable")
+    if not isinstance(card, dict):
+        raise FanfictionContextError("fanfiction_context_chapter_card_unreadable")
+    contract = {key: value for key, value in raw_contract.items() if key != "chapter_contract_hash"}
+    contract_errors = validate_chapter_contract(contract)
+    if contract_errors:
+        raise FanfictionContextError(
+            "fanfiction_context_chapter_contract_invalid: " + "; ".join(contract_errors)
+        )
+    if contract.get("chapter_number") != chapter_number:
+        raise FanfictionContextError("fanfiction_context_chapter_contract_mismatch")
+    return contract_path, contract, card_path, card
+
+
+def _require_bundle_matches_persisted_inputs(
+    config: ConfigDocument,
+    payload: Mapping[str, Any],
+) -> None:
+    chapter_number = int(payload.get("chapter_number") or 0)
+    root = resolve_project_root(config)
+    _contract_path, contract, _card_path, card = _load_persisted_chapter_inputs(
+        root, chapter_number
+    )
+    expected = compile_fanfiction_context(
+        config,
+        chapter_number=chapter_number,
+        chapter_contract=contract,
+        chapter_card=card,
+        character_packet={},
+    )
+    volatile = {"bundle_sha256", "diagnostics"}
+    if any(
+        payload.get(key) != expected.get(key)
+        for key in (set(payload) | set(expected)) - volatile
+    ):
+        divergent = sorted(
+            key
+            for key in set(payload) | set(expected)
+            if key not in volatile and payload.get(key) != expected.get(key)
+        )
+        raise FanfictionContextError(
+            "fanfiction_context_stale: deterministic persisted-input recompilation differs: "
+            + ", ".join(divergent)
+        )
 
 
 def require_current_fanfiction_context_bundle(
@@ -1003,7 +1056,7 @@ def require_current_fanfiction_context_bundle(
     if bundle_errors:
         raise FanfictionContextError("fanfiction_context_invalid: " + "; ".join(bundle_errors))
     knowledge_documents, knowledge_paths, knowledge_sha256 = _current_future_knowledge_documents(
-        root
+        config, root
     )
     stale_sources = _bundle_stale_sources(
         root,
@@ -1025,59 +1078,7 @@ def require_current_fanfiction_context_bundle(
         raise FanfictionContextError(
             "fanfiction_context_stale: " + ", ".join(provenance_stale)
         )
-    canonical_claims: dict[str, dict[str, Any]] = {}
-    for namespace, document in (
-        ("source_canon", current.source_canon),
-        ("story_engine", current.story_engine),
-        ("route_design", current.route),
-        *knowledge_documents.items(),
-    ):
-        for claim in document.get("claims") or []:
-            if isinstance(claim, dict) and claim.get("claim_id"):
-                canonical_claims[str(claim["claim_id"])] = _claim_record(
-                    namespace, claim, document
-                )
-    projection_inputs = payload.get("projection_inputs")
-    projection_card: dict[str, Any] = {}
-    if isinstance(projection_inputs, dict):
-        persisted_projection_card = projection_inputs.get("chapter_card")
-        if isinstance(persisted_projection_card, dict):
-            projection_card = dict(persisted_projection_card)
-    for update_claim in list(canonical_claims.values()):
-        if not str(update_claim.get("namespace") or "").startswith("future_knowledge:"):
-            continue
-        if not _claim_applies(
-            update_claim,
-            chapter_number=chapter_number,
-            chapter_card=projection_card,
-        ):
-            continue
-        knowledge_claim_id = str(
-            update_claim.get("extensions", {}).get("knowledge_claim_id") or ""
-        )
-        knowledge_claim = canonical_claims.get(knowledge_claim_id)
-        if knowledge_claim is None:
-            continue
-        knowledge_claim["dependency_edges"].append(
-            {
-                "field": "approved_future_knowledge_update",
-                "claim_id": update_claim["claim_id"],
-            }
-        )
-        knowledge_claim["dependency_claim_ids"] = _dedupe(
-            [
-                *knowledge_claim.get("dependency_claim_ids", []),
-                update_claim["claim_id"],
-            ]
-        )
-    for claim in payload.get("claims") or []:
-        if not isinstance(claim, dict):
-            continue
-        claim_id = str(claim.get("claim_id") or "")
-        if canonical_claims.get(claim_id) != claim:
-            raise FanfictionContextError(
-                f"fanfiction_context_stale: selected claim record drifted: {claim_id}"
-            )
+    _require_bundle_matches_persisted_inputs(config, payload)
     return path, payload
 
 
@@ -1098,6 +1099,11 @@ def future_knowledge_impact_workflows(
         event_ledger_path.relative_to(root.resolve())
     except ValueError as exc:
         raise FanfictionContextError("event ledger path must stay inside the project") from exc
+    expected_event_path = (
+        root / "30_state" / "narrative_events" / f"ch{chapter_number:03d}.json"
+    ).resolve()
+    if event_ledger_path != expected_event_path:
+        raise FanfictionContextError("future_knowledge_event_ledger_path_is_not_canonical")
     disk_event_ledger = _read_json(event_ledger_path)
     if disk_event_ledger != event_ledger:
         raise FanfictionContextError("future_knowledge_event_ledger_stale: payload differs from disk")
@@ -1118,6 +1124,23 @@ def future_knowledge_impact_workflows(
         for item in bundle.get("review_projection", {}).get("claims") or []
         if isinstance(item, dict) and item.get("claim_id")
     }
+    final_path = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
+    semantic_path = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
+    trigger_errors = realized_major_divergence_errors(
+        root=root,
+        chapter_number=chapter_number,
+        divergences=event_ledger.get("realized_major_divergences"),
+        event_payload=event_ledger,
+        review_claims=claims,
+        final_path=final_path,
+        semantic_path=semantic_path,
+        context_path=bundle_path,
+        require_stored_bindings=True,
+    )
+    if trigger_errors:
+        raise FanfictionContextError(
+            "future_knowledge_trigger_invalid:" + ";".join(trigger_errors)
+        )
     triggers: list[dict[str, Any]] = []
     for raw_trigger in event_ledger.get("realized_major_divergences") or []:
         if not isinstance(raw_trigger, dict):
@@ -1428,9 +1451,10 @@ def _current_scope(
     *,
     chapter_contract: Mapping[str, Any],
     chapter_card: Mapping[str, Any],
-    character_packet: Mapping[str, Any],
 ) -> dict[str, set[str]]:
-    values = (chapter_contract, chapter_card, character_packet)
+    # Character-expression packets are transient author aids and have no canonical
+    # persisted owner.  They therefore cannot influence semantic claim selection.
+    values = (chapter_contract, chapter_card)
 
     def collect(*fields: str) -> set[str]:
         result: set[str] = set()
@@ -1877,6 +1901,7 @@ def _bundle_hash(bundle: dict[str, Any]) -> str:
 
 
 def _current_future_knowledge_documents(
+    config: ConfigDocument,
     root: Path,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Path], dict[str, str]]:
     documents: dict[str, dict[str, Any]] = {}
@@ -1909,11 +1934,163 @@ def _current_future_knowledge_documents(
                 f"future_knowledge_document_invalid:{path.relative_to(root).as_posix()}:"
                 + ";".join(semantic_errors)
             )
+        _validate_current_future_knowledge_provenance(config, root, path, payload)
         key = f"future_knowledge:{path.stem}"
         documents[key] = payload
         paths[key] = path
         digests[key] = sha256(path.read_bytes()).hexdigest()
     return documents, paths, digests
+
+
+def _validate_current_future_knowledge_provenance(
+    config: ConfigDocument,
+    root: Path,
+    approved_path: Path,
+    approved: Mapping[str, Any],
+) -> None:
+    extensions = approved.get("extensions")
+    extensions = extensions if isinstance(extensions, dict) else {}
+    trigger_id = str(extensions.get("trigger_id") or "")
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    workflow_dir = root / "50_workbench" / "fanfiction_knowledge_impacts"
+    for workflow_path in (
+        sorted(workflow_dir.glob("*.workflow.json")) if workflow_dir.is_dir() else []
+    ):
+        workflow = _read_json(workflow_path)
+        trigger = (
+            workflow.get("extensions", {}).get("trigger")
+            if isinstance(workflow, dict)
+            else None
+        )
+        if isinstance(trigger, dict) and trigger.get("trigger_id") == trigger_id:
+            matches.append((workflow_path, workflow))
+    if len(matches) != 1:
+        raise FanfictionContextError(
+            f"future_knowledge_document_stale:{approved_path.relative_to(root).as_posix()}:workflow"
+        )
+    workflow_path, workflow = matches[0]
+    trigger = workflow["extensions"]["trigger"]
+    chapter = int(trigger.get("realized_chapter") or 0)
+    digest = sha256(trigger_id.encode("utf-8")).hexdigest()[:24]
+    expected_target = (
+        root
+        / "10_bible"
+        / "fanfiction"
+        / "future_knowledge"
+        / f"ch{chapter:03d}.{digest}.json"
+    )
+    if approved_path.resolve() != expected_target.resolve():
+        raise FanfictionContextError(
+            f"future_knowledge_document_stale:{approved_path.relative_to(root).as_posix()}:target"
+        )
+    inputs = {
+        str(item.get("kind") or ""): item
+        for item in workflow.get("inputs") or []
+        if isinstance(item, dict)
+    }
+    context_input = inputs.get("fanfiction_context_bundle")
+    event_input = inputs.get("narrative_event_ledger")
+    if not isinstance(context_input, dict) or not isinstance(event_input, dict):
+        raise FanfictionContextError("future_knowledge_document_stale:workflow_inputs")
+    context_path = root / str(context_input.get("path") or "")
+    event_path = root / str(event_input.get("path") or "")
+    expected_context = root / "50_workbench" / "fanfiction_context" / f"ch{chapter:03d}.json"
+    expected_event = root / "30_state" / "narrative_events" / f"ch{chapter:03d}.json"
+    if context_path.resolve() != expected_context.resolve() or event_path.resolve() != expected_event.resolve():
+        raise FanfictionContextError("future_knowledge_document_stale:workflow_paths")
+    for label, item, bound_path in (
+        ("context", context_input, context_path),
+        ("event", event_input, event_path),
+    ):
+        if not bound_path.is_file() or item.get("sha256") != sha256(bound_path.read_bytes()).hexdigest():
+            raise FanfictionContextError(f"future_knowledge_document_stale:{label}_hash")
+    context = _read_json(context_path)
+    event = _read_json(event_path)
+    context_errors = _validate_bundle_v2(context) if isinstance(context, dict) else ["unreadable"]
+    if context_errors or _chapter_provenance_stale(root, context, chapter_number=chapter):
+        raise FanfictionContextError("future_knowledge_document_stale:context_binding")
+    current = load_current_fanfiction_documents(config, root)
+    base_sources = {
+        path.relative_to(root).as_posix(): current.sha256[name]
+        for name, path in current.paths.items()
+    }
+    declared_sources = {
+        str(item.get("path") or ""): str(item.get("sha256") or "")
+        for item in context.get("source_files") or []
+        if isinstance(item, dict)
+    }
+    if any(declared_sources.get(path) != digest for path, digest in base_sources.items()):
+        raise FanfictionContextError("future_knowledge_document_stale:base_canon")
+    review_claims = {
+        str(item.get("claim_id") or ""): item
+        for item in context.get("review_projection", {}).get("claims") or []
+        if isinstance(item, dict) and item.get("claim_id")
+    }
+    divergence_errors = realized_major_divergence_errors(
+        root=root,
+        chapter_number=chapter,
+        divergences=event.get("realized_major_divergences") if isinstance(event, dict) else None,
+        event_payload=event if isinstance(event, dict) else {},
+        review_claims=review_claims,
+        final_path=root / "40_manuscript" / "final" / f"ch{chapter:03d}.md",
+        semantic_path=root / "30_state" / "semantic_ledger" / f"ch{chapter:03d}.json",
+        context_path=context_path,
+        require_stored_bindings=True,
+    )
+    if divergence_errors or not any(
+        isinstance(item, dict) and item.get("trigger_id") == trigger_id
+        for item in event.get("realized_major_divergences") or []
+    ):
+        raise FanfictionContextError("future_knowledge_document_stale:trigger_evidence")
+    workflow_relative = workflow_path.relative_to(root).as_posix()
+    manifests = [
+        item
+        for item in list_manifests(root)
+        if item.get("task_type") == "fanfiction_future_knowledge_reassessment"
+        and workflow_relative
+        in {str(record.get("path") or "") for record in manifest_input_records(item)}
+    ]
+    if len(manifests) != 1:
+        raise FanfictionContextError("future_knowledge_document_stale:task_manifest")
+    manifest = manifests[0]
+    if manifest.get("status") != "applied" or manifest_chapter_number(manifest) != chapter:
+        raise FanfictionContextError("future_knowledge_document_stale:task_state")
+    manifest_validation = validate_manifest_strict(root, manifest, strict=True)
+    if not manifest_validation.ok:
+        raise FanfictionContextError(
+            "future_knowledge_document_stale:task_manifest:"
+            + ";".join(manifest_validation.errors)
+        )
+    for item in manifest_input_records(manifest):
+        bound_path = root / str(item.get("path") or "")
+        if not bound_path.is_file() or item.get("sha256") != sha256(bound_path.read_bytes()).hexdigest():
+            raise FanfictionContextError("future_knowledge_document_stale:task_inputs")
+    candidate = root / str(manifest_output(manifest).get("path") or "")
+    candidate_payload = _read_json(candidate)
+    candidate_artifact = (
+        candidate_payload.get("artifact") if isinstance(candidate_payload, dict) else None
+    )
+    if (
+        not isinstance(candidate_artifact, dict)
+        or extensions.get("approved_candidate_sha256")
+        != candidate_artifact.get("content_sha256")
+    ):
+        raise FanfictionContextError("future_knowledge_document_stale:candidate")
+    stale_registry = _read_json(root / "30_state" / "stale_artifacts.json")
+    stale_paths = {
+        str(item.get("artifact_path") or "")
+        for item in stale_registry.get("items") or []
+        if isinstance(item, dict) and item.get("state") == "stale"
+    }
+    protected_paths = {
+        approved_path.relative_to(root).as_posix(),
+        workflow_relative,
+        context_path.relative_to(root).as_posix(),
+        event_path.relative_to(root).as_posix(),
+        *base_sources,
+    }
+    if stale_paths & protected_paths:
+        raise FanfictionContextError("future_knowledge_document_stale:registry")
 
 
 def _canonical_json_hash(value: Any) -> str:

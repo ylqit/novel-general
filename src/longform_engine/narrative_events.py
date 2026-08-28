@@ -13,6 +13,10 @@ from longform_engine.fanfiction_context import (
     FanfictionContextError,
     require_current_fanfiction_context_bundle,
 )
+from longform_engine.fanfiction_divergence import (
+    derive_major_divergence_trigger_id,
+    realized_major_divergence_errors,
+)
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import manuscript_chapter_path
 
@@ -154,6 +158,10 @@ def validate_event_realization_application(
         errors.append("event realization must be human-confirmed")
 
     loaded: dict[str, tuple[Path, dict[str, Any]]] = {}
+    expected_owned_paths = {
+        "event_ledger": root / "30_state" / "narrative_events" / f"ch{chapter:03d}.json",
+        "semantic_ledger": root / "30_state" / "semantic_ledger" / f"ch{chapter:03d}.json",
+    }
     for label in ("event_ledger", "semantic_ledger"):
         reference = payload.get(label)
         if not isinstance(reference, dict) or set(reference) != {"path", "sha256"}:
@@ -161,6 +169,8 @@ def validate_event_realization_application(
             continue
         try:
             path = _resolve_file(root, reference.get("path"))
+            if path != expected_owned_paths[label].resolve():
+                errors.append(f"{label} path must be the canonical ch{chapter:03d} ledger")
             if reference.get("sha256") != _file_hash(path):
                 errors.append(f"{label} SHA-256 is stale")
             loaded[label] = (path, _read_json(path))
@@ -215,6 +225,30 @@ def validate_event_realization_application(
         errors.append("event_ledger schema is invalid")
     if event_payload.get("chapter_number") != chapter:
         errors.append("event_ledger chapter_number does not match")
+    plot_table = root / "20_outline" / "plot_nodes" / f"ch{chapter:03d}.json"
+    plot_payload = _read_json(plot_table) if plot_table.is_file() else {}
+    if not isinstance(plot_payload, dict) or plot_payload.get("schema") != "plot_node_table_v1":
+        errors.append("event_ledger planning source is missing or invalid")
+    else:
+        if event_payload.get("source_plot_node_table_sha256") != _file_hash(plot_table):
+            errors.append("event_ledger planning source hash is stale")
+    semantic_payload = loaded.get("semantic_ledger", (Path(), {}))[1]
+    semantic_source_value = semantic_payload.get("source")
+    semantic_source: dict[str, Any] = (
+        dict(semantic_source_value) if isinstance(semantic_source_value, dict) else {}
+    )
+    expected_final_path = manuscript_chapter_path(root, chapter, lane="final") if chapter else Path()
+    if semantic_payload.get("schema") != "chapter_semantic_bundle_v1":
+        errors.append("semantic_ledger schema is invalid")
+    if semantic_payload.get("chapter_number") != chapter:
+        errors.append("semantic_ledger chapter_number does not match")
+    if semantic_payload.get("canonical") is not True:
+        errors.append("semantic_ledger is not canonically approved")
+    if chapter and (
+        semantic_source.get("path") != expected_final_path.relative_to(root).as_posix()
+        or semantic_source.get("sha256") != _file_hash(expected_final_path)
+    ):
+        errors.append("semantic_ledger final binding is stale")
     planned = {
         str(item.get("event_id")): item
         for item in event_payload.get("events", [])
@@ -262,11 +296,6 @@ def validate_event_realization_application(
             errors.append("observations include unknown events: " + ", ".join(extra))
 
     divergences = payload.get("realized_major_divergences")
-    if not isinstance(divergences, list):
-        errors.append("realized_major_divergences must be a list")
-        divergences = []
-    trigger_ids: set[str] = set()
-    logical_identities: set[tuple[str, str, int, str]] = set()
     existing_logical_identities = {
         (
             str(item.get("source_event_id") or ""),
@@ -277,103 +306,28 @@ def validate_event_realization_application(
         for item in event_payload.get("realized_major_divergences") or []
         if isinstance(item, dict)
     }
-    for index, divergence in enumerate(divergences):
-        prefix = f"realized_major_divergences[{index}]"
-        fields = {
-            "trigger_id",
-            "declaration_id",
-            "source_event_id",
-            "source_claim_id",
-            "realized_chapter",
-            "impact_level",
-            "knowledge_scope_refs",
-            "human_confirmation",
-            "evidence",
-        }
-        if not isinstance(divergence, dict) or set(divergence) != fields:
-            errors.append(f"{prefix} fields are invalid")
-            continue
-        declaration_id = divergence.get("declaration_id")
-        if not isinstance(declaration_id, str) or not declaration_id.strip():
-            errors.append(f"{prefix}.declaration_id must be stable and non-empty")
-        source_event_id = divergence.get("source_event_id")
-        event = planned.get(str(source_event_id))
-        if event is None:
-            errors.append(f"{prefix}.source_event_id is not an approved planned event")
-        elif observations and next(
-            (
-                item.get("state")
-                for item in observations
-                if isinstance(item, dict) and item.get("event_id") == source_event_id
-            ),
-            "",
-        ) != "realized":
-            errors.append(f"{prefix}.source_event_id must be realized")
-        source_claim_id = divergence.get("source_claim_id")
-        if not isinstance(source_claim_id, str) or not source_claim_id.strip():
-            errors.append(f"{prefix}.source_claim_id must be stable and non-empty")
-        elif isinstance(event, dict) and source_claim_id not in (
-            event.get("fanfiction_claim_refs") or []
-        ):
-            errors.append(f"{prefix}.source_claim_id is not approved by the source event")
-        source_claim = review_claims.get(str(source_claim_id))
-        semantic_type = str((source_claim or {}).get("semantic_type") or "")
-        disposition = str((source_claim or {}).get("extensions", {}).get("disposition") or "")
-        if source_claim is None:
-            errors.append(f"{prefix}.source claim is not selected in review_projection")
-        elif semantic_type != "初始分歧" and not (
-            semantic_type == "原著事件命运" and disposition not in {"", "保留"}
-        ):
-            errors.append(f"{prefix}.source claim is not a realized major divergence")
-        if divergence.get("realized_chapter") != chapter:
-            errors.append(f"{prefix}.realized_chapter must match chapter_number")
-        if divergence.get("impact_level") != "major":
-            errors.append(f"{prefix}.impact_level must be major")
-        knowledge_refs = divergence.get("knowledge_scope_refs")
-        if (
-            not isinstance(knowledge_refs, list)
-            or not knowledge_refs
-            or any(not isinstance(item, str) or not item.strip() for item in knowledge_refs)
-            or len(knowledge_refs) != len(set(knowledge_refs or []))
-        ):
-            errors.append(f"{prefix}.knowledge_scope_refs must be a non-empty unique string list")
-        else:
-            for knowledge_claim_id in knowledge_refs:
-                knowledge_claim = review_claims.get(str(knowledge_claim_id))
-                if knowledge_claim is None or knowledge_claim.get("semantic_type") not in {
-                    "人物知识边界",
-                    "人物阶段与知识边界",
-                    "未来知识可靠性",
-                }:
-                    errors.append(
-                        f"{prefix}.knowledge scope claim is invalid: {knowledge_claim_id}"
-                    )
-        confirmation = divergence.get("human_confirmation")
-        if (
-            not isinstance(confirmation, dict)
-            or set(confirmation) != {"confirmed_by", "reason"}
-            or confirmation.get("confirmed_by") != "human"
-            or not isinstance(confirmation.get("reason"), str)
-            or not confirmation["reason"].strip()
-        ):
-            errors.append(f"{prefix}.human_confirmation must contain human and a reason")
-        errors.extend(_validate_exact_span(divergence.get("evidence"), final_text, prefix))
-        logical_identity = (
-            str(source_event_id or ""),
-            str(source_claim_id or ""),
-            int(divergence.get("realized_chapter") or 0),
-            str(declaration_id or ""),
+    projected_states = {
+        str(item.get("event_id") or ""): str(item.get("state") or "")
+        for item in observations
+        if isinstance(item, dict)
+    }
+    if chapter and expected_final_path.is_file():
+        context_path = root / "50_workbench" / "fanfiction_context" / f"ch{chapter:03d}.json"
+        errors.extend(
+            realized_major_divergence_errors(
+                root=root,
+                chapter_number=chapter,
+                divergences=divergences,
+                event_payload=event_payload,
+                review_claims=review_claims,
+                final_path=expected_final_path,
+                semantic_path=expected_owned_paths["semantic_ledger"],
+                context_path=context_path,
+                projected_states=projected_states,
+                require_stored_bindings=False,
+                existing_logical_identities=existing_logical_identities,
+            )
         )
-        expected_trigger_id = derive_major_divergence_trigger_id(*logical_identity)
-        trigger_id = divergence.get("trigger_id")
-        if trigger_id != expected_trigger_id:
-            errors.append(f"{prefix}.trigger_id must be engine-derived from logical identity")
-        if trigger_id in trigger_ids:
-            errors.append(f"duplicate realized divergence trigger_id: {trigger_id}")
-        trigger_ids.add(str(trigger_id))
-        if logical_identity in logical_identities or logical_identity in existing_logical_identities:
-            errors.append(f"{prefix} has duplicate logical divergence identity")
-        logical_identities.add(logical_identity)
 
     discovered = payload.get("discovered_causal_nodes")
     if not isinstance(discovered, list) or any(not isinstance(item, dict) for item in discovered):
@@ -472,26 +426,6 @@ def apply_event_realization(
         event_ledger=event_file.relative_to(root).as_posix(),
         transaction_report=transaction.report_file.relative_to(root).as_posix(),
     )
-
-
-def derive_major_divergence_trigger_id(
-    source_event_id: str,
-    source_claim_id: str,
-    realized_chapter: int,
-    declaration_id: str,
-) -> str:
-    identity = {
-        "source_event_id": source_event_id,
-        "source_claim_id": source_claim_id,
-        "realized_chapter": realized_chapter,
-        "declaration_id": declaration_id,
-    }
-    digest = sha256(
-        json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
-    ).hexdigest()[:24]
-    return f"major_divergence:{digest}"
 
 
 def _normalize_major_divergence_declaration(

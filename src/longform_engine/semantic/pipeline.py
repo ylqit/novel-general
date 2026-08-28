@@ -145,6 +145,7 @@ def semantic_task(config: ConfigDocument, *, chapter_number: int) -> SemanticTas
     source = manuscript_chapter_path(root, chapter_number, lane="final")
     if not source.exists():
         raise ValueError(f"Unified semantic extraction requires finalized ch{chapter_number:03d}.")
+    _require_current_fanfiction_bundle_for_semantics(config, root, chapter_number)
 
     task_dir = root / "50_workbench" / "semantic_tasks"
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -438,6 +439,7 @@ def semantic_validate(
     if chapter_number <= 0:
         raise ValueError("chapter_number must be positive.")
     root = resolve_project_root(config)
+    _require_current_fanfiction_bundle_for_semantics(config, root, chapter_number)
     path = resolve_under(root, file_path)
     errors: list[str] = []
     warnings: list[str] = []
@@ -697,6 +699,7 @@ def semantic_apply(config: ConfigDocument, *, chapter_number: int, file_path: st
     """Atomically apply one validated semantic bundle and rebuild derived indexes."""
 
     root = resolve_project_root(config)
+    _require_current_fanfiction_bundle_for_semantics(config, root, chapter_number)
     source_file = resolve_under(root, file_path)
     try:
         source_file.resolve().relative_to((root / "50_workbench").resolve())
@@ -1458,6 +1461,26 @@ def _require_exact_close_span(source: str, evidence: dict[str, Any], label: str)
         or source[start:end] != excerpt
     ):
         raise ValueError(f"{label} must cite an exact Unicode span in the current final chapter.")
+
+
+def _require_current_fanfiction_bundle_for_semantics(
+    config: ConfigDocument,
+    root: Path,
+    chapter_number: int,
+) -> None:
+    if str(config.data.get("creation", {}).get("mode") or "original") != "fanfiction":
+        return
+    from longform_engine.fanfiction_context import (
+        FanfictionContextError,
+        require_current_fanfiction_context_bundle,
+    )
+
+    try:
+        require_current_fanfiction_context_bundle(config, chapter_number=chapter_number)
+    except FanfictionContextError as exc:
+        raise ValueError(
+            f"fanfiction semantic context is missing or stale before canonical write: {exc}"
+        ) from exc
 
 
 def verify_materialized_chapter(

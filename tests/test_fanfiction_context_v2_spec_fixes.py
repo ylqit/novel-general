@@ -28,6 +28,11 @@ from longform_engine.intelligence import (
     validate_intelligence_candidate,
 )
 from longform_engine.intelligence.pipeline import semantic_task_target
+from longform_engine.human_chapter_intent import (
+    apply_human_chapter_intent,
+    create_human_chapter_intent_task,
+    validate_human_chapter_intent,
+)
 from longform_engine.orchestration import (
     continue_write,
     finalize_chapter,
@@ -49,7 +54,6 @@ from tests.project_fixtures import (
     complete_unified_semantic_lifecycle,
     mark_project_ready,
     prepare_unified_semantic_bundle,
-    rebind_human_intent_fixture,
 )
 from tests.test_fanfiction_contracts import (
     configure_crossover_project,
@@ -118,6 +122,37 @@ def _contract(*, claim_refs: list[str] | None = None) -> dict:
         "prohibited_drift": ["不得让代价自动消失。"],
         "fanfiction_claim_refs": _claim_channel(chapter=claim_refs),
     }
+
+
+def _persist_compile_inputs(root: Path, contract: dict, card: dict) -> None:
+    write_json(root / "20_outline/chapter_contracts" / f"ch{contract['chapter_number']:03d}.json", contract)
+    write_json(root / "20_outline/chapter_cards" / f"ch{contract['chapter_number']:03d}.json", card)
+
+
+def _write_current_semantic_and_plot(root: Path, final: Path) -> str:
+    write_json(
+        root / "30_state/semantic_ledger/ch001.json",
+        {
+            "schema": "chapter_semantic_bundle_v1",
+            "chapter_number": 1,
+            "canonical": True,
+            "source": {
+                "path": "40_manuscript/final/ch001.md",
+                "sha256": sha256(final.read_bytes()).hexdigest(),
+            },
+        },
+    )
+    plot = {
+        "schema": "plot_node_table_v1",
+        "chapter_number": 1,
+        "nodes": [],
+        "approval_sha256": "a" * 64,
+    }
+    plot_path = write_json(
+        root / "20_outline/plot_nodes/ch001.json",
+        plot,
+    )
+    return sha256(plot_path.read_bytes()).hexdigest()
 
 
 def _bundle_hash(payload: dict) -> str:
@@ -240,6 +275,7 @@ def test_applicability_dimensions_are_and_and_wrong_source_optional_hit_is_omitt
         "reader_value": "规则发生作用。",
         "observable_change": "选择改变局势。",
     }
+    _persist_compile_inputs(project["root"], contract, card)
 
     bundle = compile_fanfiction_context(
         project["config"],
@@ -257,15 +293,14 @@ def test_required_claim_ids_equal_only_the_formal_contract_channel(current_contr
     project = current_contract_project
     install_route(project)
     contract = _contract(claim_refs=["route:entry"])
+    card = {"chapter_number": 1, "fanfiction_claim_refs": ["route:event"]}
+    _persist_compile_inputs(project["root"], contract, card)
 
     bundle = compile_fanfiction_context(
         project["config"],
         chapter_number=1,
         chapter_contract=contract,
-        chapter_card={
-            "chapter_number": 1,
-            "fanfiction_claim_refs": ["route:event"],
-        },
+        chapter_card=card,
         character_packet={"fanfiction_claim_refs": ["route:knowledge"]},
     )
 
@@ -278,12 +313,15 @@ def test_explicit_global_claim_remains_observable_as_required(current_contract_p
     project = current_contract_project
     install_route(project)
     global_claim_id = "engine:claim_0"
+    contract = _contract(claim_refs=[global_claim_id])
+    card = {"chapter_number": 1}
+    _persist_compile_inputs(project["root"], contract, card)
 
     bundle = compile_fanfiction_context(
         project["config"],
         chapter_number=1,
-        chapter_contract=_contract(claim_refs=[global_claim_id]),
-        chapter_card={"chapter_number": 1},
+        chapter_contract=contract,
+        chapter_card=card,
         character_packet={},
     )
 
@@ -451,11 +489,14 @@ def test_deep_v2_validator_rejects_rehashed_cross_field_tampering(
 ):
     project = current_contract_project
     install_route(project)
+    contract = _contract(claim_refs=["route:event", "classic:canon"])
+    card = {"chapter_number": 1, "volume_id": "volume:001"}
+    _persist_compile_inputs(project["root"], contract, card)
     bundle = compile_fanfiction_context(
         project["config"],
         chapter_number=1,
-        chapter_contract=_contract(claim_refs=["route:event", "classic:canon"]),
-        chapter_card={"chapter_number": 1, "volume_id": "volume:001"},
+        chapter_contract=contract,
+        chapter_card=card,
         character_packet={},
     )
     changed = deepcopy(bundle)
@@ -484,15 +525,16 @@ def test_realized_major_divergence_is_formal_and_not_inferred_from_event_depende
     install_route(project)
     config = project["config"]
     root = project["root"]
+    contract = _contract(claim_refs=["route:divergence", "route:knowledge"])
+    card = {"chapter_number": 1}
+    _persist_compile_inputs(root, contract, card)
     write_fanfiction_context_bundle(
         root,
         compile_fanfiction_context(
             config,
             chapter_number=1,
-            chapter_contract=_contract(
-                claim_refs=["route:divergence", "route:knowledge"]
-            ),
-            chapter_card={"chapter_number": 1},
+            chapter_contract=contract,
+            chapter_card=card,
             character_packet={},
         ),
     )
@@ -500,10 +542,7 @@ def test_realized_major_divergence_is_formal_and_not_inferred_from_event_depende
     final = root / "40_manuscript/final/ch001.md"
     final.parent.mkdir(parents=True, exist_ok=True)
     final.write_text(text, encoding="utf-8")
-    write_json(
-        root / "30_state/semantic_ledger/ch001.json",
-        {"schema": "chapter_semantic_bundle_v1", "chapter_number": 1, "canonical": True},
-    )
+    plot_sha = _write_current_semantic_and_plot(root, final)
     ledger_path = root / "30_state/narrative_events/ch001.json"
     write_json(
         ledger_path,
@@ -525,7 +564,7 @@ def test_realized_major_divergence_is_formal_and_not_inferred_from_event_depende
                     "realization_evidence": None,
                 }
             ],
-            "source_plot_node_table_sha256": "0" * 64,
+            "source_plot_node_table_sha256": plot_sha,
         },
     )
     start = text.index("人物")
@@ -585,28 +624,27 @@ def test_event_realization_rejects_semantically_invalid_and_duplicate_divergence
     project = current_contract_project
     install_route(project)
     root = project["root"]
+    contract = _contract(
+        claim_refs=["route:divergence", "route:knowledge", "route:event"]
+    )
+    card = {"chapter_number": 1}
+    _persist_compile_inputs(root, contract, card)
     write_fanfiction_context_bundle(
         root,
         compile_fanfiction_context(
             project["config"],
             chapter_number=1,
-            chapter_contract=_contract(
-                claim_refs=["route:divergence", "route:knowledge", "route:event"]
-            ),
-            chapter_card={"chapter_number": 1},
+            chapter_contract=contract,
+            chapter_card=card,
             character_packet={},
         ),
     )
     final = root / "40_manuscript/final/ch001.md"
-    semantic = root / "30_state/semantic_ledger/ch001.json"
     ledger = root / "30_state/narrative_events/ch001.json"
     text = "# 第一章\n\n人物完成了一次有代价的选择。\n"
     final.parent.mkdir(parents=True, exist_ok=True)
     final.write_text(text, encoding="utf-8")
-    write_json(
-        semantic,
-        {"schema": "chapter_semantic_bundle_v1", "chapter_number": 1, "canonical": True},
-    )
+    plot_sha = _write_current_semantic_and_plot(root, final)
     write_json(
         ledger,
         {
@@ -627,7 +665,7 @@ def test_event_realization_rejects_semantically_invalid_and_duplicate_divergence
                     "realization_evidence": None,
                 }
             ],
-            "source_plot_node_table_sha256": "0" * 64,
+            "source_plot_node_table_sha256": plot_sha,
         },
     )
     start = text.index("人物")
@@ -683,21 +721,58 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
     install_route(project)
     root = project["root"]
     chapter_one = _contract(claim_refs=["route:divergence", "route:knowledge"])
+    chapter_one_card = {"chapter_number": 1, "volume_id": "volume:001"}
+    _persist_compile_inputs(root, chapter_one, chapter_one_card)
     bundle = compile_fanfiction_context(
         project["config"],
         chapter_number=1,
         chapter_contract=chapter_one,
-        chapter_card={"chapter_number": 1, "volume_id": "volume:001"},
+        chapter_card=chapter_one_card,
         character_packet={},
     )
     bundle_path = write_fanfiction_context_bundle(root, bundle)
+    final = root / "40_manuscript/final/ch001.md"
+    final.parent.mkdir(parents=True, exist_ok=True)
+    final.write_text("证据显示人物作出有代价的选择。\n", encoding="utf-8")
+    plot_sha = _write_current_semantic_and_plot(root, final)
+    planned_event = {
+        "schema": "narrative_event_v1",
+        "event_id": "event:ch001:gate",
+        "source_node_id": "node:ch001:gate",
+        "chapter_number": 1,
+        "preconditions": [],
+        "dependency_refs": [],
+        "fanfiction_claim_refs": ["route:divergence"],
+        "expected_changes": [{"domain": "relationship"}],
+        "reader_effect": "选择改变后续行动边界。",
+        "state": "planned_approved",
+        "realization_evidence": None,
+    }
     event_payload = {
         "schema": "narrative_event_ledger_v1",
         "chapter_number": 1,
-        "events": [],
-        "realized_major_divergences": [
+        "events": [planned_event],
+        "realized_major_divergences": [],
+        "source_plot_node_table_sha256": plot_sha,
+    }
+    event_path = write_json(root / "30_state/narrative_events/ch001.json", event_payload)
+    evidence = {"start": 0, "end": 2, "excerpt": "证据"}
+    realization = build_event_realization_application(
+        project["config"],
+        chapter_number=1,
+        observations=[
             {
-                "trigger_id": "divergence:ch001:gate",
+                "event_id": "event:ch001:gate",
+                "state": "realized",
+                "evidence": evidence,
+                "semantic_reason": "终稿精确证据显示已批准事件实现。",
+            }
+        ],
+        discovered_causal_nodes=[],
+        confirmed_by="human",
+        realized_major_divergences=[
+            {
+                "declaration_id": "declaration:ch001:gate",
                 "source_event_id": "event:ch001:gate",
                 "source_claim_id": "route:divergence",
                 "realized_chapter": 1,
@@ -707,18 +782,16 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
                     "confirmed_by": "human",
                     "reason": "已核对终稿证据。",
                 },
-                "evidence": {"start": 0, "end": 1, "excerpt": "证"},
-                "final_path": "40_manuscript/final/ch001.md",
-                "final_sha256": "1" * 64,
-                "semantic_ledger_path": "30_state/semantic_ledger/ch001.json",
-                "semantic_ledger_sha256": "2" * 64,
-                "realization_application_sha256": "3" * 64,
+                "evidence": evidence,
             }
         ],
-        "source_plot_node_table_sha256": "4" * 64,
-        "realization_application_sha256": "3" * 64,
-    }
-    event_path = write_json(root / "30_state/narrative_events/ch001.json", event_payload)
+    )
+    realization_path = write_json(
+        root / "50_workbench/event_realizations/ch001.valid.json", realization
+    )
+    apply_event_realization(project["config"], application_path=realization_path)
+    event_payload = json.loads(event_path.read_text(encoding="utf-8"))
+    trigger_id = event_payload["realized_major_divergences"][0]["trigger_id"]
     workflow_path, workflow = context_module.future_knowledge_impact_workflows(
         project["config"],
         chapter_number=1,
@@ -752,7 +825,7 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
                         "future:ch001:gate:knowledge",
                         "未来知识可靠性",
                         extensions={
-                            "trigger_id": "divergence:ch001:gate",
+                            "trigger_id": trigger_id,
                             "trigger_sha256": sha256(
                                 json.dumps(
                                     workflow["extensions"]["trigger"],
@@ -778,7 +851,7 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
                 ],
                 extensions={
                     "task_type": "fanfiction_future_knowledge_reassessment",
-                    "trigger_id": "divergence:ch001:gate",
+                    "trigger_id": trigger_id,
                 },
             )
         )
@@ -836,11 +909,13 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
     chapter_two = deepcopy(chapter_one)
     chapter_two["contract_id"] = "contract:ch002"
     chapter_two["chapter_number"] = 2
+    chapter_two_card = {"chapter_number": 2, "volume_id": "volume:001"}
+    _persist_compile_inputs(root, chapter_two, chapter_two_card)
     next_bundle = compile_fanfiction_context(
         project["config"],
         chapter_number=2,
         chapter_contract=chapter_two,
-        chapter_card={"chapter_number": 2, "volume_id": "volume:001"},
+        chapter_card=chapter_two_card,
         character_packet={},
     )
     assert "future:ch001:gate:knowledge" in next_bundle["dependency_claim_ids"]
@@ -864,6 +939,19 @@ def test_future_knowledge_target_identity_is_owned_by_stable_trigger(tmp_path):
         "artifact": shared_artifact,
         "extensions": {"trigger_id": "divergence:stable:second"},
     }
+    workflow_dir = tmp_path / "50_workbench/fanfiction_knowledge_impacts"
+    for index, trigger_id in enumerate(
+        ("divergence:stable:first", "divergence:stable:second"), start=1
+    ):
+        write_json(
+            workflow_dir / f"ch001.{index}.workflow.json",
+            {
+                "workflow_kind": "fanfiction_future_knowledge_impact",
+                "extensions": {
+                    "trigger": {"trigger_id": trigger_id, "realized_chapter": 1}
+                },
+            },
+        )
 
     first_target = semantic_task_target(
         tmp_path, "fanfiction_future_knowledge_reassessment", first
@@ -1004,16 +1092,32 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
         node_decisions_path=decisions_path,
         approved_by="human",
     )
-    current_contract = json.loads(
-        (root / "20_outline/chapter_contracts/ch001.json").read_text(encoding="utf-8")
+    intent_task = create_human_chapter_intent_task(config, chapter_number=1)
+    intent_candidate_path = root / intent_task.candidate_file
+    intent = json.loads(intent_candidate_path.read_text(encoding="utf-8"))
+    intent.update(
+        {
+            "story_intent": "让访客在规则压力下作出不可回退的本章选择。",
+            "key_character_choice": "人物主动接受眼前代价并保留下一步拒绝权。",
+            "emotional_truth": "信任来自承担后果，而不是来自无条件服从。",
+            "pov_voice_intent": "视角保持克制，以动作和判断呈现内在压力。",
+            "protected_items": ["不得消除本章选择造成的长期代价"],
+            "completed_by": "human",
+        }
     )
-    rebind_human_intent_fixture(root, 1, current_contract)
-    intent_path = root / "20_outline/chapter_intents/ch001.json"
-    intent = json.loads(intent_path.read_text(encoding="utf-8"))
-    intent["plot_node_approval_sha256"] = sha256(
-        (root / "20_outline/plot_nodes/ch001.json").read_bytes()
-    ).hexdigest()
-    write_json(intent_path, intent)
+    write_json(intent_candidate_path, intent)
+    intent_validation = validate_human_chapter_intent(
+        config,
+        chapter_number=1,
+        file_path=intent_candidate_path,
+    )
+    assert intent_validation.ok, intent_validation.errors
+    apply_human_chapter_intent(
+        config,
+        chapter_number=1,
+        file_path=intent_candidate_path,
+        approved_by="human",
+    )
 
     continue_write(config, chapter_number=1)
 

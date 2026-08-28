@@ -4958,6 +4958,12 @@ def validate_future_knowledge_reassessment(
     trigger_id = str(trigger.get("trigger_id") or "")
     if extensions.get("trigger_id") != trigger_id:
         errors.append("extensions.trigger_id must match the workflow trigger")
+    realized_chapter = int(trigger.get("realized_chapter") or 0)
+    expected_scope = {"kind": "chapter", "chapter_number": realized_chapter}
+    if scope != expected_scope:
+        errors.append("artifact.scope must equal the engine-owned workflow trigger scope")
+    if manifest_chapter_number(manifest or {}) != realized_chapter:
+        errors.append("task manifest chapter must equal the workflow trigger chapter")
     try:
         owned_target = semantic_task_target(
             root,
@@ -5568,7 +5574,6 @@ def apply_targets(
 def semantic_task_target(root: Path, task_type: str, payload: dict[str, Any]) -> Path:
     artifact = payload.get("artifact") if isinstance(payload.get("artifact"), dict) else {}
     scope = artifact.get("scope") if isinstance(artifact.get("scope"), dict) else {}
-    chapter = int(scope.get("chapter_number") or 0)
     if task_type == "fanfiction_future_knowledge_reassessment":
         extensions = (
             payload.get("extensions") if isinstance(payload.get("extensions"), dict) else {}
@@ -5576,6 +5581,15 @@ def semantic_task_target(root: Path, task_type: str, payload: dict[str, Any]) ->
         trigger_id = str(extensions.get("trigger_id") or "")
         if not trigger_id:
             raise ValueError("future knowledge target requires a stable trigger_id")
+        _workflow_path, workflow = _future_knowledge_workflow_for_trigger(root, trigger_id)
+        trigger = workflow.get("extensions", {}).get("trigger")
+        if not isinstance(trigger, dict):
+            raise ValueError("future knowledge workflow trigger is invalid")
+        chapter = int(trigger.get("realized_chapter") or 0)
+        if chapter <= 0:
+            raise ValueError("future knowledge workflow trigger chapter is invalid")
+        if scope != {"kind": "chapter", "chapter_number": chapter}:
+            raise ValueError("future knowledge candidate scope differs from engine-owned trigger")
         trigger_digest = sha256(trigger_id.encode("utf-8")).hexdigest()[:24]
         return (
             root
@@ -5584,6 +5598,7 @@ def semantic_task_target(root: Path, task_type: str, payload: dict[str, Any]) ->
             / "future_knowledge"
             / f"ch{chapter:03d}.{trigger_digest}.json"
         )
+    chapter = int(scope.get("chapter_number") or 0)
     token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(artifact.get("artifact_id") or "semantic"))
     directories = {
         "character_interpretation": root / "10_bible" / "semantic" / "人物理解",
@@ -5608,6 +5623,28 @@ def semantic_task_target(root: Path, task_type: str, payload: dict[str, Any]) ->
         "source_candidate_triage": root / "50_workbench" / "同人原著资料" / "来源筛选",
     }
     return directories[task_type] / f"{token[:120]}.json"
+
+
+def _future_knowledge_workflow_for_trigger(
+    root: Path,
+    trigger_id: str,
+) -> tuple[Path, dict[str, Any]]:
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    directory = root / "50_workbench" / "fanfiction_knowledge_impacts"
+    for path in sorted(directory.glob("*.workflow.json")) if directory.is_dir() else []:
+        payload = read_json(path, {})
+        trigger = (
+            payload.get("extensions", {}).get("trigger")
+            if isinstance(payload, dict)
+            else None
+        )
+        if isinstance(trigger, dict) and trigger.get("trigger_id") == trigger_id:
+            matches.append((path, payload))
+    if len(matches) != 1:
+        raise ValueError(
+            "future knowledge target requires exactly one engine-owned workflow for trigger"
+        )
+    return matches[0]
 
 
 def outline_revision_side_effect_targets(

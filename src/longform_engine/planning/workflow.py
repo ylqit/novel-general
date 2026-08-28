@@ -23,7 +23,6 @@ from .contracts import (
     PLANNING_BUNDLE_SCHEMA,
     PLOT_NODE_TABLE_SCHEMA,
     StructuralValidation,
-    canonical_json_hash,
     validate_planning_bundle,
 )
 
@@ -716,9 +715,14 @@ def apply_planning_bundle(
                 )
             else:
                 micro_nodes += 1
+        approved_table = {
+            **table,
+            "nodes": approved_nodes,
+            "approval_sha256": _file_hash(decisions_file),
+        }
         canonical_payloads[
             root / "20_outline" / "plot_nodes" / f"ch{chapter:03d}.json"
-        ] = {**table, "nodes": approved_nodes, "approval_sha256": _file_hash(decisions_file)}
+        ] = approved_table
         canonical_payloads[
             root / "30_state" / "narrative_events" / f"ch{chapter:03d}.json"
         ] = {
@@ -726,9 +730,7 @@ def apply_planning_bundle(
             "chapter_number": chapter,
             "events": events,
             "realized_major_divergences": [],
-            "source_plot_node_table_sha256": canonical_json_hash(
-                {**table, "nodes": approved_nodes}
-            ),
+            "source_plot_node_table_sha256": _json_file_hash(approved_table),
         }
 
     source_paths = (bundle_file, application_file, approval_file, decisions_file)

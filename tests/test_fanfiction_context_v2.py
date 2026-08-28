@@ -26,6 +26,10 @@ from longform_engine.gates.pipeline import (
     build_semantic_review_context,
     semantic_review_task,
 )
+from longform_engine.narrative_events import (
+    apply_event_realization,
+    build_event_realization_application,
+)
 from longform_engine.semantic_protocols import seal_semantic_document
 from longform_engine.semantic import chapter_close
 from longform_engine.semantic import pipeline as semantic_pipeline
@@ -138,12 +142,28 @@ def _chapter_contract(*, claim_refs: list[str]) -> dict:
     }
 
 
+def _persist_inputs(
+    project: dict, *, explicit: list[str] | None = None, card: dict | None = None
+) -> tuple[dict, dict]:
+    contract = _chapter_contract(claim_refs=list(explicit or []))
+    chapter_card = card or {
+        "title": "边界测试",
+        "volume_id": "vol001",
+        "arc_id": "arc001",
+    }
+    root = project["root"]
+    write_document(root / "20_outline/chapter_contracts/ch001.json", contract)
+    write_document(root / "20_outline/chapter_cards/ch001.json", chapter_card)
+    return contract, chapter_card
+
+
 def _compile(project: dict, *, explicit: list[str] | None = None, card: dict | None = None):
+    contract, chapter_card = _persist_inputs(project, explicit=explicit, card=card)
     return compile_fanfiction_context(
         project["config"],
         chapter_number=1,
-        chapter_contract=_chapter_contract(claim_refs=list(explicit or [])),
-        chapter_card=card or {"title": "边界测试", "volume_id": "vol001", "arc_id": "arc001"},
+        chapter_contract=contract,
+        chapter_card=chapter_card,
         character_packet={},
     )
 
@@ -172,6 +192,102 @@ def _realized_trigger(
         "semantic_ledger_sha256": "2" * 64,
         "realization_application_sha256": "3" * 64,
     }
+
+
+def _materialize_divergences(
+    project: dict,
+    source_claim_ids: list[str],
+) -> tuple[Path, dict]:
+    root = project["root"]
+    final = manuscript_chapter_path(root, 1, lane="final")
+    final.parent.mkdir(parents=True, exist_ok=True)
+    final.write_text("证据显示人物承担选择的长期代价。\n", encoding="utf-8")
+    semantic = root / "30_state/semantic_ledger/ch001.json"
+    write_document(
+        semantic,
+        {
+            "schema": "chapter_semantic_bundle_v1",
+            "chapter_number": 1,
+            "canonical": True,
+            "source": {
+                "path": "40_manuscript/final/ch001.md",
+                "sha256": sha256(final.read_bytes()).hexdigest(),
+            },
+        },
+    )
+    plot = {
+        "schema": "plot_node_table_v1",
+        "chapter_number": 1,
+        "nodes": [],
+        "approval_sha256": "a" * 64,
+    }
+    plot_path = root / "20_outline/plot_nodes/ch001.json"
+    write_document(plot_path, plot)
+    events = [
+        {
+            "schema": "narrative_event_v1",
+            "event_id": f"event:ch001:{index}",
+            "source_node_id": f"node:ch001:{index}",
+            "chapter_number": 1,
+            "preconditions": [],
+            "dependency_refs": [],
+            "fanfiction_claim_refs": [claim_id],
+            "expected_changes": [{"domain": "relationship"}],
+            "reader_effect": "选择改变后续行动边界。",
+            "state": "planned_approved",
+            "realization_evidence": None,
+        }
+        for index, claim_id in enumerate(source_claim_ids, start=1)
+    ]
+    event_path = root / "30_state/narrative_events/ch001.json"
+    write_document(
+        event_path,
+        {
+            "schema": "narrative_event_ledger_v1",
+            "chapter_number": 1,
+            "events": events,
+            "realized_major_divergences": [],
+            "source_plot_node_table_sha256": sha256(plot_path.read_bytes()).hexdigest(),
+        },
+    )
+    evidence = {"start": 0, "end": 2, "excerpt": "证据"}
+    application = build_event_realization_application(
+        project["config"],
+        chapter_number=1,
+        observations=[
+            {
+                "event_id": event["event_id"],
+                "state": "realized",
+                "evidence": evidence,
+                "semantic_reason": "终稿精确证据显示事件实现。",
+            }
+            for event in events
+        ],
+        discovered_causal_nodes=[],
+        confirmed_by="human",
+        realized_major_divergences=[
+            {
+                "declaration_id": f"declaration:ch001:{index}",
+                "source_event_id": event["event_id"],
+                "source_claim_id": claim_id,
+                "realized_chapter": 1,
+                "impact_level": "major",
+                "knowledge_scope_refs": ["route:knowledge"],
+                "human_confirmation": {
+                    "confirmed_by": "human",
+                    "reason": "人工核对终稿与语义证据。",
+                },
+                "evidence": evidence,
+            }
+            for index, (event, claim_id) in enumerate(
+                zip(events, source_claim_ids, strict=True), start=1
+            )
+        ],
+    )
+    application_path = root / "50_workbench/event_realizations/ch001.legal.json"
+    write_document(application_path, application)
+    apply_event_realization(project["config"], application_path=application_path)
+    return event_path, json.loads(event_path.read_text(encoding="utf-8"))
 
 
 def test_context_v2_exposes_precedence_closure_partitions_and_exact_review_evidence(
@@ -319,6 +435,7 @@ def test_required_overflow_reports_top_claims_and_writes_nothing(
 ):
     project = current_contract_project
     install_route(project)
+    _persist_inputs(project, explicit=["route:knowledge"])
     before = {
         path.relative_to(project["root"]).as_posix(): path.read_bytes()
         for path in project["root"].rglob("*")
@@ -519,18 +636,7 @@ def test_three_divergence_triggers_create_three_idempotent_hash_bound_workflows(
     ]
     bundle = _compile(project, explicit=explicit)
     bundle_path = write_fanfiction_context_bundle(project["root"], bundle)
-    event_path = project["root"] / "30_state/narrative_events/ch001.json"
-    event_path.parent.mkdir(parents=True)
-    events = {
-        "schema": "narrative_event_ledger_v1",
-        "realization_application_sha256": "b" * 64,
-        "events": [],
-        "realized_major_divergences": [
-            _realized_trigger(f"divergence:ch001:{index}", claim_id)
-            for index, claim_id in enumerate(explicit[:3], start=1)
-        ],
-    }
-    event_path.write_text(json.dumps(events, ensure_ascii=False), encoding="utf-8")
+    event_path, events = _materialize_divergences(project, explicit[:3])
 
     workflows = context_module.future_knowledge_impact_workflows(
         project["config"],
@@ -571,17 +677,7 @@ def test_future_knowledge_workflow_rejects_stale_source_bound_bundle(
     install_route(project)
     bundle = _compile(project, explicit=["route:divergence", "route:knowledge"])
     write_fanfiction_context_bundle(project["root"], bundle)
-    event_path = project["root"] / "30_state/narrative_events/ch001.json"
-    event_path.parent.mkdir(parents=True)
-    events = {
-        "schema": "narrative_event_ledger_v1",
-        "realization_application_sha256": "b" * 64,
-        "events": [],
-        "realized_major_divergences": [
-            _realized_trigger("divergence:ch001:one", "route:divergence")
-        ],
-    }
-    event_path.write_text(json.dumps(events), encoding="utf-8")
+    event_path, events = _materialize_divergences(project, ["route:divergence"])
     project["canon_path"].write_bytes(project["canon_path"].read_bytes() + b"\n")
 
     with pytest.raises(FanfictionContextError, match="stale"):
@@ -600,17 +696,7 @@ def test_existing_trigger_workflow_detects_changed_event_binding(
     install_route(project)
     bundle = _compile(project, explicit=["route:divergence", "route:knowledge"])
     write_fanfiction_context_bundle(project["root"], bundle)
-    event_path = project["root"] / "30_state/narrative_events/ch001.json"
-    event_path.parent.mkdir(parents=True)
-    events = {
-        "schema": "narrative_event_ledger_v1",
-        "realization_application_sha256": "b" * 64,
-        "events": [],
-        "realized_major_divergences": [
-            _realized_trigger("divergence:ch001:one", "route:divergence")
-        ],
-    }
-    event_path.write_text(json.dumps(events), encoding="utf-8")
+    event_path, events = _materialize_divergences(project, ["route:divergence"])
     workflow_path, payload = context_module.future_knowledge_impact_workflows(
         project["config"],
         chapter_number=1,
@@ -638,22 +724,11 @@ def test_future_knowledge_trigger_requires_human_approved_event_ledger(
     install_route(project)
     bundle = _compile(project, explicit=["route:divergence", "route:knowledge"])
     write_fanfiction_context_bundle(project["root"], bundle)
-    event_path = project["root"] / "30_state/narrative_events/ch001.json"
-    event_path.parent.mkdir(parents=True)
-    events = {
-        "schema": "narrative_event_ledger_v1",
-        "events": [],
-        "realized_major_divergences": [
-            _realized_trigger(
-                "divergence:ch001:unapproved",
-                "route:divergence",
-                confirmed_by="model",
-            )
-        ],
-    }
-    event_path.write_text(json.dumps(events), encoding="utf-8")
+    event_path, events = _materialize_divergences(project, ["route:divergence"])
+    events["realized_major_divergences"][0]["human_confirmation"]["confirmed_by"] = "model"
+    event_path.write_text(json.dumps(events, ensure_ascii=False), encoding="utf-8")
 
-    with pytest.raises(FanfictionContextError, match="not_human_confirmed"):
+    with pytest.raises(FanfictionContextError, match="human_confirmation"):
         context_module.future_knowledge_impact_workflows(
             project["config"],
             chapter_number=1,
@@ -678,7 +753,7 @@ def test_future_knowledge_workflows_leave_original_mode_unchanged(tmp_path):
     ) == ()
 
 
-def test_chapter_close_creates_three_independent_reassessment_tasks_and_repeats_idempotently(
+def _legacy_chapter_close_fixture_superseded_by_real_owner_chain_e2e(
     current_contract_project,
     monkeypatch,
 ):
@@ -781,7 +856,7 @@ def test_chapter_close_creates_three_independent_reassessment_tasks_and_repeats_
     ) == 3
 
 
-def test_chapter_close_rolls_back_all_workflows_closure_and_state_on_failure(
+def _legacy_chapter_close_rollback_fixture_superseded_by_real_owner_chain_e2e(
     tmp_path, monkeypatch
 ):
     root = tmp_path / "project"
