@@ -37,6 +37,7 @@ from longform_engine.agent_tasks import (
     mark_tasks_for_chapter_type,
     update_task_status,
     validate_current_task_result,
+    validate_manifest_strict,
     write_manifest,
 )
 from longform_engine.arc_simulation import (
@@ -640,6 +641,10 @@ def create_intelligence_task(
         raise ValueError(f"{task_type} requires at least one --input file.")
     if task_type.startswith("fanfiction_") and str(config.data.get("creation", {}).get("mode") or "") != "fanfiction":
         raise ValueError(f"{task_type} requires creation.mode=fanfiction.")
+    if current_fanfiction is not None and task_type in DESIGN_INTELLIGENCE_TASK_TYPES:
+        for path in current_fanfiction.paths.values():
+            if path not in inputs:
+                inputs.append(path)
 
     token = scope_token(scope)
     round_number = next_book_ideation_round(root) if task_type == "book_ideation" else 0
@@ -738,6 +743,7 @@ def validate_intelligence_candidate(
     *,
     task_type: str,
     file_path: str | Path,
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None,
 ) -> IntelligenceValidationResult:
     root = resolve_project_root(config)
     spec = require_spec(task_type)
@@ -745,16 +751,26 @@ def validate_intelligence_candidate(
         str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
         and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES
     ):
-        try:
-            fanfiction_contracts.load_current_fanfiction_documents(config, root)
-        except fanfiction_contracts.FanfictionContractError as exc:
-            raise ValueError(str(exc)) from exc
+        if current_fanfiction is None:
+            try:
+                current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
+                    config, root
+                )
+            except fanfiction_contracts.FanfictionContractError as exc:
+                raise ValueError(str(exc)) from exc
     candidate = resolve_candidate(root, file_path)
     errors: list[str] = []
     manifest = manifest_for_output(root, task_type, candidate)
     if manifest is None:
         errors.append("candidate is not declared by an active AgentTaskManifest.")
     else:
+        if current_fanfiction is not None and task_type in DESIGN_INTELLIGENCE_TASK_TYPES:
+            _require_current_fanfiction_design_task(
+                root,
+                manifest,
+                current_fanfiction,
+                label="design source task",
+            )
         _task, control_errors = validate_current_task_result(
             root,
             chapter_number=manifest_chapter_number(manifest),
@@ -1344,12 +1360,15 @@ def approve_design_document(
     if approved_by != "human":
         raise ValueError("Design document approval requires --approved-by human.")
     root = resolve_project_root(config)
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None
     if (
         str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
         and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES
     ):
         try:
-            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+            current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
+                config, root
+            )
         except fanfiction_contracts.FanfictionContractError as exc:
             raise ValueError(str(exc)) from exc
     document = resolve_candidate(root, document_path)
@@ -1357,6 +1376,7 @@ def approve_design_document(
         config,
         task_type=task_type,
         file_path=document,
+        current_fanfiction=current_fanfiction,
     )
     if not validation.ok:
         raise ValueError("Design document is invalid: " + "; ".join(validation.errors))
@@ -1371,7 +1391,7 @@ def approve_design_document(
         selection_file = str(selection["selection_file"])
         selection_hash = str(selection["selection_sha256"])
     approval = design_approval_path(root, document)
-    approval_payload = {
+    approval_payload: dict[str, Any] = {
         "schema": "design_document_approval_v1",
         "task_id": str(manifest.get("task_id") or ""),
         "task_type": task_type,
@@ -1386,6 +1406,12 @@ def approve_design_document(
                 "selection_file": selection_file,
                 "selection_sha256": selection_hash,
             }
+        )
+    if current_fanfiction is not None:
+        approval_payload["fanfiction_chain"] = (
+            fanfiction_contracts.current_fanfiction_chain_binding(
+                root, current_fanfiction
+            )
         )
     atomic_write_text(approval, json.dumps(approval_payload, ensure_ascii=False, indent=2) + "\n")
     mark_tasks_for_output(
@@ -1420,19 +1446,34 @@ def create_design_compile_task(
     if task_type not in DESIGN_INTELLIGENCE_TASK_TYPES:
         raise ValueError(f"{task_type} is not a design_document_v1 task.")
     root = resolve_project_root(config)
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None
     if (
         str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
         and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES
     ):
         try:
-            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+            current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
+                config, root
+            )
         except fanfiction_contracts.FanfictionContractError as exc:
             raise ValueError(str(exc)) from exc
     document = resolve_candidate(root, document_path)
-    approval = load_design_approval(root, task_type, document)
+    approval = load_design_approval(
+        root,
+        task_type,
+        document,
+        current_fanfiction=current_fanfiction,
+    )
     source_manifest = manifest_for_output(root, task_type, document)
     if source_manifest is None:
         raise ValueError("Approved design document has no active source task.")
+    if current_fanfiction is not None:
+        _require_current_fanfiction_design_task(
+            root,
+            source_manifest,
+            current_fanfiction,
+            label="design source task",
+        )
     source_task = next(
         (
             item
@@ -1454,6 +1495,7 @@ def create_design_compile_task(
         if task_type == "chapter_direction"
         else None
     )
+    approval_path = design_approval_path(root, document)
     instruction_text = render_design_compile_instruction(
         task_type=task_type,
         document=relative(root, document),
@@ -1478,12 +1520,20 @@ def create_design_compile_task(
         "longform-engine intelligence apply project.yaml "
         f"--task-type {task_type} --document {document_rel} --delta {delta_rel} --approved-by human"
     )
+    compile_inputs = [
+        instruction,
+        document,
+        approval_path,
+        *([selection_path] if selection_path is not None else []),
+        *(current_fanfiction.paths.values() if current_fanfiction is not None else ()),
+    ]
+    compile_inputs = list(dict.fromkeys(compile_inputs))
     manifest = build_manifest(
         root,
         task_type="design_semantic_compile",
         chapter_number=int(scope.get("chapter_number") or 0) or None,
         scope=scope,
-        input_files=(instruction, document, *([selection_path] if selection_path is not None else [])),
+        input_files=compile_inputs,
         allowed_output_paths=(delta,),
         output_schema=CANONICAL_DELTA_SCHEMA,
         validate_command=validate_command,
@@ -1495,7 +1545,7 @@ def create_design_compile_task(
         canonical_targets=intelligence_canonical_targets(root, task_type, scope),
         requires_human_apply=True,
         context_policy={
-            "required_files": [instruction, document, *([selection_path] if selection_path is not None else [])],
+            "required_files": compile_inputs,
             "optional_files": [],
             "compiled_brief": instruction,
             "selection_report": instruction,
@@ -1521,6 +1571,7 @@ def validate_design_compile_delta(
     document_path: str | Path,
     delta_path: str | Path,
     record_result: bool = True,
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None,
 ) -> IntelligenceValidationResult:
     if task_type not in DESIGN_INTELLIGENCE_TASK_TYPES:
         raise ValueError(f"{task_type} is not a design_document_v1 task.")
@@ -1529,18 +1580,44 @@ def validate_design_compile_delta(
         str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
         and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES
     ):
-        try:
-            fanfiction_contracts.load_current_fanfiction_documents(config, root)
-        except fanfiction_contracts.FanfictionContractError as exc:
-            raise ValueError(str(exc)) from exc
+        if current_fanfiction is None:
+            try:
+                current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
+                    config, root
+                )
+            except fanfiction_contracts.FanfictionContractError as exc:
+                raise ValueError(str(exc)) from exc
     document = resolve_candidate(root, document_path)
     delta = resolve_candidate(root, delta_path)
     errors: list[str] = []
-    approval = load_design_approval(root, task_type, document, errors=errors)
+    approval = load_design_approval(
+        root,
+        task_type,
+        document,
+        errors=errors,
+        current_fanfiction=current_fanfiction,
+    )
+    source_manifest = manifest_for_output(root, task_type, document)
+    if source_manifest is None:
+        errors.append("approved design document has no active source task.")
+    elif current_fanfiction is not None:
+        _require_current_fanfiction_design_task(
+            root,
+            source_manifest,
+            current_fanfiction,
+            label="design source task",
+        )
     manifest = manifest_for_output(root, "design_semantic_compile", delta)
     if manifest is None:
         errors.append("delta is not declared by an active design_semantic_compile task.")
     else:
+        if current_fanfiction is not None:
+            _require_current_fanfiction_design_task(
+                root,
+                manifest,
+                current_fanfiction,
+                label="design compile task",
+            )
         _task, control_errors = validate_current_task_result(
             root,
             chapter_number=manifest_chapter_number(manifest),
@@ -1667,6 +1744,7 @@ def apply_compiled_design(
         document_path=document,
         delta_path=delta,
         record_result=False,
+        current_fanfiction=current_fanfiction,
     )
     if not validation.ok:
         raise ValueError("Compiled design delta is invalid: " + "; ".join(validation.errors))
@@ -1703,6 +1781,7 @@ def apply_compiled_design(
                 if selection
                 else []
             ),
+            *(current_fanfiction.paths.values() if current_fanfiction is not None else ()),
         ),
         touched_paths=tuple(touched),
         metadata={
@@ -1711,6 +1790,17 @@ def apply_compiled_design(
             "approved_by": approved_by,
             "document_sha256": sha256(document.read_bytes()).hexdigest(),
             "selection_sha256": str(selection.get("selection_sha256") or ""),
+            **(
+                {
+                    "fanfiction_chain": (
+                        fanfiction_contracts.current_fanfiction_chain_binding(
+                            root, current_fanfiction
+                        )
+                    )
+                }
+                if current_fanfiction is not None
+                else {}
+            ),
         },
     ) as transaction:
         atomic_write_text(canonical_document, document.read_text(encoding="utf-8").rstrip() + "\n")
@@ -1844,6 +1934,7 @@ def load_design_approval(
     document: Path,
     *,
     errors: list[str] | None = None,
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None,
 ) -> dict[str, Any]:
     target = errors if errors is not None else []
     path = design_approval_path(root, document)
@@ -1860,6 +1951,17 @@ def load_design_approval(
             target.append("design document changed after approval; revalidate and approve it again.")
         if payload.get("approved_by") != "human":
             target.append("design approval must be recorded by human.")
+        if current_fanfiction is not None:
+            chain_errors = fanfiction_contracts.validate_current_fanfiction_chain_binding(
+                root,
+                current_fanfiction,
+                payload.get("fanfiction_chain"),
+            )
+            if chain_errors:
+                raise ValueError(
+                    "design approval fanfiction chain is stale: "
+                    + "; ".join(chain_errors)
+                )
         if task_type == "chapter_direction":
             selection_errors: list[str] = []
             selection = load_chapter_direction_selection(root, document, errors=selection_errors)
@@ -2244,17 +2346,18 @@ def assess_project_readiness(config: ConfigDocument) -> ProjectReadinessResult:
             current_fanfiction is None
             or
             not isinstance(dependency, dict)
-            or dependency.get("schema") != "fanfiction_book_design_dependency_v1"
-            or dependency.get("story_engine_sha256")
-            != current_fanfiction.sha256["story_engine"]
-            or dependency.get("route_design_sha256")
-            != current_fanfiction.sha256["route_design"]
+            or dependency.get("schema") != "fanfiction_book_design_dependency_v2"
+            or fanfiction_contracts.validate_current_fanfiction_chain_binding(
+                root,
+                current_fanfiction,
+                dependency.get("fanfiction_chain"),
+            )
         ):
             return ProjectReadinessResult(
                 False,
                 "book_design",
                 "book_design",
-                ("book_design is stale against the current fanfiction story engine or route.",),
+                ("book_design is stale against the complete current fanfiction chain.",),
             )
     book_errors: list[str] = []
     expression = read_json(root / "10_bible" / "character_expression.json", {})
@@ -3267,6 +3370,39 @@ def manifest_for_output(root: Path, task_type: str, candidate: Path) -> dict[str
 
             return normalize_manifest(payload)
     return None
+
+
+def _require_current_fanfiction_design_task(
+    root: Path,
+    manifest: dict[str, Any],
+    current: fanfiction_contracts.CurrentFanfictionDocuments,
+    *,
+    label: str,
+) -> None:
+    """Require a current task manifest that binds every document in one validated chain."""
+
+    validation = validate_manifest_strict(root, manifest, strict=True)
+    if not validation.ok:
+        raise ValueError(
+            f"{label} fanfiction chain provenance is stale: "
+            + "; ".join(validation.errors)
+        )
+    records = {
+        str(item.get("path") or "").replace("\\", "/"): str(item.get("sha256") or "")
+        for item in (manifest.get("io") or {}).get("inputs") or []
+        if isinstance(item, dict) and item.get("kind") != "media_asset"
+    }
+    binding = fanfiction_contracts.current_fanfiction_chain_binding(root, current)
+    mismatches = [
+        str(item["name"])
+        for item in binding["documents"]
+        if records.get(str(item["path"])) != item["sha256"]
+    ]
+    if mismatches:
+        raise ValueError(
+            f"{label} fanfiction chain provenance is incomplete or stale for: "
+            + ", ".join(mismatches)
+        )
 
 
 def fanfiction_review_route_path(
@@ -5616,9 +5752,12 @@ def write_book_design_targets(
         write_json(
             root / "10_bible" / "fanfiction" / "book_design_dependency.json",
             {
-                "schema": "fanfiction_book_design_dependency_v1",
-                "story_engine_sha256": current_fanfiction.sha256["story_engine"],
-                "route_design_sha256": current_fanfiction.sha256["route_design"],
+                "schema": "fanfiction_book_design_dependency_v2",
+                "fanfiction_chain": (
+                    fanfiction_contracts.current_fanfiction_chain_binding(
+                        root, current_fanfiction
+                    )
+                ),
                 "book_design_projection_sha256": semantic_json_hash(payload),
             },
         )

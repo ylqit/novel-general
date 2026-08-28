@@ -73,6 +73,15 @@ CROSSOVER_TOPICS_BY_PAYLOAD_KIND = {
     "world_rule": frozenset({"身份组织法律", "信息传播"}),
 }
 
+FANFICTION_CHAIN_BINDING_SCHEMA = "current_fanfiction_chain_binding_v1"
+FANFICTION_CHAIN_DOCUMENT_NAMES = (
+    "source_canon",
+    "story_engine",
+    "route_design",
+    "independent_review",
+    "review_target",
+)
+
 _CROSSOVER_TRIGGER_ELEMENTS = frozenset(
     {
         "characters",
@@ -126,6 +135,65 @@ class FanfictionContractError(ValueError):
         self.code = code
         self.detail = detail
         super().__init__(f"fanfiction_contract[{code}] {path}: {detail}")
+
+
+def current_fanfiction_chain_binding(
+    root: Path,
+    current: CurrentFanfictionDocuments,
+) -> dict[str, Any]:
+    """Serialize the complete validated chain as stable project-local provenance."""
+
+    documents: list[dict[str, str]] = []
+    for name in FANFICTION_CHAIN_DOCUMENT_NAMES:
+        path = current.paths[name].resolve()
+        try:
+            relative_path = path.relative_to(root.resolve()).as_posix()
+        except ValueError as exc:
+            raise ValueError(f"fanfiction chain path escapes project root: {path}") from exc
+        documents.append(
+            {
+                "name": name,
+                "path": relative_path,
+                "sha256": current.sha256[name],
+            }
+        )
+    return {
+        "schema": FANFICTION_CHAIN_BINDING_SCHEMA,
+        "documents": documents,
+    }
+
+
+def validate_current_fanfiction_chain_binding(
+    root: Path,
+    current: CurrentFanfictionDocuments,
+    binding: Any,
+) -> list[str]:
+    """Compare recorded chain provenance with one validated current snapshot."""
+
+    if not isinstance(binding, dict) or set(binding) != {"schema", "documents"}:
+        return ["fanfiction chain binding must contain schema and documents only"]
+    if binding.get("schema") != FANFICTION_CHAIN_BINDING_SCHEMA:
+        return [f"fanfiction chain binding schema must be {FANFICTION_CHAIN_BINDING_SCHEMA}"]
+    documents = binding.get("documents")
+    if not isinstance(documents, list):
+        return ["fanfiction chain binding documents must be a list"]
+    expected = current_fanfiction_chain_binding(root, current)["documents"]
+    errors: list[str] = []
+    if len(documents) != len(expected):
+        errors.append("fanfiction chain binding must cover the complete current chain")
+    for index, expected_document in enumerate(expected):
+        if index >= len(documents):
+            break
+        actual = documents[index]
+        if not isinstance(actual, dict) or set(actual) != {"name", "path", "sha256"}:
+            errors.append(f"fanfiction chain binding documents[{index}] has invalid fields")
+            continue
+        if actual != expected_document:
+            errors.append(
+                "fanfiction chain binding changed for "
+                f"{expected_document['name']}; revalidate against the current chain"
+            )
+    return errors
 
 
 def _read_document(path: Path) -> CurrentFanfictionDocument:
@@ -294,7 +362,7 @@ def validate_crossover_route_contract(
                 f"extensions.crossover.transfers[{index}].source_id must name a configured source"
             )
         else:
-            transferred_sources.add(source_id)
+            transferred_sources.add(str(source_id))
         payload_kinds = transfer.get("payload_kinds")
         payloads_valid = (
             isinstance(payload_kinds, list)
@@ -312,8 +380,10 @@ def validate_crossover_route_contract(
                 "list containing only character, body_or_soul, ability, item_or_contract, "
                 "knowledge, organization, or world_rule"
             )
-        elif source_valid:
-            transfer_payloads.setdefault(source_id, set()).update(payload_kinds)
+        elif source_valid and isinstance(source_id, str) and isinstance(payload_kinds, list):
+            transfer_payloads.setdefault(source_id, set()).update(
+                str(item) for item in payload_kinds
+            )
 
     if topology == "fixed_host" and isinstance(default_host_source_id, str):
         if default_host_source_id in transferred_sources:
@@ -396,7 +466,13 @@ def validate_crossover_route_contract(
                 errors.append(
                     f"claims[{index}].extensions.host_source_id must name a configured source"
                 )
-            if topology == "sequential_worlds" and volume_ids_valid and host_valid:
+            if (
+                topology == "sequential_worlds"
+                and volume_ids_valid
+                and host_valid
+                and isinstance(volume_ids, list)
+                and isinstance(host_source_id, str)
+            ):
                 for volume_id in volume_ids:
                     if volume_id not in declared_volume_set:
                         errors.append(
@@ -404,7 +480,9 @@ def validate_crossover_route_contract(
                             f"sequential volume {volume_id}"
                         )
                     else:
-                        volume_host_assignments.setdefault(volume_id, []).append(host_source_id)
+                        volume_host_assignments.setdefault(str(volume_id), []).append(
+                            host_source_id
+                        )
             continue
         if semantic_type != "主世界适配器":
             continue
@@ -435,8 +513,12 @@ def validate_crossover_route_contract(
                 f"claims[{index}].extensions.payload_kinds must be a non-empty unique "
                 "crossover payload-kind list"
             )
-        elif source_valid and source_id in transfer_payloads and (
-            set(adapter_payloads) != transfer_payloads[source_id]
+        elif (
+            source_valid
+            and isinstance(source_id, str)
+            and isinstance(adapter_payloads, list)
+            and source_id in transfer_payloads
+            and set(adapter_payloads) != transfer_payloads[source_id]
         ):
             errors.append(
                 f"claims[{index}].extensions.payload_kinds must exactly match the actual "
@@ -491,8 +573,8 @@ def validate_crossover_route_contract(
                     "list for sequential_worlds"
                 )
                 scope_valid = False
-            else:
-                adapter_volume_set = set(adapter_volume_ids)
+            elif isinstance(adapter_volume_ids, list):
+                adapter_volume_set = {str(item) for item in adapter_volume_ids}
                 outside_scope = sorted(adapter_volume_set - declared_volume_set)
                 if outside_scope:
                     errors.append(
@@ -1360,12 +1442,15 @@ __all__ = [
     "CROSSOVER_TOPICS_BY_PAYLOAD_KIND",
     "EVENT_CAUSAL_REFERENCE_FIELDS",
     "EVENT_DISPOSITIONS",
+    "FANFICTION_CHAIN_BINDING_SCHEMA",
+    "FANFICTION_CHAIN_DOCUMENT_NAMES",
     "CurrentFanfictionDocument",
     "CurrentFanfictionDocuments",
     "CurrentFanfictionStoryEngineDocuments",
     "FanfictionContractError",
     "STORY_ENGINE_REQUIRED_SEMANTIC_TYPES",
     "STORY_ENGINE_ROUTE_FAMILIES",
+    "current_fanfiction_chain_binding",
     "current_fanfiction_source_contracts",
     "crossover_required_topics",
     "fanfiction_route_review_projection",
@@ -1377,6 +1462,7 @@ __all__ = [
     "load_current_fanfiction_story_engine",
     "load_current_fanfiction_story_engine_documents",
     "requires_crossover_contract",
+    "validate_current_fanfiction_chain_binding",
     "validate_crossover_route_contract",
     "validate_event_disposition_claims",
     "validate_fanfiction_review_contract",

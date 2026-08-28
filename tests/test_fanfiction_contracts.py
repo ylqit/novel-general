@@ -15,7 +15,10 @@ from longform_engine.editorial import (
 )
 from longform_engine.gates import GateError, semantic_review_task
 from longform_engine.intelligence import (
+    apply_compiled_design,
     apply_intelligence_candidate,
+    approve_design_document,
+    create_design_compile_task,
     create_intelligence_task,
     validate_design_compile_delta,
     validate_intelligence_candidate,
@@ -844,7 +847,7 @@ def install_story_engine(project: dict) -> tuple[dict, str]:
     return engine, write_document(path, engine)
 
 
-def install_route(project: dict) -> tuple[dict, Path]:
+def install_route(project: dict, *, variant: str = "") -> tuple[dict, Path]:
     _engine, engine_sha = install_story_engine(project)
     continuity_mode = project["config"].data["fanfiction"]["continuity_mode"]
     claims = [
@@ -881,7 +884,7 @@ def install_route(project: dict) -> tuple[dict, Path]:
         title="当前同人路线",
         scope={"kind": "project", "project": project["root"].name},
         continuity="跨界连续性" if continuity_mode == "crossover" else "原作分歧",
-        body="从原著基线产生可追责的分歧后果。",
+        body=f"从原著基线产生可追责的分歧后果。{variant}",
         claims=claims,
         extensions={
             "task_type": "fanfiction_design",
@@ -901,7 +904,7 @@ def install_route(project: dict) -> tuple[dict, Path]:
             title="当前路线复核",
             scope={"kind": "project", "project": project["root"].name},
             continuity="跨界连续性" if continuity_mode == "crossover" else "原作分歧",
-            body="独立复核通过。",
+            body=f"独立复核通过。{variant}",
             extensions={
                 "task_type": "fanfiction_design_review",
                 "verdict": "pass",
@@ -955,6 +958,229 @@ def corrupt_canonical_crossover_route(
     else:
         raise AssertionError(f"unknown crossover corruption: {corruption}")
     write_document(route_path, reapprove(corrupted))
+
+
+def prepare_fanfiction_book_design(project: dict) -> tuple[Path, str, dict]:
+    from tests.test_intelligence_tasks import (
+        book_design_payload,
+        submit_result,
+        write_design_document,
+    )
+
+    install_route(project, variant="route-A")
+    payload = book_design_payload()
+    task = create_intelligence_task(project["config"], task_type="book_design")
+    document = project["root"] / task.candidate_file
+    document_text = write_design_document(document, "book_design", payload)
+    submit_result(project["root"], task.task_id, document)
+    validation = validate_intelligence_candidate(
+        project["config"],
+        task_type="book_design",
+        file_path=document,
+    )
+    assert validation.ok, validation.errors
+    return document, document_text, payload
+
+
+def approve_fanfiction_book_design(project: dict, document: Path) -> None:
+    approve_design_document(
+        project["config"],
+        task_type="book_design",
+        document_path=document,
+        approved_by="human",
+    )
+
+
+def prepare_fanfiction_book_design_delta(
+    project: dict,
+    document: Path,
+    document_text: str,
+    payload: dict,
+) -> tuple[Path, str]:
+    from tests.test_intelligence_tasks import submit_result, write_delta
+
+    compile_task = create_design_compile_task(
+        project["config"],
+        task_type="book_design",
+        document_path=document,
+    )
+    delta = project["root"] / compile_task.candidate_file
+    write_delta(
+        delta,
+        changes={key: value for key, value in payload.items() if key != "schema"},
+        source_name=document.name,
+        source_text=document_text,
+        delta_type="design_document",
+    )
+    submit_result(project["root"], compile_task.task_id, delta)
+    return delta, compile_task.task_id
+
+
+def test_design_approval_rejects_valid_but_different_current_chain_without_write(
+    current_contract_project,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    document, _document_text, _payload = prepare_fanfiction_book_design(project)
+    install_route(project, variant="route-B")
+    before = project_file_snapshot(project["root"])
+
+    with pytest.raises(ValueError, match="fanfiction chain"):
+        approve_fanfiction_book_design(project, document)
+
+    assert project_file_snapshot(project["root"]) == before
+
+
+def test_compile_task_rejects_chain_drift_before_instruction_or_manifest_write(
+    current_contract_project,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    document, _document_text, _payload = prepare_fanfiction_book_design(project)
+    approve_fanfiction_book_design(project, document)
+    install_route(project, variant="route-B")
+    before = project_file_snapshot(project["root"])
+
+    with pytest.raises(ValueError, match="fanfiction chain"):
+        create_design_compile_task(
+            project["config"],
+            task_type="book_design",
+            document_path=document,
+        )
+
+    assert project_file_snapshot(project["root"]) == before
+
+
+def test_compile_validation_rejects_chain_drift_before_report_or_status_write(
+    current_contract_project,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    document, document_text, payload = prepare_fanfiction_book_design(project)
+    approve_fanfiction_book_design(project, document)
+    delta, _task_id = prepare_fanfiction_book_design_delta(
+        project, document, document_text, payload
+    )
+    install_route(project, variant="route-B")
+    before = project_file_snapshot(project["root"])
+
+    with pytest.raises(ValueError, match="fanfiction chain"):
+        validate_design_compile_delta(
+            project["config"],
+            task_type="book_design",
+            document_path=document,
+            delta_path=delta,
+        )
+
+    assert project_file_snapshot(project["root"]) == before
+
+
+def test_compiled_apply_rejects_chain_drift_before_transaction_or_canonical_write(
+    current_contract_project,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    document, document_text, payload = prepare_fanfiction_book_design(project)
+    approve_fanfiction_book_design(project, document)
+    delta, _task_id = prepare_fanfiction_book_design_delta(
+        project, document, document_text, payload
+    )
+    validation = validate_design_compile_delta(
+        project["config"],
+        task_type="book_design",
+        document_path=document,
+        delta_path=delta,
+    )
+    assert validation.ok, validation.errors
+    install_route(project, variant="route-B")
+    before = project_file_snapshot(project["root"])
+
+    with pytest.raises(ValueError, match="fanfiction chain"):
+        apply_compiled_design(
+            project["config"],
+            task_type="book_design",
+            document_path=document,
+            delta_path=delta,
+            approved_by="human",
+        )
+
+    assert project_file_snapshot(project["root"]) == before
+
+
+def test_design_approval_compile_manifest_and_transaction_bind_complete_chain(
+    current_contract_project,
+):
+    from longform_engine.reader_promises_v2 import (
+        empty_reader_promise_ledger,
+        write_reader_promise_ledger,
+    )
+
+    project = current_contract_project
+    configure_crossover_project(project)
+    write_reader_promise_ledger(
+        project["root"],
+        empty_reader_promise_ledger(),
+    )
+    document, document_text, payload = prepare_fanfiction_book_design(project)
+    current = contracts.load_current_fanfiction_documents(
+        project["config"], project["root"]
+    )
+    expected = {
+        path.relative_to(project["root"]).as_posix(): current.sha256[name]
+        for name, path in current.paths.items()
+    }
+    approve_fanfiction_book_design(project, document)
+    approval = json.loads(
+        (
+            project["root"]
+            / "50_workbench"
+            / "intelligence_approvals"
+            / f"{document.stem}.approval.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert {
+        item["path"]: item["sha256"]
+        for item in approval["fanfiction_chain"]["documents"]
+    } == expected
+
+    delta, task_id = prepare_fanfiction_book_design_delta(
+        project, document, document_text, payload
+    )
+    manifest = load_manifest(project["root"], task_id)
+    manifest_inputs = {
+        item["path"]: item["sha256"] for item in manifest["io"]["inputs"]
+    }
+    assert expected.items() <= manifest_inputs.items()
+    validation = validate_design_compile_delta(
+        project["config"],
+        task_type="book_design",
+        document_path=document,
+        delta_path=delta,
+    )
+    assert validation.ok, validation.errors
+    applied = apply_compiled_design(
+        project["config"],
+        task_type="book_design",
+        document_path=document,
+        delta_path=delta,
+        approved_by="human",
+    )
+    transaction = json.loads(
+        (project["root"] / applied.transaction_report).read_text(encoding="utf-8")
+    )
+    assert set(expected) <= set(transaction["source_paths"])
+    dependency = json.loads(
+        (
+            project["root"]
+            / "10_bible"
+            / "fanfiction"
+            / "book_design_dependency.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert {
+        item["path"]: item["sha256"]
+        for item in dependency["fanfiction_chain"]["documents"]
+    } == expected
 
 
 def test_complete_current_chain_rejects_legacy_crossover_route_and_review_target(
