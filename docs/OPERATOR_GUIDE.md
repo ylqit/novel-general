@@ -12,18 +12,36 @@
 | `/逐项搜索原著资料` | `longform-engine fanfiction source-search project.yaml --source-id SOURCE --gap GAP --query QUERY` |
 | `/导入本地原著资料` | `longform-engine source-library item-import ... --approved-by human` |
 | `/绑定全局原著资料` | `longform-engine fanfiction item-bind ... --approved-by human` |
-| `/提取原著设定`、`/批准原著设定` | 先执行 `source-library extraction-template --item-id ...` 生成不覆盖的 `source_extraction_candidate_v1` 骨架，逐条填写短证据后再执行 `source-library extraction-approve ... --approved-by human` |
+| `/提取原著设定`、`/批准原著设定` | 对 `evidence_ready` 资料执行 `source-library task-create --task-type source_fact_extraction`，或生成不覆盖的 `semantic_document_v1` 骨架；逐条绑定证据位置后人工 `task-apply` 或 `extraction-approve` |
 | `/处理版本冲突` | `longform-engine fanfiction conflict-apply project.yaml --source-id SOURCE --file 决定.yaml --approved-by human` |
 | `/补全当前章节资料` | 写作门禁自动生成 `gap-request`；人工执行 `gap-approve` 后才可 `source-search`，绑定批准资料后执行 `gap-resolve` |
 | `/查看原著资料升级` | `longform-engine fanfiction upgrade-status project.yaml --json` |
 | `/申请原著资料升级` | `longform-engine fanfiction upgrade-propose ... --created-by human` |
 | `/应用原著资料升级` | `longform-engine fanfiction upgrade-apply ... --proposal ... --review ... --decision ...` |
+| `/工程同人故事发动机` | `longform-engine fanfiction story-engine-task/validate/apply ... --approved-by human` |
+| `/工程同人路线设计` | `longform-engine fanfiction design-task/validate ...` |
+| `/工程同人路线复核` | 隔离会话执行 `fanfiction design-review-task/validate ...`，随后 `design-apply --review ... --approved-by human` |
+| `/查看原著事件命运` | `longform-engine fanfiction event-disposition-status project.yaml --json` |
+| `/查看人物知识边界`、`/查看跨界规则`、`/查看同人章节上下文` | `longform-engine fanfiction context-status project.yaml --chapter N --json` |
 | `/申请外部作品研究` | `longform-engine research external-request ...` |
 | `/批准外部作品研究` | `longform-engine research external-approve ... --approved-by human` |
 
-同人设计前，每部原著都必须完成权威版本、截止点、全目录单元、来源和维度覆盖。跨作品项目必须全部通过。全局资料升级只生成提案；未来影响使 Canon/规划 stale，历史影响路由 `revision_branch_v2`。项目不会复制完整原件，也不会从普通网页拼接受版权保护的连续小说、字幕或剧本。
+同人设计前，每部原著都必须完成身份、采用版本、截止点和 `design_core` 需求；写章前只硬校验当前 `chapter_dependency`。`whole_to_cutoff` 全作覆盖必须由人工显式选择。跨作品项目分别显示每部原著状态。全局资料升级只生成提案；未来影响使 Canon/规划 stale，历史影响路由 `revision_branch_v2`。项目不会复制完整原件，也不会从普通网页拼接受版权保护的连续小说、字幕或剧本。
 
-本指南对应 v0.11.0。旧 v0.9 项目、证据、Skill 与 `fanfiction_source_canon_v1` 不能继续使用。
+项目原著基线 Canon 获批后，先批准同人故事发动机，再设计路线；路线必须经过不同隔离会话的独立复核。故事发动机、路线、复核和原著 Canon 的 hash 共同决定当前状态。原著事件命运、人物知识边界和跨界规则通过开放 `semantic_document_v1` claim 表达，不建立专用封闭 Schema。当前章内部上下文以稳定 claim 引用和 Token 预算编译；作者 Story Brief 只显示自然中文。
+
+本指南对应 0.12.0 语义优先开发态。`fanfiction_source_canon_v1/v2/v3` 与旧固定内容协议不能继续作为当前证据；v0.11 项目必须使用显式审计和非原地导入。
+
+创作沙盒与迁移入口：
+
+```powershell
+longform-engine sandbox create project.yaml --type 分歧点试验 --title 标题 --body-file IDEA.md
+longform-engine sandbox promote project.yaml --sandbox SANDBOX.json --candidate CANDIDATE.json --approved-by human --reason 理由
+longform-engine migrate audit-v011 --source OLD_PATH --json
+longform-engine migrate v011-to-v012 --source OLD_PATH --destination NEW_PATH --approved-by human
+```
+
+沙盒提升只产生正式语义候选，不会直接改变 Canon、图谱、RAG、大纲或正文。
 
 ## 1. 每轮唯一入口
 
@@ -52,7 +70,7 @@ longform-engine planning node-decisions-record project.yaml --bundle 50_workbenc
 longform-engine planning apply project.yaml --bundle 50_workbench/planning/planning_bundle_v1.json --application 50_workbench/planning/semantic_application.json --approval 50_workbench/planning/human_approval.json --node-decisions 50_workbench/planning/node_decisions.json --approved-by human
 ```
 
-语义审查者必须与规划作者/编译者独立。每个 firm Plot Node 都要一个人工决定；不能批量默认批准。
+语义审查者必须与规划作者/编译者独立。firm 层中改变长期目标、关系阶段、原著事件命运、能力规则、死亡/存活/背叛/身份揭露、跨界规则、组织迁移或核心职责的 state-changing Plot Node 必须逐项获得人工决定；普通对话、动作、过渡、短战斗节拍和局部幽默不创建审批节点，也不能批量默认批准重大节点。
 
 ## 3. 人工写前意图与写作
 

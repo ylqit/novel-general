@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from longform_engine.agent_tasks import mark_tasks_for_chapter_type
-from longform_engine.chapter_contract import load_verified_chapter_contract
+from longform_engine.chapter_contract import (
+    load_verified_chapter_contract,
+    plot_node_approval_is_current,
+)
 from longform_engine.config import ConfigDocument
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 
@@ -299,8 +302,7 @@ def current_plot_node_approval_binding(root: Path, chapter_number: int) -> dict[
         or payload.get("chapter_number") != chapter_number
         or not str(payload.get("approval_sha256") or "")
         or any(
-            not isinstance(node, dict)
-            or (node.get("human_decision") or {}).get("decision") not in {"approve", "adjust"}
+            not plot_node_approval_is_current(node)
             for node in payload.get("nodes") or []
         )
     ):

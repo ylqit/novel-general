@@ -69,7 +69,7 @@ def test_no_key_agent_task_chapter_loop_and_manifest_index(tmp_path, monkeypatch
     assert "status" not in json.loads(manifest.read_text(encoding="utf-8"))
     assert next(item for item in indexed if item["task_type"] == "chapter_write")["status"] == "superseded"
     events = event_payloads(root)
-    assert [item["to_status"] for item in events if item["task_id"] == "chapter_write:ch001:v4"] == [
+    assert [item["to_status"] for item in events if item["task_id"] == "chapter_write:ch001:v5"] == [
         "awaiting_agent",
         "submitted",
         "superseded",
@@ -120,7 +120,7 @@ def test_finalize_applies_submitted_candidate_and_supersedes_unused_repair(tmp_p
     finalize_chapter(config, chapter_number=1, approved_by="human")
 
     manifests = {item["task_id"]: item for item in list_manifests(root, chapter_number=1)}
-    assert manifests["chapter_write:ch001:v4"]["status"] == "superseded"
+    assert manifests["chapter_write:ch001:v5"]["status"] == "superseded"
     assert manifests["repair:ch001:unused"]["status"] == "superseded"
     next_action = production_next(config)
     assert next_action["status"] == "ready_for_chapter_semantic_task"
@@ -145,7 +145,7 @@ def test_agent_task_manifests_for_repair_prose_naturalness_and_unified_semantic(
         root,
         task_type="repair",
         chapter_number=1,
-        task_id="repair:ch001:r01:v4",
+        task_id="repair:ch001:r01:v5",
         input_files=[repair_task, root / "40_manuscript" / "draft" / "ch001.md"],
         allowed_output_paths=[repair_output],
         output_schema=PROSE_MARKDOWN_SCHEMA,
@@ -154,7 +154,7 @@ def test_agent_task_manifests_for_repair_prose_naturalness_and_unified_semantic(
             "--file 50_workbench/repair_candidates/ch001.r01.codex.md --agent codex --overwrite"
         ),
         apply_command="longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
-        failure_next_command="longform-engine agent-task brief project.yaml repair:ch001:r01:v4",
+        failure_next_command="longform-engine agent-task brief project.yaml repair:ch001:r01:v5",
         context_policy={
             "required_files": [repair_task, root / "40_manuscript" / "draft" / "ch001.md"],
             "optional_files": [],
@@ -194,8 +194,8 @@ def test_agent_task_manifests_for_repair_prose_naturalness_and_unified_semantic(
     assert expand_manifest["commands"]["apply"].startswith("longform-engine draft submit ")
     assert "--overwrite" in expand_manifest["commands"]["apply"]
     assert expand_manifest["commands"]["failure"].startswith("longform-engine creative expand-task ")
-    humanize_manifest = load_manifest(root, "prose_naturalness:ch001:v4")
-    repair_manifest = load_manifest(root, "repair:ch001:r01:v4")
+    humanize_manifest = load_manifest(root, "prose_naturalness:ch001:v5")
+    repair_manifest = load_manifest(root, "repair:ch001:r01:v5")
     assert humanize_manifest["commands"]["failure"].startswith("longform-engine creative prose-naturalness-task ")
     assert repair_manifest["commands"]["failure"].startswith("longform-engine agent-task brief ")
     for item in list_manifests(root, chapter_number=1):
@@ -297,10 +297,10 @@ def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_cand
         source_path=second_candidate,
     )
 
-    assert first["task_id"] == "repair_plan_synthesis:ch001:r01:v4"
-    assert first_candidate_task["task_id"] == "repair:ch001:r01:v4"
-    assert second["task_id"] == "repair_plan_synthesis:ch001:r02:v4"
-    assert second_candidate_task["task_id"] == "repair:ch001:r02:v4"
+    assert first["task_id"] == "repair_plan_synthesis:ch001:r01:v5"
+    assert first_candidate_task["task_id"] == "repair:ch001:r01:v5"
+    assert second["task_id"] == "repair_plan_synthesis:ch001:r02:v5"
+    assert second_candidate_task["task_id"] == "repair:ch001:r02:v5"
     assert first["review_bundle"] != second["review_bundle"]
     assert first_candidate_task["candidate_draft"] != second_candidate_task["candidate_draft"]
     assert next_repair_round(config, chapter_number=1) is None
@@ -346,7 +346,7 @@ def test_editorial_submit_review_aggregates_need_human_without_canon_pollution(t
     assert not aggregate.duplicate_role_results
     assert not aggregate.invalid_results
     assert editorial_manifests
-    serial_task = next(item for item in editorial_manifests if item["task_id"] == "editorial_review:planning_chief_editor:ch001:v4")
+    serial_task = next(item for item in editorial_manifests if item["task_id"] == "editorial_review:planning_chief_editor:ch001:v5")
     assert serial_task["status"] == "applied"
     for item in editorial_manifests:
         result = validate_manifest_strict(root, load_manifest(root, item["task_id"]))
@@ -871,7 +871,7 @@ def pacing_review_payload(root: Path, source: Path, *, blocking: bool = False) -
 
 def submit_editorial_review(config, *, chapter_number: int, role: str, file_path: Path):
     root = resolve_project_root(config)
-    manifest = load_manifest(root, f"editorial_review:{role}:ch{chapter_number:03d}:v4")
+    manifest = load_manifest(root, f"editorial_review:{role}:ch{chapter_number:03d}:v5")
     validate_production_agent_result(root, manifest, result_file=file_path)
     return editorial_submit_review(
         config,

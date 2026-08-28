@@ -40,6 +40,7 @@ COMPACT_CONTRACT_FIELDS = (
     "foreshadow_release",
     "ending_distribution",
     "slow_chapter_policy",
+    "cn_longform_fanfiction",
     "platform_policy",
 )
 
@@ -158,6 +159,33 @@ def compile_effective_quality_contract(
                 "id": f"{market}:{phase}",
                 "path": market_source[1],
                 "sha256": market_source[2],
+            }
+        )
+
+    conditional_overlays: list[dict[str, Any]] = []
+    if (
+        market == "qidian_male"
+        and str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
+    ):
+        overlay = load_quality_profile("overlays", "cn_longform_fanfiction")
+        merge_contract_layer(
+            contract,
+            overlay[0]["contract"],
+            layer="conditional_overlay",
+            source=overlay[1],
+            digest=overlay[2],
+            merge_trace=merge_trace,
+            overridden_fields=overridden_fields,
+        )
+        record = profile_source_record(overlay[0], overlay[1], overlay[2])
+        source_records.append(record)
+        conditional_overlays.append(
+            {
+                "id": "cn_longform_fanfiction",
+                "applied": True,
+                "source": overlay[1],
+                "sha256": overlay[2],
+                "execution_level": "P2_advisory",
             }
         )
 
@@ -294,6 +322,7 @@ def compile_effective_quality_contract(
         "merge_trace": merge_trace,
         "overridden_fields": list(dict.fromkeys(overridden_fields)),
         "compatibility_observations": compatibility_observations[:3],
+        "conditional_overlays": conditional_overlays,
         "blocking_policy": blocking_policy,
         "merge_order": [
             "fact_and_safety_boundaries",
@@ -302,6 +331,7 @@ def compile_effective_quality_contract(
             "current_story_arc",
             "phase",
             "market_phase",
+            "conditional_overlay",
             "user_approved_style_baseline",
             "project_overrides",
         ],
@@ -346,6 +376,9 @@ def compact_effective_quality_contract(payload: dict[str, Any]) -> dict[str, Any
         },
         "compatibility_observations": copy.deepcopy(
             list(payload.get("compatibility_observations") or [])[:3]
+        ),
+        "conditional_overlays": copy.deepcopy(
+            list(payload.get("conditional_overlays") or [])
         ),
         "blocking_policy": copy.deepcopy(payload.get("blocking_policy") or {}),
     }

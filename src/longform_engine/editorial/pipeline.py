@@ -66,8 +66,8 @@ DEFAULT_EDITORIAL_TEAM: tuple[dict[str, str], ...] = (
     },
     {
         "id": "canon_fidelity_reviewer",
-        "display_name": "同人还原编辑",
-        "focus": "canon motive, voice, relationship phase, world rules, divergence causality, agency, original contribution",
+        "display_name": "同人一致性与创造性编辑",
+        "focus": "source fidelity, character knowledge, divergence causality, agency, crossover rules, fanfiction originality",
     },
 )
 
@@ -1012,7 +1012,7 @@ def write_multi_agent_task_files(root: Path, payload: dict[str, Any]) -> list[st
                 f"longform-engine editorial need-human project.yaml --chapter {int(payload['chapter_number'])} "
                 "--reason editorial_result_invalid"
             ),
-            task_id=f"editorial_review:{role_id}:ch{int(payload['chapter_number']):03d}:v4",
+            task_id=f"editorial_review:{role_id}:ch{int(payload['chapter_number']):03d}:v5",
             role_id=role_id,
             context_policy={
                 "required_files": role_inputs,
@@ -1070,10 +1070,10 @@ def editorial_role_source_inputs(
         ],
         "canon_fidelity_reviewer": [
             chapter,
+            root / "50_workbench" / "fanfiction_context" / f"ch{chapter_number:03d}.json",
             root / "10_bible" / "fanfiction" / "source_canon.json",
+            root / "10_bible" / "fanfiction" / "story_engine.json",
             root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
-            card,
-            root / "10_bible" / "creative_brief.json",
         ],
     }
     candidates = candidates_by_role.get(
@@ -1116,7 +1116,9 @@ def build_editorial_context_payload(
             ],
         )
         if role_id == "canon_fidelity_reviewer" and relative in {
+            f"50_workbench/fanfiction_context/ch{chapter_number:03d}.json",
             "10_bible/fanfiction/source_canon.json",
+            "10_bible/fanfiction/story_engine.json",
             "10_bible/fanfiction/fanfiction_bible.json",
         } and (not projection or projection == "[context-evidence-incomplete]"):
             raise ValueError(f"context_evidence_incomplete:{relative}")
@@ -1298,9 +1300,11 @@ def role_instruction(role_id: str) -> str:
             "避免流水账升级，结尾是否适合本章而非强制悬崖。平台兼容意见只能作为非阻断 P2 建议。"
         ),
         "canon_fidelity_reviewer": (
-            "只读取声明的 canon 与同人设计，检查动机、说话习惯、关系阶段、能力边界、时代知识、世界规则"
-            "和原作人物能动性。有蝴蝶效应支撑的既定分歧不算 OOC；重点识别只套角色皮、集体降智、原作人物"
-            "沦为工具以及保留术语却让规则失效。"
+            "按 source_fidelity 与 fanfiction_originality 两轴独立检查。前者核对人物价值排序、知识、关系阶段、"
+            "声音、能力代价、世界规则、组织反应和已批准分歧；后者核对新选择、分歧后果、原创主线、原著人物"
+            "主体性和新的关系/债务/资源/组织后果。有因果支撑的 AU 或分歧不算 OOC。只有违反批准基线/分歧/"
+            "跨界规则、未来知识越界、无依据剥夺人物主体性、绕过能力成本，或违反明确原创义务并机械复演时，"
+            "同人创造性才可 P1；一般原创度不足只能 P2。"
         ),
     }
     return instructions.get(role_id, "只从当前声明的专业角色视角审查本章，并引用可核验正文证据。")

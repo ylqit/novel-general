@@ -2,7 +2,7 @@
 
 中文斜杠指令只用于 Codex App、Codex CLI 和 ClaudeCode 的交互层。所有正式执行必须落到 `longform-engine ...` CLI；Agent 只能写入 `50_workbench/agent_drafts/`，不能直接写 final、RAG、story graph、memory、TCS 或 SQLite。
 
-当前运行时合同固定为 29 个角色、28 类任务、4 类 Agent 输出协议和单进程顺序执行。
+当前运行时合同固定为 34 个角色、45 类任务、5 类 Agent 输出协议和单进程顺序执行。
 
 ## 使用规则
 
@@ -25,7 +25,7 @@
 | 中文指令 | CLI 命令 | 必填参数 | 写入边界 | 说明 |
 | --- | --- | --- | --- | --- |
 | `/工程下一步` | `longform-engine production next project.yaml` | `project.yaml` | 只读 | 读取 Agent task、gate、draft/final 和 editorial 状态，输出当前最高优先级安全动作。 |
-| `/工程工单` | `longform-engine agent-task brief project.yaml TASK_OR_PATH` | `project.yaml`、`TASK_OR_PATH` | 只读 | 将当前 `AgentTaskManifest v4` 渲染成 Codex / Claude Code 可执行中文工作单。 |
+| `/工程工单` | `longform-engine agent-task brief project.yaml TASK_OR_PATH` | `project.yaml`、`TASK_OR_PATH` | 只读 | 将当前 `AgentTaskManifest v5` 渲染成 Codex / Claude Code 可执行中文工作单。 |
 | `/工程生产状态` | `longform-engine production status project.yaml` | `project.yaml` | 只读 | 输出 GUI/API 稳定状态摘要，包含 next action、Agent task 统计和 board totals。 |
 | `/工程生产看板` | `longform-engine production board project.yaml` | `project.yaml` | 只读 | 按章节显示 draft、final、gate、repair、graph、memory、pacing 和 editorial 状态。 |
 | `/工程推进` | `longform-engine production loop project.yaml --no-apply` | `project.yaml` | 确定性流程产物；不自动 apply/finalize | 推进确定性步骤，遇到 Agent 输出、人工确认或 canonical apply/finalize 时暂停。 |
@@ -67,38 +67,57 @@
 | --- | --- | --- | --- | --- |
 | `/初始化原著资料库` | `longform-engine source-library init` | 可选 `LONGFORM_SOURCE_LIBRARY` 绝对路径 | 当前用户 `原著资料库/` | 建立非 Canon 的用户级共享资料库和索引。 |
 | `/查看原著资料库` | `longform-engine source-library status --json` | 无 | 只读 | 查看全局作品、资料项和批准提取状态，不读取其他项目 Canon。 |
+| `/打开创作控制台` | `longform-engine studio serve project.yaml` | 当前项目 | `127.0.0.1` 本地控制台 | 创建目标、资料库、批量导入、处理、证据、覆盖和审批分面；不能 finalize 或直接 apply Canon。 |
+| `/查看资料处理能力` | `longform-engine source-library capabilities` | 无 | 只读 | 显示格式、MIME、处理器版本、依赖、输入上限、失败码和是否可能外传。 |
+| `/预览批量资料` | `longform-engine source-library ingest-preview --batch-id BATCH` | 暂存批次 | 只读 | 预览动态分组、相对目录、签名、大小和阻断诊断。 |
+| `/导入原著资料目录` | `longform-engine source-library ingest-plan --work-id WORK --directory DIR ...` | 本地目录、版本/权利/留存决定 | 用户级暂存区 | 不自动解压，不把上传成功当成理解成功；`ingest-apply` 需要人工批准。 |
+| `/确认资料分组` | `longform-engine source-library ingest-confirm --batch-id BATCH --groups-file GROUPS --approved-by human` | 完整分组 JSON 与人工决定 | 暂存批次 | 每个文件必须恰好归入一个分组；确认 hash 漂移后 `ingest-apply` 阻断。 |
+| `/处理资料格式` | `source-library process-plan/process-run` | 资料项、可选 asset/参数 | 规范化不可变版本 | 文档、图片、字幕、音频和视频按能力注册表处理；未知格式保持原件但不可作为证据。 |
+| `/审查OCR与转写` | `source-library task-create --task-type source_evidence_review` | 单个资料项、声明 segment | 资料级 Agent 工单 | 只读短证据包；独立复核后仍需人工 `task-apply`。 |
+| `/授权云端资料处理` | `source-library remote-prepare/remote-approve/remote-run` | 明确 asset 范围、模型、人工批准 | 非 Canon 处理结果与回执 | 默认关闭；输入、范围、模型、hash 或配置变化立即 stale，禁止本地失败自动回退。 |
+| `/搜索原著证据` | `source-library index-rebuild` / `source-library search --query QUERY` | 已核验规范化证据 | 用户级隔离 FTS | 结果仅用于定位与提取，不进入项目 Canon/RAG。 |
 | `/登记原著作品` | `longform-engine source-library work-register --name NAME --creator CREATOR --approved-by human` | 作品名、作者、人工批准 | `原著资料库/作品/<动态作品名>/` | 建立稳定作品 ID；别名和版本不决定内部目录。 |
 | `/创建同人作品资料` | `longform-engine fanfiction pack-init project.yaml` | 同人 `project.yaml` | `50_workbench/同人原著资料/<作品名>/` | 只创建作品根和必要中文配置，不创建媒介空目录。 |
-| `/选择原著版本` | `longform-engine fanfiction coverage-apply project.yaml --source-id SOURCE --file PLAN --approved-by human` | 权威版本、媒介范围、截止点 | `全作覆盖计划.yaml` | “全作”仅指人工清单内截至截止点的全部单元。 |
-| `/制定全作覆盖计划` | `longform-engine fanfiction coverage-apply project.yaml --source-id SOURCE --file PLAN --approved-by human` | 人工版本、截止点、目录单元 | 中文覆盖计划与报告 | 每部原著独立门禁；crossover 必须全部通过。 |
-| `/查看全作资料缺口` | `longform-engine fanfiction coverage-gaps project.yaml --json` | 可选 `--source-id` | 只读 | 显示逐作品单元、维度、来源与版本冲突缺口。 |
-| `/查看资料覆盖` | `longform-engine fanfiction coverage-gaps project.yaml --json` | 可选 `--source-id` | 只读 | 同时显示覆盖率、未核销单元、缺失维度与不可用原件。 |
+| `/选择原著版本` | `longform-engine fanfiction coverage-apply project.yaml --source-id SOURCE --file PLAN --approved-by human` | 权威版本、媒介范围、截止点 | `全作覆盖计划.yaml`（历史物理文件名） | 默认内容是分层按需；只有人工选择 `whole_to_cutoff` 时才要求截至截止点全作。 |
+| `/制定动态覆盖计划` | `longform-engine fanfiction coverage-apply project.yaml --source-id SOURCE --file PLAN --approved-by human` | `identity/design_core/volume_scope/chapter_dependency` 自然语言需求 | 中文覆盖计划与报告 | `design_core` 阻断正式路线；当前 `chapter_dependency` 只阻断依赖章节。 |
+| `/查看原著资料缺口` | `longform-engine fanfiction coverage-gaps project.yaml --json` | 可选 `--source-id` | 只读 | 显示逐作品语义需求、适用范围、证据、状态与版本冲突。 |
+| `/查看资料覆盖` | `longform-engine fanfiction coverage-gaps project.yaml --json` | 可选 `--source-id` | 只读 | 分别显示身份、设计核心、当前卷、当前章节和人工可选全作覆盖。 |
 | `/逐项搜索原著资料` | `longform-engine fanfiction source-search project.yaml --source-id SOURCE --gap GAP --query QUERY` | 当前批准缺口 | `搜索候选/` | 只产生待人工选择候选，不直接入库或改 Canon。 |
 | `/导入本地原著资料` | `longform-engine source-library item-import --work-id WORK --name NAME --source-type TYPE --version VERSION --unit-range RANGE --source-method METHOD --rights-status STATUS --retention-mode MODE --file FILE --approved-by human` | 权利声明、留存方式、人工批准 | 用户级动态资料项目录 | 全文仅接受用户声明合法持有、公版或明确允许；项目不复制原件。 |
 | `/批准资料来源` | `longform-engine source-library item-import ... --approved-by human` | 来源定位、版本、覆盖范围、权利与留存决定 | 用户级不可变资料项 | 来源未经人工批准不会成为可绑定资料项。 |
-| `/提取原著设定` | `longform-engine source-library extraction-template --item-id ITEM` | 已固定资料项 ID/hash | 全局非 Canon `提取候选.json` | 只生成不覆盖的候选骨架；逐条填写动态类型与短证据位置，模型记忆不能补事实。 |
-| `/批准原著设定` | `longform-engine source-library extraction-approve --item-id ITEM --file CANDIDATE --approved-by human` | 提取候选、人工批准 | hash 固定的全局提取版本 | 批准后仍只是全局候选，必须另行绑定并形成项目 Canon。 |
+| `/提取原著设定` | `longform-engine source-library extraction-template --item-id ITEM` | 已固定资料项 ID/hash | 全局非 Canon `semantic_document_v1` | 中文正文承载理解；只有可断言内容写 claim，并绑定短证据。模型记忆只能生成搜索线索。 |
+| `/批准原著设定` | `longform-engine source-library extraction-approve --item-id ITEM --file CANDIDATE --approved-by human` | 语义候选、人工批准 | hash 固定的全局语义候选版本 | 批准后仍不是项目 Canon，必须由具体小说绑定并重新决定。 |
 | `/处理版本冲突` | `longform-engine fanfiction conflict-apply project.yaml --source-id SOURCE --file DECISIONS --approved-by human` | 全部动态冲突事实 | `版本冲突决定.yaml`、中文报告 | 每项只能人工选择版本、并存隔离或排除；未处理继续阻断覆盖。 |
 | `/补全当前章节资料` | `fanfiction gap-request/gap-approve/source-search/gap-resolve` | 章节号、作品、缺口、人工决定 | `待审资料需求/` | v5 合同引用未知原著事实时自动建无网络请求；批准、资料绑定和人工核销前阻断写作。 |
 | `/绑定全局原著资料` | `longform-engine fanfiction item-bind project.yaml --source-id SOURCE --item-id ITEM --approved-by human` | 已批准全局提取 | 项目固定 ID/hash 与批准提取 | 项目不复制完整原件。已有 Canon 不允许绕过升级审批直接重绑。 |
-| `/工程同人Canon任务` | `longform-engine fanfiction canon-task project.yaml` | 全部来源覆盖门禁通过 | `50_workbench/intelligence_tasks/`、候选路径 | 自动声明批准资料包输入，生成 `fanfiction_source_canon_v2` 工作单。 |
+| `/工程同人Canon任务` | `longform-engine fanfiction canon-task project.yaml` | 每部来源 identity/design_core 门禁通过 | `50_workbench/intelligence_tasks/`、候选路径 | 自动声明固定资料输入，生成项目原著基线 `semantic_document_v1` 工作单。 |
 | `/工程同人Canon校验` | `longform-engine fanfiction canon-validate project.yaml --file ...` | `--file` | 校验报告 | 校验来源 hash/span、命名空间和原文复现，不写 Bible。 |
 | `/工程同人Canon应用` | `longform-engine fanfiction canon-apply project.yaml --file ... --approved-by human` | `--file`、人工确认 | `10_bible/fanfiction/source_canon.json` | 事务写入转述 canon；不保存连续来源正文。 |
+| `/工程同人故事发动机` | `longform-engine fanfiction story-engine-task project.yaml` / `story-engine-validate` / `story-engine-apply --approved-by human` | 已批准项目原著基线 | `10_bible/fanfiction/story_engine.json` | 建立唯一初始变量、独立长期目标、持续阻力、原著人物自主性和原作事件结束后的故事来源；缺项时不能设计正式路线。 |
 | `/工程同人设计任务` | `longform-engine fanfiction design-task project.yaml` | `project.yaml` | `50_workbench/intelligence_tasks/`、候选路径 | 生成声音合同、分歧点、原创主线、蝴蝶效应和 crossover 规则工作单。 |
 | `/工程同人设计校验` | `longform-engine fanfiction design-validate project.yaml --file ...` | `--file` | 校验报告 | 校验角色引用、分歧因果、原创贡献和跨来源规则。 |
-| `/工程同人设计应用` | `longform-engine fanfiction design-apply project.yaml --file ... --approved-by human` | `--file`、人工确认 | `10_bible/fanfiction/` 与受控 Bible | 事务应用同人设计，不修改来源文件。 |
+| `/工程同人路线复核` | `longform-engine fanfiction design-review-task project.yaml --file ROUTE` / `design-review-validate` | 已校验路线候选；隔离审阅会话 | 非 Canon `同人路线独立复核` | 双轴复核基线/分歧因果、未来知识退化、人物职责、原著事件命运、长期发动机与跨界规则；不能自批或改路线。 |
+| `/工程同人设计应用` | `longform-engine fanfiction design-apply project.yaml --file ROUTE --review REVIEW --approved-by human` | 当前路线、当前独立复核、人工确认 | `10_bible/fanfiction/` 与受控 Bible | 只有复核 verdict=pass 且 Canon/发动机/路线 hash 当前时事务应用，不修改来源文件。 |
+| `/查看原著事件命运` | `longform-engine fanfiction event-disposition-status project.yaml --json` | `project.yaml` | 只读 | 显示保留、提前、延迟、结果改变、换人承担、取消、转化或待决定，以及稳定依赖。 |
+| `/查看人物知识边界` | `longform-engine fanfiction context-status project.yaml --chapter N --json` | 当前章 | 只读 | 核对资料范围、项目截止点、切入点、人物知识与未来知识可靠性是否进入当前语义投影。 |
+| `/查看跨界规则` | `longform-engine fanfiction context-status project.yaml --chapter N --json` | crossover 当前章 | 只读 | 显示当前章实际纳入的宿主世界适配器、跨界宪法、能力条件/代价/反制和冲突诊断。 |
+| `/查看同人章节上下文` | `longform-engine fanfiction context-status project.yaml --chapter N --json` | 当前章 | 只读 | 检查 `fanfiction_context_bundle_v1` 的必要/纳入/省略/stale 状态；作者稿不会暴露 claim ID、hash 或检索分数。 |
 | `/工程同人状态` | `longform-engine fanfiction status project.yaml` | `project.yaml` | 只读 | 查看 canon/design 状态与非阻断权利提示。 |
 | `/查看原著资料升级` | `longform-engine fanfiction upgrade-status project.yaml --json` | 固定项目绑定 | 只读 | 比较全局新版本，但不改变项目。 |
 | `/申请原著资料升级` | `longform-engine fanfiction upgrade-propose project.yaml --source-id SOURCE --target-item-id ITEM --created-by human` | 人工选择升级 | `资料升级提案/` | 用稳定事实 ID 和显式引用生成影响，不应用。 |
 | `/应用原著资料升级` | `longform-engine fanfiction upgrade-apply project.yaml --proposal P --review R --decision D` | 独立语义审查、人工批准 | 未来 stale 或 `revision_branch_v2` | 历史影响不改绑定与正文。 |
 | `/申请外部作品研究` | `longform-engine research external-request project.yaml --work-name NAME --purpose PURPOSE --reason REASON` | 非同人模式 | `research_inbox/外部作品研究申请/` | 只写待审申请，不联网。 |
 | `/批准外部作品研究` | `longform-engine research external-approve project.yaml --request ID --approved-by human` | 人工批准 | 申请状态 | 使用原著元素会要求改为同人；技法研究批准后才可搜索。 |
+| `/创建创作沙盒` | `longform-engine sandbox create project.yaml --type TYPE --title TITLE --body-file FILE` | 非 Canon 构思或试写 | `50_workbench/创作沙盒/` | 不更新 Canon、图谱、RAG、大纲、承诺或正文。 |
+| `/提升沙盒候选` | `longform-engine sandbox promote project.yaml --sandbox S --candidate C --approved-by human --reason REASON` | 人工选择的语义差异 | `50_workbench/语义候选/` | 提升后仍只是待独立复核的候选，不能直接进入 Canon。 |
+| `/审计v0.11项目` | `longform-engine migrate audit-v011 --source OLD --json` | 旧项目路径 | 只读报告 | 不修改旧项目，列出旧协议、证据缺口和 final 哈希。 |
+| `/导入v0.11项目` | `longform-engine migrate v011-to-v012 --source OLD --destination NEW --approved-by human` | 独立新目录 | 隔离迁移工作区 | 不原地迁移；旧事实降为待审语义重建候选，final 不自动改写。 |
 | `/工程平台预检` | `longform-engine publication preflight project.yaml --target qidian_male --json` | `--target` | `80_exports/platform/` | 使用随版本发布的官方政策快照；固定非阻断，不输出检测通过。 |
 | `/工程创作来源` | `longform-engine publication provenance project.yaml --target qidian_male --json` | `--target` | `80_exports/platform/` | 汇总方向、人工修订、声音、final 与审稿 hash，不保存完整 Prompt 或人类占比。 |
 | `/工程发布风险` | `longform-engine publication report project.yaml` | `project.yaml` | `80_exports/publication_reports/`、provenance | 生成 `publication_risk_report_v2`；所有提醒均为 advisory。 |
 | `/工程发布导出` | `longform-engine publication export project.yaml` | `project.yaml` | `80_exports/` | 导出 final 正文并生成风险报告；不向正文插入声明。 |
 
-同人模式允许使用人工批准项目 Canon 中的角色名、关系、世界观、力量体系、时间线、续写、前传、AU、分歧和 crossover。全局资料只是非 Canon 来源事实库；项目必须固定 ID/hash、完成截至截止点的全作覆盖、逐事实批准 `fanfiction_source_canon_v2`。`rights_status` 与 `commercial_intent` 只记录和提示，不阻断创作，但未验证权利不能保留全文。整段来源正文、跨 JSON 字段重构和章节拼接仍必须失败。原创项目提及作品名只能生成待审研究申请，不能自动联网或入库。
+同人模式允许使用项目人工批准语义 Canon 中的角色名、关系、世界观、力量体系、时间线、续写、前传、AU、分歧和 crossover。全局资料只是非 Canon 证据库；项目必须固定 item/bundle/normalization/semantic hash，并以 `identity/design_core/volume_scope/chapter_dependency` 的动态需求决定何时补证。`whole_to_cutoff` 只在人工选择时成为硬门禁。`rights_status` 与 `commercial_intent` 只记录和提示，不阻断创作，但未验证权利不能保留全文。整段来源正文、完整字幕/剧本、跨字段重构和章节拼接仍必须失败。原创项目提及作品名只能生成待审研究申请，不能自动联网或入库。
 
 ## 章节生产
 

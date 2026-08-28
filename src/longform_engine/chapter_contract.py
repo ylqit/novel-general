@@ -203,13 +203,22 @@ def _validate_plot_node_table(root: Path, contract: dict[str, Any], chapter_numb
         or node_table.get("candidate_sha256") != node_ref["candidate_sha256"]
         or not node_table.get("nodes")
         or any(
-            not isinstance(node, dict)
-            or not isinstance(node.get("human_decision"), dict)
-            or node["human_decision"].get("decision") not in {"approve", "adjust"}
+            not plot_node_approval_is_current(node)
             for node in node_table.get("nodes", [])
         )
     ):
         raise ChapterContractError("chapter_contract_v5_invalid:plot_node_table_ref_stale")
+
+
+def plot_node_approval_is_current(node: Any) -> bool:
+    """Require human decisions for major state changes while leaving micro beats author-owned."""
+
+    if not isinstance(node, dict):
+        return False
+    decision = node.get("human_decision")
+    if node.get("node_kind") == "state_change":
+        return isinstance(decision, dict) and decision.get("decision") in {"approve", "adjust"}
+    return node.get("node_kind") == "micro" and decision is None
 
 
 def _validate_semantic_obligations(root: Path, contract: dict[str, Any]) -> None:
@@ -289,6 +298,7 @@ __all__ = [
     "ChapterContractError",
     "chapter_contract_hash",
     "load_verified_chapter_contract",
+    "plot_node_approval_is_current",
     "resolve_chapter_contract_refs",
     "stamp_chapter_contract",
     "validate_chapter_contract",

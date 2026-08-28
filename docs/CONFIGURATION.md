@@ -1,6 +1,6 @@
 # longform-novel-engine 配置说明
 
-v0.11.0 继续使用项目 schema v2。配置合并顺序为：
+0.12.0 语义优先开发态继续使用项目 schema v2。配置合并顺序为：
 
 ```text
 config/default.engine.yaml
@@ -12,7 +12,9 @@ config/default.engine.yaml
 
 ## 同人资料触发与资料库路径
 
-`creation.mode=fanfiction` 强制进入同人资料流程；`fanfiction.continuity_mode=crossover` 时每个 `fanfiction.sources[]` 都有独立资料包和覆盖门禁。作品身份、权威版本、截止点与目录单元必须由人工确定。默认覆盖模式为 `全作到截止点`；改为创作范围或逐章补全必须记录人工理由。
+`creation.mode=fanfiction` 强制进入同人资料流程；`fanfiction.continuity_mode=crossover` 时每个 `fanfiction.sources[]` 都有独立资料包和覆盖状态。作品身份、权威版本和截止点必须由人工确定。默认覆盖模式为 `分层按需`：`design_core` 阻断正式路线，当前 `chapter_dependency` 只阻断依赖它的章节；`whole_to_cutoff` 必须由人工显式选择才成为门禁。
+
+配置不为 Fix-it、穿越、能力体系、人物忠实度或跨界规则增加专用字段。批准的项目原著基线之后，`production next` 依次要求 `同人故事发动机`、路线候选、隔离独立复核和人工 apply；四种时间/知识范围、原著事件命运、人物职责与动态跨界宪法都保存在开放语义文档中。多来源项目按实际 `allowed_elements` 生成跨界需求，不能用配置关闭宿主世界适配与当前规则门禁。
 
 `original`、`inspired_original` 和 `adaptation_study` 中的作品名识别只能创建 `external_work_research_request_v1`。人工批准前不得联网；`use_original_elements` 不进入普通研究，必须改为同人模式。模型记忆不能填补 Canon 缺口。
 
@@ -28,11 +30,11 @@ LONGFORM_SOURCE_LIBRARY=D:/author-data/原著资料库
 
 `length.metric=content_characters_v1` 是唯一规模度量。总字数、章节软硬区间和卷目标都是 forecast，不是机械章节数。默认滚动窗口最多 20 章，但 v0.10 固定语义层级为：
 
-- firm：下一至第三章，必须有 v5 合同和全节点人工审批；
+- firm：下一至第三章，必须有 v5 合同；其中改变长期故事状态的重大 Plot Node 逐项人工审批，微观动作、对话和过渡不建立审批配额；
 - directional：第四至第十章；
 - horizon：第十一至第二十章。
 
-`production next` 在 firm 覆盖少于三章、活动卷换卷或 planning basis 漂移时强制重新规划。配置不能关闭独立语义审查或逐节点审批。
+`production next` 在 firm 覆盖少于三章、活动卷换卷或 planning basis 漂移时强制重新规划。配置不能关闭独立语义审查或重大状态变化节点的逐项审批。
 
 ## 写作与人工参与
 
@@ -76,4 +78,6 @@ Agent 只能读取 manifest 的 `io.inputs` 并写唯一 `io.output.path`。Bibl
 
 平台预检固定 `blocking=false`。项目不配置 AI 概率、检测规避、平台必过或人工写作比例。`literary_evidence_ready` 只能由合格真实盲评 manifest 改变；当前保持 `false`。
 
-当前公开稳定配置是 v0.11.0。发布记录见 [`V0_11_0_RELEASE_CHECKLIST.md`](V0_11_0_RELEASE_CHECKLIST.md)。
+当前公开稳定配置是 v0.12.0；语义、资料和小说生产边界见 [`V0_12_SEMANTIC_ARCHITECTURE.md`](V0_12_SEMANTIC_ARCHITECTURE.md)，发布事实以 v0.12 checklist、远程 CI 和不可变 Release 为准。
+
+`source_processing.default_execution` 默认为 `local`。`source_processing.cloud.enabled` 默认为 `false`；启用 OpenAI 时必须显式填写版本化的视觉或转写模型，并保持 `require_per_job_human_approval=true`、`allow_automatic_fallback=false`、`retain_remote_files=false`。密钥只能由环境变量或操作系统凭据边界提供。

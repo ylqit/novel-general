@@ -21,6 +21,10 @@ from longform_engine.storage.layout import (
     manuscript_chapter_path,
     manuscript_chapter_relative_path,
 )
+from longform_engine.source_materialization import (
+    SOURCE_CANON_CHUNK_RELATIVE_PATH,
+    SOURCE_CANON_RELATIVE_PATH,
+)
 from longform_engine.text_metrics import content_character_count
 
 
@@ -149,6 +153,30 @@ def sync_database(config: ConfigDocument) -> SyncStats:
             tcs_transitions=memory_stats["tcs_transitions"],
         )
         record_audit(conn, "db.sync", asdict(stats))
+    return stats
+
+
+def sync_fanfiction_source_canon(config: ConfigDocument) -> SyncStats:
+    """Refresh only project Canon graph rows and its bounded RAG chunks."""
+
+    root = resolve_project_root(config)
+    db_path = init_database(config)
+    chunk_file = root / SOURCE_CANON_CHUNK_RELATIVE_PATH
+    with connect(db_path) as conn:
+        create_schema(conn)
+        conn.execute("DELETE FROM chapter_chunks WHERE source_path = ?", (SOURCE_CANON_RELATIVE_PATH,))
+        chunk_count = sync_chunk_files(conn, root, [chunk_file] if chunk_file.is_file() else [])
+        conn.execute("DELETE FROM entity_mentions")
+        conn.execute("DELETE FROM entities")
+        conn.execute("DELETE FROM events")
+        entity_count, mention_count, event_count = sync_graph(conn, root)
+        stats = SyncStats(
+            chapter_chunks=chunk_count,
+            entities=entity_count,
+            entity_mentions=mention_count,
+            events=event_count,
+        )
+        record_audit(conn, "db.fanfiction_source_canon_delta", asdict(stats))
     return stats
 
 
@@ -1003,7 +1031,7 @@ def is_allowed_chunk_source(root: Path, source_path: str | None, metadata: dict[
         return False
     normalized = source_path.replace("\\", "/")
     if metadata.get("canon") is True:
-        return normalized == "10_bible/research_canon.jsonl"
+        return normalized in {"10_bible/research_canon.jsonl", SOURCE_CANON_RELATIVE_PATH}
     if not normalized.startswith("40_manuscript/final/"):
         return False
     return (root / normalized).exists()

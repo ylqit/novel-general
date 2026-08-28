@@ -187,6 +187,10 @@ professional_prompt_calibration:
       positive: "从获救分歧推导政治债务、原关系重排和三卷后的反噬。"
       negative: "让所有原角色立即认同原创主角以证明分歧成功。"
       boundary: "保留原作事件骨架可以成立，但必须由新选择产生不同过程或后果。"
+    fanfiction_route_reviewer:
+      positive: "沿唯一初始变量复核一阶选择、二阶组织反应和原著事件命运，指出原作事件结束后仍可运行的原创卷级矛盾。"
+      negative: "只因路线救下原作死亡角色，就把与原作结果不同直接判为不合格。"
+      boundary: "路线可以保留暂未回答的远期问题，但当前卷依赖的未来知识退化、人物拒绝权和跨界作用边界必须明确。"
     fanfiction_canon_archivist:
       positive: "区分原著与补充作品命名空间，记录截止点、来源 hash、span 和冲突事实。"
       negative: "凭百科印象补齐来源没有出现的角色动机。"
@@ -243,6 +247,22 @@ professional_prompt_calibration:
       positive: "区分连续两章同为担忧复述造成的职责重复，与关系决定后的必要安静余波。"
       negative: "用句长、对白比例或是否悬崖判断节奏。"
       boundary: "两个慢章可分别承担关系决定和计划重构，只要状态变化不同。"
+    semantic_narrative_architect:
+      positive: "把角色在特定阶段的目标、知识边界和关系压力写成可复核的语义文档，并将会被后续章节依赖的判断拆成带证据主张。"
+      negative: "用性格、关系、能力三张固定表替代上下文理解，并把模型印象直接写成项目事实。"
+      boundary: "审美建议和创作假设可以保留在正文中；只有进入 Canon 或依赖传播的可断言内容才需要稳定主张。"
+    source_evidence_reviewer:
+      positive: "逐项核对 OCR 片段、页码和原始区域，只批准能够由当前定位直接复核的文字。"
+      negative: "因为内容符合原著印象，就批准定位失效且置信度不足的转写。"
+      boundary: "两个可靠版本互相冲突时并列证据并保留待人工选择，不自行消解差异。"
+    source_fact_archivist:
+      positive: "把已核验片段中的能力限制转述为短事实，并绑定稳定事实 ID 与精确片段区间。"
+      negative: "从模型记忆补齐当前资料没有给出的角色动机和后续结果。"
+      boundary: "来源只证明事件发生时登记事件，不把可能的动机一并写成事实。"
+    source_visual_observer:
+      positive: "记录关键帧中人物右手接触门把，并明确单帧不能证明随后已经开门。"
+      negative: "根据皱眉表情断言角色已经决定背叛同伴。"
+      boundary: "前后帧显示位置变化但中间过程缺失时，只报告变化范围并保留动作方式未知。"
     semantic_style_analyst:
       positive: "区分可统计的句段节奏与语义上的视角距离，并记录样本范围和置信度。"
       negative: "根据一个段落宣布全书必须模仿某位著名作者。"

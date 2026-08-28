@@ -5,6 +5,7 @@ import pytest
 
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_protocols import (
+    AGENT_OUTPUT_PROTOCOLS,
     CANONICAL_DELTA_SCHEMA,
     DESIGN_REQUIRED_HEADINGS,
     DESIGN_TASK_TYPES,
@@ -186,17 +187,19 @@ def prepare_book_design(config, root: Path, payload: dict):
     return document, delta
 
 
-def test_manifest_v4_and_four_protocol_surface_rejects_history(tmp_path):
+def test_manifest_v5_and_current_protocol_surface_rejects_history(tmp_path):
     seed_project(tmp_path)
     root = tmp_path / "novel"
-    assert len(TASK_CONTRACTS) == 28
+    assert "character_interpretation" in TASK_CONTRACTS
+    assert "story_architecture_design" in TASK_CONTRACTS
+    assert "reader_feedback_analysis" in TASK_CONTRACTS
     assert DESIGN_TASK_TYPES
-    assert {output_protocol_for_task(task_type) for task_type in TASK_CONTRACTS} == {
-        "prose_markdown_v1", "design_document_v1", "evidence_review_v2", "canonical_delta_v1"
-    }
+    assert {output_protocol_for_task(task_type) for task_type in TASK_CONTRACTS} == set(
+        AGENT_OUTPUT_PROTOCOLS
+    )
     retired = root / "50_workbench" / "agent_tasks" / "retired.json"
     retired.write_text(json.dumps({"schema_version": 3}), encoding="utf-8")
-    with pytest.raises(ValueError, match="schema_version must be 4"):
+    with pytest.raises(ValueError, match="schema_version must be 5"):
         load_manifest(root, retired)
 
 
@@ -235,7 +238,7 @@ def test_design_delta_fact_absent_from_markdown_is_rejected_without_pollution(tm
     payload = json.loads(delta.read_text(encoding="utf-8"))
     payload["changes"]["world_markdown"] = "A fact never approved by the human"
     delta.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    submit_result(root, "design_semantic_compile:book_design:project:v4", delta)
+    submit_result(root, "design_semantic_compile:book_design:project:v5", delta)
     before = project_snapshot(root)
     invalid = validate_design_compile_delta(config, task_type="book_design", document_path=document, delta_path=delta)
     assert not invalid.ok

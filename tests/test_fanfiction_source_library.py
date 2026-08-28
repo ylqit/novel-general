@@ -5,12 +5,11 @@ from pathlib import Path
 import pytest
 
 from longform_engine.agent_pipeline import validate_production_agent_result
-from longform_engine.agent_protocols import CANONICAL_DELTA_SCHEMA
 from longform_engine.agent_tasks import load_manifest
 from longform_engine.config import load_project_config
 from longform_engine.fanfiction_sources import (
     CANON_SCHEMA,
-    EXTRACTION_SCHEMA,
+    COVERAGE_SCHEMA,
     FanfictionSourceError,
     apply_coverage_plan,
     apply_source_upgrade,
@@ -23,6 +22,7 @@ from longform_engine.fanfiction_sources import (
     create_external_work_request,
     create_incremental_source_request,
     create_source_extraction_template,
+    create_source_processing_job,
     create_source_upgrade_proposal,
     fanfiction_source_readiness,
     import_source_item,
@@ -33,8 +33,10 @@ from longform_engine.fanfiction_sources import (
     resolve_incremental_source_request,
     search_approved_external_work,
     search_source_gap,
+    source_evidence_preview,
     source_library_status,
     source_upgrade_status,
+    run_source_processing_job,
 )
 from longform_engine.intelligence import (
     apply_intelligence_candidate,
@@ -45,6 +47,10 @@ from longform_engine.intelligence import assess_project_readiness
 from longform_engine.intelligence.pipeline import validate_fanfiction_canon
 from longform_engine.orchestration import open_book
 from longform_engine.research import ResearchError, promote_research
+from longform_engine.semantic_protocols import (
+    EVIDENCE_REFERENCE_SCHEMA,
+    build_semantic_document,
+)
 from longform_engine.storage import init_project
 
 
@@ -112,48 +118,69 @@ def approved_library_item(
         approved_by="human",
         file_path=source_file,
     )
+    job = create_source_processing_job(item_id=item["item_id"])
+    run_source_processing_job(item_id=item["item_id"], job_id=job["job_id"])
     registered = library_item(item["item_id"])
-    content_file = registered["content_files"][0]
+    preview = source_evidence_preview(item["item_id"])
     evidence_excerpt = "林舟来到青铜门前。"
-    extraction = {
-        "schema": EXTRACTION_SCHEMA,
-        "item_id": item["item_id"],
-        "content_sha256": item["content_sha256"],
-        "facts": [
+    rule_excerpt = "门后的火不能用水熄灭"
+
+    def evidence_record(evidence_id: str, excerpt: str) -> dict:
+        segment = next(
+            value for value in preview["segments"] if excerpt in value["normalized_text"]
+        )
+        return {
+            "schema": EVIDENCE_REFERENCE_SCHEMA,
+            "evidence_id": f"{item['item_id']}:{evidence_id}",
+            "item_id": item["item_id"],
+            "asset_id": segment["origin_locator"]["asset_id"],
+            "segment_id": segment["segment_id"],
+            "locator": segment["origin_locator"],
+            "excerpt": excerpt,
+            "excerpt_sha256": sha256(excerpt.encode("utf-8")).hexdigest(),
+        }
+
+    extraction = build_semantic_document(
+        document_id=f"sem_source_{item['item_id'][5:]}",
+        document_type="原著事实候选",
+        title="第一卷合法原件语义提取",
+        scope={"kind": "source_item", "item_id": item["item_id"], "work_id": work["work_id"]},
+        continuity="原著基线",
+        body="提取人物选择与门后规则；只保存释义主张和短证据。",
+        claims=[
             {
-                "id": "classic:lin_zhou",
-                "type": "人物",
-                "name": "林舟",
-                "summary": "谨慎保管星纹钥匙并验证守门规则的人物。",
-                "attributes": {"目标": "确认青铜门规则", "声音": ["简短", "求证"]},
-                "evidence_refs": ["e1"],
+                "claim_id": f"{item['item_id']}:lin_zhou",
+                "statement": "林舟谨慎保管星纹钥匙，并在行动前验证守门规则。",
+                "applicability": "第一卷当前场景",
+                "evidence_refs": [f"{item['item_id']}:e1"],
+                "uncertainty": "后续阶段的价值排序仍需单独证据。",
+                "extensions": {
+                    "semantic_type": "人物",
+                    "display_name": "林舟",
+                    "目标": "确认青铜门规则",
+                },
             },
             {
-                "id": "classic:gate_fire",
-                "type": "世界规则",
-                "name": "门后之火",
-                "summary": "门后的火不遵循普通水灭规则。",
-                "attributes": {},
-                "evidence_refs": ["e2"],
+                "claim_id": f"{item['item_id']}:gate_fire",
+                "statement": "门后的火不遵循普通水灭规则。",
+                "applicability": "第一卷门后规则",
+                "evidence_refs": [f"{item['item_id']}:e2"],
+                "uncertainty": "只确认普通水无效，不推断其他灭火方式。",
+                "extensions": {"semantic_type": "世界规则", "display_name": "门后之火"},
             },
         ],
-        "evidence": [
-            {
-                "id": "e1",
-                "content_file": content_file,
-                "start": 0,
-                "end": len(evidence_excerpt),
-                "excerpt": evidence_excerpt,
-            },
-            {
-                "id": "e2",
-                "content_file": content_file,
-                "start": source_text.index("门后的火"),
-                "end": source_text.index("门后的火") + len("门后的火不能用水熄灭"),
-                "excerpt": "门后的火不能用水熄灭",
-            },
+        evidence_references=[
+            evidence_record("e1", evidence_excerpt),
+            evidence_record("e2", rule_excerpt),
         ],
-    }
+        extensions={
+            "task_type": "source_fact_extraction",
+            "item_id": item["item_id"],
+            "bundle_sha256": registered["bundle_sha256"],
+            "normalization_sha256": registered["normalization_sha256"],
+        },
+        input_hashes=[registered["bundle_sha256"], registered["normalization_sha256"]],
+    )
     extraction_file = tmp_path / "提取候选.json"
     extraction_file.write_text(json.dumps(extraction, ensure_ascii=False), encoding="utf-8")
     approved = approve_source_extraction(
@@ -162,20 +189,28 @@ def approved_library_item(
     return work, {**item, **approved}, source_text
 
 
+def reopen_extraction_candidate(payload: dict) -> dict:
+    candidate = json.loads(json.dumps(payload, ensure_ascii=False))
+    candidate["artifact"]["state"] = "candidate"
+    candidate["extensions"].pop("approved_candidate_sha256", None)
+    candidate["extensions"].pop("human_decision", None)
+    return candidate
+
+
 def test_source_extraction_template_is_noncanonical_and_does_not_overwrite(tmp_path, monkeypatch):
     _work, item, _source_text = approved_library_item(tmp_path, monkeypatch)
 
     first = create_source_extraction_template(item_id=item["item_id"])
     candidate = Path(first["candidate_file"])
     payload = json.loads(candidate.read_text(encoding="utf-8"))
-    payload["facts"].append({"author_work": "keep"})
+    payload["body"] = "作者保留的提取说明"
     candidate.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     second = create_source_extraction_template(item_id=item["item_id"])
 
     assert first["created"] is True
     assert first["non_canonical"] is True
     assert second["created"] is False
-    assert json.loads(candidate.read_text(encoding="utf-8"))["facts"] == [{"author_work": "keep"}]
+    assert json.loads(candidate.read_text(encoding="utf-8"))["body"] == "作者保留的提取说明"
 
 
 def complete_project_pack(config, tmp_path: Path, item: dict) -> None:
@@ -192,23 +227,33 @@ def complete_project_pack(config, tmp_path: Path, item: dict) -> None:
         approved_by="human",
     )
     plan = {
-        "协议版本": "同人全作覆盖计划_第1版",
+        "协议版本": COVERAGE_SCHEMA,
         "资料源ID": "classic",
         "作品ID": item["work_id"],
-        "覆盖模式": "全作到截止点",
+        "覆盖模式": "分层按需",
         "权威版本": ["第一卷"],
         "截止点": source["canon_cutoff"],
-        "目录单元": [
+        "覆盖需求": [
             {
-                "单元ID": "volume_1",
-                "名称": "第一卷",
-                "版本": "第一卷",
-                "必需维度": ["人物", "世界规则"],
-                "已覆盖维度": ["人物", "世界规则"],
-                "状态": "已覆盖",
+                "需求ID": "identity_classic_v1",
+                "需求": "确认作品、第一卷权威版本与第一卷末截止点。",
+                "层级": "identity",
+                "适用范围": "项目原著身份",
+                "状态": "covered",
                 "资料项ID列表": [item["item_id"]],
+                "证据ID列表": [f"{item['item_id']}:e1"],
                 "不适用理由": "",
-            }
+            },
+            {
+                "需求ID": "design_core_gate_rule",
+                "需求": "确认林舟的行动倾向与门后火焰规则，足以设计分歧路线。",
+                "层级": "design_core",
+                "适用范围": "同人路线设计",
+                "状态": "covered",
+                "资料项ID列表": [item["item_id"]],
+                "证据ID列表": [f"{item['item_id']}:e1", f"{item['item_id']}:e2"],
+                "不适用理由": "",
+            },
         ],
         "模式变更理由": "",
     }
@@ -227,55 +272,68 @@ def complete_project_pack(config, tmp_path: Path, item: dict) -> None:
 
 def apply_project_canon(config, root: Path, *, interpretation: str) -> dict:
     contract = project_source_contract(config, "classic")
-    item_id = contract["binding"]["items"][0]["item_id"]
     task = create_intelligence_task(config, task_type="fanfiction_canon")
     candidate = root / task.candidate_file
-    extraction_file = next(
-        path
-        for path in (root / "50_workbench" / "同人原著资料").rglob("提取结果.json")
-        if path.is_file()
+    approved_evidence = {
+        record["evidence_id"]: {
+            key: record[key]
+            for key in (
+                "schema",
+                "evidence_id",
+                "item_id",
+                "asset_id",
+                "segment_id",
+                "locator",
+                "excerpt",
+                "excerpt_sha256",
+            )
+        }
+        for record in contract["evidence"].values()
+    }
+    character_evidence = next(
+        value for key, value in approved_evidence.items() if key.endswith(":e1")
     )
-    source_ref = extraction_file.relative_to(root).as_posix()
-    candidate.write_text(
-        json.dumps(
+    rule_evidence = next(
+        value for key, value in approved_evidence.items() if key.endswith(":e2")
+    )
+    document = build_semantic_document(
+        document_id="sem_project_source_canon_classic",
+        document_type="项目原著基线Canon候选",
+        title="公共领域冒险项目原著基线",
+        scope={"kind": "project", "project": root.name},
+        continuity="原著基线",
+        body="本项目采用第一卷截至卷末的原著基线，并保留证据不足处的不确定性。",
+        claims=[
             {
-                "schema": CANONICAL_DELTA_SCHEMA,
-                "delta_type": "fanfiction_canon",
-                "coverage": {"全作覆盖": "changed"},
-                "changes": {
-                    "sources": [
-                        {
-                            "source_id": "classic",
-                            "facts": [
-                                {
-                                    "id": "classic:lin_zhou",
-                                    "type": "人物",
-                                    "name": "林舟",
-                                    "summary": interpretation,
-                                    "attributes": {"声音": ["简短", "求证"]},
-                                    "evidence_keys": [f"{item_id}:e1"],
-                                },
-                                {
-                                    "id": "classic:gate_fire",
-                                    "type": "世界规则",
-                                    "name": "门后之火",
-                                    "summary": "门后的火不遵循普通水灭规则。",
-                                    "attributes": {},
-                                    "evidence_keys": [f"{item_id}:e2"],
-                                },
-                            ],
-                        }
-                    ]
+                "claim_id": "classic:lin_zhou",
+                "statement": interpretation,
+                "applicability": "第一卷末之前",
+                "evidence_refs": [character_evidence["evidence_id"]],
+                "uncertainty": "其他时期需要独立人物理解。",
+                "extensions": {
+                    "source_id": "classic",
+                    "semantic_type": "人物",
+                    "display_name": "林舟",
                 },
-                "evidence": {
-                    "/changes/sources/0/facts/0": [f"{source_ref}@0:20"],
-                    "/changes/sources/0/facts/1": [f"{source_ref}@20:40"],
-                },
-                "uncertainties": [],
             },
-            ensure_ascii=False,
-            indent=2,
-        ),
+            {
+                "claim_id": "classic:gate_fire",
+                "statement": "门后的火不遵循普通水灭规则。",
+                "applicability": "第一卷门后规则",
+                "evidence_refs": [rule_evidence["evidence_id"]],
+                "uncertainty": "没有证据支持其他灭火方式。",
+                "extensions": {
+                    "source_id": "classic",
+                    "semantic_type": "世界规则",
+                    "display_name": "门后之火",
+                },
+            },
+        ],
+        evidence_references=[character_evidence, rule_evidence],
+        extensions={"task_type": "fanfiction_canon"},
+    )
+    candidate.write_text(
+        json.dumps(document, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     control = validate_production_agent_result(
@@ -353,8 +411,11 @@ def test_same_global_item_can_form_isolated_project_canons(tmp_path, monkeypatch
 
     assert canon_a["schema"] == CANON_SCHEMA
     assert canon_b["schema"] == CANON_SCHEMA
-    assert canon_a["sources"][0]["item_bindings"] == canon_b["sources"][0]["item_bindings"]
-    assert canon_a["sources"][0]["facts"][0]["summary"] != canon_b["sources"][0]["facts"][0]["summary"]
+    assert (
+        canon_a["extensions"]["source_contracts"][0]["item_bindings"]
+        == canon_b["extensions"]["source_contracts"][0]["item_bindings"]
+    )
+    assert canon_a["claims"][0]["statement"] != canon_b["claims"][0]["statement"]
 
 
 def test_full_coverage_gate_requires_every_approved_unit_and_every_work(tmp_path, monkeypatch):
@@ -419,12 +480,13 @@ def test_missing_or_hash_drifted_global_original_blocks_dependent_work(tmp_path,
     config, _root = project_config(tmp_path)
     complete_project_pack(config, tmp_path, item)
     registered = library_item(item["item_id"])
-    content_file = Path(source_library_status()["library_root"]) / registered["content_files"][0]
+    asset = registered["assets"][0]
+    content_file = Path(source_library_status()["library_root"]) / asset["managed_path"]
     content_file.write_text("被静默改动的原件", encoding="utf-8")
 
     readiness = fanfiction_source_readiness(config)
     assert readiness["ready"] is False
-    assert any("content hash does not match" in error for error in readiness["errors"])
+    assert any("hash" in error.lower() and "drift" in error.lower() for error in readiness["errors"])
 
 
 def test_discovered_version_conflicts_require_explicit_human_resolution(tmp_path, monkeypatch):
@@ -437,17 +499,22 @@ def test_discovered_version_conflicts_require_explicit_human_resolution(tmp_path
         / current["path"]
         / "提取结果.json"
     )
-    revised = json.loads(library_extraction.read_text(encoding="utf-8"))
-    for field in ("status", "approved_by", "approved_at"):
-        revised.pop(field, None)
-    revised["facts"].append(
+    revised = reopen_extraction_candidate(
+        json.loads(library_extraction.read_text(encoding="utf-8"))
+    )
+    conflict_id = f"{item['item_id']}:conflict_gate_rule"
+    revised["claims"].append(
         {
-            "id": "classic:conflict_gate_rule",
-            "type": "版本冲突",
-            "name": "门后之火规则冲突",
-            "summary": "两个版本对普通水是否有效给出不同描述。",
-            "attributes": {"versions": ["小说版", "动画版"]},
-            "evidence_refs": ["e2"],
+            "claim_id": conflict_id,
+            "statement": "两个版本对普通水是否有效给出不同描述。",
+            "applicability": "小说版与动画版冲突",
+            "evidence_refs": [f"{item['item_id']}:e2"],
+            "uncertainty": "需要项目人工选择、隔离或排除版本。",
+            "extensions": {
+                "semantic_type": "版本冲突",
+                "display_name": "门后之火规则冲突",
+                "versions": ["小说版", "动画版"],
+            },
         }
     )
     revised_file = tmp_path / "冲突提取候选.json"
@@ -470,7 +537,7 @@ def test_discovered_version_conflicts_require_explicit_human_resolution(tmp_path
         "资料源ID": "classic",
         "决定": [
             {
-                "冲突事实ID": "classic:conflict_gate_rule",
+                "冲突事实ID": conflict_id,
                 "处理": "选择版本",
                 "采用版本": "小说版",
                 "说明": "本项目权威版本和截止点均采用小说版。",
@@ -505,7 +572,10 @@ def test_chapter_canon_gap_requires_human_approval_before_search_and_resolution(
         reason="现有章节合同依赖该关系边界，不能由模型记忆补齐",
     )
     assert request["network_performed"] is False
-    assert fanfiction_source_readiness(config)["ready"] is False
+    assert fanfiction_source_readiness(config)["ready"] is True
+    assert fanfiction_source_readiness(
+        config, gate="chapter_dependency", chapter_number=3
+    )["ready"] is False
     calls: list[str] = []
 
     def fetcher(query: str, limit: int, timeout: int):
@@ -550,7 +620,9 @@ def test_chapter_canon_gap_requires_human_approval_before_search_and_resolution(
         reason="人工确认当前固定资料项的直接证据已经覆盖该关系阶段。",
         approved_by="human",
     )
-    assert fanfiction_source_readiness(config)["ready"] is True
+    assert fanfiction_source_readiness(
+        config, gate="chapter_dependency", chapter_number=3
+    )["ready"] is True
 
 
 def test_original_work_mention_requires_approval_before_search(tmp_path, monkeypatch):
@@ -628,17 +700,17 @@ def test_original_elements_route_to_fanfiction_without_network(tmp_path, monkeyp
         )
 
 
-def test_v1_project_canon_is_rejected_without_dual_read(tmp_path, monkeypatch):
+def test_v2_project_canon_is_rejected_without_dual_read(tmp_path, monkeypatch):
     _work, item, _source_text = approved_library_item(tmp_path, monkeypatch)
     config, _root = project_config(tmp_path)
     complete_project_pack(config, tmp_path, item)
     errors: list[str] = []
     validate_fanfiction_canon(
         config,
-        {"schema": "fanfiction_source_canon_v1", "continuity_mode": "canon_divergent", "sources": []},
+        {"schema": "fanfiction_source_canon_v2", "continuity_mode": "canon_divergent", "sources": []},
         errors,
     )
-    assert any(CANON_SCHEMA in error and "v1" in error for error in errors)
+    assert any(CANON_SCHEMA in error and "incompatible" in error for error in errors)
 
 
 def test_full_text_retention_requires_declared_rights(tmp_path, monkeypatch):
@@ -680,7 +752,7 @@ def test_unknown_chinese_source_type_uses_generic_dynamic_item(tmp_path, monkeyp
     )
     registered = library_item(item["item_id"])
     assert registered["source_type"] == "舞台剧巡演后台访谈"
-    assert registered["content_files"] == []
+    assert registered["assets"] == []
 
 
 def test_global_extraction_update_only_creates_project_upgrade_proposal(tmp_path, monkeypatch):
@@ -699,10 +771,10 @@ def test_global_extraction_update_only_creates_project_upgrade_proposal(tmp_path
         / current["path"]
         / "提取结果.json"
     )
-    revised = json.loads(library_extraction.read_text(encoding="utf-8"))
-    for field in ("status", "approved_by", "approved_at"):
-        revised.pop(field, None)
-    revised["facts"][0]["summary"] = "经人工修正：人物会先验证规则，再决定是否使用钥匙。"
+    revised = reopen_extraction_candidate(
+        json.loads(library_extraction.read_text(encoding="utf-8"))
+    )
+    revised["claims"][0]["statement"] = "经人工修正：人物会先验证规则，再决定是否使用钥匙。"
     revised_file = tmp_path / "修正提取候选.json"
     revised_file.write_text(json.dumps(revised, ensure_ascii=False), encoding="utf-8")
     updated = approve_source_extraction(
@@ -748,10 +820,10 @@ def test_approved_future_upgrade_stales_project_canon_without_rewriting_it(tmp_p
         / current["path"]
         / "提取结果.json"
     )
-    revised = json.loads(library_extraction.read_text(encoding="utf-8"))
-    for field in ("status", "approved_by", "approved_at"):
-        revised.pop(field, None)
-    revised["facts"][0]["summary"] = "经人工修正：人物验证规则来源后再决定是否使用钥匙。"
+    revised = reopen_extraction_candidate(
+        json.loads(library_extraction.read_text(encoding="utf-8"))
+    )
+    revised["claims"][0]["statement"] = "经人工修正：人物验证规则来源后再决定是否使用钥匙。"
     revised_file = tmp_path / "修正提取候选.json"
     revised_file.write_text(json.dumps(revised, ensure_ascii=False), encoding="utf-8")
     approve_source_extraction(
@@ -826,9 +898,9 @@ def test_approved_future_upgrade_stales_project_canon_without_rewriting_it(tmp_p
     readiness = assess_project_readiness(config)
     assert readiness.ready is False
     assert readiness.stage == "fanfiction_canon"
-    assert canon_before["sources"][0]["binding_sha256"] != project_source_contract(
-        config, "classic"
-    )["binding_sha256"]
+    assert canon_before["extensions"]["source_contracts"][0][
+        "binding_sha256"
+    ] != project_source_contract(config, "classic")["binding_sha256"]
 
 
 def test_historical_source_upgrade_routes_to_revision_branch_without_mutation(tmp_path, monkeypatch):
@@ -852,10 +924,10 @@ def test_historical_source_upgrade_routes_to_revision_branch_without_mutation(tm
         / current["path"]
         / "提取结果.json"
     )
-    revised = json.loads(library_extraction.read_text(encoding="utf-8"))
-    for field in ("status", "approved_by", "approved_at"):
-        revised.pop(field, None)
-    revised["facts"][0]["summary"] = "经人工修正：这一选择也改变第一章的人物解释。"
+    revised = reopen_extraction_candidate(
+        json.loads(library_extraction.read_text(encoding="utf-8"))
+    )
+    revised["claims"][0]["statement"] = "经人工修正：这一选择也改变第一章的人物解释。"
     revised_file = tmp_path / "历史修正提取候选.json"
     revised_file.write_text(json.dumps(revised, ensure_ascii=False), encoding="utf-8")
     approve_source_extraction(

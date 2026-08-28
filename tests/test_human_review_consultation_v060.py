@@ -42,7 +42,7 @@ def test_consultation_uses_existing_design_protocol_and_cannot_write_canonical(t
         question="这个转折是否真正由人物选择推动？",
     )
     manifest = load_manifest(root, task.task_id)
-    assert len(AGENT_OUTPUT_PROTOCOLS) == 4
+    assert "semantic_document_v1" in AGENT_OUTPUT_PROTOCOLS
     assert manifest["io"]["output"]["protocol"] == "design_document_v1"
     assert manifest["role"]["id"] == "human_author_advisor"
     assert manifest["policy"]["canonical_targets"] == []

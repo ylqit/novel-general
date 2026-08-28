@@ -57,6 +57,7 @@ from longform_engine.agent_protocol_readiness import (
 )
 from longform_engine.config import ConfigDocument, ConfigError, config_field_registry, load_project_config
 from longform_engine.completion import approve_completion, completion_status
+from longform_engine.creative_sandbox import create_sandbox_artifact, promote_sandbox_candidate
 from longform_engine.creative import (
     expand_check,
     expand_task,
@@ -100,26 +101,44 @@ from longform_engine.gates import (
 )
 from longform_engine.fanfiction_sources import (
     apply_coverage_plan,
+    apply_source_agent_task,
+    apply_source_evidence_review,
+    apply_source_ingest_batch,
     apply_source_upgrade,
     apply_version_conflict_decisions,
     approve_incremental_source_request,
     approve_external_work_request,
     approve_source_extraction,
+    approve_source_remote_decision,
     bind_library_item,
+    confirm_source_ingest_groups,
     coverage_gaps,
+    create_source_agent_task,
     create_external_work_request,
     create_incremental_source_request,
     create_source_extraction_template,
+    create_source_evidence_review_template,
+    create_source_ingest_plan,
+    create_source_processing_job,
+    create_source_remote_decision,
     create_source_upgrade_proposal,
     import_source_item,
     initialize_project_source_packs,
     initialize_source_library,
     register_source_work,
+    rebuild_source_library_search_index,
     resolve_incremental_source_request,
     search_approved_external_work,
     search_source_gap,
+    search_source_library_evidence,
     source_library_status,
+    source_ingest_preview,
+    source_item_status,
+    source_processing_capabilities,
+    run_source_processing_job,
+    run_source_remote_processing,
     source_upgrade_status,
+    validate_source_agent_task,
 )
 from longform_engine.human_story_review import (
     apply_human_story_review,
@@ -130,6 +149,7 @@ from longform_engine.human_author_revision import (
     create_human_author_revision_task,
     validate_human_author_revision,
 )
+from longform_engine.migration_v012 import audit_v011, migrate_v011_to_v012
 from longform_engine.human_chapter_intent import (
     apply_human_chapter_intent,
     create_human_chapter_intent_task,
@@ -152,6 +172,7 @@ from longform_engine.repair_coordination import (
     validate_repair_plan,
 )
 from longform_engine.review_server import ReviewDeskService, ReviewHTTPServer
+from longform_engine.studio_server import StudioHTTPServer, StudioService
 from longform_engine.graph import (
     check_graph,
     retrieve_graph,
@@ -170,6 +191,10 @@ from longform_engine.intelligence import (
     record_chapter_direction_selection,
     validate_intelligence_candidate,
     validate_design_compile_delta,
+)
+from longform_engine.fanfiction_context import (
+    event_disposition_status,
+    fanfiction_context_status,
 )
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.story_profiles import BUILTIN_MARKET_IDS, compile_story_profile
@@ -612,7 +637,7 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_compare.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     benchmark_compare.set_defaults(func=cmd_benchmark_compare)
 
-    agent_task = subparsers.add_parser("agent-task", help="Inspect current AgentTaskManifest v4 task packages.")
+    agent_task = subparsers.add_parser("agent-task", help="Inspect current AgentTaskManifest v5 task packages.")
     agent_task_subparsers = agent_task.add_subparsers(dest="agent_task_command", required=True)
 
     agent_task_list = agent_task_subparsers.add_parser("list", help="List indexed agent task manifests.")
@@ -660,7 +685,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     agent_task_overlay_validate.set_defaults(func=cmd_agent_task_overlay_validate)
 
-    agent_task_validate = agent_task_subparsers.add_parser("validate", help="Validate one AgentTaskManifest v4 contract.")
+    agent_task_validate = agent_task_subparsers.add_parser("validate", help="Validate one AgentTaskManifest v5 contract.")
     agent_task_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     agent_task_validate.add_argument("task", help="Task id or manifest path.")
     agent_task_validate.add_argument("--strict", action="store_true", help="Check task type, lanes, schemas, commands, and hard boundaries.")
@@ -692,7 +717,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     agent_task_readiness = agent_task_subparsers.add_parser(
         "readiness",
-        help="Check the installed Manifest v4, Chinese role, and single-process Agent protocol.",
+        help="Check the installed Manifest v5, Chinese role, and single-process Agent protocol.",
     )
     agent_task_readiness.add_argument(
         "--repository", default=".", help="Engine repository root."
@@ -928,6 +953,14 @@ def build_parser() -> argparse.ArgumentParser:
     source_library_item_import.add_argument("--file")
     source_library_item_import.add_argument("--source-locator", default="")
     source_library_item_import.add_argument("--supersedes-item-id", default="")
+    source_library_item_import.add_argument(
+        "--storage-mode", choices=["managed_copy", "external_reference"], default="managed_copy"
+    )
+    source_library_item_import.add_argument(
+        "--asset-role",
+        choices=["original", "subtitle", "cover", "attachment", "human_note"],
+        default="original",
+    )
     source_library_item_import.add_argument("--approved-by", required=True, choices=["human"])
     source_library_item_import.add_argument("--json", action="store_true")
     source_library_item_import.set_defaults(func=cmd_source_library_item_import)
@@ -948,6 +981,187 @@ def build_parser() -> argparse.ArgumentParser:
     source_library_extraction_approve.add_argument("--approved-by", required=True, choices=["human"])
     source_library_extraction_approve.add_argument("--json", action="store_true")
     source_library_extraction_approve.set_defaults(func=cmd_source_library_extraction_approve)
+
+    source_library_capabilities = source_library_subparsers.add_parser(
+        "capabilities", help="Inspect installed document, image, subtitle, audio, video, and cloud processors."
+    )
+    source_library_capabilities.add_argument("--json", action="store_true")
+    source_library_capabilities.set_defaults(func=cmd_source_library_capabilities)
+
+    source_library_ingest_plan = source_library_subparsers.add_parser(
+        "ingest-plan", help="Stage files or a directory and create editable grouping suggestions."
+    )
+    source_library_ingest_plan.add_argument("--work-id", required=True)
+    source_library_ingest_plan.add_argument("--file", action="append", default=[])
+    source_library_ingest_plan.add_argument("--directory")
+    source_library_ingest_plan.add_argument("--source-type", required=True)
+    source_library_ingest_plan.add_argument("--version", required=True)
+    source_library_ingest_plan.add_argument("--unit-range", required=True)
+    source_library_ingest_plan.add_argument("--source-method", required=True)
+    source_library_ingest_plan.add_argument(
+        "--rights-status",
+        required=True,
+        choices=["user_claimed_authorized", "public_domain_claimed", "platform_permitted_claimed", "unverified"],
+    )
+    source_library_ingest_plan.add_argument(
+        "--retention-mode", required=True, choices=["full_text", "short_evidence", "metadata_only"]
+    )
+    source_library_ingest_plan.add_argument(
+        "--storage-mode", choices=["managed_copy", "external_reference"], default="managed_copy"
+    )
+    source_library_ingest_plan.add_argument("--json", action="store_true")
+    source_library_ingest_plan.set_defaults(func=cmd_source_library_ingest_plan)
+
+    source_library_ingest_preview = source_library_subparsers.add_parser(
+        "ingest-preview", help="Inspect one staged batch before editing group approvals."
+    )
+    source_library_ingest_preview.add_argument("--batch-id", required=True)
+    source_library_ingest_preview.add_argument("--json", action="store_true")
+    source_library_ingest_preview.set_defaults(func=cmd_source_library_ingest_preview)
+
+    source_library_ingest_confirm = source_library_subparsers.add_parser(
+        "ingest-confirm", help="Validate and persist one complete human grouping decision."
+    )
+    source_library_ingest_confirm.add_argument("--batch-id", required=True)
+    source_library_ingest_confirm.add_argument("--groups-file", required=True)
+    source_library_ingest_confirm.add_argument("--approved-by", required=True, choices=["human"])
+    source_library_ingest_confirm.add_argument("--json", action="store_true")
+    source_library_ingest_confirm.set_defaults(func=cmd_source_library_ingest_confirm)
+
+    source_library_ingest_apply = source_library_subparsers.add_parser(
+        "ingest-apply", help="Apply only groups marked approved=true in the staged batch."
+    )
+    source_library_ingest_apply.add_argument("--batch-id", required=True)
+    source_library_ingest_apply.add_argument("--approved-by", required=True, choices=["human"])
+    source_library_ingest_apply.add_argument("--json", action="store_true")
+    source_library_ingest_apply.set_defaults(func=cmd_source_library_ingest_apply)
+
+    source_library_item_status = source_library_subparsers.add_parser(
+        "item-status", help="Show asset, normalization, review, and extraction state for one item."
+    )
+    source_library_item_status.add_argument("--item-id", required=True)
+    source_library_item_status.add_argument("--json", action="store_true")
+    source_library_item_status.set_defaults(func=cmd_source_library_item_status)
+
+    source_library_process_plan = source_library_subparsers.add_parser(
+        "process-plan", help="Create a hash-bound local or OpenAI source-processing job."
+    )
+    source_library_process_plan.add_argument("--item-id", required=True)
+    source_library_process_plan.add_argument("--asset-id", action="append", default=[])
+    source_library_process_plan.add_argument("--execution", choices=["local", "openai"], default="local")
+    source_library_process_plan.add_argument("--processor-id", default="auto")
+    source_library_process_plan.add_argument("--parameters-file")
+    source_library_process_plan.add_argument("--json", action="store_true")
+    source_library_process_plan.set_defaults(func=cmd_source_library_process_plan)
+
+    source_library_process_run = source_library_subparsers.add_parser(
+        "process-run", help="Run one local processing job sequentially."
+    )
+    source_library_process_run.add_argument("--item-id", required=True)
+    source_library_process_run.add_argument("--job-id", required=True)
+    source_library_process_run.add_argument("--json", action="store_true")
+    source_library_process_run.set_defaults(func=cmd_source_library_process_run)
+
+    source_library_review_template = source_library_subparsers.add_parser(
+        "evidence-review-template", help="Prepare review decisions for OCR, ASR, or visual observations."
+    )
+    source_library_review_template.add_argument("--item-id", required=True)
+    source_library_review_template.add_argument("--json", action="store_true")
+    source_library_review_template.set_defaults(func=cmd_source_library_review_template)
+
+    source_library_review_apply = source_library_subparsers.add_parser(
+        "evidence-review-apply", help="Apply a complete human review of pending evidence segments."
+    )
+    source_library_review_apply.add_argument("--item-id", required=True)
+    source_library_review_apply.add_argument("--file", required=True)
+    source_library_review_apply.add_argument("--approved-by", required=True, choices=["human"])
+    source_library_review_apply.add_argument("--json", action="store_true")
+    source_library_review_apply.set_defaults(func=cmd_source_library_review_apply)
+
+    source_library_remote_prepare = source_library_subparsers.add_parser(
+        "remote-prepare", help="Create a non-executing OpenAI data-scope and model approval preview."
+    )
+    source_library_remote_prepare.add_argument("--item-id", required=True)
+    source_library_remote_prepare.add_argument("--job-id", required=True)
+    source_library_remote_prepare.add_argument("--provider", choices=["openai"], default="openai")
+    source_library_remote_prepare.add_argument("--model", required=True)
+    source_library_remote_prepare.add_argument("--scopes-file", required=True)
+    source_library_remote_prepare.add_argument("--json", action="store_true")
+    source_library_remote_prepare.set_defaults(func=cmd_source_library_remote_prepare)
+
+    source_library_remote_approve = source_library_subparsers.add_parser(
+        "remote-approve", help="Approve one unchanged cloud preprocessing task."
+    )
+    source_library_remote_approve.add_argument("--item-id", required=True)
+    source_library_remote_approve.add_argument("--job-id", required=True)
+    source_library_remote_approve.add_argument("--approved-by", required=True, choices=["human"])
+    source_library_remote_approve.add_argument("--json", action="store_true")
+    source_library_remote_approve.set_defaults(func=cmd_source_library_remote_approve)
+
+    source_library_remote_run = source_library_subparsers.add_parser(
+        "remote-run", help="Run an explicitly approved OpenAI preprocessing task."
+    )
+    source_library_remote_run.add_argument("config", nargs="?", default="project.yaml")
+    source_library_remote_run.add_argument("--item-id", required=True)
+    source_library_remote_run.add_argument("--job-id", required=True)
+    source_library_remote_run.add_argument("--json", action="store_true")
+    source_library_remote_run.set_defaults(func=cmd_source_library_remote_run)
+
+    source_library_task_create = source_library_subparsers.add_parser(
+        "task-create", help="Create one bounded source-item Host Agent work order."
+    )
+    source_library_task_create.add_argument("--item-id", required=True)
+    source_library_task_create.add_argument(
+        "--task-type",
+        required=True,
+        choices=[
+            "source_fact_extraction",
+            "source_visual_observation",
+            "source_evidence_review",
+            "source_version_conflict_review",
+            "source_coverage_gap_analysis",
+        ],
+    )
+    source_library_task_create.add_argument("--segment-id", action="append", default=[])
+    source_library_task_create.add_argument(
+        "--review-type", choices=["segment_evidence", "visual_observation"], default=""
+    )
+    source_library_task_create.add_argument("--candidate-file")
+    source_library_task_create.add_argument("--json", action="store_true")
+    source_library_task_create.set_defaults(func=cmd_source_library_task_create)
+
+    source_library_task_validate = source_library_subparsers.add_parser(
+        "task-validate", help="Validate one immutable source-item Agent result."
+    )
+    source_library_task_validate.add_argument("--item-id", required=True)
+    source_library_task_validate.add_argument("--task-id", required=True)
+    source_library_task_validate.add_argument("--json", action="store_true")
+    source_library_task_validate.set_defaults(func=cmd_source_library_task_validate)
+
+    source_library_task_apply = source_library_subparsers.add_parser(
+        "task-apply", help="Apply a validated source result at the human approval boundary."
+    )
+    source_library_task_apply.add_argument("--item-id", required=True)
+    source_library_task_apply.add_argument("--task-id", required=True)
+    source_library_task_apply.add_argument("--approved-by", required=True, choices=["human"])
+    source_library_task_apply.add_argument("--json", action="store_true")
+    source_library_task_apply.set_defaults(func=cmd_source_library_task_apply)
+
+    source_library_index_rebuild = source_library_subparsers.add_parser(
+        "index-rebuild", help="Rebuild the isolated non-Canon source-library FTS index."
+    )
+    source_library_index_rebuild.add_argument("--json", action="store_true")
+    source_library_index_rebuild.set_defaults(func=cmd_source_library_index_rebuild)
+
+    source_library_search = source_library_subparsers.add_parser(
+        "search", help="Search approved source evidence without promoting it into a project."
+    )
+    source_library_search.add_argument("--query", required=True)
+    source_library_search.add_argument("--work-id", default="")
+    source_library_search.add_argument("--item-id", default="")
+    source_library_search.add_argument("--limit", type=positive_int_arg, default=20)
+    source_library_search.add_argument("--json", action="store_true")
+    source_library_search.set_defaults(func=cmd_source_library_search)
 
     fanfiction = subparsers.add_parser("fanfiction", help="Manage first-class canon-aware fanfiction workflows.")
     fanfiction_subparsers = fanfiction.add_subparsers(dest="fanfiction_command", required=True)
@@ -1095,7 +1309,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate canon hashes, evidence spans, namespaces, and schema.",
     )
     fanfiction_canon_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    fanfiction_canon_validate.add_argument("--file", required=True, help="fanfiction_source_canon_v2 candidate JSON.")
+    fanfiction_canon_validate.add_argument(
+        "--file", required=True, help="semantic_document_v1 source Canon candidate JSON."
+    )
     fanfiction_canon_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     fanfiction_canon_validate.set_defaults(func=cmd_fanfiction_canon_validate)
 
@@ -1109,6 +1325,33 @@ def build_parser() -> argparse.ArgumentParser:
     fanfiction_canon_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     fanfiction_canon_apply.set_defaults(func=cmd_fanfiction_canon_apply)
 
+    fanfiction_story_engine_task = fanfiction_subparsers.add_parser(
+        "story-engine-task",
+        help="Create the evidence-bound long-form fanfiction story-engine task.",
+    )
+    fanfiction_story_engine_task.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_story_engine_task.add_argument("--json", action="store_true")
+    fanfiction_story_engine_task.set_defaults(func=cmd_fanfiction_story_engine_task)
+
+    fanfiction_story_engine_validate = fanfiction_subparsers.add_parser(
+        "story-engine-validate",
+        help="Validate a semantic fanfiction story-engine candidate.",
+    )
+    fanfiction_story_engine_validate.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_story_engine_validate.add_argument("--file", required=True)
+    fanfiction_story_engine_validate.add_argument("--json", action="store_true")
+    fanfiction_story_engine_validate.set_defaults(func=cmd_fanfiction_story_engine_validate)
+
+    fanfiction_story_engine_apply = fanfiction_subparsers.add_parser(
+        "story-engine-apply",
+        help="Apply a validated story engine with explicit human approval.",
+    )
+    fanfiction_story_engine_apply.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_story_engine_apply.add_argument("--file", required=True)
+    fanfiction_story_engine_apply.add_argument("--approved-by", required=True, choices=["human"])
+    fanfiction_story_engine_apply.add_argument("--json", action="store_true")
+    fanfiction_story_engine_apply.set_defaults(func=cmd_fanfiction_story_engine_apply)
+
     fanfiction_design_task = fanfiction_subparsers.add_parser(
         "design-task",
         help="Create a canon-aware fanfiction design task.",
@@ -1119,23 +1362,60 @@ def build_parser() -> argparse.ArgumentParser:
 
     fanfiction_design_validate = fanfiction_subparsers.add_parser(
         "design-validate",
-        help="Validate divergence, voice, originality, crossover, and book design contracts.",
+        help="Validate the evidence-bound semantic fanfiction route document.",
     )
     fanfiction_design_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    fanfiction_design_validate.add_argument("--file", required=True, help="fanfiction_design_candidate_v1 JSON.")
+    fanfiction_design_validate.add_argument("--file", required=True, help="semantic_document_v1 candidate JSON.")
     fanfiction_design_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     fanfiction_design_validate.set_defaults(func=cmd_fanfiction_design_validate)
 
+    fanfiction_design_review_task = fanfiction_subparsers.add_parser(
+        "design-review-task",
+        help="Create an isolated independent review task for one validated route candidate.",
+    )
+    fanfiction_design_review_task.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_design_review_task.add_argument("--file", required=True)
+    fanfiction_design_review_task.add_argument("--json", action="store_true")
+    fanfiction_design_review_task.set_defaults(func=cmd_fanfiction_design_review_task)
+
+    fanfiction_design_review_validate = fanfiction_subparsers.add_parser(
+        "design-review-validate",
+        help="Validate an independent semantic route review.",
+    )
+    fanfiction_design_review_validate.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_design_review_validate.add_argument("--file", required=True)
+    fanfiction_design_review_validate.add_argument("--json", action="store_true")
+    fanfiction_design_review_validate.set_defaults(func=cmd_fanfiction_design_review_validate)
+
     fanfiction_design_apply = fanfiction_subparsers.add_parser(
         "design-apply",
-        help="Apply validated fanfiction design with explicit human approval.",
+        help="Apply a validated semantic fanfiction route with explicit human approval.",
     )
     fanfiction_design_apply.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    fanfiction_design_apply.add_argument("--document", required=True, help="Approved design_document_v1 Markdown.")
-    fanfiction_design_apply.add_argument("--delta", required=True, help="Validated canonical_delta_v1 JSON.")
+    fanfiction_design_apply.add_argument("--file", required=True, help="Validated semantic_document_v1 JSON.")
+    fanfiction_design_apply.add_argument(
+        "--review", required=True, help="Validated independent semantic route review JSON."
+    )
     fanfiction_design_apply.add_argument("--approved-by", required=True, choices=["human"])
     fanfiction_design_apply.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     fanfiction_design_apply.set_defaults(func=cmd_fanfiction_design_apply)
+
+    fanfiction_context_status_cmd = fanfiction_subparsers.add_parser(
+        "context-status",
+        help="Show the current claim-bound fanfiction context for one chapter.",
+    )
+    fanfiction_context_status_cmd.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_context_status_cmd.add_argument("--chapter", required=True, type=positive_int_arg)
+    fanfiction_context_status_cmd.add_argument("--json", action="store_true")
+    fanfiction_context_status_cmd.set_defaults(func=cmd_fanfiction_context_status)
+
+    fanfiction_event_status_cmd = fanfiction_subparsers.add_parser(
+        "event-disposition-status",
+        help="Show approved original-event fate claims and unresolved decisions.",
+    )
+    fanfiction_event_status_cmd.add_argument("config", nargs="?", default="project.yaml")
+    fanfiction_event_status_cmd.add_argument("--json", action="store_true")
+    fanfiction_event_status_cmd.set_defaults(func=cmd_fanfiction_event_disposition_status)
 
     fanfiction_status_cmd = fanfiction_subparsers.add_parser(
         "status",
@@ -1521,6 +1801,62 @@ def build_parser() -> argparse.ArgumentParser:
     review_serve.add_argument("--no-open", action="store_true")
     review_serve.set_defaults(func=cmd_review_serve)
 
+    sandbox = subparsers.add_parser(
+        "sandbox", help="Create non-canonical experiments and explicitly promote selected meaning."
+    )
+    sandbox_subparsers = sandbox.add_subparsers(dest="sandbox_command", required=True)
+    sandbox_create = sandbox_subparsers.add_parser(
+        "create", help="Create a semantic sandbox artifact without touching Canon or planning."
+    )
+    sandbox_create.add_argument("config", nargs="?", default="project.yaml")
+    sandbox_create.add_argument("--type", required=True, dest="document_type")
+    sandbox_create.add_argument("--title", required=True)
+    sandbox_create.add_argument("--body-file", required=True)
+    sandbox_create.add_argument("--created-by", choices=["human", "host_agent"], default="human")
+    sandbox_create.add_argument("--json", action="store_true")
+    sandbox_create.set_defaults(func=cmd_sandbox_create)
+    sandbox_promote = sandbox_subparsers.add_parser(
+        "promote", help="Promote selected sandbox meaning to a formal semantic candidate."
+    )
+    sandbox_promote.add_argument("config", nargs="?", default="project.yaml")
+    sandbox_promote.add_argument("--sandbox", required=True)
+    sandbox_promote.add_argument("--candidate", required=True)
+    sandbox_promote.add_argument("--approved-by", required=True, choices=["human"])
+    sandbox_promote.add_argument("--reason", required=True)
+    sandbox_promote.add_argument("--json", action="store_true")
+    sandbox_promote.set_defaults(func=cmd_sandbox_promote)
+
+    migrate = subparsers.add_parser(
+        "migrate", help="Audit or explicitly import an older project without in-place mutation."
+    )
+    migrate_subparsers = migrate.add_subparsers(dest="migrate_command", required=True)
+    migrate_audit = migrate_subparsers.add_parser(
+        "audit-v011", help="Read-only audit of a v0.11 project before v0.12 import."
+    )
+    migrate_audit.add_argument("--source", required=True)
+    migrate_audit.add_argument("--json", action="store_true")
+    migrate_audit.set_defaults(func=cmd_migrate_audit_v011)
+    migrate_apply = migrate_subparsers.add_parser(
+        "v011-to-v012", help="Copy a v0.11 project into a new v0.12 migration workspace."
+    )
+    migrate_apply.add_argument("--source", required=True)
+    migrate_apply.add_argument("--destination", required=True)
+    migrate_apply.add_argument("--approved-by", required=True, choices=["human"])
+    migrate_apply.add_argument("--json", action="store_true")
+    migrate_apply.set_defaults(func=cmd_migrate_v011_to_v012)
+
+    studio = subparsers.add_parser(
+        "studio", help="Serve the loopback-only Chinese novel creation and source-processing console."
+    )
+    studio_subparsers = studio.add_subparsers(dest="studio_command", required=True)
+    studio_serve = studio_subparsers.add_parser(
+        "serve", help="Open the Chinese creation console without granting Canon or chapter-finalize authority."
+    )
+    studio_serve.add_argument("config", nargs="?", default="project.yaml")
+    studio_serve.add_argument("--port", type=positive_int_arg, default=8764)
+    studio_serve.add_argument("--no-open", action="store_true")
+    studio_serve.set_defaults(func=cmd_studio_serve)
+
     rag = subparsers.add_parser("rag", help="Build and query local RAG context.")
     rag_subparsers = rag.add_subparsers(dest="rag_command", required=True)
 
@@ -1535,6 +1871,7 @@ def build_parser() -> argparse.ArgumentParser:
     rag_query_cmd.add_argument("config", help="Path to project.yaml.")
     rag_query_cmd.add_argument("query", help="Search query.")
     rag_query_cmd.add_argument("--top-k", type=int, help="Number of hits to return.")
+    rag_query_cmd.add_argument("--token-budget", type=positive_int_arg, help="Maximum retrieval context units.")
     rag_query_cmd.add_argument("--candidate-pool", type=int, help="Candidate pool size.")
     rag_query_cmd.add_argument("--chapter", type=int, help="Target/current chapter for graph/TCS filtering.")
     rag_query_cmd.add_argument("--semantic", action="store_true", help="Enable semantic/memory retrieval fallback.")
@@ -1546,6 +1883,7 @@ def build_parser() -> argparse.ArgumentParser:
     rag_context.add_argument("--chapter", type=int, help="Target chapter number.")
     rag_context.add_argument("--query", help="Override context query.")
     rag_context.add_argument("--top-k", type=int, help="Number of hits to include.")
+    rag_context.add_argument("--token-budget", type=positive_int_arg, help="Maximum retrieval context units.")
     rag_context.add_argument("--semantic", action="store_true", help="Enable semantic/memory retrieval fallback.")
     rag_context.set_defaults(func=cmd_rag_context)
 
@@ -3025,6 +3363,7 @@ def cmd_benchmark_record(args: argparse.Namespace) -> int:
         config,
         run_id=args.run_id,
         chapter_number=args.chapter,
+        token_budget=args.token_budget,
         scores={
             "continuity": args.continuity,
             "character_consistency": args.character_consistency,
@@ -3930,6 +4269,8 @@ def cmd_source_library_item_import(args: argparse.Namespace) -> int:
         file_path=args.file,
         source_locator=args.source_locator,
         supersedes_item_id=args.supersedes_item_id,
+        storage_mode=args.storage_mode,
+        asset_role=args.asset_role,
     )
     _print_source_payload(payload, as_json=args.json, title="OK: source item imported")
     return 0
@@ -3948,6 +4289,173 @@ def cmd_source_library_extraction_approve(args: argparse.Namespace) -> int:
         approved_by=args.approved_by,
     )
     _print_source_payload(payload, as_json=args.json, title="OK: source extraction approved")
+    return 0
+
+
+def cmd_source_library_capabilities(args: argparse.Namespace) -> int:
+    payload = source_processing_capabilities()
+    _print_source_payload(payload, as_json=args.json, title="Source processing capabilities")
+    return 0
+
+
+def cmd_source_library_ingest_plan(args: argparse.Namespace) -> int:
+    payload = create_source_ingest_plan(
+        work_id=args.work_id,
+        file_paths=args.file,
+        directory=args.directory,
+        source_type=args.source_type,
+        version=args.version,
+        unit_range=args.unit_range,
+        source_method=args.source_method,
+        rights_status=args.rights_status,
+        retention_mode=args.retention_mode,
+        storage_mode=args.storage_mode,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: source ingest batch staged")
+    return 0
+
+
+def cmd_source_library_ingest_preview(args: argparse.Namespace) -> int:
+    payload = source_ingest_preview(args.batch_id)
+    _print_source_payload(payload, as_json=args.json, title="Source ingest preview")
+    return 0
+
+
+def cmd_source_library_ingest_confirm(args: argparse.Namespace) -> int:
+    groups = json.loads(Path(args.groups_file).expanduser().resolve().read_text(encoding="utf-8"))
+    if not isinstance(groups, list) or any(not isinstance(item, dict) for item in groups):
+        raise ValueError("source ingest groups must be a JSON list of objects")
+    payload = confirm_source_ingest_groups(
+        batch_id=args.batch_id,
+        groups=groups,
+        approved_by=args.approved_by,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: source ingest groups confirmed")
+    return 0
+
+
+def cmd_source_library_ingest_apply(args: argparse.Namespace) -> int:
+    payload = apply_source_ingest_batch(batch_id=args.batch_id, approved_by=args.approved_by)
+    _print_source_payload(payload, as_json=args.json, title="OK: approved source groups imported")
+    return 0
+
+
+def cmd_source_library_item_status(args: argparse.Namespace) -> int:
+    payload = source_item_status(args.item_id)
+    _print_source_payload(payload, as_json=args.json, title="Source item status")
+    return 0
+
+
+def cmd_source_library_process_plan(args: argparse.Namespace) -> int:
+    parameters: dict[str, Any] = {}
+    if args.parameters_file:
+        payload = json.loads(Path(args.parameters_file).expanduser().resolve().read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("source processing parameters must be a JSON object")
+        parameters = payload
+    result = create_source_processing_job(
+        item_id=args.item_id,
+        asset_ids=args.asset_id,
+        execution=args.execution,
+        processor_id=args.processor_id,
+        parameters=parameters,
+    )
+    _print_source_payload(result, as_json=args.json, title="OK: source processing job prepared")
+    return 0
+
+
+def cmd_source_library_process_run(args: argparse.Namespace) -> int:
+    payload = run_source_processing_job(item_id=args.item_id, job_id=args.job_id)
+    _print_source_payload(payload, as_json=args.json, title="OK: local source processing completed")
+    return 0 if payload.get("status") in {"evidence_ready", "evidence_review_pending"} else 1
+
+
+def cmd_source_library_review_template(args: argparse.Namespace) -> int:
+    payload = create_source_evidence_review_template(item_id=args.item_id)
+    _print_source_payload(payload, as_json=args.json, title="OK: source evidence review prepared")
+    return 0
+
+
+def cmd_source_library_review_apply(args: argparse.Namespace) -> int:
+    payload = apply_source_evidence_review(
+        item_id=args.item_id, file_path=args.file, approved_by=args.approved_by
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: source evidence review applied")
+    return 0
+
+
+def cmd_source_library_remote_prepare(args: argparse.Namespace) -> int:
+    scopes = json.loads(Path(args.scopes_file).expanduser().resolve().read_text(encoding="utf-8"))
+    if not isinstance(scopes, list) or any(not isinstance(item, dict) for item in scopes):
+        raise ValueError("remote processing scopes must be a JSON list of objects")
+    payload = create_source_remote_decision(
+        item_id=args.item_id,
+        job_id=args.job_id,
+        provider=args.provider,
+        model=args.model,
+        scopes=scopes,
+    )
+    _print_source_payload(payload, as_json=args.json, title="Remote source processing approval preview")
+    return 0
+
+
+def cmd_source_library_remote_approve(args: argparse.Namespace) -> int:
+    payload = approve_source_remote_decision(
+        item_id=args.item_id, job_id=args.job_id, approved_by=args.approved_by
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: remote source processing approved")
+    return 0
+
+
+def cmd_source_library_remote_run(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = run_source_remote_processing(config, item_id=args.item_id, job_id=args.job_id)
+    _print_source_payload(payload, as_json=args.json, title="OK: remote source processing completed")
+    return 0
+
+
+def cmd_source_library_task_create(args: argparse.Namespace) -> int:
+    payload = create_source_agent_task(
+        item_id=args.item_id,
+        task_type=args.task_type,
+        segment_ids=args.segment_id,
+        review_type=args.review_type,
+        candidate_file=args.candidate_file,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: source Agent task created")
+    return 0
+
+
+def cmd_source_library_task_validate(args: argparse.Namespace) -> int:
+    payload = validate_source_agent_task(item_id=args.item_id, task_id=args.task_id)
+    _print_source_payload(payload, as_json=args.json, title="Source Agent task validation")
+    return 0 if payload.get("ok") is True else 1
+
+
+def cmd_source_library_task_apply(args: argparse.Namespace) -> int:
+    payload = apply_source_agent_task(
+        item_id=args.item_id,
+        task_id=args.task_id,
+        approved_by=args.approved_by,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: source Agent result applied")
+    return 0
+
+
+def cmd_source_library_index_rebuild(args: argparse.Namespace) -> int:
+    payload = rebuild_source_library_search_index()
+    _print_source_payload(payload, as_json=args.json, title="OK: source library FTS rebuilt")
+    return 0
+
+
+def cmd_source_library_search(args: argparse.Namespace) -> int:
+    payload = search_source_library_evidence(
+        args.query,
+        work_id=args.work_id,
+        item_id=args.item_id,
+        limit=args.limit,
+    )
+    _print_source_payload(payload, as_json=args.json, title="Source library evidence search")
     return 0
 
 
@@ -4121,6 +4629,27 @@ def cmd_fanfiction_canon_apply(args: argparse.Namespace) -> int:
     return cmd_intelligence_apply(args)
 
 
+def cmd_fanfiction_story_engine_task(args: argparse.Namespace) -> int:
+    args.task_type = "fanfiction_story_engine"
+    args.input_files = []
+    args.chapter = None
+    args.from_chapter = None
+    args.to_chapter = None
+    return cmd_intelligence_task(args)
+
+
+def cmd_fanfiction_story_engine_validate(args: argparse.Namespace) -> int:
+    args.task_type = "fanfiction_story_engine"
+    return cmd_intelligence_validate(args)
+
+
+def cmd_fanfiction_story_engine_apply(args: argparse.Namespace) -> int:
+    args.task_type = "fanfiction_story_engine"
+    args.delta = args.file
+    args.document = None
+    return cmd_intelligence_apply(args)
+
+
 def cmd_fanfiction_design_task(args: argparse.Namespace) -> int:
     args.task_type = "fanfiction_design"
     args.input_files = []
@@ -4134,9 +4663,37 @@ def cmd_fanfiction_design_validate(args: argparse.Namespace) -> int:
     return cmd_intelligence_validate(args)
 
 
+def cmd_fanfiction_design_review_task(args: argparse.Namespace) -> int:
+    args.task_type = "fanfiction_design_review"
+    args.input_files = [args.file]
+    args.chapter = None
+    args.from_chapter = None
+    args.to_chapter = None
+    return cmd_intelligence_task(args)
+
+
+def cmd_fanfiction_design_review_validate(args: argparse.Namespace) -> int:
+    args.task_type = "fanfiction_design_review"
+    return cmd_intelligence_validate(args)
+
+
 def cmd_fanfiction_design_apply(args: argparse.Namespace) -> int:
-    args.task_type = "fanfiction_design"
-    return cmd_intelligence_apply(args)
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = apply_intelligence_candidate(
+        config,
+        task_type="fanfiction_design",
+        file_path=args.file,
+        review_path=args.review,
+        approved_by=args.approved_by,
+    )
+    payload = asdict(result)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: independently reviewed fanfiction route applied")
+        print(f"Transaction: {result.transaction_report}")
+        print(f"Next command: {result.next_command}")
+    return 0
 
 
 def cmd_fanfiction_status(args: argparse.Namespace) -> int:
@@ -4149,12 +4706,32 @@ def cmd_fanfiction_status(args: argparse.Namespace) -> int:
         print(f"Continuity mode: {payload['continuity_mode']}")
         print(f"Sources: {payload['source_count']}")
         print(f"Canon: {payload['canon_status']}")
+        print(f"Story engine: {payload['story_engine_status']}")
         print(f"Design: {payload['design_status']}")
+        print(f"Design review: {payload['design_review_status']}")
         print(f"Source coverage: {payload['source_coverage_ready']}")
         for error in payload["source_coverage_errors"]:
             print(f"- {error}")
         print(f"Ready: {payload['ready']}")
         print("Rights status is advisory only and never blocks creation or export.")
+    return 0
+
+
+def cmd_fanfiction_context_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = fanfiction_context_status(config, chapter_number=args.chapter)
+    _print_source_payload(
+        payload,
+        as_json=args.json,
+        title=f"同人章节上下文：第 {args.chapter} 章",
+    )
+    return 0
+
+
+def cmd_fanfiction_event_disposition_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = event_disposition_status(config)
+    _print_source_payload(payload, as_json=args.json, title="原著事件命运")
     return 0
 
 
@@ -4756,6 +5333,84 @@ def cmd_review_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sandbox_create(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    body_path = Path(args.body_file).expanduser().resolve()
+    body = body_path.read_text(encoding="utf-8")
+    payload = create_sandbox_artifact(
+        config,
+        document_type=args.document_type,
+        title=args.title,
+        body=body,
+        created_by=args.created_by,
+    )
+    _print_source_payload(payload, as_json=args.json, title="OK: non-canonical sandbox artifact created")
+    return 0
+
+
+def cmd_sandbox_promote(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = promote_sandbox_candidate(
+        config,
+        sandbox_path=args.sandbox,
+        candidate_path=args.candidate,
+        approved_by=args.approved_by,
+        reason=args.reason,
+    )
+    _print_source_payload(
+        payload,
+        as_json=args.json,
+        title="OK: sandbox meaning promoted to a non-canonical formal candidate",
+    )
+    return 0
+
+
+def cmd_migrate_audit_v011(args: argparse.Namespace) -> int:
+    payload = audit_v011(args.source)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: v0.11 migration audit completed")
+        print(f"Source: {payload['source']}")
+        print(f"Files: {payload['file_count']}")
+        print(f"Legacy schemas: {json.dumps(payload['legacy_schemas'], ensure_ascii=False)}")
+        print(f"Symlinks/reparse points: {len(payload['symlinks_or_reparse_points'])}")
+    return 0
+
+
+def cmd_migrate_v011_to_v012(args: argparse.Namespace) -> int:
+    payload = migrate_v011_to_v012(
+        args.source,
+        args.destination,
+        approved_by=args.approved_by,
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: v0.11 project copied into a v0.12 migration workspace")
+        print(f"Destination: {payload['destination']}")
+        print("Legacy Canon and derived indexes are quarantined and require human reapproval.")
+    return 0
+
+
+def cmd_studio_serve(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    server = StudioHTTPServer(StudioService(config), port=args.port)
+    print(f"Creation studio: {server.bootstrap_url}")
+    print("Binding: 127.0.0.1 only; the URL token can be used once.")
+    if not args.no_open:
+        import webbrowser
+
+        webbrowser.open(server.bootstrap_url)
+    try:
+        server.serve_forever(poll_interval=0.25)
+    except KeyboardInterrupt:
+        print("Creation studio stopped.")
+    finally:
+        server.server_close()
+    return 0
+
+
 def cmd_editorial_pattern_status(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
     result = pattern_registry_status(config, target_chapter=args.chapter)
@@ -4880,6 +5535,7 @@ def cmd_rag_query(args: argparse.Namespace) -> int:
         candidate_pool=args.candidate_pool,
         semantic=args.semantic,
         chapter_number=args.chapter,
+        token_budget=args.token_budget,
     )
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
@@ -4887,6 +5543,9 @@ def cmd_rag_query(args: argparse.Namespace) -> int:
         print(f"Query: {result.query}")
         print(f"Cache: {result.cache_file}")
         print(f"Hits: {len(result.hits)}")
+        print(f"Budget: {result.used_units}/{result.token_budget}")
+        if result.omitted_hit_ids:
+            print(f"Omitted by budget: {', '.join(result.omitted_hit_ids)}")
         for hit in result.hits:
             print(f"- {hit.id} score={hit.score:.3f} chapter={hit.chapter_number} source={hit.source_path}")
             if args.semantic:
@@ -4898,7 +5557,14 @@ def cmd_rag_query(args: argparse.Namespace) -> int:
 
 def cmd_rag_context(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = build_context(config, chapter_number=args.chapter, query_text=args.query, top_k=args.top_k, semantic=args.semantic)
+    result = build_context(
+        config,
+        chapter_number=args.chapter,
+        query_text=args.query,
+        top_k=args.top_k,
+        semantic=args.semantic,
+        token_budget=args.token_budget,
+    )
     print("OK: RAG context written")
     print(f"Context: {result.context_file}")
     print(f"Hits: {result.hit_count}")

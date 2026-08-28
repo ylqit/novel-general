@@ -39,7 +39,11 @@ from longform_engine.config import ConfigDocument
 from longform_engine.fanfiction_sources import (
     create_incremental_source_request,
     initialize_project_source_packs,
-    source_fact_records,
+)
+from longform_engine.fanfiction_context import (
+    FanfictionContextError,
+    compile_fanfiction_context,
+    write_fanfiction_context_bundle,
 )
 from longform_engine.creative import (
     author_prose_naturalness_policy,
@@ -1874,11 +1878,9 @@ def write_writing_task(
         }
         canon = load_json(root / "10_bible" / "fanfiction" / "source_canon.json", default={})
         known_ids = {
-            str(fact.get("id") or "")
-            for source in (canon.get("sources") or [] if isinstance(canon, dict) else [])
-            if isinstance(source, dict)
-            for fact in source.get("facts") or []
-            if isinstance(fact, dict) and fact.get("id")
+            str(claim.get("claim_id") or "")
+            for claim in (canon.get("claims") or [] if isinstance(canon, dict) else [])
+            if isinstance(claim, dict) and claim.get("claim_id")
         }
         explicit_refs = dedupe_strings(
             [
@@ -1951,6 +1953,8 @@ def write_writing_task(
     fanfiction_contract = load_fanfiction_writing_contract(
         config,
         root,
+        chapter_number=chapter_number,
+        chapter_contract=chapter_contract,
         card=card if isinstance(card, dict) else {},
         character_packet=character_expression_packet,
     )
@@ -2030,6 +2034,7 @@ def write_writing_task(
         style_context=style_context,
         human_intent=human_intent,
         semantic_obligations=chapter_obligations,
+        fanfiction_contract=fanfiction_contract,
     )
     source_paths = [
         context_file,
@@ -2047,6 +2052,13 @@ def write_writing_task(
         story_graph_path,
         tcs_path,
     ]
+    if fanfiction_contract.get("enabled"):
+        bundle_path = str(fanfiction_contract.get("context_bundle_path") or "")
+        if bundle_path:
+            source_paths.append(root / bundle_path)
+        for item in fanfiction_contract.get("source_files") or []:
+            if isinstance(item, dict) and str(item.get("path") or ""):
+                source_paths.append(root / str(item["path"]))
     style_source = str(style_context.get("source") or "")
     if style_source:
         source_paths.append(root / style_source)
@@ -2062,7 +2074,10 @@ def write_writing_task(
         rolling_window_sha256=sha256_bytes(rolling_window_file.read_bytes()),
         plot_node_table_sha256=sha256_bytes(beat_sheet_file.read_bytes()),
         semantic_obligation_ledger_sha256=sha256_bytes(obligation_file.read_bytes()),
-        canonical_projection=story_brief.get("relevant_facts") or [],
+        canonical_projection={
+            "project_facts": story_brief.get("relevant_facts") or [],
+            "fanfiction": story_brief.get("fanfiction_context") or {},
+        },
         character_voice_projection=story_brief.get("character_guidance") or [],
         author_voice_projection=story_brief.get("author_voice_examples") or [],
         structure_history_projection={
@@ -3708,20 +3723,27 @@ def build_chapter_fact_inventory(
                 key: fanfiction_contract.get(key)
                 for key in (
                     "continuity_mode",
-                    "canon_cutoff",
-                    "divergence_point",
-                    "ooc_tolerance",
-                    "voice_contracts",
-                    "world_rule_changes",
-                    "butterfly_effects",
+                    "context_bundle_sha256",
+                    "required_claim_ids",
+                    "included_claim_ids",
+                    "current_canon_time_and_scene",
+                    "approved_divergences",
+                    "character_knowledge_boundaries",
+                    "relationship_stage",
+                    "event_dispositions",
+                    "ability_and_crossover_rules",
+                    "canon_character_agency",
+                    "original_contribution",
                     "protected_reveals",
+                    "free_play",
+                    "ending_state",
                 )
                 if fanfiction_contract.get(key) not in (None, "", [], {})
             },
-            source=str(fanfiction_contract.get("design_path") or "10_bible/fanfiction/fanfiction_bible.json"),
-            source_hash=source_hash(root, str(fanfiction_contract.get("design_path") or "")),
+            source=str(fanfiction_contract.get("context_bundle_path") or ""),
+            source_hash=source_hash(root, str(fanfiction_contract.get("context_bundle_path") or "")),
             priority="required",
-            reason="declared divergence and OOC boundaries",
+            reason="claim-bound fanfiction time, knowledge, divergence, event, agency, and crossover context",
         )
     for fact_id, value, source, reason in (
         (
@@ -3960,6 +3982,7 @@ def build_chapter_story_brief(
     style_context: dict[str, Any],
     human_intent: dict[str, Any],
     semantic_obligations: list[dict[str, Any]],
+    fanfiction_contract: dict[str, Any],
 ) -> dict[str, Any]:
     """Compile the author-facing story problem without exposing control-plane evidence."""
 
@@ -4016,6 +4039,11 @@ def build_chapter_story_brief(
     )
     author_voice_examples = author_voice_guidance(style_context)
     quality_guidance = author_quality_guidance(writing_brief)
+    fanfiction_projection = (
+        dict(fanfiction_contract.get("author_projection") or {})
+        if fanfiction_contract.get("enabled")
+        else {}
+    )
     return {
         "schema": STORY_BRIEF_SCHEMA,
         "chapter_number": chapter_number,
@@ -4051,6 +4079,7 @@ def build_chapter_story_brief(
             writing_brief.get("local_freedom")
             or "在受保护结果和禁止偏移内，可自由设计具体动作、摩擦、细节与潜台词。"
         ),
+        "fanfiction_context": fanfiction_projection,
         "relevant_facts": relevant_facts,
         "character_guidance": character_guidance,
         "author_voice_examples": author_voice_examples,
@@ -4274,6 +4303,43 @@ def render_chapter_story_brief_markdown(payload: dict[str, Any]) -> str:
                 "",
             ]
         )
+    fanfiction = (
+        brief.get("fanfiction_context")
+        if isinstance(brief.get("fanfiction_context"), dict)
+        else {}
+    )
+    if fanfiction:
+        def readable(values: Any) -> str:
+            rows = [str(item) for item in as_list(values) if author_safe_text(item)]
+            return "；".join(rows) or "本章无额外要求"
+
+        event_rows = [
+            f"{item.get('description', '')}（{item.get('disposition', '')}）"
+            for item in fanfiction.get("event_dispositions") or []
+            if isinstance(item, dict) and author_safe_text(item.get("description"))
+        ]
+        lines.extend(
+            [
+                "## 同人章节语义边界",
+                "",
+                "- 当前原著时间和场景基线："
+                + readable(fanfiction.get("current_canon_time_and_scene")),
+                "- 当前已批准分歧：" + readable(fanfiction.get("approved_divergences")),
+                "- 本章人物知识边界："
+                + readable(fanfiction.get("character_knowledge_boundaries")),
+                "- 当前关系阶段：" + readable(fanfiction.get("relationship_stage")),
+                "- 本章相关原著事件命运：" + ("；".join(event_rows) or "本章无对应重大事件"),
+                "- 适用能力和跨界规则："
+                + readable(fanfiction.get("ability_and_crossover_rules")),
+                "- 原著人物独立目标与可拒绝范围："
+                + readable(fanfiction.get("canon_character_agency")),
+                "- 本章原创贡献：" + readable(fanfiction.get("original_contribution")),
+                "- 不能提前揭露：" + readable(fanfiction.get("protected_reveals")),
+                "- 可自由发挥范围：" + str(fanfiction.get("free_play") or ""),
+                "- 章末应形成的新状态：" + str(fanfiction.get("ending_state") or ""),
+                "",
+            ]
+        )
     lines.extend(
         [
             "## 演出边界",
@@ -4390,92 +4456,49 @@ def load_fanfiction_writing_contract(
     config: ConfigDocument,
     root: Path,
     *,
+    chapter_number: int,
+    chapter_contract: dict[str, Any],
     card: dict[str, Any] | None = None,
     character_packet: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if str(config.data.get("creation", {}).get("mode") or "original") != "fanfiction":
         return {"enabled": False}
-    design_path = root / "10_bible" / "fanfiction" / "fanfiction_bible.json"
-    canon_path = root / "10_bible" / "fanfiction" / "source_canon.json"
-    design = load_json(design_path, default={})
-    canon = load_json(canon_path, default={})
-    card = card if isinstance(card, dict) else {}
-    character_packet = character_packet if isinstance(character_packet, dict) else {}
-    relevant_ids = {
-        str(item)
-        for item in (
-            as_list(card.get("featured_character_ids"))
-            + as_list(card.get("canon_refs"))
-            + as_list(card.get("voice_refs"))
-            + as_list(character_packet.get("featured_character_ids"))
+    try:
+        bundle = compile_fanfiction_context(
+            config,
+            chapter_number=chapter_number,
+            chapter_contract=chapter_contract,
+            chapter_card=card if isinstance(card, dict) else {},
+            character_packet=(
+                character_packet if isinstance(character_packet, dict) else {}
+            ),
         )
-        if str(item).strip()
-    }
-    narrative_role_fields = {
-        key: card.get(key)
-        for key in (
-            "title",
-            "chapter_duty",
-            "conflict",
-            "chapter_turn",
-            "ending_intent",
-            "reader_gain",
-            "scene_wants",
-            "opposing_wants",
-            "hidden_agenda",
-            "relationship_move",
-        )
-        if card.get(key) not in (None, "", [], {})
-    }
-    card_text = json.dumps(narrative_role_fields, ensure_ascii=False).casefold()
-    source_summaries: list[dict[str, Any]] = []
-    if isinstance(canon, dict):
-        for source in canon.get("sources") or []:
-            if not isinstance(source, dict):
-                continue
-            characters = source_fact_records(source, "character")
-            for character in characters:
-                character_id = str(character.get("id") or "")
-                names = [
-                    part.strip().casefold()
-                    for part in re.split(r"[/／|]", str(character.get("name") or ""))
-                    if part.strip()
-                ]
-                if any(name in card_text for name in names):
-                    relevant_ids.add(character_id)
-            source_summaries.append(
-                {
-                    "source_id": source.get("source_id"),
-                    "title": source.get("title"),
-                    "canon_cutoff": source.get("canon_cutoff"),
-                    "character_ids": [
-                        item.get("id")
-                        for item in characters
-                        if item.get("id")
-                    ][:12],
-                    "unresolved_questions": [
-                        trim_text(str(item.get("summary") or ""), 120)
-                        for item in source_fact_records(source, "unresolved_question")
-                    ][:5],
-                }
-            )
+    except FanfictionContextError as exc:
+        raise WorkflowError(str(exc)) from exc
+    bundle_path = write_fanfiction_context_bundle(root, bundle)
+    projection = bundle.get("author_projection")
+    projection = projection if isinstance(projection, dict) else {}
     return {
         "enabled": True,
-        "source_canon_path": relative_path(root, canon_path),
-        "design_path": relative_path(root, design_path),
-        "continuity_mode": design.get("continuity_mode") if isinstance(design, dict) else "",
-        "canon_cutoff": design.get("canon_cutoff") if isinstance(design, dict) else "",
-        "divergence_point": design.get("divergence_point") if isinstance(design, dict) else "",
-        "ooc_tolerance": design.get("ooc_tolerance") if isinstance(design, dict) else "",
-        "voice_contracts": [
-            item
-            for item in (design.get("character_voice_contracts") or [])
-            if isinstance(item, dict) and str(item.get("character_id") or "") in relevant_ids
-        ][:8] if isinstance(design, dict) else [],
-        "world_rule_changes": (design.get("world_rule_changes") or [])[:8] if isinstance(design, dict) else [],
-        "butterfly_effects": (design.get("butterfly_effects") or [])[:8] if isinstance(design, dict) else [],
-        "protected_reveals": (design.get("protected_reveals") or [])[:8] if isinstance(design, dict) else [],
-        "sources": source_summaries,
+        "context_bundle_path": relative_path(root, bundle_path),
+        "context_bundle_sha256": str(bundle.get("bundle_sha256") or ""),
+        "source_files": list(bundle.get("source_files") or []),
+        "required_claim_ids": list(bundle.get("required_claim_ids") or []),
+        "included_claim_ids": list(bundle.get("included_claim_ids") or []),
+        "continuity_mode": str(bundle.get("continuity_mode") or ""),
+        "author_projection": projection,
+        "current_canon_time_and_scene": projection.get("current_canon_time_and_scene") or [],
+        "approved_divergences": projection.get("approved_divergences") or [],
+        "character_knowledge_boundaries": projection.get("character_knowledge_boundaries") or [],
+        "relationship_stage": projection.get("relationship_stage") or [],
+        "event_dispositions": projection.get("event_dispositions") or [],
+        "ability_and_crossover_rules": projection.get("ability_and_crossover_rules") or [],
+        "canon_character_agency": projection.get("canon_character_agency") or [],
+        "original_contribution": projection.get("original_contribution") or [],
+        "protected_reveals": projection.get("protected_reveals") or [],
+        "free_play": str(projection.get("free_play") or ""),
+        "ending_state": str(projection.get("ending_state") or ""),
+        "diagnostics": bundle.get("diagnostics") or {},
     }
 
 

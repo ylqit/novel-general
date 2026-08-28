@@ -51,6 +51,9 @@ ALLOW_FINAL_WRITES = {
     "src/longform_engine/publication.py",
     # Human revision tasks name final only as a forbidden Agent path.
     "src/longform_engine/human_author_revision.py",
+    # Explicit v0.11 import copies the whole project into a new destination and
+    # verifies final hashes; it never mutates the source or rewrites prose.
+    "src/longform_engine/migration_v012.py",
 }
 
 ALLOW_GRAPH_WRITES = {
@@ -91,7 +94,21 @@ DIRECT_LLM_PATTERNS = (
     r"chat\.completions\.create",
     r"messages\.create",
     r"responses\.create",
+    r"audio\.transcriptions\.create",
 )
+
+# v0.12+ deliberately permits one narrowly owned OpenAI boundary for
+# human-approved, non-Canonical source preprocessing.  Every other production
+# module and every other provider/call shape remains rejected below.
+ALLOWED_DIRECT_LLM_PATTERNS = {
+    "src/longform_engine/source_processing.py": frozenset(
+        {
+            r"\bfrom\s+openai\b",
+            r"responses\.create",
+            r"audio\.transcriptions\.create",
+        }
+    ),
+}
 
 EXTERNAL_LLM_KEY_PATTERNS = (
     "OPENAI_API_KEY",
@@ -208,13 +225,15 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "docs/V0_11_0_RELEASE_CHECKLIST.md",
+        "docs/V0_12_0_RELEASE_CHECKLIST.md",
         (
             "协议收口",
+            "semantic_document_v1",
+            "agent_task_manifest_v5",
             "本地发布验证",
             "提交与远程发布",
             "本机同步",
-            "literary_evidence_ready=false",
+            "未发布",
         ),
     ),
     (
@@ -396,13 +415,31 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "src/longform_engine/review_server.py",
+        "src/longform_engine/local_web.py",
         (
             'super().__init__(("127.0.0.1", port)',
             "Content-Security-Policy",
+            'self.headers.get("Host"',
+            'self.headers.get("Origin"',
+            "_require_csrf",
+        ),
+    ),
+    (
+        "src/longform_engine/review_server.py",
+        (
             "X-Review-CSRF",
             "acquire_project_lock",
             'agent="human"',
+        ),
+    ),
+    (
+        "src/longform_engine/source_processing.py",
+        (
+            "approve_remote_decision",
+            "approved_by=human",
+            "remote processing approval is stale",
+            "store=False",
+            "retain_remote_files",
         ),
     ),
     (
@@ -520,10 +557,10 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "docs/V0_11_0_RELEASE_CHECKLIST.md",
+        "docs/V0_12_0_RELEASE_CHECKLIST.md",
         (
-            "动态同人原著资料库",
-            "fanfiction_source_canon_v2",
+            "资料、语义引擎与小说生产",
+            "semantic_document_v1",
             "本地发布验证",
             "wheel",
             "sdist",
@@ -532,7 +569,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "tests/test_agent_skill_integrity.py",
         (
-            "test_release_guard_tracks_current_v011_contracts",
+            "test_release_guard_tracks_current_v012_contracts",
             "check_experience_layer_guards",
             "DIRECT_WRITER_PATTERNS",
         ),
@@ -540,7 +577,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "tests/test_agent_skill_integrity.py",
         (
-            "test_progressive_prompts_cover_four_protocols_without_pollution",
+            "test_progressive_prompts_cover_current_protocols_without_pollution",
             "agent_data_pipeline_readiness_v5",
             "single_process_sequential",
         ),
@@ -714,8 +751,9 @@ def main() -> int:
     for path in iter_text_files(SRC):
         rel = relpath(path)
         text = path.read_text(encoding="utf-8", errors="ignore")
+        allowed_llm_patterns = ALLOWED_DIRECT_LLM_PATTERNS.get(rel, frozenset())
         for pattern in DIRECT_LLM_PATTERNS:
-            if re.search(pattern, text):
+            if pattern not in allowed_llm_patterns and re.search(pattern, text):
                 failures.append(f"direct external LLM call/import pattern `{pattern}` appears in {rel}")
         for key in EXTERNAL_LLM_KEY_PATTERNS:
             if key in text:

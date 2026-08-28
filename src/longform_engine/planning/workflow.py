@@ -483,7 +483,7 @@ def validate_human_node_decisions(
         for table in current_bundle.get("plot_node_tables", [])
         if isinstance(table, dict) and table.get("schema") == PLOT_NODE_TABLE_SCHEMA
         for node in table.get("nodes", [])
-        if isinstance(node, dict)
+        if isinstance(node, dict) and node.get("node_kind") == "state_change"
     }
     decisions = payload.get("decisions")
     if not isinstance(decisions, list):
@@ -521,7 +521,10 @@ def validate_human_node_decisions(
         missing = sorted(expected_nodes - actual_nodes)
         extra = sorted(actual_nodes - expected_nodes)
         if missing:
-            errors.append("every plot node requires an explicit decision; missing: " + ", ".join(missing))
+            errors.append(
+                "every major state-change plot node requires an explicit decision; missing: "
+                + ", ".join(missing)
+            )
         if extra:
             errors.append("node decisions contain unknown nodes: " + ", ".join(extra))
     return errors
@@ -549,6 +552,34 @@ def apply_planning_bundle(
     structural = validate_planning_bundle(bundle)
     if not structural.ok:
         raise ValueError("planning bundle is structurally invalid: " + "; ".join(structural.errors))
+    fanfiction_sources: list[Path] = []
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        projection = bundle["active_volume_plan"].get("fanfiction_projection")
+        if not isinstance(projection, dict):
+            raise ValueError(
+                "fanfiction planning requires active_volume_plan.fanfiction_projection"
+            )
+        fanfiction_sources = [
+            root / "10_bible" / "fanfiction" / "source_canon.json",
+            root / "10_bible" / "fanfiction" / "story_engine.json",
+            root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
+        ]
+        documents = [_read_json(path) for path in fanfiction_sources]
+        if any(not path.is_file() for path in fanfiction_sources):
+            raise ValueError("fanfiction planning requires current Canon, story engine, and route files")
+        claim_ids = {
+            str(claim.get("claim_id") or "")
+            for document in documents
+            if isinstance(document, dict)
+            for claim in document.get("claims") or []
+            if isinstance(claim, dict) and claim.get("claim_id")
+        }
+        unresolved = sorted(set(projection.get("claim_refs") or []) - claim_ids)
+        if unresolved:
+            raise ValueError(
+                "fanfiction volume projection has unresolved stable claims: "
+                + ", ".join(unresolved)
+            )
     application = _read_json(application_file)
     review = validate_planning_semantic_application(root, application)
     if not review.ok or review.state != "semantic_passed":
@@ -628,6 +659,13 @@ def apply_planning_bundle(
                 if fact_registry.is_file()
                 else []
             ),
+            *(
+                {
+                    "path": path.relative_to(root).as_posix(),
+                    "sha256": _file_hash(path),
+                }
+                for path in fanfiction_sources
+            ),
         ],
         "source_bundle_sha256": _file_hash(bundle_file),
     }
@@ -648,10 +686,14 @@ def apply_planning_bundle(
         approved_nodes = []
         events = []
         for node in table["nodes"]:
-            decision = decisions_by_id[node["node_id"]]
+            decision = decisions_by_id.get(node["node_id"])
             approved_node = {**node, "human_decision": decision}
             approved_nodes.append(approved_node)
             if node["node_kind"] == "state_change":
+                if decision is None:
+                    raise ValueError(
+                        f"major plot node {node['node_id']} has no explicit human decision"
+                    )
                 planned_events += 1
                 events.append(
                     {

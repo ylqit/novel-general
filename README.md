@@ -7,9 +7,9 @@
 - 本地文件是事实源；SQLite、RAG 和图谱是受控或可重建派生状态。
 - Agent 只能写 manifest 声明的 workbench 候选，不能直接写 canonical。
 
-> 当前公开稳定版为 `v0.11.0`。它在 v0.10 生产协议上新增动态同人原著资料库；发布不等于文学质量、平台接受或 AI 检测规避证明。
+> 当前公开稳定版为 `v0.12.0`，这是一个破坏性的语义优先版本。未发布的 v0.12–v0.14 多媒体实验已收口为一个 v0.12 发布：保留格式与证据处理能力，内容语义改用“最小硬协议 + 开放中文语义文档 + 人工决定”。发布不等于文学质量、平台接受、原著行为百分之百还原或 AI 检测规避证明。
 
-v0.11 延续 v0.10 对 v0.9 及更早项目的拒绝策略；同人来源只接受 `fanfiction_source_canon_v2`，不迁移或双读 v1。
+当前公共语义边界是 `artifact_envelope_v1`、`source_asset_v1`、`evidence_reference_v1`、`workflow_record_v1`、`semantic_document_v1`、`human_decision_v1` 与 `agent_task_manifest_v5`。资料索引和格式处理记录仍可使用确定性内部结构，但不再为人物、事件、关系、能力、外观或跨界规则建立封闭内容 Schema。`fanfiction_source_canon_v1/v2/v3` 不双读；旧项目只能显式审计并非原地导入，旧事实必须重新形成证据可回溯的语义候选并获人工批准。
 
 ## 产品边界
 
@@ -28,7 +28,7 @@ v0.11 延续 v0.10 对 v0.9 及更早项目的拒绝策略；同人来源只接�
 | 人工终稿 | `human_author_revision_v4` 绑定最终锁、真实改动及双稿语义保真 |
 | 人工深审 | `human_story_review_v7` 绑定当前协议证据后才允许 finalize |
 | 发布预检 | 起点、番茄政策快照只提示风险，不输出“检测通过” |
-| 同人资料 | 用户级中文原著资料库、项目固定哈希绑定、全作截至截止点覆盖门禁与项目独立 Canon |
+| 同人资料 | 用户级中文原著证据库、项目固定哈希绑定、需求驱动分层覆盖与项目独立语义 Canon |
 | 恢复 | canonical 写入使用事务、锁、证据和显式恢复命令 |
 
 ## 两套 Skill
@@ -50,7 +50,7 @@ Windows：
 py -3 -m pip install --user pipx
 py -3 -m pipx ensurepath
 py -3 -m pipx install --force `
-  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.11.0'
+  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.12.0'
 longform-engine skills install --tool codex --force
 longform-engine doctor --tool codex
 ```
@@ -61,7 +61,7 @@ macOS / Linux：
 python3 -m pip install --user pipx
 python3 -m pipx ensurepath
 python3 -m pipx install --force \
-  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.11.0'
+  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.12.0'
 longform-engine skills install --tool codex --force
 longform-engine doctor --tool codex
 ```
@@ -99,7 +99,7 @@ longform-engine intelligence apply project.yaml --task-type book_ideation --cand
 
 ### 同人项目资料启动
 
-同人模式不会把原著全文复制进小说项目。完整原件只进入当前用户的共享 `原著资料库/`；项目内的 `50_workbench/同人原著资料/` 只保存固定 ID/hash、批准提取、短证据和覆盖计划。每部 crossover 原著都必须独立通过“指定版本截至截止点”的覆盖门禁，之后才能创建 `fanfiction_source_canon_v2` 和同人设计。
+同人模式不会把原著全文复制进小说项目。完整原件只进入当前用户的共享 `原著资料库/`；项目内的 `50_workbench/同人原著资料/` 只保存固定 asset/bundle/规范化/提取 hash、批准提取、短证据和动态覆盖需求。每部 crossover 原著独立管理版本、截止点和覆盖：`design_core` 未满足时不能批准正式路线，当前 `chapter_dependency` 未满足时只阻断依赖它的章节；`whole_to_cutoff` 全作覆盖是人工可选模式。正式项目原著基线使用人工批准的 `semantic_document_v1`。
 
 ```bash
 longform-engine source-library init
@@ -111,7 +111,18 @@ longform-engine fanfiction pack-init project.yaml
 longform-engine fanfiction item-bind project.yaml --source-id SOURCE --item-id ITEM_ID --approved-by human
 longform-engine fanfiction coverage-apply project.yaml --source-id SOURCE --file 全作覆盖计划.yaml --approved-by human
 longform-engine fanfiction canon-task project.yaml
+longform-engine fanfiction story-engine-task project.yaml
+longform-engine fanfiction story-engine-validate project.yaml --file STORY_ENGINE.json
+longform-engine fanfiction story-engine-apply project.yaml --file STORY_ENGINE.json --approved-by human
+longform-engine fanfiction design-task project.yaml
+longform-engine fanfiction design-validate project.yaml --file ROUTE.json
+longform-engine fanfiction design-review-task project.yaml --file ROUTE.json
+longform-engine fanfiction design-review-validate project.yaml --file REVIEW.json
+longform-engine fanfiction design-apply project.yaml --file ROUTE.json --review REVIEW.json --approved-by human
+longform-engine fanfiction context-status project.yaml --chapter N --json
 ```
+
+故事发动机先确认唯一初始变量、独立长期目标、持续阻力、原著人物自主性和原作事件结束后的原创主线；路线再明确故事切入点、人物知识边界、未来知识退化、原著事件命运和人物职责，并由隔离会话独立复核。跨作品只为实际 `allowed_elements` 建立宿主世界适配器与动态跨界宪法。章节上下文按稳定 claim 依赖和 Token 预算编译，不使用姓名匹配或“无命中取前几条”；必需事实超出预算时明确阻断。用户提供的同人案例与技法只进入仓库 Prompt、质量规则、抽象夹具和文档，不进入项目数据、Canon、RAG 或图谱。
 
 原创、灵感原创或改编研究仅提及作品名时，只能先创建 `research external-request`；人工批准前不会联网，也不会写入全局资料库。实际使用原著人物、世界或事件会要求把项目改为同人模式。普通网页不得被搜索结果拼接为小说、字幕或剧本全文。
 写作时若 `chapter_contract_v5` 引用了尚未进入项目 Canon 的原著 ID，`continue-write` 会先创建 `fanfiction_incremental_source_request_v1`（`network_performed=false`）并阻断。本次缺口必须依次人工批准、逐项搜索/导入、项目绑定和人工核销；模型记忆不能替代证据。
@@ -307,6 +318,7 @@ v0.11.0 发布包含动态原著资料库、全作覆盖门禁、项目独立 Ca
 
 - [Operator Guide](docs/OPERATOR_GUIDE.md)
 - [v0.11 动态同人原著资料库](docs/V0_11_0_IMPLEMENTATION.md)
+- [v0.12 语义优先架构](docs/V0_12_SEMANTIC_ARCHITECTURE.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Storage Model](docs/STORAGE_MODEL.md)
 - [Configuration](docs/CONFIGURATION.md)
@@ -314,6 +326,7 @@ v0.11.0 发布包含动态原著资料库、全作覆盖门禁、项目独立 Ca
 - [Release Runbook](docs/RELEASE_RUNBOOK.md)
 - [Release History](docs/RELEASE_HISTORY.md)
 - [v0.11.0 发布 Checklist](docs/V0_11_0_RELEASE_CHECKLIST.md)
+- [v0.12.0 发布 Checklist](docs/V0_12_0_RELEASE_CHECKLIST.md)
 
 ## License
 

@@ -367,7 +367,7 @@ def create_repair_synthesis_task(config: ConfigDocument, *, chapter_number: int)
     context_file = plan_dir / f"{round_token}.constraints.json"
     plan_file = plan_dir / f"{round_token}.plan.md"
     manifest_file = plan_dir / f"{round_token}.plan.agent_task.json"
-    task_id = f"repair_plan_synthesis:ch{chapter_number:03d}:{round_token}:v4"
+    task_id = f"repair_plan_synthesis:ch{chapter_number:03d}:{round_token}:v5"
     existing = _task_by_id(root, task_id)
     if existing is not None:
         existing_bundle = load_json(bundle_file, default={})
@@ -661,7 +661,7 @@ def create_repair_candidate_task(
     candidate_dir.mkdir(parents=True, exist_ok=True)
     candidate_file = candidate_dir / f"ch{chapter_number:03d}.{round_token}.{safe_agent}.md"
     manifest_file = plan_dir / f"{round_token}.repair.agent_task.json"
-    task_id = f"repair:ch{chapter_number:03d}:{round_token}:v4"
+    task_id = f"repair:ch{chapter_number:03d}:{round_token}:v5"
     existing = _task_by_id(root, task_id)
     lineage = _validate_repair_plan_lineage(
         root,
@@ -792,7 +792,7 @@ def repair_lifecycle_reconciliation_status(
         except RepairCoordinationError as exc:
             errors.append(str(exc))
             continue
-        child_id = f"repair:ch{chapter_number:03d}:r{round_number:02d}:v4"
+        child_id = f"repair:ch{chapter_number:03d}:r{round_number:02d}:v5"
         child = _task_by_id(root, child_id)
         if child is None:
             continue
@@ -882,7 +882,7 @@ def _repair_plan_for_candidate_command(root: Path, chapter_number: int) -> dict[
         if str(plan.get("status") or "") != "applied":
             continue
         round_number = _round_from_task(str(plan.get("task_id") or ""))
-        child_id = f"repair:ch{chapter_number:03d}:r{round_number:02d}:v4"
+        child_id = f"repair:ch{chapter_number:03d}:r{round_number:02d}:v5"
         if _task_by_id(root, child_id) is not None:
             reusable.append(plan)
     if not reusable:
@@ -915,7 +915,7 @@ def _validate_repair_plan_lineage(
     snapshot = root / snapshot_text
     candidate_sha256 = str(provenance.get("candidate_sha256") or "")
     errors: list[str] = []
-    if str(synthesis.get("task_id") or "") != f"repair_plan_synthesis:ch{chapter_number:03d}:{round_token}:v4":
+    if str(synthesis.get("task_id") or "") != f"repair_plan_synthesis:ch{chapter_number:03d}:{round_token}:v5":
         errors.append("repair parent task id does not match chapter and round")
     if report.get("ok") is not True:
         errors.append("repair plan validation report is missing or unsuccessful")
@@ -947,7 +947,7 @@ def _validate_repair_plan_lineage(
         errors.append("repair parent control-plane result is missing or stale")
 
     if child is not None:
-        child_id = f"repair:ch{chapter_number:03d}:{round_token}:v4"
+        child_id = f"repair:ch{chapter_number:03d}:{round_token}:v5"
         if str(child.get("task_id") or "") != child_id or str(child.get("task_type") or "") != "repair":
             errors.append("repair child identity does not match the parent round")
         validation = validate_manifest_strict(
@@ -1486,7 +1486,7 @@ def _task_by_id(root: Path, task_id: str) -> dict[str, Any] | None:
 
 
 def _round_from_task(task_id: str) -> int:
-    match = re.search(r":r(\d{2}):v4$", task_id)
+    match = re.search(r":r(\d{2}):v5$", task_id)
     if not match:
         raise RepairCoordinationError(f"task id does not declare an immutable repair round: {task_id}")
     return int(match.group(1))

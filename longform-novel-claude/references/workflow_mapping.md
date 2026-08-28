@@ -24,7 +24,7 @@ open-book
 -> explicit reader_promise_ledger_v2 expectation windows
 -> planning_bundle_v1 establishes active volume and a three-chapter firm rolling window
 -> independent planning semantic review
--> human decisions for every plot node
+-> human decisions for every state-changing plot node; micro dialogue/action/transition beats remain inside the chapter contract
 -> agent-task brief when an Agent task exists
 -> blank human_chapter_intent_v2 / validate / human apply binds approved nodes and contract
 -> continue-write
@@ -74,25 +74,38 @@ creation.mode = fanfiction
 -> open-book
 -> source-library register/import/extraction approval (user-level, non-Canon)
 -> fanfiction pack-init (one dynamic Chinese pack per configured work)
--> human selects authoritative version, explicit cutoff, and complete unit inventory
--> bind approved item IDs/content hashes/extraction hashes into this project
--> coverage-apply; every work independently passes unit + semantic-dimension coverage
+-> human selects authoritative version and explicit cutoff
+-> bind approved item IDs/bundle hashes/normalization hashes/extraction hashes into this project
+-> LLM proposes natural-language identity/design_core/volume_scope/chapter_dependency needs
+-> coverage-apply; every work independently passes identity + design_core before route approval
 -> fanfiction canon-task with automatically declared approved project-pack inputs
 -> agent-task brief
--> Agent writes dynamic facts and approved evidence keys
+-> Agent writes semantic_document_v1 Chinese body, evidence-backed claims and uncertainties
 -> canon-validate
--> CLI hydrates fanfiction_source_canon_v2 with pinned bindings and exact global evidence spans
+-> CLI hydrates the project baseline semantic document with pinned bindings and exact short evidence
 -> canon-apply --approved-by human
+-> fanfiction story-engine-task
+-> Agent establishes one initial variable, independent long-term goal, sustainable resistance, canon-character agency and post-canon story source
+-> story-engine-validate
+-> story-engine-apply --approved-by human
 -> book_ideation rounds with explicit human selection
 -> fanfiction design-task
--> Agent writes fanfiction_design_candidate_v1
+-> Agent writes a semantic_document_v1 route candidate with entry point, character knowledge boundaries, canon-character duties and canon-event fate claims
 -> design-validate
--> design-apply --approved-by human
+-> fanfiction design-review-task in a separate isolated session
+-> design-review-validate
+-> design-apply --review REVIEW --approved-by human
 -> outline_design
--> chapter writing
+-> active volume projects canon range, character stage, event fates, original problem and crossover rules
+-> major state-changing nodes receive human decisions; dialogue, transitions and local beats do not become approval quotas
+-> current chapter compiles fanfiction_context_bundle_v1 from stable claim dependencies and a token budget
+-> chapter_story_brief_v5 exposes only readable Chinese fanfiction context
+-> chapter writing and dual-axis canon fidelity / fanfiction originality review
 ```
 
 Rights status and commercial intent are advisory only. Names, relationships, worlds, abilities, and timelines are allowed; continuous source prose and cross-field reconstruction are not. AU and canon-divergent work is reviewed against its declared divergence and causal consequences, not against literal canon sameness.
+
+The active retrieval domains are only `source_evidence`, `project_canon`, and `project_story`. User-provided fanfiction cases and craft techniques are distilled into repository role prompts, quality rules and abstract fixtures; they are not a runtime fanwork corpus and never enter project Canon, RAG or graph.
 
 Global library updates never alter a project silently. `upgrade-status -> upgrade-propose -> independent semantic review -> human decision -> upgrade-apply` either marks explicit future dependencies stale or routes historical impact to `revision_branch_v2`. In non-fanfiction modes, a detected work name only creates `external_work_research_request_v1`; no network call occurs before human approval, and using original characters/world/events requires a mode change to fanfiction.
 

@@ -377,8 +377,8 @@ def test_submit_agent_draft_waits_for_required_semantic_review_without_invalidat
 
     assert result.passed is True
     assert result.next_command == "longform-engine production next project.yaml"
-    assert tasks["chapter_write:ch001:v4"]["status"] == "submitted"
-    assert tasks["semantic_review:ch001:v4"]["status"] == "awaiting_agent"
+    assert tasks["chapter_write:ch001:v5"]["status"] == "submitted"
+    assert tasks["semantic_review:ch001:v5"]["status"] == "awaiting_agent"
     assert next_action["task_type"] == "semantic_review"
     assert next_action["status"] == "agent_task_awaiting_agent"
     assert "agent_semantic_review" in gate["allowed_actions"]
@@ -724,7 +724,7 @@ def write_repair_manifest(root):
             "--file 50_workbench/repair_candidates/ch001.r01.codex.md --agent codex --overwrite"
         ),
         apply_command="longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
-        failure_next_command="longform-engine agent-task brief project.yaml repair:ch001:r01:v4",
-        task_id="repair:ch001:r01:v4",
+        failure_next_command="longform-engine agent-task brief project.yaml repair:ch001:r01:v5",
+        task_id="repair:ch001:r01:v5",
     )
     write_manifest(root, manifest, root / "50_workbench" / "repair_candidates" / "ch001.repair_task.agent_task.json")

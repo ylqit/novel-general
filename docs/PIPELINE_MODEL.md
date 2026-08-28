@@ -1,13 +1,23 @@
 # Pipeline Model
 
-v0.11.0 的生产主链只接受当前协议：
+v0.12.0 语义优先稳定版的正式生产主链只接受当前协议。创作沙盒是独立非 Canon 通道，只有人工提升、独立复核和正式审批后才能进入本链：
+
+同人项目在通用规划链之前增加：
+
+```text
+动态资料覆盖 / 项目原著基线 Canon
+-> 同人故事发动机 / 人工 apply
+-> 同人路线 / 隔离独立复核 / 人工 apply
+-> 活动卷同人投影、原著事件命运和重大节点决定
+-> fanfiction_context_bundle_v1
+```
 
 ```text
 planning_bundle_v1
 -> structural validate
 -> independent planning semantic review
 -> human planning decision
--> every firm plot-node human decision
+-> every firm state-changing plot-node human decision
 -> atomic planning apply
 -> chapter_contract_v5
 -> human_chapter_intent_v2
@@ -26,7 +36,7 @@ planning_bundle_v1
 
 ## 规划
 
-规划候选同时包含 Book Spine、分卷骨架、活动卷、20 章滚动窗口、forecast、语义义务、Plot Node 表和 firm v5 合同。结构校验不作文学判断；独立语义审查必须绑定 exact bytes；整体批准和逐节点批准分别保存。
+规划候选同时包含 Book Spine、分卷骨架、活动卷、20 章滚动窗口、forecast、语义义务、Plot Node 表和 firm v5 合同。结构校验不作文学判断；独立语义审查必须绑定 exact bytes；整体批准和重大状态变化节点的逐项批准分别保存。微观对话、动作、过渡和局部节拍由章节合同约束，不创建审批配额。
 
 任一 `reject|defer` 节点阻断 apply。活动卷只能有一个；firm 层始终以三个有效合同为目标。少于三个、换卷或 basis 漂移时 `production next` 返回 `planning_refresh_required`。
 

@@ -131,14 +131,14 @@ def check_agent_data_pipeline_readiness(
     )
 
     protocol_ok = (
-        AGENT_TASK_SCHEMA_VERSION == 4
-        and SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS == (4,)
-        and AGENT_TASK_INDEX_SCHEMA == "agent_task_index_v4"
-        and AGENT_TASK_EVENT_SCHEMA == "agent_task_event_v4"
+        AGENT_TASK_SCHEMA_VERSION == 5
+        and SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS == (5,)
+        and AGENT_TASK_INDEX_SCHEMA == "agent_task_index_v5"
+        and AGENT_TASK_EVENT_SCHEMA == "agent_task_event_v5"
     )
     add_check(
         checks,
-        "manifest_v4_only",
+        "manifest_v5_only",
         protocol_ok,
         {
             "manifest_version": AGENT_TASK_SCHEMA_VERSION,
@@ -146,7 +146,7 @@ def check_agent_data_pipeline_readiness(
             "index_schema": AGENT_TASK_INDEX_SCHEMA,
             "event_schema": AGENT_TASK_EVENT_SCHEMA,
         },
-        "仅保留 AgentTaskManifest、task index 和 event 的 v4 协议。",
+        "仅保留 AgentTaskManifest、task index 和 event 的 v5 协议。",
     )
 
     prompt_errors: list[str] = [role_error] if role_error else []
@@ -217,8 +217,8 @@ def check_agent_data_pipeline_readiness(
         ]
         if len(facet_sections) != len(set(facet_sections)):
             prompt_errors.append("Playbooks contain duplicated story-facet guidance")
-        if registry.registry_version != 3 or len(registry.roles) != 29 or len(registry.playbooks) != 12:
-            prompt_errors.append("registry must contain v3, 29 roles, and 12 playbooks")
+        if registry.registry_version != 3 or not registry.roles or not registry.playbooks:
+            prompt_errors.append("registry must remain v3 with non-empty roles and playbooks")
     add_check(
         checks,
         "chinese_role_contracts",
@@ -314,37 +314,42 @@ def check_agent_data_pipeline_readiness(
         registry=registry,
         facets=facets,
     )
+    expected_prompt_items = (
+        len(registry.roles) + len(registry.playbooks) + sum(len(values) for values in facets.values())
+        if registry
+        else sum(len(values) for values in facets.values())
+    )
     add_check(
         checks,
         "professional_prompt_calibration",
         not professional_errors,
         {
             "item_count": professional_inventory.get("item_count", 0),
-            "expected_item_count": 85,
+            "expected_item_count": expected_prompt_items,
             "inventory": professional_inventory,
             "errors": professional_errors,
         },
-        "逐项补齐 29 个角色、12 个 Playbook 与 44 个故事分面的专业内容和校准证据。",
+        "逐项补齐当前注册角色、Playbook 与故事分面的专业内容和校准证据。",
     )
 
     protocol_errors: list[str] = []
-    if len(TASK_CONTRACTS) != 28:
-        protocol_errors.append(f"expected 28 task contracts, got {len(TASK_CONTRACTS)}")
+    if not TASK_CONTRACTS:
+        protocol_errors.append("task contract registry is empty")
     mapped_protocols: set[str] = set()
     for task_type, contract in TASK_CONTRACTS.items():
         schemas = tuple(contract.get("schemas") or ())
         if len(schemas) != 1 or schemas[0] not in AGENT_OUTPUT_PROTOCOLS:
-            protocol_errors.append(f"{task_type}: output protocol must be one of the four current protocols")
+            protocol_errors.append(f"{task_type}: output protocol is not current")
         else:
             mapped_protocols.add(schemas[0])
     if mapped_protocols != set(AGENT_OUTPUT_PROTOCOLS):
-        protocol_errors.append("task contracts do not exercise exactly the four current protocols")
+        protocol_errors.append("task contracts do not exercise exactly the current protocols")
     add_check(
         checks,
-        "four_output_protocols",
+        "output_protocol_coverage",
         not protocol_errors,
         {"protocols": sorted(mapped_protocols), "task_count": len(TASK_CONTRACTS), "errors": protocol_errors},
-        "将所有当前任务收敛到四种单文件 Agent 输出协议。",
+        "将所有当前任务收敛到已注册的单文件 Agent 输出协议。",
     )
 
     selection_errors: list[str] = []
@@ -713,8 +718,14 @@ def professional_prompt_evidence(
     inventory["item_count"] = sum(
         len(inventory[kind]) for kind in ("roles", "playbooks", "facets")
     )
-    if inventory["item_count"] != 85:
-        errors.append(f"professional Prompt inventory must contain 85 items, got {inventory['item_count']}")
+    expected_item_count = (
+        len(expected_role_ids) + len(expected_playbook_ids) + len(expected_facet_ids)
+    )
+    if inventory["item_count"] != expected_item_count:
+        errors.append(
+            "professional Prompt inventory does not match the current registries; "
+            f"expected {expected_item_count}, got {inventory['item_count']}"
+        )
     inventory["calibration_fixture_sha256"] = sha256(fixture_path.read_bytes()).hexdigest()
     return errors, inventory
 

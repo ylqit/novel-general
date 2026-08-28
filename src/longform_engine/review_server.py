@@ -6,15 +6,11 @@ from dataclasses import asdict
 from difflib import unified_diff
 from hashlib import sha256
 from http import HTTPStatus
-from http.cookies import SimpleCookie
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 import hmac
 import html
 import json
-import secrets
 
 from longform_engine.agent_tasks import list_manifests, manifest_output, relative_path
 from longform_engine.chapter_contract import load_verified_chapter_contract
@@ -47,6 +43,7 @@ from longform_engine.human_author_revision import (
     task_record_path_for_hash,
     validate_human_author_revision,
 )
+from longform_engine.local_web import LocalWebError, LoopbackHTTPServer, LoopbackRequestHandler
 from longform_engine.orchestration.pipeline import submit_agent_draft
 from longform_engine.quality import compile_effective_quality_contract
 from longform_engine.reader_promises_v2 import load_reader_promise_ledger
@@ -87,7 +84,7 @@ CHECK_LABELS = {
 }
 
 
-class ReviewServerError(ValueError):
+class ReviewServerError(LocalWebError):
     """Raised when a browser action crosses a review-desk safety boundary."""
 
 
@@ -721,33 +718,21 @@ class ReviewDeskService:
         return views
 
 
-class ReviewHTTPServer(ThreadingHTTPServer):
+class ReviewHTTPServer(LoopbackHTTPServer):
     """Threaded loopback HTTP server; domain mutations still serialize on project.lock."""
 
-    daemon_threads = True
-    allow_reuse_address = False
-
     def __init__(self, service: ReviewDeskService, *, port: int) -> None:
-        if port < 0 or port > 65535:
-            raise ReviewServerError("port must be between 0 and 65535")
-        self.service = service
-        self.bootstrap_token = secrets.token_urlsafe(32)
-        self.session_token = secrets.token_urlsafe(32)
-        self.csrf_token = secrets.token_urlsafe(32)
-        self.csp_nonce = secrets.token_urlsafe(24)
-        self.bootstrap_used = False
-        super().__init__(("127.0.0.1", port), ReviewRequestHandler)
-
-    @property
-    def port(self) -> int:
-        return int(self.server_address[1])
-
-    @property
-    def bootstrap_url(self) -> str:
-        return f"http://127.0.0.1:{self.port}/?{urlencode({'token': self.bootstrap_token})}"
+        super().__init__(
+            service=service,
+            port=port,
+            handler=ReviewRequestHandler,
+            session_cookie="review_session",
+            csrf_header="X-Review-CSRF",
+            app_label="local review desk",
+        )
 
 
-class ReviewRequestHandler(BaseHTTPRequestHandler):
+class ReviewRequestHandler(LoopbackRequestHandler):
     """Exact-route HTTP adapter with Host, Origin, cookie, CSRF, and size checks."""
 
     server: ReviewHTTPServer
@@ -769,7 +754,7 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, self.server.service.state())
             else:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "route_not_found"})
-        except ReviewServerError as exc:
+        except (ReviewServerError, LocalWebError) as exc:
             self._send_json(HTTPStatus.FORBIDDEN, {"error": str(exc)})
         except ValueError as exc:
             self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
@@ -849,130 +834,10 @@ class ReviewRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "route_not_found"})
                 return
             self._send_json(HTTPStatus.OK, {"ok": True, "result": action()})
-        except ReviewServerError as exc:
+        except (ReviewServerError, LocalWebError) as exc:
             self._send_json(HTTPStatus.FORBIDDEN, {"error": str(exc)})
         except (KeyError, TypeError, ValueError) as exc:
             self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
-
-    def log_message(self, _format: str, *_args: object) -> None:
-        return
-
-    def _bootstrap(self, query: str) -> None:
-        values = parse_qs(query, keep_blank_values=True)
-        token = values.get("token") if set(values) == {"token"} else None
-        supplied = token[0] if isinstance(token, list) and len(token) == 1 else ""
-        if self.server.bootstrap_used or not hmac.compare_digest(
-            supplied, self.server.bootstrap_token
-        ):
-            raise ReviewServerError("bootstrap token is invalid or already used")
-        self.server.bootstrap_used = True
-        headers = {
-            "Location": "/",
-            "Set-Cookie": (
-                f"review_session={self.server.session_token}; Path=/; HttpOnly; "
-                "SameSite=Strict; Max-Age=43200"
-            ),
-        }
-        self._send_bytes(HTTPStatus.SEE_OTHER, b"", "text/plain; charset=utf-8", headers)
-
-    def _safe_url(self) -> Any:
-        parsed = urlsplit(self.path)
-        decoded = unquote(parsed.path)
-        if (
-            decoded != parsed.path
-            or ".." in decoded
-            or "\\" in decoded
-            or not decoded.startswith("/")
-        ):
-            raise ReviewServerError("unsafe request path")
-        return parsed
-
-    def _require_host(self) -> None:
-        allowed = {f"127.0.0.1:{self.server.port}", f"localhost:{self.server.port}"}
-        if self.headers.get("Host", "") not in allowed:
-            raise ReviewServerError("Host is not the local review desk")
-
-    def _require_origin(self) -> None:
-        allowed = {
-            f"http://127.0.0.1:{self.server.port}",
-            f"http://localhost:{self.server.port}",
-        }
-        if self.headers.get("Origin", "") not in allowed:
-            raise ReviewServerError("Origin is not the local review desk")
-
-    def _require_session(self) -> None:
-        cookie = SimpleCookie()
-        try:
-            cookie.load(self.headers.get("Cookie", ""))
-        except Exception as exc:  # pragma: no cover - stdlib parser defensive boundary
-            raise ReviewServerError("invalid session cookie") from exc
-        morsel = cookie.get("review_session")
-        supplied = morsel.value if morsel is not None else ""
-        if not hmac.compare_digest(supplied, self.server.session_token):
-            raise ReviewServerError("review session is missing or invalid")
-
-    def _require_csrf(self) -> None:
-        if not hmac.compare_digest(
-            self.headers.get("X-Review-CSRF", ""), self.server.csrf_token
-        ):
-            raise ReviewServerError("CSRF token is missing or invalid")
-
-    def _read_json(self) -> dict[str, Any]:
-        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-        if content_type != "application/json":
-            raise ReviewServerError("POST bodies must use application/json")
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError as exc:
-            raise ReviewServerError("Content-Length is invalid") from exc
-        if length <= 0 or length > MAX_JSON_BYTES:
-            raise ReviewServerError("JSON request size is outside the allowed range")
-        try:
-            payload = json.loads(self.rfile.read(length).decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError) as exc:
-            raise ReviewServerError("request body is not valid UTF-8 JSON") from exc
-        if not isinstance(payload, dict):
-            raise ReviewServerError("request body must be a JSON object")
-        return payload
-
-    def _send_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
-        rendered = json.dumps(payload, ensure_ascii=False)
-        rendered = rendered.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
-        body = rendered.encode("utf-8")
-        self._send_bytes(status, body, "application/json; charset=utf-8")
-
-    def _send_html(self, body: str) -> None:
-        self._send_bytes(
-            HTTPStatus.OK, body.encode("utf-8"), "text/html; charset=utf-8"
-        )
-
-    def _send_bytes(
-        self,
-        status: HTTPStatus,
-        body: bytes,
-        content_type: str,
-        extra_headers: dict[str, str] | None = None,
-    ) -> None:
-        self.send_response(int(status))
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Cross-Origin-Opener-Policy", "same-origin")
-        self.send_header(
-            "Content-Security-Policy",
-            f"default-src 'self'; script-src 'nonce-{self.server.csp_nonce}'; "
-            f"style-src 'nonce-{self.server.csp_nonce}'; "
-            "connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; "
-            "frame-ancestors 'none'; form-action 'none'",
-        )
-        for key, value in (extra_headers or {}).items():
-            self.send_header(key, value)
-        self.end_headers()
-        if body:
-            self.wfile.write(body)
-
 
 def review_page_html(csrf_token: str, *, csp_nonce: str = "reviewdesk") -> str:
     """Render a static shell; all project text enters the DOM through textContent/value only."""

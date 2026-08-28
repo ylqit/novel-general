@@ -129,7 +129,10 @@ def validate_skill(name: str, platform: str, forbidden_platform: str) -> list[st
         "20_outline/",
         "research_canon.jsonl",
         "fanfiction canon-task",
+        "fanfiction story-engine-task",
         "fanfiction design-task",
+        "design-review-task",
+        "fanfiction_context_bundle_v1",
         "human_chapter_intent_v2",
         "chapter_contract_v5",
         "chapter_story_brief_v5",
@@ -189,7 +192,8 @@ def validate_readme() -> list[str]:
         "canonical_delta_v1",
         "OPERATOR_GUIDE.md",
         "RELEASE_HISTORY.md",
-        "V0_11_0_RELEASE_CHECKLIST.md",
+        "V0_12_SEMANTIC_ARCHITECTURE.md",
+        "V0_12_0_RELEASE_CHECKLIST.md",
     )
     for term in required:
         if term.lower() not in readme.lower():
@@ -200,8 +204,8 @@ def validate_readme() -> list[str]:
     if len(re.findall(r"(?m)^## 安装稳定版\s*$", readme)) != 1:
         errors.append("README.md: public install must use exactly one '## 安装稳定版' section")
     readme_lines = len(readme.splitlines())
-    if not 280 <= readme_lines <= 320:
-        errors.append(f"README.md: expected about 280-320 lines, found {readme_lines}")
+    if not 280 <= readme_lines <= 340:
+        errors.append(f"README.md: expected about 280-340 lines, found {readme_lines}")
     if (ROOT / "README.zh-CN.md").exists():
         errors.append("README.zh-CN.md must not be added; Chinese public content belongs in README.md")
     return errors

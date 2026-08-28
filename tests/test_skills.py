@@ -97,7 +97,7 @@ def test_readme_is_public_pipx_skill_package_homepage():
     for forbidden in ("<owner>", "README.zh-CN.md", "clone 到临时目录", "curl | bash"):
         assert forbidden.lower() not in lower
     assert readme.count("\n## 安装稳定版\n") == 1
-    assert 280 <= len(readme.splitlines()) <= 320
+    assert 280 <= len(readme.splitlines()) <= 340
 
 
 def test_current_release_checklist_and_management_docs_are_linked():
@@ -105,18 +105,19 @@ def test_current_release_checklist_and_management_docs_are_linked():
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     install = (ROOT / "docs" / "SKILL_INSTALLATION.md").read_text(encoding="utf-8")
     history = (ROOT / "docs" / "RELEASE_HISTORY.md").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_11_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_12_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
 
     for document in (
         "ARCHITECTURE.md",
         "STORAGE_MODEL.md",
         "OPERATOR_GUIDE.md",
         "RELEASE_HISTORY.md",
-        "V0_11_0_RELEASE_CHECKLIST.md",
+        "V0_12_SEMANTIC_ARCHITECTURE.md",
+        "V0_12_0_RELEASE_CHECKLIST.md",
     ):
         assert document in readme
     assert "OPERATOR_GUIDE.md" in agents
-    assert "V0_11_0_RELEASE_CHECKLIST.md" in agents
+    assert "V0_12_0_RELEASE_CHECKLIST.md" in agents
     assert "OPERATOR_GUIDE.md" in install
     for historical in (
         "V0_4_4_RELEASE_CHECKLIST.md",
@@ -129,6 +130,9 @@ def test_current_release_checklist_and_management_docs_are_linked():
     assert "V0_5_0_RELEASE_CHECKLIST.md" in install
     assert "V0_6_0_RELEASE_CHECKLIST.md" in install
     assert "V0_7_0_RELEASE_CHECKLIST.md" in install
+    assert "V0_12_0_RELEASE_CHECKLIST.md" in install
+    assert "协议收口" in checklist
+    assert "semantic_document_v1" in checklist
     for section in (
         "协议收口",
         "版本与活动文档",

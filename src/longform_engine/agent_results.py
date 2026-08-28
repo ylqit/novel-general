@@ -21,6 +21,11 @@ from longform_engine.agent_protocols import (
     validate_canonical_delta,
     validate_evidence_review,
 )
+from longform_engine.semantic_protocols import (
+    SEMANTIC_DOCUMENT_SCHEMA,
+    build_semantic_document,
+    validate_semantic_document,
+)
 from longform_engine.agent_tasks import (
     is_canonical_output,
     manifest_commands,
@@ -115,7 +120,11 @@ def parse_agent_output_files(
             parse_design_document(text, expected_type=contract.task_type)
         except AgentProtocolError as exc:
             raise AgentResultProtocolError(str(exc)) from exc
-    elif contract.protocol in {EVIDENCE_REVIEW_SCHEMA, CANONICAL_DELTA_SCHEMA}:
+    elif contract.protocol in {
+        EVIDENCE_REVIEW_SCHEMA,
+        CANONICAL_DELTA_SCHEMA,
+        SEMANTIC_DOCUMENT_SCHEMA,
+    }:
         try:
             loaded = json.loads(text, object_pairs_hook=reject_duplicate_json_keys)
         except (json.JSONDecodeError, ValueError) as exc:
@@ -204,6 +213,54 @@ def build_agent_result_template(
             "evidence": {},
             "uncertainties": [],
         }
+    if contract.protocol == SEMANTIC_DOCUMENT_SCHEMA:
+        scope = manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {}
+        document_types = {
+            "fanfiction_canon": "项目原著基线Canon候选",
+            "fanfiction_design": "同人路线设计候选",
+            "source_discovery_planning": "原著资料搜索规划",
+            "source_candidate_triage": "原著来源候选筛选",
+            "source_timeline_alignment": "原著媒体时间线对齐",
+            "source_conflict_analysis": "原著版本冲突分析",
+            "character_interpretation": "人物理解候选",
+            "fanfiction_route_design": "同人路线设计候选",
+            "story_architecture_design": "故事架构设计候选",
+            "chapter_semantic_planning": "章节语义规划候选",
+            "draft_semantic_review": "章节因果与人物选择审查",
+            "prose_revision_review": "文风与表达修订审查",
+            "reader_feedback_analysis": "读者反馈分析",
+            "source_fact_extraction": "原著事实候选",
+            "source_visual_observation": "视觉直接观察候选",
+            "source_evidence_review": "原著证据复核",
+            "source_version_conflict_review": "原著版本冲突分析",
+            "source_coverage_gap_analysis": "原著资料覆盖分析",
+        }
+        extensions = {
+            "task_type": contract.task_type,
+            "item_id": str(scope.get("item_id") or ""),
+            "normalization_sha256": str(scope.get("normalization_sha256") or ""),
+            "review_type": {
+                "source_evidence_review": "segment_evidence",
+                "source_version_conflict_review": "version_conflict",
+                "source_coverage_gap_analysis": "coverage_gap",
+            }.get(contract.task_type, ""),
+        }
+        if scope.get("bundle_sha256"):
+            extensions["bundle_sha256"] = str(scope["bundle_sha256"])
+        return build_semantic_document(
+            document_id="sem_" + sha256(contract.task_id.encode("utf-8")).hexdigest()[:24],
+            document_type=document_types[contract.task_type],
+            title=document_types[contract.task_type],
+            scope=dict(scope),
+            continuity="原著基线",
+            body="",
+            extensions=extensions,
+            input_hashes=[
+                str(item.get("sha256") or "")
+                for item in ((manifest.get("io") or {}).get("inputs") or [])
+                if isinstance(item, dict) and str(item.get("sha256") or "")
+            ],
+        )
     raise AgentResultProtocolError(
         f"{contract.protocol} is a document protocol; follow the rendered work order"
     )
@@ -222,6 +279,12 @@ def render_agent_output_instructions(contract: AgentOutputContract) -> str:
             "只写 evidence_review_v2 JSON；coverage 每个维度都写 status、1-2 个正文 evidence_ids "
             "和角色要求的 canonical_refs；finding 不写 dimension 或 notes；"
             "不要回填任务、章节、路径、hash、角色、命令或时间。"
+        )
+    elif contract.protocol == SEMANTIC_DOCUMENT_SCHEMA:
+        shape = (
+            "只写 semantic_document_v1 JSON；正文使用自然中文，只有可断言内容写入 claims，"
+            "每条主张只引用本工单声明的 evidence_reference_v1。直接观察与解释必须分开，"
+            "结论保持候选状态、不得复制连续原文或使用模型记忆补全。"
         )
     else:
         shape = (
@@ -255,6 +318,8 @@ def validate_agent_result_envelope(
         )
     elif contract.protocol == CANONICAL_DELTA_SCHEMA:
         errors = validate_canonical_delta(payload, task_type=contract.task_type)
+    elif contract.protocol == SEMANTIC_DOCUMENT_SCHEMA:
+        errors = validate_semantic_document(payload)
     else:
         errors = [f"{contract.protocol} is not a JSON result protocol"]
     return AgentResultValidation(not errors, contract.protocol, tuple(errors))

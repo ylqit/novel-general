@@ -21,7 +21,7 @@ jobs:
       - run: python -m pip install --upgrade pip hnswlib numpy
       - run: python -m pip install -e ".[dev]"
       - run: python -m ruff check src tests
-      - run: python -m mypy --follow-imports=skip src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/story_brief.py src/longform_engine/storage/recovery.py src/longform_engine/human_author_revision.py src/longform_engine/human_story_review.py src/longform_engine/human_review_consultation.py src/longform_engine/author_voice.py src/longform_engine/publication.py
+      - run: python -m mypy --follow-imports=skip src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/story_brief.py src/longform_engine/storage/recovery.py src/longform_engine/human_author_revision.py src/longform_engine/human_story_review.py src/longform_engine/human_review_consultation.py src/longform_engine/author_voice.py src/longform_engine/publication.py src/longform_engine/semantic_protocols.py src/longform_engine/source_protocols.py src/longform_engine/source_processing.py src/longform_engine/fanfiction_sources.py src/longform_engine/source_materialization.py src/longform_engine/fanfiction_context.py src/longform_engine/local_web.py src/longform_engine/studio_server.py
       - run: python scripts/sync_skill_references.py --check
       - run: python scripts/build_resource_manifest.py --check
       - run: python scripts/validate_skills.py

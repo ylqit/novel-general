@@ -9,7 +9,7 @@
 ```powershell
 git status --short
 git log -1 --oneline
-git tag --list "v0.11.*"
+git tag --list "v0.1[1-2].*"
 longform-engine --version
 longform-engine skills status --tool codex --json
 python scripts/check_agent_data_pipeline_readiness.py
@@ -25,7 +25,7 @@ python scripts/check_agent_data_pipeline_readiness.py
 
 ## 2. 当前发布状态
 
-- 当前公开稳定版为 `v0.11.0`。它延续 v0.10 的语义规划、活动分卷、三章 firm 滚动窗口、逐节点人工审批、事件/承诺关闭证据和版本化设定回溯，并正式加入动态同人原著资料库。
+- 当前公开稳定版为破坏性的 `v0.12.0` 语义优先版本。原 v0.12–v0.14 多媒体实验已收口到单一 v0.12 发布；发布事实以当前 checklist、远程 CI、不可变 tag 和 GitHub Release 制品为准。
 - 协议与生产合同 readiness 以 `scripts/check_agent_data_pipeline_readiness.py` 的输出为准。
 - `literary_evidence_ready` 保持 `false`，直到真实章节与独立盲评证据完整。
 - 不要把任一本地小说运行、全局 Skill 状态或历史阶段文档当作源码事实源。
@@ -94,9 +94,9 @@ Agent 禁止直接修改：
 
 这些目录只能由 CLI 在 validate 通过后通过事务化 apply/finalize 更新。
 
-## 5. AgentTaskManifest v4
+## 5. AgentTaskManifest v5
 
-当前磁盘协议只接受 Manifest v4。顶层字段固定为：
+当前磁盘协议只接受 Manifest v5。顶层字段固定为：
 
 ```text
 schema_version
@@ -119,14 +119,15 @@ created_at
 - manifest 必须在注册 index/event 前严格校验。无效任务不得成为活动任务。
 - `production next` 只读；发现可确定修复的状态分裂时只返回 `agent-task reconcile` 命令。
 
-四类 Agent 输出协议：
+五类 Agent 输出协议：
 
 | 协议 | 用途 |
 | --- | --- |
 | `prose_markdown_v1` | 章节正文、共编完整候选、修章和自然度修订 |
-| `design_document_v1` | 开书、人物、纲要、章节方向、同人和风格设计 Markdown |
+| `design_document_v1` | 开书、传统人物表达、纲要、章节方向和风格设计 Markdown |
 | `evidence_review_v2` | 连贯性、收益、节奏、人物、场景、反模板和同人审稿 |
-| `canonical_delta_v1` | 设计语义编译、章节事实、研究事实和同人 canon 增量 |
+| `canonical_delta_v1` | 设计语义编译、章节事实和研究事实增量 |
+| `semantic_document_v1` | 原著资料、人物理解、同人路线、故事/章节语义规划及开放语义审查 |
 
 CLI 已知的章节号、路径、hash、角色和时间不得要求 Agent 机械回填。磁盘校验报告统一使用 `validation_report_v1`。
 
@@ -325,17 +326,18 @@ task event/index 记录：
 2. `docs/OPERATOR_GUIDE.md`
 3. `docs/ARCHITECTURE.md`
 4. `docs/STORAGE_MODEL.md`
-5. `docs/V0_11_0_RELEASE_CHECKLIST.md`
-6. `docs/RELEASE_HISTORY.md`
-7. `docs/GATE_MODEL.md`
-8. `docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`
-9. `docs/CONFIGURATION.md`
-10. `docs/RAG_MODEL.md`
-11. `docs/QUALITY_BENCHMARK_RUNBOOK.md`
-12. `docs/SKILL_INSTALLATION.md`
-13. `docs/RELEASE_RUNBOOK.md`
+5. `docs/V0_12_SEMANTIC_ARCHITECTURE.md`
+6. 当前目标版本 checklist：`docs/V0_12_0_RELEASE_CHECKLIST.md`
+7. `docs/RELEASE_HISTORY.md`
+8. `docs/GATE_MODEL.md`
+9. `docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`
+10. `docs/CONFIGURATION.md`
+11. `docs/RAG_MODEL.md`
+12. `docs/QUALITY_BENCHMARK_RUNBOOK.md`
+13. `docs/SKILL_INSTALLATION.md`
+14. `docs/RELEASE_RUNBOOK.md`
 
-历史发布说明只记录版本变化，不得覆盖当前 Manifest v4、`evidence_review_v2`、29 角色、配置注册表或 `chNNN.md` 存储契约。
+历史发布说明只记录版本变化，不得覆盖当前 Manifest v5、开放语义文档、角色注册表或 `chNNN.md` 存储契约。
 
 ## 15. 验证与发布纪律
 
@@ -343,7 +345,7 @@ task event/index 记录：
 
 ```powershell
 python -m ruff check src tests
-python -m mypy --follow-imports=skip src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/storage/recovery.py src/longform_engine/human_author_revision.py src/longform_engine/human_story_review.py src/longform_engine/author_voice.py src/longform_engine/publication.py
+python -m mypy --follow-imports=skip src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/story_brief.py src/longform_engine/storage/recovery.py src/longform_engine/human_author_revision.py src/longform_engine/human_story_review.py src/longform_engine/human_review_consultation.py src/longform_engine/author_voice.py src/longform_engine/publication.py src/longform_engine/semantic_protocols.py src/longform_engine/source_protocols.py src/longform_engine/source_processing.py src/longform_engine/fanfiction_sources.py src/longform_engine/source_materialization.py src/longform_engine/fanfiction_context.py src/longform_engine/local_web.py src/longform_engine/studio_server.py
 python -m pytest --cov=longform_engine --cov-report=term-missing
 python scripts/validate_skills.py
 python scripts/sync_skill_references.py --check

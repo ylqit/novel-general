@@ -156,7 +156,7 @@ def test_prose_naturalness_task_and_check_stay_in_workbench(tmp_path):
     assert "50_workbench" in task.task_file
     assert Path(task.candidate_file).name == "ch001.prose_naturalness_candidate.md"
     assert Path(task.candidate_file).parent.name == "repair_candidates"
-    manifest = load_manifest(root, "prose_naturalness:ch001:v4")
+    manifest = load_manifest(root, "prose_naturalness:ch001:v5")
     strict = validate_manifest_strict(root, manifest)
     assert strict.ok, strict.errors
     assert check.passed is True

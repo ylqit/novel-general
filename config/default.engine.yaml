@@ -91,8 +91,10 @@ editorial:
   conditional_pass_limit: 3
 
 rag:
-  candidate_pool_size: 40
+  candidate_pool_size: 96
   top_k: 12
+  max_hits: 64
+  context_token_budget: 6000
   chunk_max_chars: 900
   chunk_overlap_chars: 120
   semantic_weight: 0.55
@@ -157,3 +159,14 @@ research:
   search_provider: "zh.wikipedia"
   search_limit: 5
   network_timeout_seconds: 8
+
+source_processing:
+  default_execution: "local"
+  cloud:
+    enabled: false
+    provider: "openai"
+    vision_model: ""
+    transcription_model: ""
+    require_per_job_human_approval: true
+    allow_automatic_fallback: false
+    retain_remote_files: false

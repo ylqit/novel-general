@@ -42,6 +42,10 @@ from longform_engine.agent_tasks import (
 )
 from longform_engine.roles import load_role_registry, reject_duplicate_json_keys
 from longform_engine.resources import resource_path, resource_root
+from longform_engine.semantic_protocols import (
+    SEMANTIC_DOCUMENT_SCHEMA,
+    validate_semantic_document,
+)
 from longform_engine.storage import atomic_write_text
 from longform_engine.storage.layout import manuscript_chapter_path
 
@@ -301,6 +305,7 @@ def normalize_and_validate_agent_result(
     notes: list[str] = []
     raw_payload: dict[str, Any] = {}
     design_payload: dict[str, Any] = {}
+    semantic_payload: dict[str, Any] = {}
 
     if role.output_mode == PROSE_MARKDOWN_SCHEMA:
         structural = validate_markdown_prose_output(
@@ -408,6 +413,14 @@ def normalize_and_validate_agent_result(
             notes = [str(item) for item in loaded.get("uncertainties") or [] if isinstance(item, str)]
             if notes:
                 need_human.append("canonical_delta_contains_uncertainties")
+        elif role.output_mode == SEMANTIC_DOCUMENT_SCHEMA:
+            errors.extend(validate_semantic_document(loaded))
+            semantic_payload = loaded
+            notes = [
+                str(item)
+                for item in loaded.get("uncertainties") or []
+                if isinstance(item, str)
+            ]
         else:
             errors.append(f"Unsupported Agent output protocol `{role.output_mode}`.")
         errors.extend(agent_control_plane_errors(loaded))
@@ -460,6 +473,7 @@ def normalize_and_validate_agent_result(
         "findings": findings,
         "deltas": deltas,
         "design_document": design_payload,
+        "semantic_document": semantic_payload,
         "notes": notes,
         "cli_context": {
             "manifest_schema_version": int(normalized_manifest["schema_version"]),

@@ -123,9 +123,11 @@ TASK_WAITING_FOR = {
 TASK_PRIORITY = {
     "book_ideation": 0,
     "fanfiction_canon": 1,
-    "fanfiction_design": 2,
-    "book_design": 3,
-    "outline_design": 4,
+    "fanfiction_story_engine": 2,
+    "fanfiction_design": 3,
+    "fanfiction_design_review": 4,
+    "book_design": 5,
+    "outline_design": 6,
     "outline_extension": 8,
     "chapter_direction": 9,
     "outline_revision": 5,
@@ -242,6 +244,8 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
         or task_lifecycle_reconciliation_action(root)
         or chapter_semantic_lifecycle_action(root)
         or chapter_workflow_action(config, root)
+        or project_readiness_action(config, root)
+        or fanfiction_chapter_source_action(config, root)
         or v010_planning_action(config, root)
         or human_chapter_intent_action(root)
         or first_active_agent_task(root)
@@ -258,6 +262,35 @@ def production_next(config: ConfigDocument) -> dict[str, Any]:
         waiting_for="cli",
         next_command=f"longform-engine continue-write project.yaml --chapter {chapter_number}",
         human_summary=f"No blocker found. Generate the ch{chapter_number:03d} writing task.",
+    )
+
+
+def fanfiction_chapter_source_action(
+    config: ConfigDocument, root: Path
+) -> dict[str, Any] | None:
+    """Block only the next chapter when one of its declared source needs is unresolved."""
+
+    if str(config.data.get("creation", {}).get("mode") or "") != "fanfiction":
+        return None
+    chapter_number = highest_finalized_chapter(root) + 1
+    readiness = fanfiction_source_readiness(
+        config,
+        gate="chapter_dependency",
+        chapter_number=chapter_number,
+    )
+    if readiness["ready"]:
+        return None
+    return base_action(
+        status="need_human",
+        chapter_number=chapter_number,
+        blocked_by="fanfiction_chapter_dependency",
+        waiting_for="human_source_review",
+        next_command=str(readiness["next_command"]),
+        human_summary=(
+            f"ch{chapter_number:03d} depends on unresolved source evidence; unrelated future "
+            "coverage does not block this chapter: "
+            + "; ".join(str(item) for item in readiness["errors"][:3])
+        ),
     )
 
 
@@ -340,7 +373,8 @@ def v010_planning_action(config: ConfigDocument, root: Path) -> dict[str, Any] |
         ),
         human_summary=(
             "Prepare or refresh the active-volume rolling plan, validate the exact bundle, run an "
-            "independent semantic review, and record an explicit human decision for every firm plot node."
+            "independent semantic review, and record an explicit human decision for every firm major state-change node; "
+            "micro beats do not require individual approval."
         ),
         sources=[
             window_path.relative_to(root).as_posix(),
@@ -483,7 +517,7 @@ def agent_task_brief(
     output = manifest_output(manifest)
     payload = {
         "schema_version": 1,
-        "renderer": "agent_task_brief_v4",
+        "renderer": "agent_task_brief_v5",
         "read_only": True,
         "manifest_file": str(entry.get("manifest_file") or manifest_file_from_task(root, task)),
         "task_id": package.task_id,
@@ -1496,8 +1530,8 @@ def project_readiness_action(config: ConfigDocument, root: Path) -> dict[str, An
             waiting_for="human",
             next_command=str(source_readiness["next_command"]),
             human_summary=(
-                "Complete the user-level source binding and the human-approved whole-work coverage plan "
-                "for every configured source before canon extraction or fanfiction design: "
+                "Complete each configured work's identity and design-core evidence needs before "
+                "Canon extraction or formal fanfiction route approval: "
                 + "; ".join(readiness.errors[:3])
             ),
         )
@@ -1517,6 +1551,53 @@ def project_readiness_action(config: ConfigDocument, root: Path) -> dict[str, An
         for task in list_manifests(root, chapter_number=0)
         if task.get("task_type") == task_type and task.get("status") in active_statuses
     ]
+    if task_type == "fanfiction_design":
+        validated_routes = [
+            task for task in active_tasks if str(task.get("status") or "") == "validated"
+        ]
+        if validated_routes:
+            route_task = sorted(validated_routes, key=task_sort_key)[0]
+            route_manifest = load_manifest(
+                root,
+                str(route_task.get("task_id") or route_task.get("manifest_file") or ""),
+            )
+            route_file = str(manifest_output(route_manifest).get("path") or "")
+            review_tasks = [
+                task
+                for task in list_manifests(root, chapter_number=0)
+                if task.get("task_type") == "fanfiction_design_review"
+                and task.get("status") in active_statuses
+            ]
+            matching_reviews = []
+            for review_task in review_tasks:
+                review_manifest = load_manifest(
+                    root,
+                    str(
+                        review_task.get("task_id")
+                        or review_task.get("manifest_file")
+                        or ""
+                    ),
+                )
+                if route_file in manifest_input_paths(review_manifest):
+                    matching_reviews.append(review_task)
+            if matching_reviews:
+                return agent_task_action(root, sorted(matching_reviews, key=task_sort_key)[0])
+            return base_action(
+                status="ready_for_fanfiction_design_review",
+                chapter_number=0,
+                task_type="fanfiction_design_review",
+                blocked_by="fanfiction_design_independent_review",
+                waiting_for="cli",
+                next_command=(
+                    "longform-engine fanfiction design-review-task project.yaml "
+                    f"--file {route_file}"
+                ),
+                human_summary=(
+                    "The validated fanfiction route requires an isolated independent review "
+                    "before human apply."
+                ),
+                sources=[route_file],
+            )
     if active_tasks:
         return agent_task_action(root, sorted(active_tasks, key=task_sort_key)[0])
     return base_action(
@@ -1536,6 +1617,8 @@ def project_readiness_action(config: ConfigDocument, root: Path) -> dict[str, An
 def project_intelligence_task_command(task_type: str) -> str:
     if task_type == "fanfiction_canon":
         return "longform-engine fanfiction canon-task project.yaml"
+    if task_type == "fanfiction_story_engine":
+        return "longform-engine fanfiction story-engine-task project.yaml"
     if task_type == "fanfiction_design":
         return "longform-engine fanfiction design-task project.yaml"
     if task_type == "character_expression_design":
@@ -2248,7 +2331,7 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
                 }
             round_number = next_repair_round(config, chapter_number=chapter_number)
             round_token = f"r{int(round_number or 0):02d}"
-            synthesis_id = f"repair_plan_synthesis:ch{chapter_number:03d}:{round_token}:v4"
+            synthesis_id = f"repair_plan_synthesis:ch{chapter_number:03d}:{round_token}:v5"
             synthesis = next(
                 (
                     task
@@ -2264,7 +2347,7 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
                     "sources": [str(plan_status.get("report_file") or relative_path(root, gate_path))],
                     "reason": "repair target conflicts with the preservation ledger",
                 }
-            repair_id = f"repair:ch{chapter_number:03d}:{round_token}:v4"
+            repair_id = f"repair:ch{chapter_number:03d}:{round_token}:v5"
             repair_task = next(
                 (
                     task

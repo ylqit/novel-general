@@ -129,6 +129,7 @@ CONFIG_OWNER_PREFIXES = {
     "gates": "gates.pipeline",
     "pacing": "planning.pipeline/gates.pipeline",
     "research": "research.pipeline",
+    "source_processing": "source_processing",
     "quality.semantic_pacing": "gates.pipeline",
     "quality.prose_naturalness": "creative.pipeline",
     "quality.reader_payoff": "quality.review",
@@ -470,8 +471,12 @@ def validate_config(data: dict[str, Any]) -> None:
     rag = _require_mapping(data, "rag")
     candidate_pool_size = _require_positive_int(rag, "candidate_pool_size", "rag")
     top_k = _require_positive_int(rag, "top_k", "rag")
+    max_hits = _require_positive_int(rag, "max_hits", "rag")
+    _require_positive_int(rag, "context_token_budget", "rag")
     if candidate_pool_size < top_k:
         raise ConfigError("rag.candidate_pool_size must be greater than or equal to rag.top_k")
+    if candidate_pool_size < max_hits:
+        raise ConfigError("rag.candidate_pool_size must be greater than or equal to rag.max_hits")
     chunk_max = _require_positive_int(rag, "chunk_max_chars", "rag")
     chunk_overlap = rag.get("chunk_overlap_chars")
     if not isinstance(chunk_overlap, int) or isinstance(chunk_overlap, bool) or chunk_overlap < 0:
@@ -548,6 +553,38 @@ def validate_config(data: dict[str, Any]) -> None:
     for field in ("inbox_dir", "impact_report_dir", "canon_file", "impact_ledger"):
         if not isinstance(research.get(field), str) or not str(research[field]).strip():
             raise ConfigError(f"research.{field} must be a non-empty path string")
+
+    source_processing = _require_mapping(data, "source_processing")
+    if source_processing.get("default_execution") != "local":
+        raise ConfigError("source_processing.default_execution must be local")
+    cloud = _require_mapping(source_processing, "cloud", "source_processing")
+    if cloud.get("provider") != "openai":
+        raise ConfigError("source_processing.cloud.provider must be openai")
+    for field in (
+        "enabled",
+        "require_per_job_human_approval",
+        "allow_automatic_fallback",
+        "retain_remote_files",
+    ):
+        if not isinstance(cloud.get(field), bool):
+            raise ConfigError(f"source_processing.cloud.{field} must be boolean")
+    if cloud.get("require_per_job_human_approval") is not True:
+        raise ConfigError("source_processing.cloud.require_per_job_human_approval must remain true")
+    if cloud.get("allow_automatic_fallback") is not False:
+        raise ConfigError("source_processing.cloud.allow_automatic_fallback must remain false")
+    if cloud.get("retain_remote_files") is not False:
+        raise ConfigError("source_processing.cloud.retain_remote_files must remain false")
+    for field in ("vision_model", "transcription_model"):
+        model = cloud.get(field)
+        if not isinstance(model, str):
+            raise ConfigError(f"source_processing.cloud.{field} must be a string")
+        if model.casefold() == "latest" or model.casefold().endswith("-latest"):
+            raise ConfigError(f"source_processing.cloud.{field} must not use a latest alias")
+    if cloud.get("enabled") and not any(
+        str(cloud.get(field) or "").strip()
+        for field in ("vision_model", "transcription_model")
+    ):
+        raise ConfigError("enabled source-processing cloud requires at least one explicit model id")
 
 
 def _validate_fanfiction_source(source: Any, *, index: int, source_ids: set[str]) -> None:

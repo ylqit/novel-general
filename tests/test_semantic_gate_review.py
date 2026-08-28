@@ -41,7 +41,7 @@ def test_high_risk_gate_creates_strict_semantic_review_task(tmp_path):
     config, root, _ = seed_high_risk_chapter(tmp_path)
 
     result = gate_check(config, chapter_number=1, semantic=True)
-    manifest = load_manifest(root, "semantic_review:ch001:v4")
+    manifest = load_manifest(root, "semantic_review:ch001:v5")
     strict = validate_manifest_strict(root, manifest)
 
     assert result.passed
@@ -78,7 +78,7 @@ def test_semantic_review_validates_spans_and_applies_only_gate_artifacts(tmp_pat
     )
     protected = snapshot_protected(root)
 
-    manifest = load_manifest(root, "semantic_review:ch001:v4")
+    manifest = load_manifest(root, "semantic_review:ch001:v5")
     control = validate_production_agent_result(root, manifest, result_file=output)
     validation = semantic_review_validate(config, chapter_number=1, file_path=output)
     next_action = production_next(config)
@@ -130,7 +130,7 @@ def test_semantic_review_rejects_fabricated_span_without_pollution(tmp_path):
     )
     protected = snapshot_protected(root, include_db=True)
 
-    manifest = load_manifest(root, "semantic_review:ch001:v4")
+    manifest = load_manifest(root, "semantic_review:ch001:v5")
     control = validate_production_agent_result(root, manifest, result_file=output)
     validation = semantic_review_validate(config, chapter_number=1, file_path=output)
 

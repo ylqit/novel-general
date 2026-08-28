@@ -98,7 +98,7 @@ def test_chapter_work_order_compiles_character_packet_inside_existing_budget(tmp
     continue_write(config, chapter_number=1)
 
     task = json.loads((root / "50_workbench" / "writing_tasks" / "ch001.json").read_text(encoding="utf-8"))
-    manifest = load_manifest(root, "chapter_write:ch001:v4")
+    manifest = load_manifest(root, "chapter_write:ch001:v5")
     markdown = (root / "50_workbench" / "writing_tasks" / "ch001.md").read_text(encoding="utf-8")
     fact_inventory = json.loads(
         (root / task["internal_fact_inventory"]["path"]).read_text(encoding="utf-8")

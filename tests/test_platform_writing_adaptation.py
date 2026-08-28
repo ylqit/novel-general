@@ -160,7 +160,7 @@ def test_chapter_card_writer_brief_and_prose_naturalness_share_one_bounded_contr
     )
     task = json.loads((root / "50_workbench" / "writing_tasks" / "ch001.json").read_text(encoding="utf-8"))
     task_markdown = (root / "50_workbench" / "writing_tasks" / "ch001.md").read_text(encoding="utf-8")
-    manifest = load_manifest(root, "chapter_write:ch001:v4")
+    manifest = load_manifest(root, "chapter_write:ch001:v5")
 
     assert card["platform_promise"] == card["effective_quality_contract"]["contract"]["platform_promise"]
     assert card["chapter_duty"]

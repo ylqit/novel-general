@@ -10,6 +10,7 @@ from .sqlite_index import (
     rebuild_database,
     status,
     sync_database,
+    sync_fanfiction_source_canon,
     sync_semantic_delta,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "rebuild_database",
     "status",
     "sync_database",
+    "sync_fanfiction_source_canon",
     "sync_semantic_delta",
 ]

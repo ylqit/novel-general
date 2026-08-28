@@ -86,7 +86,7 @@ def test_repair_parent_child_commit_is_idempotent(tmp_path):
         task_id=candidate["task_id"],
         source_path=candidate_path,
     )
-    assert not any(item["task_id"].endswith(":r02:v4") for item in list_manifests(root, chapter_number=1))
+    assert not any(item["task_id"].endswith(":r02:v5") for item in list_manifests(root, chapter_number=1))
 
 
 def test_v042_dangling_parent_reconciles_then_chapter_closes(tmp_path):

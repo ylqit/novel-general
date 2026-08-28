@@ -63,9 +63,17 @@
     "chapter_coedit_rewrite": "chapter_author",
     "character_expression_design": "character_performance_architect",
     "character_expression_review": "character_performance_reviewer",
+    "character_interpretation": "semantic_narrative_architect",
     "content_expand": "expansion_writer",
     "fanfiction_canon": "fanfiction_canon_archivist",
+    "fanfiction_story_engine": "fanfiction_architect",
     "fanfiction_design": "fanfiction_architect",
+    "fanfiction_design_review": "fanfiction_route_reviewer",
+    "story_architecture_design": "semantic_narrative_architect",
+    "chapter_semantic_planning": "semantic_narrative_architect",
+    "draft_semantic_review": "semantic_narrative_architect",
+    "prose_revision_review": "semantic_narrative_architect",
+    "reader_feedback_analysis": "semantic_narrative_architect",
     "prose_naturalness": "prose_naturalness_editor",
     "prose_revision_semantic_review": "prose_revision_semantic_reviewer",
     "human_review_consult": "human_author_advisor",
@@ -78,6 +86,15 @@
     "repair_plan_synthesis": "repair_coordinator",
     "research_synthesis": "research_synthesizer",
     "semantic_review": "semantic_continuity_reviewer",
+    "source_coverage_gap_analysis": "source_evidence_reviewer",
+    "source_discovery_planning": "semantic_narrative_architect",
+    "source_candidate_triage": "semantic_narrative_architect",
+    "source_evidence_review": "source_evidence_reviewer",
+    "source_fact_extraction": "source_fact_archivist",
+    "source_timeline_alignment": "source_evidence_reviewer",
+    "source_conflict_analysis": "source_evidence_reviewer",
+    "source_version_conflict_review": "source_evidence_reviewer",
+    "source_visual_observation": "source_visual_observer",
     "style_analysis": "semantic_style_analyst"
   },
   "editorial_role_map": {
@@ -103,6 +120,7 @@
     "creative_facilitator": "project_coordinator",
     "expansion_writer": "isolated_revision",
     "fanfiction_architect": "project_coordinator",
+    "fanfiction_route_reviewer": "isolated_review",
     "fanfiction_canon_archivist": "isolated_archival",
     "prose_naturalness_editor": "isolated_revision",
     "prose_revision_semantic_reviewer": "isolated_review",
@@ -117,6 +135,10 @@
     "scene_prose_editor": "isolated_review",
     "semantic_continuity_reviewer": "isolated_review",
     "semantic_pacing_reviewer": "isolated_review",
+    "semantic_narrative_architect": "project_coordinator",
+    "source_evidence_reviewer": "isolated_review",
+    "source_fact_archivist": "isolated_archival",
+    "source_visual_observer": "isolated_review",
     "semantic_style_analyst": "isolated_review"
   },
   "roles": [
@@ -156,7 +178,7 @@
     },
     {
       "role_id": "anti_template_editor",
-      "role_version": "4.0.0",
+      "role_version": "5.0.0",
       "prompt_path": "config/agent_roles/prompts/anti_template_editor.md",
       "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
@@ -236,7 +258,7 @@
     },
     {
       "role_id": "canon_fidelity_reviewer",
-      "role_version": "3.0.0",
+      "role_version": "4.0.0",
       "prompt_path": "config/agent_roles/prompts/canon_fidelity_reviewer.md",
       "output_mode": "evidence_review_v2",
       "independence_mode": "isolated_review",
@@ -265,17 +287,20 @@
       ],
       "max_active_playbooks": 2,
       "review_dimensions": [
-        "canon_fidelity",
-        "ooc_causality",
-        "original_contribution"
+        "source_fidelity",
+        "fanfiction_originality"
       ],
       "canonical_ref_dimensions": [
-        "canon_fidelity",
-        "ooc_causality"
+        "source_fidelity",
+        "fanfiction_originality"
       ],
       "finding_codes": [
         "CANON_CONFLICT",
         "OOC_UNSUPPORTED",
+        "FUTURE_KNOWLEDGE_BOUNDARY",
+        "CROSSOVER_RULE_BYPASS",
+        "ORIGINAL_CONTRIBUTION_BREACH",
+        "CANON_REPLAY",
         "ORIGINAL_CHARACTER_DOMINATION",
         "CANON_EVENT_DISPLACED",
         "CANON_CHARACTER_INSTRUMENTALIZED",
@@ -631,10 +656,55 @@
       "finding_codes": []
     },
     {
+      "role_id": "semantic_narrative_architect",
+      "role_version": "1.0.0",
+      "prompt_path": "config/agent_roles/prompts/semantic_narrative_architect.md",
+      "output_mode": "semantic_document_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "target_reader",
+        "character_voice_contracts",
+        "content_exclusions",
+        "approved_style_baseline"
+      ],
+      "role_family": "planning",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "character_interpretation": "diagnostics",
+        "story_architecture_design": "diagnostics",
+        "chapter_semantic_planning": "diagnostics",
+        "draft_semantic_review": "diagnostics",
+        "prose_revision_review": "diagnostics",
+        "reader_feedback_analysis": "diagnostics",
+        "source_discovery_planning": "diagnostics",
+        "source_candidate_triage": "diagnostics",
+        "semantic_overreach": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "character_agency",
+        "scene_causality"
+      ],
+      "optional_playbook_ids": [
+        "dialogue_and_subtext",
+        "relationship_dynamics",
+        "anti_template_expression"
+      ],
+      "max_active_playbooks": 3,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
       "role_id": "fanfiction_architect",
-      "role_version": "3.0.0",
+      "role_version": "4.0.0",
       "prompt_path": "config/agent_roles/prompts/fanfiction_architect.md",
-      "output_mode": "design_document_v1",
+      "output_mode": "semantic_document_v1",
       "independence_mode": "author_context",
       "allowed_overlay_fields": [
         "genre_vocabulary",
@@ -651,6 +721,7 @@
         "workflow"
       ],
       "trigger_sections": {
+        "fanfiction_story_engine": "diagnostics",
         "fanfiction_design": "diagnostics",
         "divergence_causality_gap": "failure_modes"
       },
@@ -667,10 +738,59 @@
       "finding_codes": []
     },
     {
+      "role_id": "fanfiction_route_reviewer",
+      "role_version": "1.0.0",
+      "prompt_path": "config/agent_roles/prompts/fanfiction_route_reviewer.md",
+      "output_mode": "semantic_document_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [
+        "genre_vocabulary",
+        "target_reader",
+        "character_voice_contracts",
+        "content_exclusions"
+      ],
+      "role_family": "review",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "fanfiction_design_review": "diagnostics",
+        "route_review_gap": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "fanfiction_canon",
+        "character_agency"
+      ],
+      "optional_playbook_ids": [
+        "scene_causality",
+        "relationship_dynamics"
+      ],
+      "max_active_playbooks": 2,
+      "review_dimensions": [
+        "baseline_and_divergence",
+        "character_agency",
+        "longform_sustainability",
+        "crossover_integrity"
+      ],
+      "finding_codes": [
+        "BASELINE_AMBIGUOUS",
+        "DIVERGENCE_CAUSALITY_GAP",
+        "FUTURE_KNOWLEDGE_UNBOUNDED",
+        "CHARACTER_AGENCY_COLLAPSE",
+        "CANON_REPLAY_RISK",
+        "STORY_ENGINE_EXHAUSTED",
+        "CROSSOVER_RULE_INCOMPLETE"
+      ]
+    },
+    {
       "role_id": "fanfiction_canon_archivist",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/fanfiction_canon_archivist.md",
-      "output_mode": "canonical_delta_v1",
+      "output_mode": "semantic_document_v1",
       "independence_mode": "author_context",
       "allowed_overlay_fields": [
         "genre_vocabulary",
@@ -1238,6 +1358,89 @@
         "TURN_TOO_ABRUPT",
         "AFTERMATH_MISSING"
       ]
+    },
+    {
+      "role_id": "source_evidence_reviewer",
+      "role_version": "1.0.0",
+      "prompt_path": "config/agent_roles/prompts/source_evidence_reviewer.md",
+      "output_mode": "semantic_document_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [],
+      "role_family": "analysis",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "source_evidence_review": "diagnostics",
+        "source_version_conflict_review": "diagnostics",
+        "source_coverage_gap_analysis": "diagnostics",
+        "source_evidence_boundary_failure": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "fanfiction_canon"
+      ],
+      "optional_playbook_ids": [],
+      "max_active_playbooks": 1,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "source_fact_archivist",
+      "role_version": "1.0.0",
+      "prompt_path": "config/agent_roles/prompts/source_fact_archivist.md",
+      "output_mode": "semantic_document_v1",
+      "independence_mode": "author_context",
+      "allowed_overlay_fields": [],
+      "role_family": "archival",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "source_fact_extraction": "diagnostics",
+        "source_fact_evidence_gap": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "fanfiction_canon"
+      ],
+      "optional_playbook_ids": [],
+      "max_active_playbooks": 1,
+      "review_dimensions": [],
+      "finding_codes": []
+    },
+    {
+      "role_id": "source_visual_observer",
+      "role_version": "1.0.0",
+      "prompt_path": "config/agent_roles/prompts/source_visual_observer.md",
+      "output_mode": "semantic_document_v1",
+      "independence_mode": "isolated_review",
+      "allowed_overlay_fields": [],
+      "role_family": "analysis",
+      "always_sections": [
+        "core"
+      ],
+      "task_sections": [
+        "decision_model",
+        "workflow"
+      ],
+      "trigger_sections": {
+        "source_visual_observation": "diagnostics",
+        "source_visual_inference_overreach": "failure_modes"
+      },
+      "required_playbook_ids": [
+        "scene_causality"
+      ],
+      "optional_playbook_ids": [],
+      "max_active_playbooks": 1,
+      "review_dimensions": [],
+      "finding_codes": []
     },
     {
       "role_id": "semantic_style_analyst",

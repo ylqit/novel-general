@@ -16,6 +16,17 @@ novel:
     - "战力体系无成本膨胀"
     - "伏笔长期开坑不回收"
 
+source_processing:
+  default_execution: "local"
+  cloud:
+    enabled: false
+    provider: "openai"
+    vision_model: ""
+    transcription_model: ""
+    require_per_job_human_approval: true
+    allow_automatic_fallback: false
+    retain_remote_files: false
+
 story_profile:
   plot_engines:
     primary: "progression"

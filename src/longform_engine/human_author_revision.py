@@ -499,7 +499,7 @@ def create_human_revision_semantic_task(
             ]
         ),
     )
-    task_id = f"{SEMANTIC_TASK_TYPE}:ch{chapter_number:03d}:human_author_revision:{token}:v4"
+    task_id = f"{SEMANTIC_TASK_TYPE}:ch{chapter_number:03d}:human_author_revision:{token}:v5"
     manifest = build_manifest(
         root,
         task_type=SEMANTIC_TASK_TYPE,

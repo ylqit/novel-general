@@ -1108,6 +1108,17 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
     ledger_file = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
     verify_materialized_chapter(config, root, chapter_number)
     close_evidence = require_v010_close_evidence(root, chapter_number)
+    knowledge_impact: tuple[Path, dict[str, Any]] | None = None
+    if str(config.data.get("creation", {}).get("mode") or "") == "fanfiction":
+        from longform_engine.fanfiction_context import future_knowledge_impact_workflow
+
+        event_ledger = read_json(root / close_evidence["event_ledger_path"], {})
+        if isinstance(event_ledger, dict):
+            knowledge_impact = future_knowledge_impact_workflow(
+                config,
+                chapter_number=chapter_number,
+                event_ledger=event_ledger,
+            )
     closure_file = root / "30_state" / "chapter_closures" / f"ch{chapter_number:03d}.json"
     if closure_file.exists():
         closure = read_json(closure_file, {})
@@ -1177,7 +1188,12 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
             root / close_evidence["event_ledger_path"],
             root / close_evidence["reader_promise_ledger_path"],
         ],
-        touched_paths=[closure_file, state_file, planning_cursor_file],
+        touched_paths=[
+            closure_file,
+            state_file,
+            planning_cursor_file,
+            *([knowledge_impact[0]] if knowledge_impact is not None else []),
+        ],
         metadata={"approved_by": approved_by, "active_buffer_chapters": 2},
     ) as transaction:
         closure = {
@@ -1192,6 +1208,11 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
             "archive_through": archive_through,
         }
         atomic_write_text(closure_file, json.dumps(closure, ensure_ascii=False, indent=2) + "\n")
+        if knowledge_impact is not None:
+            atomic_write_text(
+                knowledge_impact[0],
+                json.dumps(knowledge_impact[1], ensure_ascii=False, indent=2) + "\n",
+            )
         state = read_json(state_file, {})
         if not isinstance(state, dict):
             state = {}

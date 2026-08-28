@@ -344,7 +344,7 @@ def test_isolated_semantic_review_rejects_same_author_and_reviewer(tmp_path: Pat
     assert "reviewer role must differ from the author role" in validation.errors
 
 
-def test_every_plot_node_requires_an_explicit_human_decision(tmp_path: Path):
+def test_every_major_state_change_node_requires_an_explicit_human_decision(tmp_path: Path):
     _config, root = seed_project(tmp_path)
     bundle_path = write_json(
         root / "50_workbench" / "planning" / "bundle.json", planning_bundle()
@@ -354,6 +354,7 @@ def test_every_plot_node_requires_an_explicit_human_decision(tmp_path: Path):
         node["node_id"]
         for table in bundle["plot_node_tables"]
         for node in table["nodes"]
+        if node["node_kind"] == "state_change"
     ]
     decisions = [
         {"node_id": node_id, "decision": "approve", "adjustment": "", "reason": "Keep."}
@@ -369,7 +370,10 @@ def test_every_plot_node_requires_an_explicit_human_decision(tmp_path: Path):
 
     errors = validate_human_node_decisions(root, payload, bundle=bundle)
 
-    assert any("every plot node requires an explicit decision" in error for error in errors)
+    assert any(
+        "every major state-change plot node requires an explicit decision" in error
+        for error in errors
+    )
 
 
 def test_semantic_and_node_approved_bundle_applies_atomically(tmp_path: Path):
@@ -421,6 +425,7 @@ def test_semantic_and_node_approved_bundle_applies_atomically(tmp_path: Path):
             }
             for table in bundle["plot_node_tables"]
             for node in table["nodes"]
+            if node["node_kind"] == "state_change"
         ],
         decided_by="human",
     )
@@ -451,6 +456,12 @@ def test_semantic_and_node_approved_bundle_applies_atomically(tmp_path: Path):
     )
     assert event_ledger["events"][0]["state"] == "planned_approved"
     assert event_ledger["events"][0]["realization_evidence"] is None
+    plot_nodes = json.loads(
+        (root / "20_outline" / "plot_nodes" / "ch001.json").read_text(encoding="utf-8")
+    )
+    assert plot_nodes["nodes"][0]["node_kind"] == "micro"
+    assert plot_nodes["nodes"][0]["human_decision"] is None
+    assert plot_nodes["nodes"][1]["human_decision"]["decision"] == "approve"
     transaction = json.loads((root / result.transaction_report).read_text(encoding="utf-8"))
     assert transaction["status"] == "applied"
 
@@ -499,6 +510,7 @@ def test_rejected_node_blocks_canonical_apply(tmp_path: Path):
         }
         for table in bundle["plot_node_tables"]
         for node in table["nodes"]
+        if node["node_kind"] == "state_change"
     ]
     decisions_path = write_json(
         root / "50_workbench" / "planning" / "node-decisions.json",

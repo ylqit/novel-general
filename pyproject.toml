@@ -1,6 +1,6 @@
 [project]
 name = "longform-novel-engine"
-version = "0.11.0"
+version = "0.12.0"
 description = "Engineering-first AI engine for million-word Chinese longform novels."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -27,6 +27,32 @@ semantic = [
   "huggingface_hub>=0.24",
   "hnswlib>=0.8.0",
   "sentence-transformers>=3.0",
+]
+documents = [
+  "pypdf>=5.0",
+  "pypdfium2>=4.30",
+  "python-docx>=1.1",
+]
+images = [
+  "Pillow>=10.4",
+]
+subtitles = [
+  "pysubs2>=1.7",
+]
+media-local = [
+  "faster-whisper>=1.1",
+]
+cloud-openai = [
+  "openai>=1.60",
+]
+source-all = [
+  "pypdf>=5.0",
+  "pypdfium2>=4.30",
+  "python-docx>=1.1",
+  "Pillow>=10.4",
+  "pysubs2>=1.7",
+  "faster-whisper>=1.1",
+  "openai>=1.60",
 ]
 dev = [
   "build>=1.2",

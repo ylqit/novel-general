@@ -2046,10 +2046,11 @@ def check_fanfiction_source_reproduction(
     ]
     if len(normalize_fanfiction_similarity(text, protected_terms)) >= 36:
         candidate_parts.insert(0, text)
-    for source in canon.get("sources") or []:
-        if not isinstance(source, dict):
+    extensions = canon.get("extensions") if isinstance(canon.get("extensions"), dict) else {}
+    for source_contract in extensions.get("source_contracts") or []:
+        if not isinstance(source_contract, dict):
             continue
-        for binding in source.get("item_bindings") or []:
+        for binding in source_contract.get("item_bindings") or []:
             if not isinstance(binding, dict):
                 continue
             item_id = str(binding.get("item_id") or "")
@@ -2080,13 +2081,10 @@ def check_fanfiction_source_reproduction(
 
 def fanfiction_protected_terms(canon: dict[str, Any]) -> tuple[str, ...]:
     terms: set[str] = set()
-    for source in canon.get("sources") or []:
-        if not isinstance(source, dict):
-            continue
-        for item in source_fact_records(source, "character", "ability", "terminology"):
-            name = str(item.get("name") or "").strip()
-            if name:
-                terms.add(name)
+    for item in source_fact_records(canon, "character", "ability", "terminology"):
+        name = str(item.get("name") or "").strip()
+        if name:
+            terms.add(name)
     return tuple(sorted(terms, key=len, reverse=True))
 
 
@@ -2653,7 +2651,7 @@ def semantic_review_gate_items(
             "required": True,
             "status": "awaiting_agent",
             "task": relative_path(root, Path(task.manifest_file)),
-            "next_command": f"longform-engine agent-task brief project.yaml --task-id semantic_review:ch{chapter_number:03d}:v4",
+            "next_command": f"longform-engine agent-task brief project.yaml --task-id semantic_review:ch{chapter_number:03d}:v5",
         }
     payload = application["payload"]
     failures: list[dict[str, Any]] = []
@@ -2733,14 +2731,13 @@ def semantic_review_known_entities(root: Path) -> set[str]:
                         ids.add(value)
     canon = load_json(root / "10_bible" / "fanfiction" / "source_canon.json", default={})
     if isinstance(canon, dict):
-        for source in canon.get("sources") or []:
-            if not isinstance(source, dict):
-                continue
-            for item in source_fact_records(source, "character", "ability", "terminology", "world_rule"):
-                for key in ("id", "name"):
-                    value = str(item.get(key) or "").strip()
-                    if value:
-                        ids.add(value)
+        for item in source_fact_records(
+            canon, "character", "ability", "terminology", "world_rule"
+        ):
+            for key in ("id", "name"):
+                value = str(item.get(key) or "").strip()
+                if value:
+                    ids.add(value)
     return ids
 
 

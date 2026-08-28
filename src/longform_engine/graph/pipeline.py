@@ -28,6 +28,13 @@ CANONICAL_ENTITY_TYPES = (
     "secret",
     "foreshadowing",
     "event",
+    "canonical_fact",
+    "relationship",
+    "world_rule",
+    "timeline",
+    "terminology",
+    "unresolved_question",
+    "version_conflict",
 )
 
 ENTITY_TYPE_ALIASES = {

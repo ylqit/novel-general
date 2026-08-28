@@ -9,6 +9,7 @@ from typing import Any, Iterable
 import gzip
 from hashlib import sha256
 import json
+import mimetypes
 import re
 
 from longform_engine.agent_protocols import (
@@ -32,13 +33,13 @@ from longform_engine.story_profiles import project_active_facet_adapters
 from longform_engine.storage import atomic_write_text
 
 
-AGENT_TASK_SCHEMA_VERSION = 4
-AGENT_TASK_INDEX_SCHEMA = "agent_task_index_v4"
-AGENT_TASK_EVENT_SCHEMA = "agent_task_event_v4"
+AGENT_TASK_SCHEMA_VERSION = 5
+AGENT_TASK_INDEX_SCHEMA = "agent_task_index_v5"
+AGENT_TASK_EVENT_SCHEMA = "agent_task_event_v5"
 EVENT_SEGMENT_SCHEMA = "agent_task_event_segments_v1"
 EVENT_ROTATE_BYTES = 5 * 1024 * 1024
 EVENT_ROTATE_LINES = 10_000
-SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS = (4,)
+SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS = (5,)
 AGENT_TASK_STATUSES = (
     "awaiting_agent",
     "submitted",
@@ -407,6 +408,23 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "apply_prefixes": ("longform-engine fanfiction canon-apply ", "longform-engine intelligence apply "),
         "failure_prefixes": ("longform-engine fanfiction canon-task ", "longform-engine intelligence task "),
     },
+    "fanfiction_story_engine": {
+        "scope_kinds": ("project",),
+        "schemas": (output_protocol_for_task("fanfiction_story_engine"),),
+        "output_prefixes": ("50_workbench/intelligence_candidates/",),
+        "validate_prefixes": (
+            "longform-engine fanfiction story-engine-validate ",
+            "longform-engine intelligence validate ",
+        ),
+        "apply_prefixes": (
+            "longform-engine fanfiction story-engine-apply ",
+            "longform-engine intelligence apply ",
+        ),
+        "failure_prefixes": (
+            "longform-engine fanfiction story-engine-task ",
+            "longform-engine intelligence task ",
+        ),
+    },
     "fanfiction_design": {
         "scope_kinds": ("project",),
         "schemas": (output_protocol_for_task("fanfiction_design"),),
@@ -414,6 +432,17 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "validate_prefixes": ("longform-engine fanfiction design-validate ", "longform-engine intelligence validate "),
         "apply_prefixes": ("longform-engine fanfiction design-apply ", "longform-engine intelligence apply "),
         "failure_prefixes": ("longform-engine fanfiction design-task ", "longform-engine intelligence task "),
+    },
+    "fanfiction_design_review": {
+        "scope_kinds": ("project",),
+        "schemas": (output_protocol_for_task("fanfiction_design_review"),),
+        "output_prefixes": ("50_workbench/intelligence_candidates/",),
+        "validate_prefixes": (
+            "longform-engine fanfiction design-review-validate ",
+            "longform-engine intelligence validate ",
+        ),
+        "apply_prefixes": ("longform-engine fanfiction design-apply ",),
+        "failure_prefixes": ("longform-engine fanfiction design-review-task ",),
     },
     "design_semantic_compile": {
         "scope_kinds": ("project", "chapter", "range"),
@@ -423,7 +452,84 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "apply_prefixes": ("longform-engine intelligence apply ",),
         "failure_prefixes": ("longform-engine intelligence compile-task ",),
     },
+    "source_fact_extraction": {
+        "scope_kinds": ("source_item",),
+        "schemas": (output_protocol_for_task("source_fact_extraction"),),
+        "output_prefixes": ("Agent工单输出/",),
+        "validate_prefixes": ("longform-engine source-library task-validate ",),
+        "apply_prefixes": ("longform-engine source-library task-apply ",),
+        "failure_prefixes": ("longform-engine source-library item-status ",),
+    },
+    "source_visual_observation": {
+        "scope_kinds": ("source_item",),
+        "schemas": (output_protocol_for_task("source_visual_observation"),),
+        "output_prefixes": ("Agent工单输出/",),
+        "validate_prefixes": ("longform-engine source-library task-validate ",),
+        "apply_prefixes": ("longform-engine source-library task-apply ",),
+        "failure_prefixes": ("longform-engine source-library item-status ",),
+    },
+    "source_evidence_review": {
+        "scope_kinds": ("source_item",),
+        "schemas": (output_protocol_for_task("source_evidence_review"),),
+        "output_prefixes": ("Agent工单输出/",),
+        "validate_prefixes": ("longform-engine source-library task-validate ",),
+        "apply_prefixes": ("longform-engine source-library task-apply ",),
+        "failure_prefixes": ("longform-engine source-library item-status ",),
+    },
+    "source_version_conflict_review": {
+        "scope_kinds": ("source_item",),
+        "schemas": (output_protocol_for_task("source_version_conflict_review"),),
+        "output_prefixes": ("Agent工单输出/",),
+        "validate_prefixes": ("longform-engine source-library task-validate ",),
+        "apply_prefixes": ("longform-engine source-library task-apply ",),
+        "failure_prefixes": ("longform-engine source-library item-status ",),
+    },
+    "source_coverage_gap_analysis": {
+        "scope_kinds": ("source_item",),
+        "schemas": (output_protocol_for_task("source_coverage_gap_analysis"),),
+        "output_prefixes": ("Agent工单输出/",),
+        "validate_prefixes": ("longform-engine source-library task-validate ",),
+        "apply_prefixes": ("longform-engine source-library task-apply ",),
+        "failure_prefixes": ("longform-engine source-library item-status ",),
+    },
 }
+
+for _semantic_task_type in (
+    "character_interpretation",
+    "story_architecture_design",
+    "chapter_semantic_planning",
+    "draft_semantic_review",
+    "prose_revision_review",
+    "reader_feedback_analysis",
+    "source_discovery_planning",
+    "source_candidate_triage",
+):
+    TASK_CONTRACTS[_semantic_task_type] = {
+        "scope_kinds": (
+            ("chapter",)
+            if _semantic_task_type
+            in {"chapter_semantic_planning", "draft_semantic_review", "prose_revision_review"}
+            else ("project",)
+        ),
+        "schemas": (output_protocol_for_task(_semantic_task_type),),
+        "output_prefixes": ("50_workbench/intelligence_candidates/",),
+        "validate_prefixes": ("longform-engine intelligence validate ",),
+        "apply_prefixes": ("longform-engine intelligence apply ",),
+        "failure_prefixes": ("longform-engine intelligence task ",),
+    }
+
+for _source_semantic_task_type in (
+    "source_timeline_alignment",
+    "source_conflict_analysis",
+):
+    TASK_CONTRACTS[_source_semantic_task_type] = {
+        "scope_kinds": ("source_item",),
+        "schemas": (output_protocol_for_task(_source_semantic_task_type),),
+        "output_prefixes": ("Agent工单输出/",),
+        "validate_prefixes": ("longform-engine source-library task-validate ",),
+        "apply_prefixes": ("longform-engine source-library task-apply ",),
+        "failure_prefixes": ("longform-engine source-library item-status ",),
+    }
 
 CANONICAL_OUTPUT_PREFIXES = (
     "10_bible/",
@@ -458,8 +564,11 @@ def build_manifest(
     requires_human_apply: bool = False,
     context_policy: dict[str, Any] | None = None,
     role_id: str = "",
+    media_inputs: Iterable[dict[str, Any]] = (),
+    tool_grants: Iterable[dict[str, Any]] = (),
+    media_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create one immutable AgentTaskManifest v4 without duplicated projections."""
+    """Create one immutable AgentTaskManifest v5 without duplicated projections."""
 
     normalized_type = normalize_token(task_type)
     normalized_status = normalize_status(status)
@@ -470,9 +579,11 @@ def build_manifest(
         scope_token = f"ch{normalized_chapter:03d}"
     elif scope_kind == "range":
         scope_token = f"ch{int(normalized_scope['from_chapter']):03d}-ch{int(normalized_scope['to_chapter']):03d}"
+    elif scope_kind == "source_item":
+        scope_token = f"source-{normalize_token(str(normalized_scope['item_id']))[:48]}"
     else:
         scope_token = "project"
-    id_revision = "v4"
+    id_revision = "v5"
     manifest_id = task_id or f"{normalized_type}:{scope_token}:{id_revision}"
     normalized_inputs = normalize_paths(root, input_files)
     try:
@@ -499,7 +610,7 @@ def build_manifest(
         raise AgentTaskContractError("Agent tasks must use the registered canonical boundary profile.")
     normalized_outputs = normalize_paths(root, allowed_output_paths)
     if len(normalized_outputs) != 1:
-        raise AgentTaskContractError("AgentTaskManifest v4 requires exactly one output path.")
+        raise AgentTaskContractError("AgentTaskManifest v5 requires exactly one output path.")
     try:
         overlay = load_project_prompt_overlay(root, role)
     except PromptCompilationError as exc:
@@ -513,19 +624,30 @@ def build_manifest(
         path = resolve_under_root(root, path_text)
         try:
             content = path.read_text(encoding="utf-8").lstrip("\ufeff")
+            character_count = len(content)
         except UnicodeDecodeError as exc:
-            raise AgentTaskContractError(f"Agent input must be UTF-8 text: {path_text}") from exc
+            raise AgentTaskContractError(
+                f"Binary Agent inputs must be declared as typed media_inputs in manifest v5: {path_text}"
+            ) from exc
         requirement = "required" if path_text in required else "optional"
         reason = "compiled_task_brief" if path_text == normalized_policy.get("compiled_brief") else requirement
         input_records.append(
             {
+                "kind": (
+                    "evidence_pack"
+                    if reason != "compiled_task_brief" and scope_kind == "source_item"
+                    else "text_file"
+                ),
                 "path": path_text,
                 "requirement": requirement,
                 "sha256": sha256(path.read_bytes()).hexdigest(),
-                "characters": len(content),
+                "characters": character_count,
+                "bytes": path.stat().st_size,
+                "media_type": mimetypes.guess_type(path.name)[0] or "text/plain",
                 "reason": reason,
             }
         )
+    input_records.extend(_normalize_media_inputs(media_inputs, scope_kind=scope_kind))
     role_sections = [
         {"id": section, "sha256": digest}
         for section, digest in zip(selection.role_sections, selection.role_section_hashes, strict=True)
@@ -567,6 +689,8 @@ def build_manifest(
                 },
                 "canonical_targets": normalize_paths(root, canonical_targets),
                 "requires_human_apply": bool(requires_human_apply),
+                "tool_grants": _normalize_tool_grants(tool_grants),
+                "media": _normalize_media_policy(media_policy),
                 "context": {
                     "forbidden_paths": list(normalized_policy.get("forbidden_paths") or []),
                     "budget_profile": str(normalized_policy["budget_profile"]),
@@ -1382,7 +1506,7 @@ def live_chapter_tasks(root: Path, *, chapter_number: int) -> list[dict[str, Any
 
 
 def normalize_scope(scope: dict[str, Any] | None, *, chapter_number: int | None) -> dict[str, Any]:
-    """Validate and normalize project/chapter/range scope."""
+    """Validate and normalize project/chapter/range/source-item scope."""
 
     value = dict(scope or {})
     kind = normalize_token(str(value.get("kind") or ("chapter" if chapter_number else "project")))
@@ -1399,17 +1523,33 @@ def normalize_scope(scope: dict[str, Any] | None, *, chapter_number: int | None)
         return {"kind": "range", "from_chapter": start, "to_chapter": end}
     if kind == "project":
         return {"kind": "project"}
-    raise ValueError("scope.kind must be one of: project, chapter, range.")
+    if kind == "source_item":
+        item_id = str(value.get("item_id") or "").strip()
+        work_id = str(value.get("work_id") or "").strip()
+        normalization_sha = str(value.get("normalization_sha256") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{1,159}", item_id):
+            raise ValueError("source_item scope requires a stable item_id.")
+        if work_id and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{1,159}", work_id):
+            raise ValueError("source_item scope work_id must be a stable id when provided.")
+        if normalization_sha and not re.fullmatch(r"[0-9a-f]{64}", normalization_sha):
+            raise ValueError("source_item scope normalization_sha256 must be a SHA-256 digest.")
+        return {
+            "kind": "source_item",
+            "item_id": item_id,
+            "work_id": work_id,
+            "normalization_sha256": normalization_sha,
+        }
+    raise ValueError("scope.kind must be one of: project, chapter, range, source_item.")
 
 
 def normalize_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the current v4 manifest without adding removed fields."""
+    """Normalize the current v5 manifest without accepting historical manifests."""
 
     if not isinstance(manifest, dict):
         raise ValueError("Agent task manifest must be a JSON object.")
     source_version = manifest.get("schema_version")
     if source_version != AGENT_TASK_SCHEMA_VERSION:
-        raise ValueError("Agent task manifest schema_version must be 4; historical manifests are unsupported.")
+        raise ValueError("Agent task manifest schema_version must be 5; historical manifests are unsupported.")
     normalized = dict(manifest)
     normalized["scope"] = normalize_scope(
         normalized.get("scope") if isinstance(normalized.get("scope"), dict) else None,
@@ -1433,10 +1573,10 @@ def validate_manifest_shape(manifest: dict[str, Any]) -> None:
     actual = {key for key in manifest.keys() if key not in {"status", "manifest_file", "updated_at", "current_result"}}
     if actual != required:
         raise ValueError(
-            "AgentTaskManifest v4 fields must be exactly: " + ", ".join(sorted(required))
+            "AgentTaskManifest v5 fields must be exactly: " + ", ".join(sorted(required))
         )
     if manifest.get("schema_version") != AGENT_TASK_SCHEMA_VERSION:
-        raise ValueError("Agent task manifest schema_version must be 4.")
+        raise ValueError("Agent task manifest schema_version must be 5.")
     if not str(manifest.get("task_id") or "").strip():
         raise ValueError("Agent task manifest task_id is required.")
     if not isinstance(manifest.get("scope"), dict):
@@ -1446,22 +1586,27 @@ def validate_manifest_shape(manifest: dict[str, Any]) -> None:
         "id", "version", "contract_hash", "selection_hash", "independence_mode",
         "overlay_hash", "sections", "playbooks",
     }:
-        raise ValueError("Agent task manifest role must use the v4 role projection.")
+        raise ValueError("Agent task manifest role must use the v5 role projection.")
     io = manifest.get("io")
     if not isinstance(io, dict) or set(io) != {"inputs", "output"}:
         raise ValueError("Agent task manifest io must contain exactly inputs and output.")
     policy = manifest.get("policy")
     if not isinstance(policy, dict) or set(policy) != {
-        "boundary_profile", "canonical_targets", "requires_human_apply", "context",
+        "boundary_profile",
+        "canonical_targets",
+        "requires_human_apply",
+        "tool_grants",
+        "media",
+        "context",
     }:
-        raise ValueError("Agent task manifest policy must use the v4 policy projection.")
+        raise ValueError("Agent task manifest policy must use the v5 policy projection.")
     commands = manifest.get("commands")
     if not isinstance(commands, dict) or set(commands) != {"validate", "apply", "failure"}:
         raise ValueError("Agent task manifest commands must contain validate, apply, and failure.")
 
 
 def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bool = True) -> ManifestValidationResult:
-    """Validate the current AgentTaskManifest v4 workflow contract."""
+    """Validate the current AgentTaskManifest v5 workflow contract."""
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -1532,8 +1677,16 @@ def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bo
             normalize_scope(scope, chapter_number=None)
         except ValueError as exc:
             errors.append(str(exc))
+    elif scope_kind == "source_item":
+        try:
+            normalize_scope(scope, chapter_number=None)
+        except ValueError as exc:
+            errors.append(str(exc))
+        item_token = normalize_token(str(scope.get("item_id") or ""))[:48]
+        if item_token and f"source-{item_token}" not in task_id:
+            errors.append(f"task_id must contain source-{item_token}.")
     else:
-        errors.append("scope.kind must be one of: project, chapter, range.")
+        errors.append("scope.kind must be one of: project, chapter, range, source_item.")
 
     contract = TASK_CONTRACTS.get(task_type)
     if contract is None:
@@ -1557,6 +1710,11 @@ def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bo
     if not input_records:
         errors.append("io.inputs must contain at least one input record.")
     for index, item in enumerate(input_records):
+        if isinstance(item, dict) and item.get("kind") == "media_asset":
+            errors.extend(
+                f"io.inputs[{index}].{error}" for error in _validate_media_input_record(item)
+            )
+            continue
         path_text = normalize_manifest_path(root, item.get("path") if isinstance(item, dict) else "")
         if not path_text:
             errors.append(f"io.inputs[{index}].path must be a non-empty path.")
@@ -1581,6 +1739,8 @@ def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bo
             errors.append(f"canonical_targets[{index}] is not a recognized canonical lane: {path_text}")
     if bool(policy_value.get("requires_human_apply")) and "--approved-by human" not in str(commands_value.get("apply") or ""):
         errors.append("policy.requires_human_apply tasks must include `--approved-by human` in commands.apply.")
+    errors.extend(_validate_tool_grants(policy_value.get("tool_grants")))
+    errors.extend(_validate_media_policy(policy_value.get("media")))
 
     return ManifestValidationResult(
         ok=not errors,
@@ -2065,14 +2225,15 @@ def validate_context_policy(root: Path, manifest: dict[str, Any], errors: list[s
         "active_facets",
     }
     if set(policy) != required_fields:
-        errors.append("policy.context must contain exactly the v4 context fields.")
+        errors.append("policy.context must contain exactly the v5 context fields.")
         return
     input_records = ((manifest.get("io") or {}).get("inputs") or []) if isinstance(manifest.get("io"), dict) else []
-    inputs = [
+    text_inputs = [
         str(item.get("path") or "").replace("\\", "/")
         for item in input_records
-        if isinstance(item, dict)
+        if isinstance(item, dict) and item.get("kind") != "media_asset"
     ]
+    media_inputs = [item for item in input_records if isinstance(item, dict) and item.get("kind") == "media_asset"]
     required = [
         str(item.get("path") or "").replace("\\", "/")
         for item in input_records
@@ -2090,7 +2251,7 @@ def validate_context_policy(root: Path, manifest: dict[str, Any], errors: list[s
     classified = [str(item).replace("\\", "/") for item in [*required, *optional]]
     if len(classified) != len(set(classified)):
         errors.append("io.inputs paths must not be duplicated across required and optional tiers.")
-    if set(classified) != set(inputs):
+    if set(classified) != set(text_inputs):
         errors.append("io.inputs must classify every path as required or optional exactly once.")
     try:
         resolve_context_budget_contract(root, policy)
@@ -2102,7 +2263,7 @@ def validate_context_policy(root: Path, manifest: dict[str, Any], errors: list[s
             for item in input_records
             if isinstance(item, dict)
         }
-        for index, item in enumerate(inputs):
+        for index, item in enumerate(text_inputs):
             path_text = normalize_manifest_path(root, item)
             if not path_text or is_parent_escape(path_text):
                 continue
@@ -2110,24 +2271,39 @@ def validate_context_policy(root: Path, manifest: dict[str, Any], errors: list[s
             if not path.exists() or not path.is_file():
                 errors.append(f"io.inputs[{index}].path does not exist or is not a file: {path_text}")
                 continue
-            try:
-                content = path.read_text(encoding="utf-8").lstrip("\ufeff")
-            except UnicodeDecodeError:
-                errors.append(f"io.inputs[{index}].path must be valid UTF-8 text: {path_text}")
-                continue
             record = records.get(path_text)
             if record is None:
                 errors.append(f"io.inputs is missing `{path_text}`.")
                 continue
-            if set(record) != {"path", "requirement", "sha256", "characters", "reason"}:
-                errors.append(f"io.inputs record for `{path_text}` has an invalid v4 shape.")
+            if set(record) != {
+                "kind",
+                "path",
+                "requirement",
+                "sha256",
+                "characters",
+                "bytes",
+                "media_type",
+                "reason",
+            }:
+                errors.append(f"io.inputs record for `{path_text}` has an invalid v5 text shape.")
                 continue
+            if record.get("kind") not in {"text_file", "evidence_pack"}:
+                errors.append(f"io.inputs kind for `{path_text}` is invalid.")
             if record.get("requirement") not in {"required", "optional"}:
                 errors.append(f"io.inputs requirement for `{path_text}` is invalid.")
-            if int(record.get("characters") or -1) != len(content):
-                errors.append(f"io.inputs character count drifted for `{path_text}`.")
+            try:
+                content = path.read_text(encoding="utf-8").lstrip("\ufeff")
+            except UnicodeDecodeError:
+                errors.append(f"io.inputs[{index}].path must be valid UTF-8 text: {path_text}")
+            else:
+                if int(record.get("characters") or -1) != len(content):
+                    errors.append(f"io.inputs character count drifted for `{path_text}`.")
+            if int(record.get("bytes") or -1) != path.stat().st_size:
+                errors.append(f"io.inputs byte count drifted for `{path_text}`.")
             if str(record.get("sha256") or "") != sha256(path.read_bytes()).hexdigest():
                 errors.append(f"io.inputs SHA-256 drifted for `{path_text}`.")
+    for index, item in enumerate(media_inputs):
+        errors.extend(f"io.media_inputs[{index}].{error}" for error in _validate_media_input_record(item))
     compiled = next(
         (
             str(item.get("path") or "")
@@ -2162,6 +2338,144 @@ def validate_context_policy(root: Path, manifest: dict[str, Any], errors: list[s
         ]
         if facets != expected:
             errors.append("policy.context.active_facets drifted from the current story facet registry.")
+
+
+def _normalize_media_inputs(
+    values: Iterable[dict[str, Any]], *, scope_kind: str
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for raw in values:
+        if scope_kind != "source_item":
+            raise AgentTaskContractError("typed media inputs are restricted to source_item tasks")
+        if not isinstance(raw, dict):
+            raise AgentTaskContractError("media_inputs entries must be objects")
+        path = Path(str(raw.get("path") or "")).expanduser().resolve()
+        if not path.is_file():
+            raise AgentTaskContractError(f"media input does not exist: {path}")
+        record = {
+            "kind": "media_asset",
+            "asset_id": str(raw.get("asset_id") or "").strip(),
+            "path": str(path),
+            "requirement": str(raw.get("requirement") or "optional"),
+            "sha256": str(raw.get("sha256") or _sha256_file(path)),
+            "bytes": int(raw.get("bytes") or path.stat().st_size),
+            "media_type": str(raw.get("media_type") or mimetypes.guess_type(path.name)[0] or "application/octet-stream"),
+            "access": str(raw.get("access") or "whole_preferred"),
+            "ranges": [dict(item) for item in raw.get("ranges") or [] if isinstance(item, dict)],
+            "reason": str(raw.get("reason") or "source_media_evidence"),
+        }
+        errors = _validate_media_input_record(record)
+        if errors:
+            raise AgentTaskContractError("invalid media input: " + "; ".join(errors))
+        records.append(record)
+    return records
+
+
+def _validate_media_input_record(value: Any) -> list[str]:
+    required = {
+        "kind",
+        "asset_id",
+        "path",
+        "requirement",
+        "sha256",
+        "bytes",
+        "media_type",
+        "access",
+        "ranges",
+        "reason",
+    }
+    if not isinstance(value, dict) or set(value) != required:
+        return [f"media input must contain exactly: {', '.join(sorted(required))}"]
+    errors: list[str] = []
+    if value.get("kind") != "media_asset":
+        errors.append("kind must be media_asset")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{1,159}", str(value.get("asset_id") or "")):
+        errors.append("asset_id must be stable")
+    path = Path(str(value.get("path") or ""))
+    if not path.is_absolute() or not path.is_file():
+        errors.append("path must be an existing absolute file")
+    else:
+        if int(value.get("bytes") or -1) != path.stat().st_size:
+            errors.append("bytes does not match the media asset")
+        if str(value.get("sha256") or "") != _sha256_file(path):
+            errors.append("sha256 does not match the media asset")
+    if value.get("requirement") not in {"required", "optional"}:
+        errors.append("requirement must be required or optional")
+    if not str(value.get("media_type") or "").strip():
+        errors.append("media_type is required")
+    if value.get("access") not in {"whole_preferred", "range_only"}:
+        errors.append("access must be whole_preferred or range_only")
+    if not isinstance(value.get("ranges"), list) or any(
+        not isinstance(item, dict) for item in value.get("ranges") or []
+    ):
+        errors.append("ranges must be a list of locator objects")
+    if not str(value.get("reason") or "").strip():
+        errors.append("reason is required")
+    return errors
+
+
+def _normalize_tool_grants(values: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for raw in values:
+        if not isinstance(raw, dict):
+            raise AgentTaskContractError("tool_grants entries must be objects")
+        item = {
+            "tool": str(raw.get("tool") or "").strip(),
+            "scope": dict(raw.get("scope") or {}),
+            "approved_by": str(raw.get("approved_by") or "").strip(),
+        }
+        errors = _validate_tool_grants([item])
+        if errors:
+            raise AgentTaskContractError("invalid tool grant: " + "; ".join(errors))
+        result.append(item)
+    return result
+
+
+def _validate_tool_grants(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return ["policy.tool_grants must be a list"]
+    errors: list[str] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict) or set(item) != {"tool", "scope", "approved_by"}:
+            errors.append(f"policy.tool_grants[{index}] has an invalid shape")
+            continue
+        if not str(item.get("tool") or "").strip():
+            errors.append(f"policy.tool_grants[{index}].tool is required")
+        if not isinstance(item.get("scope"), dict) or not item["scope"]:
+            errors.append(f"policy.tool_grants[{index}].scope must be non-empty")
+        if item.get("approved_by") != "human":
+            errors.append(f"policy.tool_grants[{index}].approved_by must be human")
+    return errors
+
+
+def _normalize_media_policy(value: dict[str, Any] | None) -> dict[str, Any]:
+    raw = dict(value or {})
+    return {
+        "preference": str(raw.get("preference") or "whole_preferred"),
+        "fallback": str(raw.get("fallback") or "evidence_pack"),
+        "capability_ref": str(raw.get("capability_ref") or "host_media_capability_v1"),
+    }
+
+
+def _validate_media_policy(value: Any) -> list[str]:
+    if not isinstance(value, dict) or set(value) != {"preference", "fallback", "capability_ref"}:
+        return ["policy.media must contain preference, fallback, and capability_ref"]
+    errors: list[str] = []
+    if value.get("preference") not in {"whole_preferred", "evidence_pack_only"}:
+        errors.append("policy.media.preference is invalid")
+    if value.get("fallback") != "evidence_pack":
+        errors.append("policy.media.fallback must be evidence_pack")
+    if value.get("capability_ref") != "host_media_capability_v1":
+        errors.append("policy.media.capability_ref must be host_media_capability_v1")
+    return errors
+
+
+def _sha256_file(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def normalize_signal_list(value: Any) -> list[str]:

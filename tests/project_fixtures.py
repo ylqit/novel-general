@@ -783,7 +783,7 @@ def complete_editorial_reviews(root: Path, config, *, chapter_number: int = 1) -
         for role_id in review.selected_roles:
             manifest = load_manifest(
                 root,
-                f"editorial_review:{role_id}:ch{chapter_number:03d}:v4",
+                f"editorial_review:{role_id}:ch{chapter_number:03d}:v5",
             )
             result_path = root / str(manifest_output(manifest)["path"])
             contract = load_role_registry().resolve(

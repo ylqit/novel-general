@@ -1,6 +1,10 @@
 # Storage Model
 
-本文定义 v0.11.0 的落盘合同。v0.9 文件及 `fanfiction_source_canon_v1` 不能作为当前协议证据。
+本文定义 0.12.0 语义优先开发态的落盘合同。人物、事件、关系、能力、外观和跨界规则不再各自拥有封闭内容表；它们使用开放 `semantic_document_v1`。`fanfiction_source_canon_v1/v2/v3` 不能作为当前协议证据。
+
+用户级资料库包含 `原件对象/`、`暂存区/`、`派生索引/`，每个动态资料项保存原件清单、不可变规范化版本、证据分段、语义候选和处理回执。一个资料项可以绑定多个 `source_asset_v1`；排序后的 asset 清单决定 bundle 哈希。项目只保存固定绑定、批准语义主张、短证据与 Canon，不复制完整原件或完整规范化全文。内部索引/作业记录服务确定性存储，不是公共人物或剧情本体。
+
+原始位置使用 `text_span`、`structured_path`、`document_block`、`image_region`、`subtitle_cue`、`audio_time_range` 或 `video_time_range`。中文目录改名不改变 work、item、asset、segment 或 fact ID。
 
 ## 1. canonical 与 workbench
 
@@ -26,6 +30,12 @@
 | `40_manuscript/final/chNNN.md` | 唯一正文事实源 |
 | `50_workbench/` | 候选、任务、审稿、反馈与审批证据，非 canonical |
 | `50_workbench/同人原著资料/<作品名>/` | 项目级中文资料包、覆盖计划、固定绑定、批准提取和短证据；不含完整原件 |
+| `10_bible/fanfiction/story_engine.json` | 人工批准的同人故事发动机语义文档 |
+| `10_bible/fanfiction/fanfiction_bible.json` | 绑定独立复核 hash 的正式同人连续性与路线语义文档 |
+| `50_workbench/fanfiction_context/chNNN.json` | 可重建的内部 `fanfiction_context_bundle_v1`；包含稳定 claim 选择、依赖、预算和诊断，不是作者稿 |
+| `50_workbench/fanfiction_knowledge_impacts/chNNN.workflow.json` | 首次重大分歧后的未来知识可靠性待审工作流；不自动改变 Canon |
+| `50_workbench/创作沙盒/` | 可自由试验的非 Canon `semantic_document_v1` |
+| `50_workbench/语义候选/` | 沙盒提升或 Host Agent 生成、仍待复核/审批的候选 |
 
 正式正文只接受 `ch{chapter:03d}.md`；四位及以上自然扩展。任何旧命名、`.txt` 或别名均不搜索、不迁移。
 
@@ -33,7 +43,7 @@
 
 默认根目录位于操作系统用户数据目录的 `longform-novel-engine/原著资料库/`；`LONGFORM_SOURCE_LIBRARY` 可指定绝对路径。其中文物理结构只有 `作品/<作品名>/资料项/<动态资料名>/`，不硬编码媒介目录。完整原件只允许用户合法导入、公版或明确许可；普通网页仅保留定位、结构化事实和必要短证据。
 
-用户资料库不进入 Git、出版包、项目审计包或 Skill。项目绑定固定 `作品ID + 资料项ID + 内容哈希 + 提取哈希`；全局文件更新只产生升级提案，不能静默改变项目。
+用户资料库不进入 Git、出版包、项目审计包或 Skill。项目绑定固定作品、资料项、asset/bundle、规范化和语义候选哈希；全局文件更新只产生升级提案，不能静默改变项目。
 
 ## 2. 作者工作单
 
@@ -45,7 +55,7 @@
 - `chNNN.agent_task.json`：活动 Agent manifest；
 - `chNNN.fact_inventory.json`：控制面事实投影。
 
-basis 绑定 v5 合同、人工意图、滚动窗口、Plot Node 表、语义义务、筛选事实、人物/作者声音、结构历史和 renderer v5。任一来源变化即 stale。
+basis 绑定 v5 合同、人工意图、滚动窗口、Plot Node 表、语义义务、筛选事实、人物/作者声音、同人上下文 bundle hash、结构历史和 renderer v5。任一来源变化即 stale。作者 Markdown 不包含 bundle 内部 ID、hash、来源位置或检索诊断。
 
 ## 3. 事件、承诺与关闭
 

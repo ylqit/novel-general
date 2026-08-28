@@ -334,10 +334,30 @@ def test_effective_quality_contract_merges_resource_layers_and_project_override(
         "current_story_arc",
         "phase",
         "market_phase",
+        "conditional_overlay",
         "user_approved_style_baseline",
         "project_overrides",
     ]
     assert contract["approved_style_baseline"]["auto_expand"] is False
+    assert contract["conditional_overlays"] == []
+
+
+def test_qidian_fanfiction_uses_advisory_chinese_longform_overlay(tmp_path):
+    config, _root = seed_project(tmp_path)
+    config.data["creation"]["mode"] = "fanfiction"
+
+    contract = compile_effective_quality_contract(config, chapter_number=1)
+
+    assert [item["id"] for item in contract["conditional_overlays"]] == [
+        "cn_longform_fanfiction"
+    ]
+    overlay = contract["contract"]["cn_longform_fanfiction"]
+    assert overlay["execution_level"] == "P2_advisory"
+    assert overlay["fixed_sentence_template"] is False
+    assert overlay["fixed_dialogue_ratio"] is False
+    assert overlay["mandatory_combat_frequency"] is False
+    assert overlay["mandatory_cliffhanger"] is False
+    assert any("原著人物" in item for item in overlay["review_questions"])
 
 
 def test_effective_contract_applies_current_arc_focus_after_story_facets(tmp_path):
@@ -475,16 +495,16 @@ def test_book_ideation_invalid_selection_does_not_pollute_bible_or_state(tmp_pat
     assert brief["manifest_validation"]["ok"] is True
 
 
-def test_production_next_keeps_current_planning_ahead_of_legacy_intelligence(tmp_path):
+def test_production_next_honors_active_book_ideation_before_formal_planning(tmp_path):
     config, _ = seed_project(tmp_path)
     task = create_intelligence_task(config, task_type="book_ideation")
 
     action = production_next(config)
 
     assert task.task_id
-    assert action["status"] == "planning_refresh_required"
-    assert action["task_type"] == "planning_semantic_review"
-    assert action["next_command"].startswith("longform-engine planning structural-validate ")
+    assert action["status"] == "agent_task_awaiting_agent"
+    assert action["task_type"] == "book_ideation"
+    assert action["next_command"].startswith("longform-engine agent-task brief ")
 
 
 def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):

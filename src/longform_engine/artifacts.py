@@ -649,9 +649,9 @@ def verify_task_projection_state(root: Path, archives: list[Path]) -> list[str]:
     index = read_json(index_file, {})
     if not index_file.exists():
         return errors
-    if not isinstance(index, dict) or int(index.get("schema_version") or 0) != 4:
+    if not isinstance(index, dict) or int(index.get("schema_version") or 0) != 5:
         return ["Agent task index is unreadable or unsupported"]
-    if index.get("schema") != "agent_task_index_v4":
+    if index.get("schema") != "agent_task_index_v5":
         errors.append("Agent task index schema is invalid")
     archived_chapters = {chapter_from_archive(path): path for path in archives}
     for task in index.get("tasks", []):

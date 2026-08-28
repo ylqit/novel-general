@@ -35,7 +35,7 @@ def test_production_schedules_strict_bounded_reader_payoff_task(tmp_path):
     assert action["next_command"] == "longform-engine quality payoff-task project.yaml --chapter 1"
 
     result = reader_payoff_task(config, chapter_number=1)
-    manifest = load_manifest(root, "reader_payoff_review:ch001:v4")
+    manifest = load_manifest(root, "reader_payoff_review:ch001:v5")
     strict = validate_manifest_strict(root, manifest)
     inputs = [item["path"] for item in manifest["io"]["inputs"]]
 

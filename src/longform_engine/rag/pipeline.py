@@ -21,6 +21,7 @@ from longform_engine.storage.layout import (
     list_canonical_chapter_files,
     list_finalized_chapter_files,
 )
+from longform_engine.source_materialization import SOURCE_CANON_RELATIVE_PATH
 from longform_engine.text_metrics import content_character_count
 from longform_engine.vectorstore import VectorQuery
 from longform_engine.vectorstore import healthcheck as vector_healthcheck
@@ -79,6 +80,9 @@ class RagQueryResult:
     query: str
     hits: tuple[RagHit, ...]
     cache_file: str
+    token_budget: int = 0
+    used_units: int = 0
+    omitted_hit_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -213,8 +217,9 @@ def query(
     candidate_pool: int | None = None,
     semantic: bool = False,
     chapter_number: int | None = None,
+    token_budget: int | None = None,
 ) -> RagQueryResult:
-    """Run a lightweight SQLite hybrid query over chunk text, keywords, and metadata."""
+    """Run hybrid retrieval, then select useful evidence within a context budget."""
 
     if not query_text.strip():
         raise ValueError("RAG query cannot be empty.")
@@ -222,11 +227,29 @@ def query(
     if not database_path(config).exists():
         sync_database(config)
     rag_config = config.data.get("rag", {})
-    top_k = top_k or int(rag_config.get("top_k", 12))
+    top_k = top_k or int(rag_config.get("max_hits", 64))
     candidate_pool = candidate_pool or int(rag_config.get("candidate_pool_size", 40))
-    hits = retrieve_hits(config, query_text, top_k=top_k, candidate_pool=candidate_pool, semantic=semantic, chapter_number=chapter_number)
+    token_budget = token_budget or int(rag_config.get("context_token_budget", 6000))
+    if token_budget <= 0:
+        raise ValueError("RAG token budget must be positive")
+    ranked = retrieve_hits(
+        config,
+        query_text,
+        top_k=top_k,
+        candidate_pool=max(candidate_pool, top_k),
+        semantic=semantic,
+        chapter_number=chapter_number,
+    )
+    hits, used_units, omitted = select_hits_by_token_budget(ranked, token_budget=token_budget)
     cache_file = write_query_cache(config, query_text, hits)
-    return RagQueryResult(query=query_text, hits=tuple(hits), cache_file=str(cache_file))
+    return RagQueryResult(
+        query=query_text,
+        hits=tuple(hits),
+        cache_file=str(cache_file),
+        token_budget=token_budget,
+        used_units=used_units,
+        omitted_hit_ids=tuple(omitted),
+    )
 
 
 def build_context(
@@ -236,6 +259,7 @@ def build_context(
     query_text: str | None = None,
     top_k: int | None = None,
     semantic: bool = False,
+    token_budget: int | None = None,
 ) -> RagContextResult:
     """Build the next chapter context document from RAG hits and project state."""
 
@@ -243,7 +267,14 @@ def build_context(
     if query_text is None:
         title = config.data["project"]["title"]
         query_text = f"{title} 第{chapter_number or '下一'}章 主线 人物 伏笔 节奏"
-    result = query(config, query_text, top_k=top_k, semantic=semantic, chapter_number=chapter_number)
+    result = query(
+        config,
+        query_text,
+        top_k=top_k,
+        semantic=semantic,
+        chapter_number=chapter_number,
+        token_budget=token_budget,
+    )
 
     context_path = root / "60_rag" / "context" / "next_plot_context.md"
     lines = [
@@ -252,6 +283,9 @@ def build_context(
         f"- Query: {query_text}",
         f"- Target chapter: {chapter_number if chapter_number is not None else 'unknown'}",
         f"- Semantic mode: {'enabled' if semantic else 'disabled'}",
+        f"- Retrieval token budget: {result.token_budget}",
+        f"- Retrieval units used: {result.used_units}",
+        f"- Omitted after rerank: {', '.join(result.omitted_hit_ids) or 'none'}",
         f"- Generated at: {utc_now()}",
         "",
         "## Recent Chapters",
@@ -342,6 +376,24 @@ def build_context(
             )
         ),
     )
+
+
+def select_hits_by_token_budget(
+    hits: Iterable[RagHit], *, token_budget: int
+) -> tuple[list[RagHit], int, list[str]]:
+    """Preserve rerank order while recording every budget omission explicitly."""
+
+    selected: list[RagHit] = []
+    omitted: list[str] = []
+    used = 0
+    for hit in hits:
+        units = max(1, (len(hit.text[:700]) + 1) // 2)
+        if selected and used + units > token_budget:
+            omitted.append(hit.id)
+            continue
+        selected.append(hit)
+        used += units
+    return selected, used, omitted
 
 
 def retrieve_hits(
@@ -1752,7 +1804,7 @@ def final_chapter_numbers(root: Path) -> set[int]:
 def is_allowed_rag_source(config: ConfigDocument, source_path: str, metadata: dict[str, Any]) -> bool:
     normalized = source_path.replace("\\", "/")
     if metadata.get("canon") is True:
-        return normalized == "10_bible/research_canon.jsonl"
+        return normalized in {"10_bible/research_canon.jsonl", SOURCE_CANON_RELATIVE_PATH}
     if not normalized.startswith("40_manuscript/final/"):
         return False
     root = resolve_project_root(config)

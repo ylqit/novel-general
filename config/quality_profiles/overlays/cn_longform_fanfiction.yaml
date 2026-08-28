@@ -1,0 +1,24 @@
+schema: quality_profile_v1
+kind: overlay
+id: cn_longform_fanfiction
+updated_at: "2026-08-28"
+evidence_level: "editorial_heuristic"
+heuristic_notes: "面向起点男频衍生同人的非机械质量覆盖；不反推推荐算法，不承诺审核、签约或商业授权。"
+contract:
+  cn_longform_fanfiction:
+    execution_level: P2_advisory
+    fixed_sentence_template: false
+    fixed_dialogue_ratio: false
+    mandatory_combat_frequency: false
+    mandatory_cliffhanger: false
+    review_questions:
+      - "开篇能否识别当前原著时间、人物位置和同人独有变量？"
+      - "新变量是否真正接受原著规则、组织和人物选择的检验？"
+      - "前期是否只依赖未来知识、抢机缘或无代价救人？"
+      - "第一卷是否建立不依赖机械复演原作的原创主线？"
+      - "原著人物是否仍有独立目标、职责、拒绝权和场外行动？"
+      - "事件改变后是否产生一阶、二阶蝴蝶效应和新的代价？"
+      - "每卷是否重复进入、抢机缘、救人、离开的单一循环？"
+      - "跨界能力是否承受宿主世界中的代价、反制和组织后果？"
+      - "章节是否提供原著识别价值、原创推进价值，或两者兼有？"
+    blocking_boundary: "平台适配本身不阻断；明确 Canon、分歧、知识、能力或人物主体性违约由正式语义审查处理。"

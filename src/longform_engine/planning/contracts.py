@@ -334,7 +334,16 @@ def validate_volume_plan(
         "lifecycle",
         "approved_by",
     }
-    if not _exact_object(value, fields, "active_volume_plan", errors):
+    if not isinstance(value, dict):
+        errors.append("active_volume_plan must be an object")
+        return None
+    missing = sorted(fields - set(value))
+    extras = sorted(set(value) - fields - {"fanfiction_projection"})
+    if missing:
+        errors.append("active_volume_plan is missing fields: " + ", ".join(missing))
+    if extras:
+        errors.append("active_volume_plan has unexpected fields: " + ", ".join(extras))
+    if missing or extras:
         return None
     if value.get("schema") != VOLUME_PLAN_SCHEMA:
         errors.append(f"active_volume_plan.schema must be {VOLUME_PLAN_SCHEMA}")
@@ -373,6 +382,20 @@ def validate_volume_plan(
             errors.append("proposed active_volume_plan must not prefill approved_by")
     elif approved_by != "human":
         errors.append("non-proposed active_volume_plan requires approved_by=human")
+    projection = value.get("fanfiction_projection")
+    if projection is not None:
+        if not isinstance(projection, dict):
+            errors.append("active_volume_plan.fanfiction_projection must be an object")
+        else:
+            if not str(projection.get("body") or "").strip():
+                errors.append("active_volume_plan.fanfiction_projection.body must be non-empty")
+            claim_refs = projection.get("claim_refs")
+            if not isinstance(claim_refs, list) or any(
+                not isinstance(item, str) or not item.strip() for item in claim_refs or []
+            ):
+                errors.append(
+                    "active_volume_plan.fanfiction_projection.claim_refs must be a text list"
+                )
     return chapter_range
 
 

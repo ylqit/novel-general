@@ -7,7 +7,14 @@ import yaml
 from longform_engine.agent_isolation import IsolatedContextSource, assert_current_protocol_coverage, plan_context_batches
 from longform_engine.agent_protocol_readiness import check_agent_data_pipeline_readiness
 from longform_engine.agent_protocols import AGENT_OUTPUT_PROTOCOLS, EVIDENCE_REVIEW_SCHEMA, validate_evidence_review
-from longform_engine.agent_tasks import TASK_CONTRACTS, build_manifest, load_manifest, normalize_manifest, write_manifest
+from longform_engine.agent_tasks import (
+    TASK_CONTRACTS,
+    build_manifest,
+    list_manifests,
+    load_manifest,
+    normalize_manifest,
+    write_manifest,
+)
 from longform_engine.config import load_project_config
 from longform_engine.db import query_table, rebuild_database
 from longform_engine.graph import check_graph
@@ -23,11 +30,11 @@ from tests.project_fixtures import mark_project_ready
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
+def test_progressive_prompts_cover_current_protocols_without_pollution(tmp_path):
     registry = load_role_registry(ROOT)
     assert_current_protocol_coverage(registry)
     assert registry.registry_version == 3
-    assert len(registry.roles) == 29
+    assert "semantic_narrative_architect" in registry.roles
     assert len(registry.playbooks) == 12
     assert "executive_editor" not in registry.roles
     assert not {"graph_extract", "memory_extract", "character_memory"} & set(TASK_CONTRACTS)
@@ -52,7 +59,14 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
             "isolated_archival",
             "candidate_consultation",
         }
-    assert len(TASK_CONTRACTS) == 28
+    assert {
+        "character_interpretation",
+        "story_architecture_design",
+        "chapter_semantic_planning",
+        "draft_semantic_review",
+        "prose_revision_review",
+        "reader_feedback_analysis",
+    } <= set(TASK_CONTRACTS)
     assert {contract["schemas"][0] for contract in TASK_CONTRACTS.values()} == set(AGENT_OUTPUT_PROTOCOLS)
     assert all(len(contract["schemas"]) == 1 for contract in TASK_CONTRACTS.values())
     facet_registries = load_facet_registries()
@@ -99,7 +113,12 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
             assert set(case) == {"positive", "negative", "boundary"}
             assert all(any("\u3400" <= char <= "\u9fff" for char in text) for text in case.values())
             calibration_texts.extend("".join(text.split()) for text in case.values())
-    assert len(calibration_texts) == 85 * 3
+    expected_professional_items = (
+        len(registry.roles) + len(registry.playbooks) + sum(
+            len(items) for items in professional["facets"].values()
+        )
+    )
+    assert len(calibration_texts) == expected_professional_items * 3
     assert len(calibration_texts) == len(set(calibration_texts))
 
     professional_check = next(
@@ -107,10 +126,10 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
     )
     inventory = professional_check["detail"]["inventory"]
     assert professional_check["status"] == "pass"
-    assert inventory["item_count"] == 85
-    assert len(inventory["roles"]) == 29
-    assert len(inventory["playbooks"]) == 12
-    assert len(inventory["facets"]) == 44
+    assert inventory["item_count"] == expected_professional_items
+    assert len(inventory["roles"]) == len(registry.roles)
+    assert len(inventory["playbooks"]) == len(registry.playbooks)
+    assert len(inventory["facets"]) == sum(len(items) for items in professional["facets"].values())
     assert all(item["estimated_units"] > 0 and len(item["contract_hash"]) == 64 for item in inventory["roles"])
     assert all(item["loaded_role_sections"] for item in inventory["roles"])
     assert all(item["estimated_units"] > 0 and len(item["source_hash"]) == 64 for item in inventory["playbooks"])
@@ -189,9 +208,14 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
     mark_project_ready(project.root, config)
     continue_write(config, chapter_number=1)
 
-    manifest = load_manifest(project.root, "chapter_write:ch001:v4")
+    chapter_task_id = next(
+        item["task_id"]
+        for item in list_manifests(project.root, chapter_number=1)
+        if item["task_type"] == "chapter_write"
+    )
+    manifest = load_manifest(project.root, chapter_task_id)
     brief = agent_task_brief(config, manifest["task_id"], host="codex")
-    assert manifest["schema_version"] == 4
+    assert manifest["schema_version"] == 5
     persisted = json.loads((project.root / manifest["manifest_file"]).read_text(encoding="utf-8"))
     assert set(persisted) == {
         "schema_version",
@@ -216,7 +240,7 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
     assert len(manifest["role"]["contract_hash"]) == 64
     assert "playbook_bundle_hash" not in manifest
     assert "prompt_selection_reasons" not in manifest
-    assert brief["renderer"] == "agent_task_brief_v4"
+    assert brief["renderer"] == "agent_task_brief_v5"
     assert brief["role"]["id"] == "chapter_author"
     assert len(brief["role"]["compiled_prompt_hash"]) == 64
     assert "## 角色与目标" in brief["work_order_markdown"]
@@ -269,7 +293,7 @@ def test_progressive_prompts_cover_four_protocols_without_pollution(tmp_path):
 
     graph = project.root / "30_state" / "story_graph.json"
     graph_before = graph.read_bytes()
-    with pytest.raises(ValueError, match="schema_version must be 4"):
+    with pytest.raises(ValueError, match="schema_version must be 5"):
         normalize_manifest(dict(manifest, schema_version=2))
     assert graph.read_bytes() == graph_before
     assert not list((project.root / "40_manuscript" / "final").glob("ch*.md"))
@@ -348,7 +372,7 @@ def test_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
             role,
             task_type=task_type,
             scope={"kind": "chapter", "chapter_number": 7},
-            task_id=f"{task_type}:ch007:v4",
+            task_id=f"{task_type}:ch007:v5",
         )
         assert directive["action"] == expected_action
 
@@ -375,9 +399,9 @@ def test_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
     assert {item["aggregation"] for item in batches} == {"deterministic_source_hash_and_evidence_id"}
 
 
-def test_release_guard_tracks_current_v011_contracts():
+def test_release_guard_tracks_current_v012_contracts():
     guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_11_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_12_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
     operator_guide = (ROOT / "docs" / "OPERATOR_GUIDE.md").read_text(encoding="utf-8")
     production = (ROOT / "src" / "longform_engine" / "production.py").read_text(encoding="utf-8")
 

@@ -10,6 +10,13 @@ import re
 
 import yaml
 
+from longform_engine.semantic_protocols import SEMANTIC_DOCUMENT_SCHEMA
+
+
+SOURCE_EVIDENCE_REVIEW_SCHEMA = SEMANTIC_DOCUMENT_SCHEMA
+SOURCE_EXTRACTION_SCHEMA = SEMANTIC_DOCUMENT_SCHEMA
+SOURCE_OBSERVATION_SCHEMA = SEMANTIC_DOCUMENT_SCHEMA
+
 
 PROSE_MARKDOWN_SCHEMA = "prose_markdown_v1"
 DESIGN_DOCUMENT_SCHEMA = "design_document_v1"
@@ -35,6 +42,7 @@ AGENT_OUTPUT_PROTOCOLS = frozenset(
         DESIGN_DOCUMENT_SCHEMA,
         EVIDENCE_REVIEW_SCHEMA,
         CANONICAL_DELTA_SCHEMA,
+        SEMANTIC_DOCUMENT_SCHEMA,
     }
 )
 
@@ -54,7 +62,6 @@ DESIGN_TASK_TYPES = frozenset(
         "repair_plan_synthesis",
         "style_analysis",
         "adaptation_analysis",
-        "fanfiction_design",
         "human_review_consult",
     }
 )
@@ -69,7 +76,35 @@ EVIDENCE_REVIEW_TASK_TYPES = frozenset(
     }
 )
 CANONICAL_DELTA_TASK_TYPES = frozenset(
-    {"chapter_semantic", "research_synthesis", "fanfiction_canon", "design_semantic_compile"}
+    {"chapter_semantic", "research_synthesis", "design_semantic_compile"}
+)
+SEMANTIC_DOCUMENT_TASK_TYPES = frozenset(
+    {
+        "fanfiction_canon",
+        "fanfiction_story_engine",
+        "fanfiction_design_review",
+        "source_discovery_planning",
+        "source_candidate_triage",
+        "source_timeline_alignment",
+        "source_conflict_analysis",
+        "character_interpretation",
+        "fanfiction_route_design",
+        "fanfiction_design",
+        "story_architecture_design",
+        "chapter_semantic_planning",
+        "draft_semantic_review",
+        "prose_revision_review",
+        "reader_feedback_analysis",
+    }
+)
+SOURCE_OBSERVATION_TASK_TYPES = frozenset({"source_visual_observation"})
+SOURCE_EXTRACTION_TASK_TYPES = frozenset({"source_fact_extraction"})
+SOURCE_REVIEW_TASK_TYPES = frozenset(
+    {
+        "source_evidence_review",
+        "source_version_conflict_review",
+        "source_coverage_gap_analysis",
+    }
 )
 
 DESIGN_REQUIRED_HEADINGS: dict[str, tuple[str, ...]] = {
@@ -140,15 +175,6 @@ DESIGN_REQUIRED_HEADINGS: dict[str, tuple[str, ...]] = {
     ),
     "style_analysis": ("样本边界", "叙述视角", "句段与节奏", "对白与人物声音", "可迁移技法", "禁用模式"),
     "adaptation_analysis": ("来源与证据边界", "结构技法", "适用条件", "不可复制内容", "原创转化方案"),
-    "fanfiction_design": (
-        "Canon截止点",
-        "分歧点与蝴蝶效应",
-        "人物声音与OOC边界",
-        "原创主线与贡献",
-        "关系发展",
-        "世界规则变化",
-        "结局边界",
-    ),
     "human_review_consult": (
         "问题复述",
         "证据判断",
@@ -161,7 +187,6 @@ DESIGN_REQUIRED_HEADINGS: dict[str, tuple[str, ...]] = {
 DELTA_TYPES = {
     "chapter_semantic": "chapter_semantic",
     "research_synthesis": "research_canon",
-    "fanfiction_canon": "fanfiction_canon",
     "design_semantic_compile": "design_document",
 }
 REVIEW_COVERAGE_STATES = frozenset({"checked", "insufficient", "not_applicable"})
@@ -230,6 +255,14 @@ def output_protocol_for_task(task_type: str) -> str:
         return EVIDENCE_REVIEW_SCHEMA
     if normalized in CANONICAL_DELTA_TASK_TYPES:
         return CANONICAL_DELTA_SCHEMA
+    if normalized in SEMANTIC_DOCUMENT_TASK_TYPES:
+        return SEMANTIC_DOCUMENT_SCHEMA
+    if normalized in SOURCE_OBSERVATION_TASK_TYPES:
+        return SEMANTIC_DOCUMENT_SCHEMA
+    if normalized in SOURCE_EXTRACTION_TASK_TYPES:
+        return SEMANTIC_DOCUMENT_SCHEMA
+    if normalized in SOURCE_REVIEW_TASK_TYPES:
+        return SEMANTIC_DOCUMENT_SCHEMA
     raise AgentProtocolError(f"task_type `{task_type}` has no Agent output protocol")
 
 
