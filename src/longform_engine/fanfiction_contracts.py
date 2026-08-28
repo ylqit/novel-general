@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -8,7 +9,7 @@ from typing import Any
 
 from longform_engine.config import ConfigDocument
 from longform_engine.fanfiction_sources import FanfictionSourceError, project_source_contract
-from longform_engine.semantic_protocols import validate_semantic_document
+from longform_engine.semantic_protocols import canonical_json_hash, validate_semantic_document
 
 
 STORY_ENGINE_REQUIRED_SEMANTIC_TYPES = (
@@ -60,6 +61,7 @@ class CurrentFanfictionDocuments:
     story_engine: CurrentFanfictionDocument
     route: CurrentFanfictionDocument
     independent_review: CurrentFanfictionDocument
+    review_target: CurrentFanfictionDocument
     paths: dict[str, Path]
     sha256: dict[str, str]
 
@@ -131,6 +133,35 @@ def fanfiction_semantic_types(payload: dict[str, Any]) -> set[str]:
         for claim in payload.get("claims") or []
         if isinstance(claim, dict) and isinstance(claim.get("extensions"), dict)
     }
+
+
+def fanfiction_route_review_projection(payload: dict[str, Any]) -> dict[str, Any]:
+    """Project only the route semantics that an independent review actually approves."""
+
+    extensions_value = payload.get("extensions")
+    extensions: dict[str, Any] = (
+        deepcopy(extensions_value) if isinstance(extensions_value, dict) else {}
+    )
+    for field in (
+        "independent_review",
+        "approved_candidate_sha256",
+        "human_decision",
+    ):
+        extensions.pop(field, None)
+    return {
+        "document_type": deepcopy(payload.get("document_type")),
+        "title": deepcopy(payload.get("title")),
+        "continuity": deepcopy(payload.get("continuity")),
+        "body": deepcopy(payload.get("body")),
+        "claims": deepcopy(payload.get("claims")),
+        "evidence_references": deepcopy(payload.get("evidence_references")),
+        "uncertainties": deepcopy(payload.get("uncertainties")),
+        "extensions": extensions,
+    }
+
+
+def fanfiction_route_review_projection_sha256(payload: dict[str, Any]) -> str:
+    return canonical_json_hash(fanfiction_route_review_projection(payload))
 
 
 def _source_contract_record(source: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any]:
@@ -640,12 +671,13 @@ def validate_fanfiction_review_contract(
 
 
 def _validate_independent_review(
+    config: ConfigDocument,
     root: Path,
     route: dict[str, Any],
     *,
     source_canon: CurrentFanfictionDocument,
     story_engine: CurrentFanfictionDocument,
-) -> CurrentFanfictionDocument:
+) -> tuple[CurrentFanfictionDocument, CurrentFanfictionDocument]:
     extensions_value = route.get("extensions")
     extensions: dict[str, Any] = extensions_value if isinstance(extensions_value, dict) else {}
     review_value = extensions.get("independent_review")
@@ -678,6 +710,15 @@ def _validate_independent_review(
             path=review_path,
             code="invalid",
             detail="current route independent review must use the isolated fanfiction_route_reviewer role",
+        )
+    projection_digest = review.get("reviewed_route_projection_sha256")
+    if not isinstance(projection_digest, str) or len(projection_digest) != 64 or any(
+        character not in "0123456789abcdef" for character in projection_digest
+    ):
+        raise FanfictionContractError(
+            path=route_path,
+            code="invalid",
+            detail="current route independent review projection binding must be a SHA-256 digest",
         )
     try:
         review_payload = _read_document(review_path)
@@ -736,13 +777,43 @@ def _validate_independent_review(
             code=exc.code,
             detail=f"current route independent review target is unavailable: {exc.detail}",
         ) from exc
+    target_errors: list[str] = []
+    validate_fanfiction_route_contract(
+        config,
+        root,
+        target,
+        target_errors,
+        require_approved=False,
+        _source_canon=source_canon,
+        _story_engine=story_engine,
+    )
+    if target_errors:
+        raise FanfictionContractError(
+            path=target_path,
+            code="invalid",
+            detail=(
+                "current route independent review target is not a valid fanfiction route: "
+                + "; ".join(target_errors)
+            ),
+        )
     if review_extensions.get("review_target_sha256") != target.sha256:
         raise FanfictionContractError(
             path=target_path,
             code="stale",
             detail="current route independent review target hash is stale",
         )
-    return review_payload
+    target_projection_digest = fanfiction_route_review_projection_sha256(target)
+    route_projection_digest = fanfiction_route_review_projection_sha256(route)
+    if (
+        projection_digest != target_projection_digest
+        or projection_digest != route_projection_digest
+    ):
+        raise FanfictionContractError(
+            path=route_path,
+            code="stale",
+            detail="current route semantics do not match the independently reviewed route projection",
+        )
+    return review_payload, target
 
 
 def _load_current_route(
@@ -751,7 +822,11 @@ def _load_current_route(
     *,
     source_canon: CurrentFanfictionDocument | None = None,
     story_engine: CurrentFanfictionDocument | None = None,
-) -> tuple[CurrentFanfictionDocument, CurrentFanfictionDocument]:
+) -> tuple[
+    CurrentFanfictionDocument,
+    CurrentFanfictionDocument,
+    CurrentFanfictionDocument,
+]:
     current_source = source_canon or _load_current_source_canon(config, root)
     current_engine = story_engine or _load_current_story_engine(
         config,
@@ -772,20 +847,21 @@ def _load_current_route(
     )
     if errors:
         raise _contract_error(path, "fanfiction route", errors)
-    review = _validate_independent_review(
+    review, review_target = _validate_independent_review(
+        config,
         root,
         payload,
         source_canon=current_source,
         story_engine=current_engine,
     )
-    return payload, review
+    return payload, review, review_target
 
 
 def load_current_fanfiction_route(
     config: ConfigDocument,
     root: Path,
 ) -> CurrentFanfictionDocument:
-    route, _review = _load_current_route(config, root)
+    route, _review, _review_target = _load_current_route(config, root)
     return route
 
 
@@ -798,7 +874,7 @@ def load_current_fanfiction_documents(
     engine_documents = load_current_fanfiction_story_engine_documents(config, root)
     source_canon = engine_documents.source_canon
     story_engine = engine_documents.story_engine
-    route, review = _load_current_route(
+    route, review, review_target = _load_current_route(
         config,
         root,
         source_canon=source_canon,
@@ -809,18 +885,21 @@ def load_current_fanfiction_documents(
         "story_engine": root / "10_bible" / "fanfiction" / "story_engine.json",
         "route_design": root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
         "independent_review": review.path,
+        "review_target": review_target.path,
     }
     return CurrentFanfictionDocuments(
         source_canon=source_canon,
         story_engine=story_engine,
         route=route,
         independent_review=review,
+        review_target=review_target,
         paths=paths,
         sha256={
             "source_canon": source_canon.sha256,
             "story_engine": story_engine.sha256,
             "route_design": route.sha256,
             "independent_review": review.sha256,
+            "review_target": review_target.sha256,
         },
     )
 
@@ -835,6 +914,8 @@ __all__ = [
     "STORY_ENGINE_REQUIRED_SEMANTIC_TYPES",
     "STORY_ENGINE_ROUTE_FAMILIES",
     "current_fanfiction_source_contracts",
+    "fanfiction_route_review_projection",
+    "fanfiction_route_review_projection_sha256",
     "fanfiction_semantic_types",
     "load_current_fanfiction_route",
     "load_current_fanfiction_documents",

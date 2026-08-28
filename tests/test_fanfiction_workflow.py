@@ -15,6 +15,7 @@ from longform_engine.fanfiction_context import (
     event_disposition_status,
 )
 from longform_engine.fanfiction_contracts import (
+    fanfiction_route_review_projection_sha256,
     validate_fanfiction_source_canon,
 )
 from longform_engine.gates.pipeline import check_fanfiction_source_reproduction
@@ -798,6 +799,9 @@ def install_cross_namespace_event_dependencies(
     route["extensions"]["independent_review"]["review_artifact_id"] = review["artifact"][
         "artifact_id"
     ]
+    route["extensions"]["independent_review"]["reviewed_route_projection_sha256"] = (
+        fanfiction_route_review_projection_sha256(route_target)
+    )
     route = approved_copy(route)
     (root / "10_bible" / "fanfiction" / "fanfiction_bible.json").write_text(
         json.dumps(route, ensure_ascii=False, indent=2), encoding="utf-8"

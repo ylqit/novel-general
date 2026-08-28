@@ -19,6 +19,7 @@ from longform_engine.semantic_protocols import (
     approved_semantic_document,
     build_human_decision,
     build_semantic_document,
+    canonical_json_hash,
     seal_semantic_document,
 )
 
@@ -54,6 +55,28 @@ def write_document(path: Path, document: dict) -> str:
     raw = json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8")
     path.write_bytes(raw)
     return sha256(raw).hexdigest()
+
+
+def reviewed_route_projection_sha256(document: dict) -> str:
+    extensions = deepcopy(document["extensions"])
+    for field in (
+        "independent_review",
+        "approved_candidate_sha256",
+        "human_decision",
+    ):
+        extensions.pop(field, None)
+    return canonical_json_hash(
+        {
+            "document_type": document["document_type"],
+            "title": document["title"],
+            "continuity": document["continuity"],
+            "body": document["body"],
+            "claims": document["claims"],
+            "evidence_references": document["evidence_references"],
+            "uncertainties": document["uncertainties"],
+            "extensions": extensions,
+        }
+    )
 
 
 def semantic_claim(
@@ -283,6 +306,7 @@ def install_route(project: dict) -> tuple[dict, Path]:
         "review_artifact_id": review["artifact"]["artifact_id"],
         "reviewer_role": "fanfiction_route_reviewer",
         "verdict": "pass",
+        "reviewed_route_projection_sha256": reviewed_route_projection_sha256(route_candidate),
     }
     route = approve(route_candidate)
     route_path = project["root"] / "10_bible" / "fanfiction" / "fanfiction_bible.json"
@@ -642,8 +666,97 @@ def test_context_bundle_records_independent_review_provenance(current_contract_p
     )
 
     review_path = route["extensions"]["independent_review"]["review_path"]
+    review = json.loads((project["root"] / review_path).read_text(encoding="utf-8"))
+    target_path = review["extensions"]["review_target_path"]
     provenance = {item["path"]: item["sha256"] for item in bundle["source_files"]}
     assert provenance[review_path] == route["extensions"]["independent_review"]["review_sha256"]
+    assert provenance[target_path] == review["extensions"]["review_target_sha256"]
+    current = contracts.load_current_fanfiction_documents(project["config"], project["root"])
+    assert current.review_target.path == project["root"] / target_path
+    assert current.review_target.sha256 == review["extensions"]["review_target_sha256"]
+
+
+def test_current_review_target_must_match_current_canonical_route_semantics(
+    current_contract_project,
+):
+    project = current_contract_project
+    route, route_path = install_route(project)
+    bundle = compile_fanfiction_context(
+        project["config"],
+        chapter_number=1,
+        chapter_contract={"chapter_number": 1},
+        chapter_card={"title": "路线 A"},
+        character_packet={},
+    )
+    write_fanfiction_context_bundle(project["root"], bundle)
+    different_route = deepcopy(route)
+    different_route["title"] = "语义不同的路线 B"
+    different_route["body"] = "路线 B 改写了已复核路线的核心因果语义。"
+    different_route["claims"][0]["statement"] = "路线 B 使用另一项初始分歧。"
+    write_document(route_path, reapprove(different_route))
+
+    with pytest.raises(contracts.FanfictionContractError) as exc_info:
+        contracts.load_current_fanfiction_route(project["config"], project["root"])
+    with pytest.raises(FanfictionContextError, match="fanfiction_contract"):
+        compile_fanfiction_context(
+            project["config"],
+            chapter_number=1,
+            chapter_contract={"chapter_number": 1},
+            chapter_card={"title": "路线 B"},
+            character_packet={},
+        )
+
+    assert exc_info.value.code == "stale"
+    status = fanfiction_context_status(project["config"], chapter_number=1)
+    assert status["status"] == "stale"
+    assert status["diagnostics"]["contract_errors"]
+
+
+def test_current_review_target_must_be_a_valid_fanfiction_route(current_contract_project):
+    project = current_contract_project
+    route, _route_path = install_route(project)
+    bundle = compile_fanfiction_context(
+        project["config"],
+        chapter_number=1,
+        chapter_contract={"chapter_number": 1},
+        chapter_card={"title": "合法路线"},
+        character_packet={},
+    )
+    write_fanfiction_context_bundle(project["root"], bundle)
+    review_path = project["root"] / route["extensions"]["independent_review"]["review_path"]
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    target_path = project["root"] / review["extensions"]["review_target_path"]
+    unrelated = approve(
+        build_semantic_document(
+            document_id="sem:unrelated_approved_document",
+            document_type="普通批准语义文档",
+            title="与同人路线无关",
+            scope={"kind": "project", "project": project["root"].name},
+            continuity="无关连续性",
+            body="这是通用 approved semantic document，但不是同人路线。",
+        )
+    )
+    target_sha = write_document(target_path, unrelated)
+    review["extensions"]["review_target_sha256"] = target_sha
+    review = reapprove(review)
+    review_sha = write_document(review_path, review)
+    bind_review_to_route(project, route, review, review_sha)
+
+    with pytest.raises(contracts.FanfictionContractError) as exc_info:
+        contracts.load_current_fanfiction_route(project["config"], project["root"])
+    with pytest.raises(FanfictionContextError, match="fanfiction_contract"):
+        compile_fanfiction_context(
+            project["config"],
+            chapter_number=1,
+            chapter_contract={"chapter_number": 1},
+            chapter_card={"title": "非法 target"},
+            character_packet={},
+        )
+
+    assert exc_info.value.code == "invalid"
+    status = fanfiction_context_status(project["config"], chapter_number=1)
+    assert status["status"] == "invalid"
+    assert status["diagnostics"]["contract_errors"]
 
 
 @pytest.mark.parametrize(

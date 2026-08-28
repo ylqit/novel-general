@@ -837,6 +837,7 @@ def apply_intelligence_candidate(
     review_manifest: dict[str, Any] | None = None
     review_candidate: Path | None = None
     approved_review_payload: dict[str, Any] | None = None
+    reviewed_route_payload: dict[str, Any] | None = None
     if task_type == "fanfiction_design":
         if approved_by != "human":
             raise ValueError("fanfiction_design apply requires --approved-by human.")
@@ -873,6 +874,15 @@ def apply_intelligence_candidate(
             )
         if str(review_payload.get("extensions", {}).get("verdict") or "") != "pass":
             raise ValueError("fanfiction_design requires an independent review verdict of pass.")
+        reviewed_route_payload = seal_semantic_document(payload)
+        reviewed_route_bytes = (
+            json.dumps(reviewed_route_payload, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        review_payload = json.loads(json.dumps(review_payload, ensure_ascii=False))
+        review_payload["extensions"]["review_target_path"] = relative(root, candidate)
+        review_payload["extensions"]["review_target_sha256"] = sha256(
+            reviewed_route_bytes
+        ).hexdigest()
         review_document = seal_semantic_document(review_payload)
         review_envelope = review_document["artifact"]
         review_decision = build_human_decision(
@@ -906,6 +916,11 @@ def apply_intelligence_candidate(
             ),
             "reviewer_role": "fanfiction_route_reviewer",
             "verdict": "pass",
+            "reviewed_route_projection_sha256": (
+                fanfiction_contracts.fanfiction_route_review_projection_sha256(
+                    reviewed_route_payload
+                )
+            ),
         }
         payload = seal_semantic_document(payload)
         source_paths.append(review_candidate)
@@ -934,6 +949,9 @@ def apply_intelligence_candidate(
     if review_candidate is not None and approved_review_payload is not None:
         touched.append(review_candidate)
         touched = list(dict.fromkeys(touched))
+    if reviewed_route_payload is not None:
+        touched.append(candidate)
+        touched = list(dict.fromkeys(touched))
     task_chapter = manifest_chapter_number(scope)
     with apply_transaction(
         root,
@@ -948,6 +966,8 @@ def apply_intelligence_candidate(
             "requires_human_apply": bool(spec["human"]),
         },
     ) as transaction:
+        if reviewed_route_payload is not None:
+            write_json(candidate, reviewed_route_payload)
         if review_candidate is not None and approved_review_payload is not None:
             write_json(review_candidate, approved_review_payload)
         write_targets(config, root, task_type, payload, scope=manifest_scope)
