@@ -60,19 +60,11 @@ from longform_engine.character_expression import (
 )
 from longform_engine.config import ConfigDocument
 from longform_engine.db import sync_database, sync_fanfiction_source_canon
-from longform_engine.fanfiction_contracts import (
-    FanfictionContractError,
-    load_current_fanfiction_story_engine,
-    validate_event_disposition_claims as validate_event_disposition_claims,
-    validate_fanfiction_route_contract,
-    validate_fanfiction_story_engine,
-)
+from longform_engine import fanfiction_contracts
 from longform_engine.fanfiction_sources import (
     CANON_SCHEMA as FANFICTION_CANON_SCHEMA,
-    FanfictionSourceError,
     fanfiction_canon_input_files,
     fanfiction_source_readiness,
-    project_source_contract,
     source_upgrade_status,
 )
 from longform_engine.lengths import compile_length_forecast
@@ -2013,14 +2005,15 @@ def assess_project_readiness(config: ConfigDocument) -> ProjectReadinessResult:
                 "fanfiction_canon",
                 ("fanfiction_canon has not been explicitly applied.",),
             )
-        canon_errors: list[str] = []
-        canon_payload = read_json(root / "10_bible" / "fanfiction" / "source_canon.json", {})
-        if not isinstance(canon_payload, dict):
-            canon_errors.append("10_bible/fanfiction/source_canon.json must be an object.")
-        else:
-            validate_fanfiction_canon(config, canon_payload, canon_errors)
-        if canon_errors:
-            return ProjectReadinessResult(False, "fanfiction_canon", "fanfiction_canon", tuple(canon_errors))
+        try:
+            fanfiction_contracts.load_current_fanfiction_source_canon(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            return ProjectReadinessResult(
+                False,
+                "fanfiction_canon",
+                "fanfiction_canon",
+                (str(exc),),
+            )
         story_engine_marker = (
             markers.get("fanfiction_story_engine")
             if isinstance(markers.get("fanfiction_story_engine"), dict)
@@ -2033,25 +2026,14 @@ def assess_project_readiness(config: ConfigDocument) -> ProjectReadinessResult:
                 "fanfiction_story_engine",
                 ("fanfiction_story_engine has not been explicitly applied.",),
             )
-        story_engine_errors: list[str] = []
-        story_engine_payload = read_json(
-            root / "10_bible" / "fanfiction" / "story_engine.json", {}
-        )
-        if not isinstance(story_engine_payload, dict):
-            story_engine_errors.append("10_bible/fanfiction/story_engine.json must be an object.")
-        else:
-            validate_fanfiction_story_engine(
-                config, root, story_engine_payload, story_engine_errors
-            )
-            story_engine_errors.extend(
-                validate_semantic_document(story_engine_payload, require_approved=True)
-            )
-        if story_engine_errors:
+        try:
+            fanfiction_contracts.load_current_fanfiction_story_engine(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
             return ProjectReadinessResult(
                 False,
                 "fanfiction_story_engine",
                 "fanfiction_story_engine",
-                tuple(dict.fromkeys(story_engine_errors)),
+                (str(exc),),
             )
     ideation_errors = book_ideation_readiness_errors(root)
     if ideation_errors:
@@ -2065,24 +2047,15 @@ def assess_project_readiness(config: ConfigDocument) -> ProjectReadinessResult:
                 "fanfiction_design",
                 ("fanfiction_design has not been explicitly applied.",),
             )
-        design_errors: list[str] = []
-        design_payload = read_json(root / "10_bible" / "fanfiction" / "fanfiction_bible.json", {})
-        if not isinstance(design_payload, dict):
-            design_errors.append("10_bible/fanfiction/fanfiction_bible.json must be an object.")
-        else:
-            validate_fanfiction_design(config, root, design_payload, design_errors)
-            design_errors.extend(validate_semantic_document(design_payload, require_approved=True))
-            review = design_payload.get("extensions", {}).get("independent_review")
-            if not isinstance(review, dict) or review.get("verdict") != "pass":
-                design_errors.append("fanfiction_design is missing its independent pass review binding")
-            elif not (root / str(review.get("review_path") or "")).is_file():
-                design_errors.append("fanfiction_design independent review artifact is unavailable")
-            elif sha256((root / str(review["review_path"])).read_bytes()).hexdigest() != review.get(
-                "review_sha256"
-            ):
-                design_errors.append("fanfiction_design independent review binding is stale")
-        if design_errors:
-            return ProjectReadinessResult(False, "fanfiction_design", "fanfiction_design", tuple(design_errors))
+        try:
+            fanfiction_contracts.load_current_fanfiction_route(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            return ProjectReadinessResult(
+                False,
+                "fanfiction_design",
+                "fanfiction_design",
+                (str(exc),),
+            )
     book_marker = markers.get("book_design") if isinstance(markers.get("book_design"), dict) else {}
     if book_marker.get("status") != "applied":
         return ProjectReadinessResult(
@@ -2273,14 +2246,10 @@ def intelligence_default_inputs(
 def write_fanfiction_story_engine_context(config: ConfigDocument, root: Path) -> Path:
     """Compile the approved baseline into one bounded story-engine work order input."""
 
-    canon_path = root / "10_bible" / "fanfiction" / "source_canon.json"
-    canon = read_json(canon_path, {})
-    if (
-        not isinstance(canon, dict)
-        or canon.get("schema") != FANFICTION_CANON_SCHEMA
-        or validate_semantic_document(canon, require_approved=True)
-    ):
-        raise ValueError("fanfiction_story_engine requires an applied fanfiction source canon.")
+    try:
+        canon = fanfiction_contracts.load_current_fanfiction_source_canon(config, root)
+    except fanfiction_contracts.FanfictionContractError as exc:
+        raise ValueError(str(exc)) from exc
     budget = resolve_context_budget_contract(root)
     selected_claims, selection_report = semantic_claim_context(
         canon,
@@ -2352,8 +2321,8 @@ def write_fanfiction_story_engine_context(config: ConfigDocument, root: Path) ->
         },
         "canonical_provenance": [
             {
-                "path": relative(root, canon_path),
-                "sha256": sha256(canon_path.read_bytes()).hexdigest(),
+                "path": relative(root, canon.path),
+                "sha256": canon.sha256,
                 "authority": "approved_project_source_canon",
             },
             {
@@ -2427,21 +2396,16 @@ def semantic_claim_context(
 def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
     """Compile approved semantic claims by token budget, never by ontology row caps."""
 
-    canon_path = root / "10_bible" / "fanfiction" / "source_canon.json"
-    story_engine_path = root / "10_bible" / "fanfiction" / "story_engine.json"
     decisions_path = root / "10_bible" / "creative_decisions.json"
-    canon = read_json(canon_path, {})
     decisions = read_json(decisions_path, {})
-    if (
-        not isinstance(canon, dict)
-        or canon.get("schema") != FANFICTION_CANON_SCHEMA
-        or validate_semantic_document(canon, require_approved=True)
-    ):
-        raise ValueError("fanfiction_design requires an applied fanfiction source canon.")
     try:
-        story_engine = load_current_fanfiction_story_engine(config, root)
-    except FanfictionContractError as exc:
+        current = fanfiction_contracts.load_current_fanfiction_story_engine_documents(
+            config, root
+        )
+    except fanfiction_contracts.FanfictionContractError as exc:
         raise ValueError(str(exc)) from exc
+    canon = current.source_canon
+    story_engine = current.story_engine
     if not isinstance(decisions, dict) or decisions.get("schema") != "book_ideation_decisions_v1":
         decisions = {"decisions": {}}
 
@@ -2504,10 +2468,18 @@ def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
         "canonical_provenance": [
             {
                 "path": relative(root, path),
+                "sha256": current.sha256[name],
+                "authority": "canonical_recheck_required",
+            }
+            for name, path in current.paths.items()
+        ]
+        + [
+            {
+                "path": relative(root, path),
                 "sha256": sha256(path.read_bytes()).hexdigest(),
                 "authority": "canonical_recheck_required",
             }
-            for path in (canon_path, story_engine_path, decisions_path, root / "project.yaml")
+            for path in (decisions_path, root / "project.yaml")
             if path.is_file()
         ],
     }
@@ -3146,7 +3118,9 @@ def load_candidate(
                 elif task_type == "fanfiction_design":
                     payload = hydrate_fanfiction_design_document(config, root, payload)
                 elif task_type == "fanfiction_design_review":
-                    payload = hydrate_fanfiction_design_review_document(root, payload, manifest)
+                    payload = hydrate_fanfiction_design_review_document(
+                        config, root, payload, manifest
+                    )
                 semantic_errors = validate_semantic_document(payload)
                 if semantic_errors:
                     raise AgentProtocolError("; ".join(semantic_errors))
@@ -3188,33 +3162,7 @@ def hydrate_fanfiction_semantic_document(
         raise AgentProtocolError(
             "fanfiction semantic Canon must not repeat CLI-owned fields: " + ", ".join(repeated)
         )
-    source_contracts: list[dict[str, Any]] = []
-    for source in configured.get("sources") or []:
-        if not isinstance(source, dict) or not source.get("source_id"):
-            continue
-        source_id = str(source["source_id"])
-        contract = project_source_contract(config, source_id)
-        source_contracts.append(
-            {
-                "source_id": source_id,
-                "work_id": str(contract["setting"].get("作品ID") or ""),
-                "title": str(source.get("title") or ""),
-                "creator": str(source.get("creator") or ""),
-                "canon_cutoff": str(source.get("canon_cutoff") or ""),
-                "binding_sha256": contract["binding_sha256"],
-                "coverage_plan_sha256": contract["coverage_sha256"],
-                "item_bindings": [
-                    {
-                        "item_id": str(item.get("item_id") or ""),
-                        "bundle_sha256": str(item.get("bundle_sha256") or ""),
-                        "normalization_sha256": str(item.get("normalization_sha256") or ""),
-                        "extraction_sha256": str(item.get("extraction_sha256") or ""),
-                    }
-                    for item in contract["binding"].get("items") or []
-                    if isinstance(item, dict)
-                ],
-            }
-        )
+    source_contracts = fanfiction_contracts.current_fanfiction_source_contracts(config)
     hydrated = json.loads(json.dumps(payload, ensure_ascii=False))
     hydrated["extensions"].update(
         {
@@ -3238,16 +3186,12 @@ def hydrate_fanfiction_design_document(
         raise AgentProtocolError(
             "fanfiction design must not repeat CLI-owned fields: " + ", ".join(repeated)
         )
-    canon_path = root / "10_bible" / "fanfiction" / "source_canon.json"
-    story_engine_path = root / "10_bible" / "fanfiction" / "story_engine.json"
-    if not canon_path.is_file():
-        raise AgentProtocolError("fanfiction design requires approved project source Canon")
-    story_engine = read_json(story_engine_path, {})
-    if (
-        not isinstance(story_engine, dict)
-        or validate_semantic_document(story_engine, require_approved=True)
-    ):
-        raise AgentProtocolError("fanfiction design requires an approved story engine")
+    try:
+        current = fanfiction_contracts.load_current_fanfiction_story_engine_documents(
+            config, root
+        )
+    except fanfiction_contracts.FanfictionContractError as exc:
+        raise AgentProtocolError(str(exc)) from exc
     configured = config.data.get("fanfiction")
     configured = configured if isinstance(configured, dict) else {}
     hydrated = json.loads(json.dumps(payload, ensure_ascii=False))
@@ -3255,8 +3199,8 @@ def hydrate_fanfiction_design_document(
         {
             "task_type": "fanfiction_design",
             "continuity_mode": str(configured.get("continuity_mode") or ""),
-            "source_canon_sha256": sha256(canon_path.read_bytes()).hexdigest(),
-            "story_engine_sha256": sha256(story_engine_path.read_bytes()).hexdigest(),
+            "source_canon_sha256": current.sha256["source_canon"],
+            "story_engine_sha256": current.sha256["story_engine"],
         }
     )
     return seal_semantic_document(hydrated)
@@ -3276,10 +3220,10 @@ def hydrate_fanfiction_story_engine_document(
         raise AgentProtocolError(
             "fanfiction story engine must not repeat CLI-owned fields: " + ", ".join(repeated)
         )
-    canon_path = root / "10_bible" / "fanfiction" / "source_canon.json"
-    canon = read_json(canon_path, {})
-    if not isinstance(canon, dict) or validate_semantic_document(canon, require_approved=True):
-        raise AgentProtocolError("fanfiction story engine requires approved project source Canon")
+    try:
+        canon = fanfiction_contracts.load_current_fanfiction_source_canon(config, root)
+    except fanfiction_contracts.FanfictionContractError as exc:
+        raise AgentProtocolError(str(exc)) from exc
     configured = config.data.get("fanfiction")
     configured = configured if isinstance(configured, dict) else {}
     hydrated = json.loads(json.dumps(payload, ensure_ascii=False))
@@ -3287,13 +3231,14 @@ def hydrate_fanfiction_story_engine_document(
         {
             "task_type": "fanfiction_story_engine",
             "continuity_mode": str(configured.get("continuity_mode") or ""),
-            "source_canon_sha256": sha256(canon_path.read_bytes()).hexdigest(),
+            "source_canon_sha256": canon.sha256,
         }
     )
     return seal_semantic_document(hydrated)
 
 
 def hydrate_fanfiction_design_review_document(
+    config: ConfigDocument,
     root: Path,
     payload: dict[str, Any],
     manifest: dict[str, Any] | None,
@@ -3314,18 +3259,20 @@ def hydrate_fanfiction_design_review_document(
             "fanfiction route review must not repeat CLI-owned fields: " + ", ".join(repeated)
         )
     route = fanfiction_review_route_path(root, manifest)
-    story_engine = root / "10_bible" / "fanfiction" / "story_engine.json"
-    canon = root / "10_bible" / "fanfiction" / "source_canon.json"
-    if not story_engine.is_file() or not canon.is_file():
-        raise AgentProtocolError("fanfiction route review requires current engine and Canon inputs")
+    try:
+        current = fanfiction_contracts.load_current_fanfiction_story_engine_documents(
+            config, root
+        )
+    except fanfiction_contracts.FanfictionContractError as exc:
+        raise AgentProtocolError(str(exc)) from exc
     hydrated = json.loads(json.dumps(payload, ensure_ascii=False))
     hydrated["extensions"].update(
         {
             "task_type": "fanfiction_design_review",
             "review_target_path": relative(root, route),
             "review_target_sha256": sha256(route.read_bytes()).hexdigest(),
-            "story_engine_sha256": sha256(story_engine.read_bytes()).hexdigest(),
-            "source_canon_sha256": sha256(canon.read_bytes()).hexdigest(),
+            "story_engine_sha256": current.sha256["story_engine"],
+            "source_canon_sha256": current.sha256["source_canon"],
         }
     )
     return seal_semantic_document(hydrated)
@@ -3443,13 +3390,15 @@ def validate_payload(
         errors.append(f"schema must normalize to {spec['schema']}.")
     validators = {
         "book_ideation": lambda value, target: validate_book_ideation(root, value, target),
-        "fanfiction_canon": lambda value, target: validate_fanfiction_canon(config, value, target),
-        "fanfiction_story_engine": lambda value, target: validate_fanfiction_story_engine(
+        "fanfiction_canon": lambda value, target: fanfiction_contracts.validate_fanfiction_source_canon(
+            config, value, target
+        ),
+        "fanfiction_story_engine": lambda value, target: fanfiction_contracts.validate_fanfiction_story_engine(
             config, root, value, target
         ),
         "fanfiction_design": lambda value, target: validate_fanfiction_design(config, root, value, target),
         "fanfiction_design_review": lambda value, target: validate_fanfiction_design_review(
-            root, value, manifest, target
+            config, root, value, manifest, target
         ),
         "book_design": lambda value, target: validate_book_design(value, target),
         "character_expression_design": lambda value, target: target.extend(
@@ -4394,109 +4343,13 @@ def validate_adaptation_analysis(payload: dict[str, Any], errors: list[str]) -> 
             break
 
 
-def validate_fanfiction_canon(config: ConfigDocument, payload: dict[str, Any], errors: list[str]) -> None:
-    if payload.get("schema") in {
-        "fanfiction_source_canon_v1",
-        "fanfiction_source_canon_v2",
-        "fanfiction_source_canon_v3",
-    }:
-        errors.append(
-            f"{payload.get('schema')} is incompatible with {FANFICTION_CANON_SCHEMA}; "
-            "use the explicit v0.11 audit/import path and rebuild semantic Canon"
-        )
-        return
-    errors.extend(validate_semantic_document(payload))
-    if errors:
-        return
-    configured = config.data.get("fanfiction")
-    configured = configured if isinstance(configured, dict) else {}
-    artifact = payload.get("artifact") if isinstance(payload.get("artifact"), dict) else {}
-    scope = artifact.get("scope") if isinstance(artifact.get("scope"), dict) else {}
-    extensions = payload.get("extensions") if isinstance(payload.get("extensions"), dict) else {}
-    if payload.get("document_type") != "项目原著基线Canon候选":
-        errors.append("fanfiction source Canon document_type must be 项目原著基线Canon候选")
-    if scope.get("kind") != "project":
-        errors.append("fanfiction source Canon must use project scope")
-    if extensions.get("task_type") != "fanfiction_canon":
-        errors.append("extensions.task_type must be fanfiction_canon")
-    if extensions.get("continuity_mode") != configured.get("continuity_mode"):
-        errors.append("extensions.continuity_mode must match project.yaml")
-    configured_sources = {
-        str(item.get("source_id")): item
-        for item in configured.get("sources") or []
-        if isinstance(item, dict) and item.get("source_id")
-    }
-    contracts = extensions.get("source_contracts")
-    contract_ids = {
-        str(item.get("source_id") or "")
-        for item in contracts or []
-        if isinstance(item, dict) and item.get("source_id")
-    }
-    if not isinstance(contracts, list) or contract_ids != set(configured_sources):
-        errors.append("extensions.source_contracts must cover every configured source exactly once")
-        return
-    approved_evidence: dict[str, tuple[str, dict[str, Any]]] = {}
-    for source_id in configured_sources:
-        try:
-            contract = project_source_contract(config, source_id)
-        except (FanfictionSourceError, OSError, KeyError) as exc:
-            errors.append(f"project source contract is unavailable for {source_id}: {exc}")
-            continue
-        for record in contract["evidence"].values():
-            if not isinstance(record, dict):
-                continue
-            evidence_id = str(record.get("evidence_id") or "")
-            if evidence_id:
-                approved_evidence[evidence_id] = (source_id, record)
-    reference_sources: dict[str, str] = {}
-    for index, reference in enumerate(payload.get("evidence_references") or []):
-        evidence_id = str(reference.get("evidence_id") or "") if isinstance(reference, dict) else ""
-        approved = approved_evidence.get(evidence_id)
-        if approved is None:
-            errors.append(f"evidence_references[{index}] is not approved by a pinned project source")
-            continue
-        source_id, expected = approved
-        for actual_field, expected_field in (
-            ("item_id", "item_id"),
-            ("asset_id", "asset_id"),
-            ("segment_id", "segment_id"),
-            ("locator", "locator"),
-            ("excerpt", "excerpt"),
-        ):
-            if reference.get(actual_field) != expected.get(expected_field):
-                errors.append(
-                    f"evidence_references[{index}].{actual_field} does not match pinned evidence"
-                )
-        reference_sources[evidence_id] = source_id
-    claims = payload.get("claims")
-    if not isinstance(claims, list) or not claims:
-        errors.append("fanfiction source Canon requires at least one semantic claim")
-        return
-    for index, claim in enumerate(claims):
-        if not isinstance(claim, dict):
-            continue
-        claim_extensions = claim.get("extensions") if isinstance(claim.get("extensions"), dict) else {}
-        source_id = str(claim_extensions.get("source_id") or "")
-        if source_id not in configured_sources:
-            errors.append(f"claims[{index}].extensions.source_id must name a configured source")
-        if not str(claim.get("claim_id") or "").startswith(f"{source_id}:"):
-            errors.append(f"claims[{index}].claim_id must use its source namespace")
-        refs = [str(value) for value in claim.get("evidence_refs") or []]
-        if not refs:
-            errors.append(f"claims[{index}] requires evidence_refs")
-        elif any(reference_sources.get(value) != source_id for value in refs):
-            errors.append(f"claims[{index}] must reference evidence from the same source")
-        if len(str(claim.get("statement") or "")) > 800:
-            errors.append(f"claims[{index}].statement exceeds the bounded paraphrase limit")
-
-
 def validate_fanfiction_design(
     config: ConfigDocument,
     root: Path,
     payload: dict[str, Any],
     errors: list[str],
 ) -> None:
-    validate_fanfiction_route_contract(config, root, payload, errors)
+    fanfiction_contracts.validate_fanfiction_route_contract(config, root, payload, errors)
     if errors:
         return
     validate_dynamic_crossover_requirements(config, payload, errors)
@@ -4609,6 +4462,7 @@ def validate_dynamic_crossover_requirements(
 
 
 def validate_fanfiction_design_review(
+    config: ConfigDocument,
     root: Path,
     payload: dict[str, Any],
     manifest: dict[str, Any] | None,
@@ -4641,11 +4495,18 @@ def validate_fanfiction_design_review(
         errors.append("extensions.review_target_path is stale")
     if extensions.get("review_target_sha256") != sha256(route.read_bytes()).hexdigest():
         errors.append("extensions.review_target_sha256 is stale")
-    for name, path in (
-        ("story_engine_sha256", root / "10_bible" / "fanfiction" / "story_engine.json"),
-        ("source_canon_sha256", root / "10_bible" / "fanfiction" / "source_canon.json"),
+    try:
+        current = fanfiction_contracts.load_current_fanfiction_story_engine_documents(
+            config, root
+        )
+    except fanfiction_contracts.FanfictionContractError as exc:
+        errors.append(str(exc))
+        return
+    for name, digest in (
+        ("story_engine_sha256", current.sha256["story_engine"]),
+        ("source_canon_sha256", current.sha256["source_canon"]),
     ):
-        if not path.is_file() or extensions.get(name) != sha256(path.read_bytes()).hexdigest():
+        if extensions.get(name) != digest:
             errors.append(f"extensions.{name} is stale")
     blocking = [
         claim

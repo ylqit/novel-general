@@ -9,13 +9,14 @@ from typing import Any, Iterable
 
 from longform_engine.config import ConfigDocument
 from longform_engine.fanfiction_contracts import (
+    EVENT_CAUSAL_REFERENCE_FIELDS,
     FanfictionContractError,
+    load_current_fanfiction_documents,
     load_current_fanfiction_route,
-    load_current_fanfiction_story_engine,
 )
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.rag import query as rag_query
-from longform_engine.semantic_protocols import build_workflow_record, validate_semantic_document
+from longform_engine.semantic_protocols import build_workflow_record
 from longform_engine.storage import atomic_write_text, resolve_project_root
 
 
@@ -97,20 +98,15 @@ def compile_fanfiction_context(
     if chapter_number <= 0:
         raise FanfictionContextError("fanfiction context requires a positive chapter number")
     root = resolve_project_root(config)
-    paths = {
-        "source_canon": root / "10_bible" / "fanfiction" / "source_canon.json",
-        "story_engine": root / "10_bible" / "fanfiction" / "story_engine.json",
-        "route_design": root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
-    }
     try:
-        story_engine = load_current_fanfiction_story_engine(config, root)
-        route_design = load_current_fanfiction_route(config, root)
+        current = load_current_fanfiction_documents(config, root)
     except FanfictionContractError as exc:
         raise FanfictionContextError(str(exc)) from exc
+    paths = current.paths
     documents = {
-        "source_canon": _load_approved_document(paths["source_canon"], name="source_canon"),
-        "story_engine": story_engine,
-        "route_design": route_design,
+        "source_canon": current.source_canon,
+        "story_engine": current.story_engine,
+        "route_design": current.route,
     }
     all_claims: dict[str, dict[str, Any]] = {}
     conflicts: list[dict[str, Any]] = []
@@ -165,6 +161,20 @@ def compile_fanfiction_context(
         if claim["namespace"] == "route_design" and semantic_type in MANDATORY_ROUTE_TYPES:
             mandatory_ids.add(claim_id)
     mandatory_ids = _dependency_closure(mandatory_ids, all_claims)
+    dependency_out_of_scope = {
+        claim_id
+        for claim_id in mandatory_ids
+        if not _claim_applies(
+            all_claims[claim_id],
+            chapter_number=chapter_number,
+            chapter_card=chapter_card,
+        )
+    }
+    if dependency_out_of_scope:
+        raise FanfictionContextError(
+            "fanfiction_context_dependency_out_of_scope: "
+            + ", ".join(sorted(dependency_out_of_scope))
+        )
 
     budget = resolve_context_budget_contract(root)
     bundle_budget = max(1_200, int(budget.capacity_units * 0.42))
@@ -205,7 +215,7 @@ def compile_fanfiction_context(
         used_units += units
 
     included = [all_claims[item] for item in included_ids]
-    stale = _stale_diagnostics(documents, paths)
+    stale = _stale_diagnostics(documents, current.sha256)
     bundle: dict[str, Any] = {
         "schema": FANFICTION_CONTEXT_BUNDLE_SCHEMA,
         "chapter_number": chapter_number,
@@ -215,9 +225,9 @@ def compile_fanfiction_context(
         "source_files": [
             {
                 "path": path.relative_to(root).as_posix(),
-                "sha256": sha256(path.read_bytes()).hexdigest(),
+                "sha256": current.sha256[name],
             }
-            for path in paths.values()
+            for name, path in paths.items()
         ],
         "required_claim_ids": sorted(mandatory_ids),
         "included_claim_ids": included_ids,
@@ -290,10 +300,12 @@ def fanfiction_context_status(
 def event_disposition_status(config: ConfigDocument) -> dict[str, Any]:
     root = resolve_project_root(config)
     diagnostics: list[str] = []
+    route_status = "approved"
     try:
         route: dict[str, Any] | None = load_current_fanfiction_route(config, root)
     except FanfictionContractError as exc:
         route = None
+        route_status = exc.code if exc.code in {"missing", "stale"} else "invalid"
         diagnostics.append(str(exc))
     rows = []
     if isinstance(route, dict):
@@ -326,7 +338,7 @@ def event_disposition_status(config: ConfigDocument) -> dict[str, Any]:
             )
     return {
         "schema": "fanfiction_event_disposition_status_v1",
-        "route_status": "approved" if isinstance(route, dict) else "missing_or_stale",
+        "route_status": route_status,
         "events": rows,
         "pending_count": sum(item["disposition"] == "待决定" for item in rows),
         "diagnostics": diagnostics,
@@ -418,17 +430,16 @@ def future_knowledge_impact_workflow(
     return target, workflow
 
 
-def _load_approved_document(path: Path, *, name: str) -> dict[str, Any]:
-    payload = _read_json(path)
-    errors = validate_semantic_document(payload, require_approved=True)
-    if errors:
-        raise FanfictionContextError(f"{name} is not an approved semantic document: {'; '.join(errors)}")
-    return payload
-
-
 def _claim_record(namespace: str, claim: dict[str, Any]) -> dict[str, Any]:
     extensions_value = claim.get("extensions")
     extensions: dict[str, Any] = extensions_value if isinstance(extensions_value, dict) else {}
+    dependency_claim_ids: list[str] = []
+    for field in ("depends_on_claims", *EVENT_CAUSAL_REFERENCE_FIELDS):
+        values = extensions.get(field)
+        if isinstance(values, list):
+            dependency_claim_ids.extend(
+                item for item in values if isinstance(item, str) and item
+            )
     return {
         "claim_id": str(claim.get("claim_id") or ""),
         "namespace": namespace,
@@ -438,8 +449,15 @@ def _claim_record(namespace: str, claim: dict[str, Any]) -> dict[str, Any]:
         "applicability": claim.get("applicability"),
         "uncertainty": str(claim.get("uncertainty") or ""),
         "depends_on_claims": [
-            str(item) for item in extensions.get("depends_on_claims") or [] if str(item)
+            item
+            for item in (
+                extensions.get("depends_on_claims")
+                if isinstance(extensions.get("depends_on_claims"), list)
+                else []
+            )
+            if isinstance(item, str) and item
         ],
+        "dependency_claim_ids": _dedupe(dependency_claim_ids),
         "extensions": extensions,
     }
 
@@ -511,7 +529,7 @@ def _dependency_closure(seed: set[str], claims: dict[str, dict[str, Any]]) -> se
         claim = claims.get(claim_id)
         if claim is None:
             continue
-        for dependency in claim.get("depends_on_claims") or []:
+        for dependency in claim.get("dependency_claim_ids") or []:
             if dependency not in claims:
                 raise FanfictionContextError(
                     f"fanfiction_context_missing_dependency:{claim_id}->{dependency}"
@@ -671,22 +689,16 @@ def _claim_units(claim: dict[str, Any], estimator: str) -> int:
 
 
 def _stale_diagnostics(
-    documents: dict[str, dict[str, Any]], paths: dict[str, Path]
+    documents: dict[str, dict[str, Any]], digests: dict[str, str]
 ) -> list[dict[str, str]]:
     route = documents["route_design"]
     engine = documents["story_engine"]
     diagnostics: list[dict[str, str]] = []
-    if route.get("extensions", {}).get("source_canon_sha256") != sha256(
-        paths["source_canon"].read_bytes()
-    ).hexdigest():
+    if route.get("extensions", {}).get("source_canon_sha256") != digests["source_canon"]:
         diagnostics.append({"document": "route_design", "reason": "source_canon_changed"})
-    if route.get("extensions", {}).get("story_engine_sha256") != sha256(
-        paths["story_engine"].read_bytes()
-    ).hexdigest():
+    if route.get("extensions", {}).get("story_engine_sha256") != digests["story_engine"]:
         diagnostics.append({"document": "route_design", "reason": "story_engine_changed"})
-    if engine.get("extensions", {}).get("source_canon_sha256") != sha256(
-        paths["source_canon"].read_bytes()
-    ).hexdigest():
+    if engine.get("extensions", {}).get("source_canon_sha256") != digests["source_canon"]:
         diagnostics.append({"document": "story_engine", "reason": "source_canon_changed"})
     if diagnostics:
         raise FanfictionContextError(

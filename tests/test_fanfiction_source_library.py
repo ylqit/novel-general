@@ -44,7 +44,7 @@ from longform_engine.intelligence import (
     validate_intelligence_candidate,
 )
 from longform_engine.intelligence import assess_project_readiness
-from longform_engine.intelligence.pipeline import validate_fanfiction_canon
+from longform_engine.fanfiction_contracts import validate_fanfiction_source_canon
 from longform_engine.orchestration import open_book
 from longform_engine.research import ResearchError, promote_research
 from longform_engine.semantic_protocols import (
@@ -705,7 +705,7 @@ def test_v2_project_canon_is_rejected_without_dual_read(tmp_path, monkeypatch):
     config, _root = project_config(tmp_path)
     complete_project_pack(config, tmp_path, item)
     errors: list[str] = []
-    validate_fanfiction_canon(
+    validate_fanfiction_source_canon(
         config,
         {"schema": "fanfiction_source_canon_v2", "continuity_mode": "canon_divergent", "sources": []},
         errors,

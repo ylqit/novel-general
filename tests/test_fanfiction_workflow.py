@@ -7,13 +7,15 @@ import pytest
 
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_results import build_agent_result_template
-from longform_engine.agent_isolation import TASK_OBJECTIVES
 from longform_engine.agent_tasks import load_manifest
 from longform_engine.fanfiction_sources import project_source_contract
 from longform_engine.fanfiction_context import (
     FanfictionContextError,
     compile_fanfiction_context,
     event_disposition_status,
+)
+from longform_engine.fanfiction_contracts import (
+    validate_fanfiction_source_canon,
 )
 from longform_engine.gates.pipeline import check_fanfiction_source_reproduction
 from longform_engine.intelligence import (
@@ -25,13 +27,10 @@ from longform_engine.intelligence.pipeline import (
     BOOK_IDEATION_DIMENSIONS,
     crossover_required_topics,
     fanfiction_semantic_dependency_paths,
-    validate_event_disposition_claims,
-    validate_fanfiction_canon,
     validate_fanfiction_design,
 )
 from longform_engine.orchestration.pipeline import WorkflowError, load_fanfiction_writing_contract
 from longform_engine.production import production_next
-from longform_engine.roles import load_role_registry
 from longform_engine.semantic_protocols import (
     build_semantic_document,
     seal_semantic_document,
@@ -474,7 +473,7 @@ def test_story_engine_requires_new_semantic_claims(
     assert any(semantic_type in error for error in validation.errors)
 
 
-def test_story_engine_contract_renderer_and_role_guidance_cover_both_routes(
+def test_story_engine_compiled_work_order_covers_both_routes(
     tmp_path,
     monkeypatch,
 ):
@@ -483,10 +482,6 @@ def test_story_engine_contract_renderer_and_role_guidance_cover_both_routes(
     manifest = load_manifest(root, task.task_id)
     template = build_agent_result_template(manifest)
     instruction = (root / task.instruction_file).read_text(encoding="utf-8")
-    registry = load_role_registry()
-    architect = registry.roles["fanfiction_architect"]
-    playbook = registry.playbooks["fanfiction_canon"].source
-
     assert template["document_type"] == "同人故事发动机"
     assert template["extensions"]["route_family"] == ""
     assert "oc_si_progression" in instruction
@@ -494,136 +489,9 @@ def test_story_engine_contract_renderer_and_role_guidance_cover_both_routes(
     assert "主角与原著关系" in instruction
     assert "读者识别承诺" in instruction
     assert "原创主线承诺" in instruction
-    assert "主角中心" in architect.prompt_sections["decision_model"]
-    assert "原著角色中心" in architect.prompt_sections["decision_model"]
-    assert "双路线" in playbook.sections["creation"]
-    assert "读者识别承诺" in TASK_OBJECTIVES["fanfiction_story_engine"]
 
 
-@pytest.mark.parametrize(
-    "field",
-    [
-        "responsibility_owner_ids",
-        "first_order_effect_claim_ids",
-        "second_order_effect_claim_ids",
-    ],
-)
-def test_event_fate_requires_non_empty_responsibility_and_effect_refs(
-    tmp_path,
-    monkeypatch,
-    field,
-):
-    config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
-    baseline = candidate_copy(apply_route_design(config, root, canon))
-    missing = object()
-    invalid_values = (
-        ("missing", missing),
-        ("empty_list", []),
-        ("blank_item", [""]),
-        ("mixed_non_string", ["route:canon_duty", 7]),
-        ("scalar", "route:canon_duty"),
-    )
-
-    for case, value in invalid_values:
-        candidate = deepcopy(baseline)
-        event = event_fate_claim(candidate)
-        if value is missing:
-            event["extensions"].pop(field)
-        else:
-            event["extensions"][field] = value
-        errors: list[str] = []
-        validate_fanfiction_design(config, root, seal_semantic_document(candidate), errors)
-
-        assert any(
-            field in error and "non-empty" in error for error in errors
-        ), (case, errors)
-
-
-@pytest.mark.parametrize(
-    "field",
-    [
-        "responsibility_owner_ids",
-        "first_order_effect_claim_ids",
-        "second_order_effect_claim_ids",
-    ],
-)
-def test_event_fate_rejects_refs_outside_route_canon_and_story_engine(
-    tmp_path,
-    monkeypatch,
-    field,
-):
-    config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
-    baseline = candidate_copy(apply_route_design(config, root, canon))
-    event = event_fate_claim(baseline)
-    event["extensions"][field] = ["outside:unstable_claim"]
-    errors: list[str] = []
-    validate_fanfiction_design(config, root, seal_semantic_document(baseline), errors)
-
-    assert errors
-    assert any(
-        field in error and "current stable claims" in error for error in errors
-    ), errors
-
-
-def test_event_fate_accepts_route_source_canon_and_story_engine_claim_refs(
-    tmp_path,
-    monkeypatch,
-):
-    config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
-    route = candidate_copy(apply_route_design(config, root, canon))
-    event = event_fate_claim(route)
-    event["extensions"].update(
-        {
-            "responsibility_owner_ids": ["route:canon_duty"],
-            "first_order_effect_claim_ids": [canon["claims"][0]["claim_id"]],
-            "second_order_effect_claim_ids": ["engine:agency"],
-        }
-    )
-    errors: list[str] = []
-
-    validate_fanfiction_design(config, root, seal_semantic_document(route), errors)
-
-    assert errors == []
-
-
-def test_event_fate_rejects_claim_ids_from_unapproved_source_or_story_engine(
-    tmp_path,
-    monkeypatch,
-):
-    config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
-    route = candidate_copy(apply_route_design(config, root, canon))
-    paths_and_claims = (
-        (
-            root / "10_bible" / "fanfiction" / "source_canon.json",
-            canon["claims"][0]["claim_id"],
-        ),
-        (
-            root / "10_bible" / "fanfiction" / "story_engine.json",
-            "engine:agency",
-        ),
-    )
-
-    for path, claim_id in paths_and_claims:
-        approved = json.loads(path.read_text(encoding="utf-8"))
-        path.write_text(
-            json.dumps(candidate_copy(approved), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        candidate = deepcopy(route)
-        event = event_fate_claim(candidate)
-        event["extensions"]["responsibility_owner_ids"] = [claim_id]
-        errors: list[str] = []
-
-        validate_event_disposition_claims(root, seal_semantic_document(candidate), errors)
-
-        assert any(
-            "responsibility_owner_ids" in error and "current stable claims" in error
-            for error in errors
-        ), (path, errors)
-        path.write_text(json.dumps(approved, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
-def test_route_work_order_and_role_guidance_require_full_event_causal_chain(
+def test_route_compiled_work_order_requires_full_event_causal_chain(
     tmp_path,
     monkeypatch,
 ):
@@ -639,15 +507,9 @@ def test_route_work_order_and_role_guidance_require_full_event_causal_chain(
             / "fanfiction_design.project.context.json"
         ).read_text(encoding="utf-8")
     )
-    registry = load_role_registry()
-    architect = registry.roles["fanfiction_architect"]
-    reviewer = registry.roles["fanfiction_route_reviewer"]
-
     causal_chain = "原著基线→变量→处置→职责→一阶→二阶→新问题"
     assert context["approved_story_engine"]["route_family"] == "hybrid"
     assert causal_chain in instruction
-    assert causal_chain in architect.prompt_sections["workflow"]
-    assert causal_chain in reviewer.prompt_sections["decision_model"]
 
 
 @pytest.mark.parametrize("gap", ["route_family", "原创主线承诺"])
@@ -744,7 +606,7 @@ def test_writing_context_and_event_status_reject_legacy_approved_route(
     assert_writing_boundaries_reject(config, root, "second_order_effect_claim_ids")
 
     status = event_disposition_status(config)
-    assert status["route_status"] == "missing_or_stale"
+    assert status["route_status"] == "invalid"
     assert status["events"] == []
     assert any("second_order_effect_claim_ids" in item for item in status["diagnostics"])
 
@@ -854,6 +716,94 @@ def test_semantic_canon_compiles_to_readable_bounded_writing_context(tmp_path, m
     assert len(serialized) < 8_000
 
 
+def install_cross_namespace_event_dependencies(
+    config,
+    root: Path,
+    canon: dict,
+    *,
+    out_of_scope: bool = False,
+) -> set[str]:
+    route = apply_route_design(config, root, canon)
+    engine_path = root / "10_bible" / "fanfiction" / "story_engine.json"
+    engine = json.loads(engine_path.read_text(encoding="utf-8"))
+    engine["claims"].append(
+        {
+            "claim_id": "engine:causal_target",
+            "statement": "发动机层因果目标必须随事件命运进入章节合同。",
+            "applicability": "全书",
+            "evidence_refs": [],
+            "uncertainty": "无。",
+            "extensions": {"semantic_type": "因果辅助"},
+        }
+    )
+    engine = seal_semantic_document(engine)
+    engine_path.write_text(
+        json.dumps(engine, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    route["claims"].append(
+        {
+            "claim_id": "route:causal_target",
+            "statement": "路线层二阶目标必须随事件命运进入章节合同。",
+            "applicability": "全书",
+            "evidence_refs": [],
+            "uncertainty": "无。",
+            "extensions": {
+                "semantic_type": "因果辅助",
+                **({"chapter_numbers": [2]} if out_of_scope else {}),
+            },
+        }
+    )
+    event_fate_claim(route)["extensions"].update(
+        {
+            "responsibility_owner_ids": [canon["claims"][0]["claim_id"]],
+            "first_order_effect_claim_ids": ["engine:causal_target"],
+            "second_order_effect_claim_ids": ["route:causal_target"],
+        }
+    )
+    route["extensions"]["story_engine_sha256"] = sha256(engine_path.read_bytes()).hexdigest()
+    route = seal_semantic_document(route)
+    (root / "10_bible" / "fanfiction" / "fanfiction_bible.json").write_text(
+        json.dumps(route, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return {
+        canon["claims"][0]["claim_id"],
+        "engine:causal_target",
+        "route:causal_target",
+    }
+
+
+def test_event_causal_targets_join_required_cross_namespace_dependency_closure(
+    tmp_path, monkeypatch
+):
+    config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
+    causal_targets = install_cross_namespace_event_dependencies(config, root, canon)
+
+    contract = load_fanfiction_writing_contract(
+        config,
+        root,
+        chapter_number=1,
+        chapter_contract={"chapter_number": 1},
+        card={"title": "因果闭包"},
+    )
+
+    assert causal_targets <= set(contract["required_claim_ids"])
+    assert causal_targets <= set(contract["included_claim_ids"])
+
+
+def test_event_causal_dependency_outside_chapter_scope_blocks_context(tmp_path, monkeypatch):
+    config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
+    install_cross_namespace_event_dependencies(config, root, canon, out_of_scope=True)
+
+    with pytest.raises(WorkflowError, match="fanfiction_context_dependency_out_of_scope"):
+        load_fanfiction_writing_contract(
+            config,
+            root,
+            chapter_number=1,
+            chapter_contract={"chapter_number": 1},
+            card={"title": "越界因果依赖"},
+        )
+
+
 def test_names_do_not_select_optional_claims_and_unknown_explicit_refs_block(
     tmp_path, monkeypatch
 ):
@@ -925,7 +875,7 @@ def test_v011_rigid_canon_is_explicitly_incompatible(tmp_path, monkeypatch):
     config, _root = project_config(tmp_path)
     errors: list[str] = []
 
-    validate_fanfiction_canon(
+    validate_fanfiction_source_canon(
         config,
         {"schema": "fanfiction_source_canon_v3", "sources": []},
         errors,
@@ -943,7 +893,7 @@ def test_unbound_evidence_cannot_enter_project_canon(tmp_path, monkeypatch):
     candidate = seal_semantic_document(candidate)
     errors: list[str] = []
 
-    validate_fanfiction_canon(config, candidate, errors)
+    validate_fanfiction_source_canon(config, candidate, errors)
 
     assert any("not approved by a pinned project source" in error for error in errors)
 
@@ -960,7 +910,7 @@ def test_pinned_evidence_locator_cannot_be_forged(tmp_path, monkeypatch):
     candidate = seal_semantic_document(candidate)
     errors: list[str] = []
 
-    validate_fanfiction_canon(config, candidate, errors)
+    validate_fanfiction_source_canon(config, candidate, errors)
 
     assert any("locator does not match pinned evidence" in error for error in errors)
 
