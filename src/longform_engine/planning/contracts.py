@@ -121,6 +121,11 @@ def validate_planning_bundle(payload: Any) -> StructuralValidation:
             if obligation_id in obligation_ids:
                 errors.append(f"duplicate semantic obligation id: {obligation_id}")
             obligation_ids.add(obligation_id)
+    obligations_by_id = {
+        str(item.get("obligation_id")): item
+        for item in obligations
+        if isinstance(item, dict) and item.get("obligation_id")
+    }
 
     forecasts = _list(payload.get("chapter_forecasts"), "chapter_forecasts", errors)
     forecast_chapters: set[int] = set()
@@ -171,13 +176,17 @@ def validate_planning_bundle(payload: Any) -> StructuralValidation:
         errors.extend(f"{prefix}.{error}" for error in contract_errors)
         if not isinstance(contract, dict):
             continue
-        chapter = contract.get("chapter_number")
-        if not isinstance(chapter, int) or isinstance(chapter, bool) or chapter <= 0:
+        contract_chapter = contract.get("chapter_number")
+        if (
+            not isinstance(contract_chapter, int)
+            or isinstance(contract_chapter, bool)
+            or contract_chapter <= 0
+        ):
             continue
-        if chapter in contract_chapters:
-            errors.append(f"duplicate chapter contract: {chapter}")
-        contract_chapters.add(chapter)
-        table = node_tables_by_chapter.get(chapter)
+        if contract_chapter in contract_chapters:
+            errors.append(f"duplicate chapter contract: {contract_chapter}")
+        contract_chapters.add(contract_chapter)
+        table = node_tables_by_chapter.get(contract_chapter)
         reference = contract.get("plot_node_table_ref")
         if not isinstance(table, dict) or not isinstance(reference, dict) or (
             reference.get("table_id") != table.get("table_id")
@@ -188,7 +197,8 @@ def validate_planning_bundle(payload: Any) -> StructuralValidation:
             (
                 item
                 for item in forecasts
-                if isinstance(item, dict) and item.get("chapter_number") == chapter
+                if isinstance(item, dict)
+                and item.get("chapter_number") == contract_chapter
             ),
             None,
         )
@@ -204,6 +214,39 @@ def validate_planning_bundle(payload: Any) -> StructuralValidation:
                 f"{prefix}.semantic_obligation_refs are unresolved: "
                 + ", ".join(missing_obligations)
             )
+        channel = contract.get("fanfiction_claim_refs")
+        if isinstance(channel, dict):
+            projection = payload.get("active_volume_plan", {}).get("fanfiction_projection")
+            active_refs = (
+                list(projection.get("claim_refs") or [])
+                if isinstance(projection, dict)
+                else []
+            )
+            obligation_refs: list[str] = []
+            for obligation_ref in contract.get("semantic_obligation_refs") or []:
+                obligation = obligations_by_id.get(str(obligation_ref))
+                if not isinstance(obligation, dict):
+                    continue
+                for claim_id in obligation.get("fanfiction_claim_refs") or []:
+                    if claim_id not in obligation_refs:
+                        obligation_refs.append(claim_id)
+            plot_refs: list[str] = []
+            for node in table.get("nodes") or [] if isinstance(table, dict) else []:
+                if not isinstance(node, dict):
+                    continue
+                for claim_id in node.get("fanfiction_claim_refs") or []:
+                    if claim_id not in plot_refs:
+                        plot_refs.append(claim_id)
+            for field, expected_refs in (
+                ("active_volume_claim_refs", active_refs),
+                ("semantic_obligation_claim_refs", obligation_refs),
+                ("plot_node_claim_refs", plot_refs),
+            ):
+                if channel.get(field) != expected_refs:
+                    errors.append(
+                        f"{prefix}.fanfiction_claim_refs.{field} must match the current "
+                        "planning origin"
+                    )
 
     if window_range:
         start, end = window_range
@@ -470,6 +513,7 @@ def validate_semantic_obligation(
         "evidence_requirement",
         "protected_invariants",
         "dependency_refs",
+        "fanfiction_claim_refs",
     }
     if not _exact_object(value, fields, prefix, errors):
         return ""
@@ -483,6 +527,7 @@ def validate_semantic_obligation(
         "prior_state_refs",
         "protected_invariants",
         "dependency_refs",
+        "fanfiction_claim_refs",
     ):
         _string_list(value.get(field), f"{prefix}.{field}", errors)
     _object_list(value.get("preconditions"), f"{prefix}.preconditions", errors)
@@ -609,6 +654,7 @@ def validate_plot_node(
         "protected_invariants",
         "allowed_deviation",
         "human_decision",
+        "fanfiction_claim_refs",
     }
     if not _exact_object(value, fields, prefix, errors):
         return "", "", 0, []
@@ -639,6 +685,9 @@ def validate_plot_node(
         _text(precondition.get("requirement"), f"{item_prefix}.requirement", errors)
     dependencies = _string_list(
         value.get("dependency_refs"), f"{prefix}.dependency_refs", errors
+    )
+    _string_list(
+        value.get("fanfiction_claim_refs"), f"{prefix}.fanfiction_claim_refs", errors
     )
     obligation_refs = _string_list(
         value.get("obligation_refs"), f"{prefix}.obligation_refs", errors

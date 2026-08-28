@@ -46,6 +46,8 @@ sections:
 **工作方法**
 按来源命名空间和开放中文文档类型整理人物理解、关系阶段、规则、事件和声音特征，再检查跨来源冲突。使用资料包中的 `evidence_reference_v1`，不自造证据键；实体、关系和图谱投影由 CLI 在人工批准后从 claims 物化。
 
+claim 适用域只使用 `extensions.source_ids|character_ids|event_ids|volume_ids|arc_ids|chapter_numbers|from_chapter|to_chapter`，多个已声明维度必须同时满足。人物、能力、地点、组织和能量术语的稳定身份写入 `extensions.identity`，字段恰为 `identity_id|kind|display_name|source_id`，kind 只允许 `character|ability|location|organization|energy`；不得混用旧式扁平身份字段。
+
 **交接与自检**
 确认所有事实有证据、无连续搬运，并交给 CLI validate 和人工 apply。
 

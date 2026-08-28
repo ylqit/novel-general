@@ -18,6 +18,8 @@ from longform_engine.agent_protocols import (
     validate_review_evidence_for_source,
 )
 from longform_engine.agent_tasks import (
+    agent_task_events_file,
+    agent_task_index_file,
     build_manifest,
     live_chapter_tasks,
     mark_tasks_for_output,
@@ -1146,7 +1148,12 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
                 "future-knowledge reassessment workflows."
             )
         for item in closure.get("future_knowledge_workflows") or []:
-            if not isinstance(item, dict) or not str(item.get("path") or ""):
+            if (
+                not isinstance(item, dict)
+                or not str(item.get("path") or "")
+                or not str(item.get("task_id") or "")
+                or not str(item.get("manifest_path") or "")
+            ):
                 raise ValueError(
                     f"Existing chapter closure ch{chapter_number:03d} has invalid future-knowledge workflow provenance."
                 )
@@ -1157,6 +1164,15 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
             ):
                 raise ValueError(
                     f"Existing chapter closure ch{chapter_number:03d} has stale future-knowledge workflow evidence."
+                )
+            manifest_path = root / str(item["manifest_path"])
+            if (
+                not manifest_path.is_file()
+                or sha256(manifest_path.read_bytes()).hexdigest()
+                != item.get("manifest_sha256")
+            ):
+                raise ValueError(
+                    f"Existing chapter closure ch{chapter_number:03d} has stale future-knowledge task provenance."
                 )
         archive_through = int(closure.get("archive_through") or max(0, chapter_number - 2))
         archives = compact_closed_artifacts(config, chapter_number)
@@ -1202,6 +1218,26 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
     state_file = root / "30_state" / "novel_state.json"
     planning_cursor_file = root / "30_state" / "planning_cursor.json"
     archive_through = max(0, chapter_number - 2)
+    future_task_artifacts: list[dict[str, Any]] = []
+    if knowledge_impacts:
+        from longform_engine.intelligence import (
+            create_intelligence_task,
+            future_knowledge_reassessment_task_artifacts,
+        )
+
+        if fanfiction_context_path is None:
+            raise ValueError("future-knowledge workflows require a current context bundle")
+        for _workflow_path, workflow_payload in knowledge_impacts:
+            workflow_bytes = (
+                json.dumps(workflow_payload, ensure_ascii=False, indent=2) + "\n"
+            ).encode("utf-8")
+            future_task_artifacts.append(
+                future_knowledge_reassessment_task_artifacts(
+                    root,
+                    chapter_number=chapter_number,
+                    workflow_sha256=sha256(workflow_bytes).hexdigest(),
+                )
+            )
     with apply_transaction(
         root,
         command="chapter close",
@@ -1218,6 +1254,13 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
             state_file,
             planning_cursor_file,
             *(path for path, _payload in knowledge_impacts),
+            *(item["instruction"] for item in future_task_artifacts),
+            *(item["manifest"] for item in future_task_artifacts),
+            *(
+                (agent_task_index_file(root), agent_task_events_file(root))
+                if future_task_artifacts
+                else ()
+            ),
         ],
         metadata={
             "approved_by": approved_by,
@@ -1242,16 +1285,38 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
             "archive_through": archive_through,
             "future_knowledge_workflows": [],
         }
-        for workflow_path, workflow_payload in knowledge_impacts:
+        for index, (workflow_path, workflow_payload) in enumerate(knowledge_impacts):
+            if fanfiction_context_path is None:  # validated before transaction construction
+                raise ValueError("future-knowledge workflows require a current context bundle")
             atomic_write_text(
                 workflow_path,
                 json.dumps(workflow_payload, ensure_ascii=False, indent=2) + "\n",
             )
+            task = create_intelligence_task(
+                config,
+                task_type="fanfiction_future_knowledge_reassessment",
+                input_files=[
+                    workflow_path,
+                    fanfiction_context_path,
+                    root / close_evidence["event_ledger_path"],
+                ],
+                chapter_number=chapter_number,
+            )
+            expected_artifacts = future_task_artifacts[index]
+            if (
+                task.task_id != expected_artifacts["task_id"]
+                or root / task.manifest_file != expected_artifacts["manifest"]
+            ):
+                raise ValueError("future-knowledge task identity drifted during chapter close")
+            manifest_path = root / task.manifest_file
             closure["future_knowledge_workflows"].append(
                 {
                     "path": relative_path(root, workflow_path),
                     "sha256": sha256(workflow_path.read_bytes()).hexdigest(),
                     "workflow_id": str(workflow_payload.get("workflow_id") or ""),
+                    "task_id": task.task_id,
+                    "manifest_path": task.manifest_file,
+                    "manifest_sha256": sha256(manifest_path.read_bytes()).hexdigest(),
                 }
             )
         atomic_write_text(closure_file, json.dumps(closure, ensure_ascii=False, indent=2) + "\n")

@@ -34,6 +34,16 @@ CONTRACT_FIELDS = {
     "reader_promise_actions",
     "protected_invariants",
     "prohibited_drift",
+    "fanfiction_claim_refs",
+}
+FANFICTION_CLAIM_CHANNEL_SCHEMA = "fanfiction_chapter_claim_channel_v1"
+FANFICTION_CLAIM_CHANNEL_FIELDS = {
+    "schema",
+    "active_volume_claim_refs",
+    "semantic_obligation_claim_refs",
+    "plot_node_claim_refs",
+    "chapter_claim_refs",
+    "all_claim_refs",
 }
 
 
@@ -84,6 +94,7 @@ def validate_chapter_contract(
         errors.append("semantic_obligation_refs must not be empty in the firm tier")
     if not value.get("protected_invariants"):
         errors.append("protected_invariants must not be empty")
+    _validate_fanfiction_claim_channel(value.get("fanfiction_claim_refs"), errors)
     actions = value.get("reader_promise_actions")
     if not isinstance(actions, list):
         errors.append("reader_promise_actions must be a list")
@@ -285,6 +296,40 @@ def _validate_applicability(value: Any, label: str, errors: list[str]) -> None:
         errors.append(f"{label}.reason must be text or null")
 
 
+def _validate_fanfiction_claim_channel(value: Any, errors: list[str]) -> None:
+    label = "fanfiction_claim_refs"
+    if not isinstance(value, dict) or set(value) != FANFICTION_CLAIM_CHANNEL_FIELDS:
+        errors.append(f"{label} fields are invalid")
+        return
+    if value.get("schema") != FANFICTION_CLAIM_CHANNEL_SCHEMA:
+        errors.append(f"{label}.schema must be {FANFICTION_CLAIM_CHANNEL_SCHEMA}")
+    origin_fields = (
+        "active_volume_claim_refs",
+        "semantic_obligation_claim_refs",
+        "plot_node_claim_refs",
+        "chapter_claim_refs",
+    )
+    for field in (*origin_fields, "all_claim_refs"):
+        items = value.get(field)
+        if not isinstance(items, list) or any(
+            not isinstance(item, str) or not item.strip() for item in items or []
+        ):
+            errors.append(f"{label}.{field} must be a string list")
+        elif len(items) != len(set(items)):
+            errors.append(f"{label}.{field} must not contain duplicates")
+    if errors:
+        return
+    expected: list[str] = []
+    for field in origin_fields:
+        for claim_id in value[field]:
+            if claim_id not in expected:
+                expected.append(claim_id)
+    if value["all_claim_refs"] != expected:
+        errors.append(
+            f"{label}.all_claim_refs must exactly equal the ordered union of its origin fields"
+        )
+
+
 def _is_sha256(value: Any) -> bool:
     token = str(value or "")
     return len(token) == 64 and all(character in "0123456789abcdef" for character in token)
@@ -294,6 +339,8 @@ __all__ = [
     "APPLICABILITY",
     "CONTRACT_FIELDS",
     "CONTRACT_SCHEMA",
+    "FANFICTION_CLAIM_CHANNEL_FIELDS",
+    "FANFICTION_CLAIM_CHANNEL_SCHEMA",
     "TOPOLOGIES",
     "ChapterContractError",
     "chapter_contract_hash",

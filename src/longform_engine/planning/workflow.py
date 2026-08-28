@@ -712,6 +712,7 @@ def apply_planning_bundle(
                         "chapter_number": chapter,
                         "preconditions": node["preconditions"],
                         "dependency_refs": node["dependency_refs"],
+                        "fanfiction_claim_refs": node["fanfiction_claim_refs"],
                         "expected_changes": node["expected_changes"],
                         "reader_effect": node["reader_effect"],
                         "state": "planned_approved",
@@ -729,6 +730,7 @@ def apply_planning_bundle(
             "schema": NARRATIVE_EVENT_LEDGER_SCHEMA,
             "chapter_number": chapter,
             "events": events,
+            "realized_major_divergences": [],
             "source_plot_node_table_sha256": canonical_json_hash(
                 {**table, "nodes": approved_nodes}
             ),

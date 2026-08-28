@@ -59,6 +59,7 @@ def build_event_realization_application(
     observations: list[dict[str, Any]],
     discovered_causal_nodes: list[dict[str, Any]],
     confirmed_by: str,
+    realized_major_divergences: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Bind semantic observations to exact final and semantic-ledger hashes."""
 
@@ -90,6 +91,7 @@ def build_event_realization_application(
         },
         "observations": observations,
         "discovered_causal_nodes": discovered_causal_nodes,
+        "realized_major_divergences": list(realized_major_divergences or []),
         "confirmed_by": "human",
     }
 
@@ -108,6 +110,7 @@ def validate_event_realization_application(
         "semantic_ledger",
         "observations",
         "discovered_causal_nodes",
+        "realized_major_divergences",
         "confirmed_by",
     }
     if not isinstance(payload, dict) or set(payload) != fields:
@@ -203,6 +206,75 @@ def validate_event_realization_application(
         if extra:
             errors.append("observations include unknown events: " + ", ".join(extra))
 
+    divergences = payload.get("realized_major_divergences")
+    if not isinstance(divergences, list):
+        errors.append("realized_major_divergences must be a list")
+        divergences = []
+    trigger_ids: set[str] = set()
+    for index, divergence in enumerate(divergences):
+        prefix = f"realized_major_divergences[{index}]"
+        fields = {
+            "trigger_id",
+            "source_event_id",
+            "source_claim_id",
+            "realized_chapter",
+            "impact_level",
+            "knowledge_scope_refs",
+            "human_confirmation",
+            "evidence",
+        }
+        if not isinstance(divergence, dict) or set(divergence) != fields:
+            errors.append(f"{prefix} fields are invalid")
+            continue
+        trigger_id = divergence.get("trigger_id")
+        if not isinstance(trigger_id, str) or not trigger_id.strip():
+            errors.append(f"{prefix}.trigger_id must be stable and non-empty")
+        elif trigger_id in trigger_ids:
+            errors.append(f"duplicate realized divergence trigger_id: {trigger_id}")
+        trigger_ids.add(str(trigger_id))
+        source_event_id = divergence.get("source_event_id")
+        event = planned.get(str(source_event_id))
+        if event is None:
+            errors.append(f"{prefix}.source_event_id is not an approved planned event")
+        elif observations and next(
+            (
+                item.get("state")
+                for item in observations
+                if isinstance(item, dict) and item.get("event_id") == source_event_id
+            ),
+            "",
+        ) != "realized":
+            errors.append(f"{prefix}.source_event_id must be realized")
+        source_claim_id = divergence.get("source_claim_id")
+        if not isinstance(source_claim_id, str) or not source_claim_id.strip():
+            errors.append(f"{prefix}.source_claim_id must be stable and non-empty")
+        elif isinstance(event, dict) and source_claim_id not in (
+            event.get("fanfiction_claim_refs") or []
+        ):
+            errors.append(f"{prefix}.source_claim_id is not approved by the source event")
+        if divergence.get("realized_chapter") != chapter:
+            errors.append(f"{prefix}.realized_chapter must match chapter_number")
+        if divergence.get("impact_level") != "major":
+            errors.append(f"{prefix}.impact_level must be major")
+        knowledge_refs = divergence.get("knowledge_scope_refs")
+        if (
+            not isinstance(knowledge_refs, list)
+            or not knowledge_refs
+            or any(not isinstance(item, str) or not item.strip() for item in knowledge_refs)
+            or len(knowledge_refs) != len(set(knowledge_refs or []))
+        ):
+            errors.append(f"{prefix}.knowledge_scope_refs must be a non-empty unique string list")
+        confirmation = divergence.get("human_confirmation")
+        if (
+            not isinstance(confirmation, dict)
+            or set(confirmation) != {"confirmed_by", "reason"}
+            or confirmation.get("confirmed_by") != "human"
+            or not isinstance(confirmation.get("reason"), str)
+            or not confirmation["reason"].strip()
+        ):
+            errors.append(f"{prefix}.human_confirmation must contain human and a reason")
+        errors.extend(_validate_exact_span(divergence.get("evidence"), final_text, prefix))
+
     discovered = payload.get("discovered_causal_nodes")
     if not isinstance(discovered, list) or any(not isinstance(item, dict) for item in discovered):
         errors.append("discovered_causal_nodes must be a list of objects")
@@ -265,7 +337,24 @@ def apply_event_realization(
                 ),
             }
         )
-    updated = {**ledger, "events": events, "realization_application_sha256": _file_hash(application_file)}
+    application_sha256 = _file_hash(application_file)
+    realized_major_divergences = [
+        {
+            **item,
+            "final_path": payload["final"]["path"],
+            "final_sha256": payload["final"]["sha256"],
+            "semantic_ledger_path": payload["semantic_ledger"]["path"],
+            "semantic_ledger_sha256": payload["semantic_ledger"]["sha256"],
+            "realization_application_sha256": application_sha256,
+        }
+        for item in payload["realized_major_divergences"]
+    ]
+    updated = {
+        **ledger,
+        "events": events,
+        "realized_major_divergences": realized_major_divergences,
+        "realization_application_sha256": application_sha256,
+    }
     with apply_transaction(
         root,
         command="chapter event-realization-apply",

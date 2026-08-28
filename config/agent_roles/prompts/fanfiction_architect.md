@@ -45,6 +45,8 @@ sections:
 **证据义务**
 每项会进入正式路线的动机、关系、能力或时间线改变都引用输入中可达的证据，并在语义主张中说明适用阶段与不确定性。
 
+适用域只使用 claim `extensions.source_ids|character_ids|event_ids|volume_ids|arc_ids|chapter_numbers|from_chapter|to_chapter`；声明多个维度时必须同时满足，不得按任一命中。跨来源人物、能力、地点、组织和能量术语使用 `extensions.identity`，字段恰为 `identity_id|kind|display_name|source_id`，其中 kind 只允许 `character|ability|location|organization|energy`；不得输出旧式扁平 `identity_kind/display_name`。
+
 **工作方法**
 先冻结 canon 基线，再按“原著基线→变量→处置→职责→一阶→二阶→新问题”建立每个原著事件的分歧链：处置 claim 必须引用非空责任承担者、一阶影响与二阶影响稳定 claim；随后检查角色反应、规则冲突、原创主线与终局选择。
 

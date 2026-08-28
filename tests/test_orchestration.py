@@ -125,6 +125,11 @@ def test_continue_write_creates_agent_writing_task_by_default(tmp_path):
     task = json.loads((root / "50_workbench" / "writing_tasks" / "ch001.json").read_text(encoding="utf-8"))
     task_md = (root / "50_workbench" / "writing_tasks" / "ch001.md").read_text(encoding="utf-8")
     report = json.loads((root / "70_runtime" / "run_reports" / "continue_write_ch001.json").read_text(encoding="utf-8"))
+    inventory = json.loads(
+        (root / "50_workbench/writing_tasks/ch001.fact_inventory.json").read_text(
+            encoding="utf-8"
+        )
+    )
 
     assert task["status"] == "task_ready"
     assert task["writing_mode"] == "agent_skill"
@@ -138,6 +143,16 @@ def test_continue_write_creates_agent_writing_task_by_default(tmp_path):
     assert "## 逐场行动" in task_md
     assert "## 演出边界" in task_md
     assert report["artifacts"]["writing_task_markdown"].endswith("ch001.md")
+    assert result.chapter_card.endswith("20_outline\\chapter_cards\\ch001.json") or result.chapter_card.endswith(
+        "20_outline/chapter_cards/ch001.json"
+    )
+    catalog_paths = {item["path"] for item in task["context_plan"]["source_catalog"]}
+    assert "20_outline/chapter_contracts/ch001.json" in catalog_paths
+    assert "20_outline/chapter_cards/ch001.json" in catalog_paths
+    contract_fact = next(
+        item for item in inventory["facts"] if item["id"] == "chapter.contract"
+    )
+    assert contract_fact["source"] == "20_outline/chapter_contracts/ch001.json"
 
     state = json.loads((root / "30_state" / "novel_state.json").read_text(encoding="utf-8"))
     assert state["status"] == "task_ready"

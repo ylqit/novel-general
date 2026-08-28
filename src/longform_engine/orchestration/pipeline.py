@@ -915,6 +915,7 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
         semantic=semantic_enabled(config),
     )
     chapter_contract_file = root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
+    chapter_card_file = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
     plot_node_file = root / "20_outline" / "plot_nodes" / f"ch{chapter_number:03d}.json"
     writing_mode = str(config.data.get("writing", {}).get("mode", "agent_skill"))
 
@@ -923,7 +924,8 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
             config,
             chapter_number=chapter_number,
             context_file=Path(context.context_file),
-            chapter_card_file=chapter_contract_file,
+            chapter_contract_file=chapter_contract_file,
+            chapter_card_file=chapter_card_file,
             beat_sheet_file=plot_node_file,
             overwrite=overwrite,
         )
@@ -963,6 +965,7 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
                 "context": context.context_file,
                 "tcs": tcs.tcs_file,
                 "chapter_contract": str(chapter_contract_file),
+                "chapter_card": str(chapter_card_file),
                 "plot_node_table": str(plot_node_file),
                 "writing_task_json": task["task_json"],
                 "writing_task_markdown": task["task_markdown"],
@@ -975,7 +978,7 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
         return ContinueWriteResult(
             chapter_number=chapter_number,
             context_file=context.context_file,
-            chapter_card=str(chapter_contract_file),
+            chapter_card=str(chapter_card_file),
             beat_sheet=str(plot_node_file),
             draft_file="",
             writing_task_json=task["task_json"],
@@ -1862,6 +1865,7 @@ def write_writing_task(
     *,
     chapter_number: int,
     context_file: Path,
+    chapter_contract_file: Path,
     chapter_card_file: Path,
     beat_sheet_file: Path,
     overwrite: bool,
@@ -1900,8 +1904,19 @@ def write_writing_task(
     recommended_draft = draft_dir / f"ch{chapter_number:03d}.{default_agent}.md"
     card = load_json(chapter_card_file, default={})
     beat = load_json(beat_sheet_file, default={})
-    if not isinstance(card, dict) or card.get("schema") != "chapter_contract_v5":
-        raise WorkflowError("chapter writing requires chapter_contract_v5; v0.9 chapter cards are incompatible")
+    if (
+        not isinstance(card, dict)
+        or int(card.get("chapter_number") or 0) != chapter_number
+    ):
+        raise WorkflowError(
+            "chapter writing requires the current formal chapter card for the requested chapter"
+        )
+    persisted_contract = load_json(chapter_contract_file, default={})
+    if not isinstance(persisted_contract, dict) or persisted_contract != {
+        **chapter_contract,
+        "chapter_contract_hash": chapter_contract_digest,
+    }:
+        raise WorkflowError("chapter writing chapter_contract_file is not the current verified contract")
     if not isinstance(beat, dict) or beat.get("schema") != "plot_node_table_v1":
         raise WorkflowError("chapter writing requires the current approved plot_node_table_v1")
     if current_fanfiction is not None:
@@ -2045,6 +2060,7 @@ def write_writing_task(
     fact_inventory = build_chapter_fact_inventory(
         root,
         chapter_contract=chapter_contract,
+        chapter_contract_file=chapter_contract_file,
         chapter_card_file=chapter_card_file,
         character_packet=character_expression_packet,
         constraint_packet=constraint_packet,
@@ -2072,6 +2088,7 @@ def write_writing_task(
     )
     source_paths = [
         context_file,
+        chapter_contract_file,
         chapter_card_file,
         beat_sheet_file,
         rolling_window_file,
@@ -2171,6 +2188,7 @@ def write_writing_task(
             task_json,
             task_markdown,
             context_file,
+            chapter_contract_file,
             chapter_card_file,
             beat_sheet_file,
         ),
@@ -2320,13 +2338,15 @@ def chapter_write_context_plan(
     task_json: Path,
     task_markdown: Path,
     context_file: Path,
+    chapter_contract_file: Path,
     chapter_card_file: Path,
     beat_sheet_file: Path,
 ) -> dict[str, Any]:
     policy = chapter_write_context_policy(task_json, task_markdown)
     source_reasons = {
         context_file: "bounded RAG evidence embedded into the compiled brief",
-        chapter_card_file: "chapter contract embedded into the compiled brief",
+        chapter_contract_file: "verified chapter_contract_v5 embedded into the compiled brief",
+        chapter_card_file: "formal chapter plan/card embedded into the compiled brief",
         beat_sheet_file: "scene-entry method compiled into the brief; chapter contract remains authoritative",
     }
     return {
@@ -2371,6 +2391,9 @@ def chapter_write_context_plan(
         ],
         "source_characters": {
             relative_path(root, context_file): len(safe_read_text(context_file)),
+            relative_path(root, chapter_contract_file): len(
+                safe_read_text(chapter_contract_file)
+            ),
             relative_path(root, chapter_card_file): len(safe_read_text(chapter_card_file)),
             relative_path(root, beat_sheet_file): len(safe_read_text(beat_sheet_file)),
         },
@@ -3645,6 +3668,7 @@ def build_chapter_fact_inventory(
     root: Path,
     *,
     chapter_contract: dict[str, Any],
+    chapter_contract_file: Path,
     chapter_card_file: Path,
     character_packet: dict[str, Any],
     constraint_packet: dict[str, Any],
@@ -3696,6 +3720,8 @@ def build_chapter_fact_inventory(
 
     card_relative = relative_path(root, chapter_card_file)
     card_hash = sha256_bytes(chapter_card_file.read_bytes())
+    contract_relative = relative_path(root, chapter_contract_file)
+    contract_hash = sha256_bytes(chapter_contract_file.read_bytes())
     factual_contract = {
         key: value
         for key, value in chapter_contract.items()
@@ -3705,8 +3731,8 @@ def build_chapter_fact_inventory(
         "chapter.contract",
         "chapter_contract",
         factual_contract,
-        source=card_relative,
-        source_hash=card_hash,
+        source=contract_relative,
+        source_hash=contract_hash,
         priority="required",
         reason="the factual and constraint projection of the approved chapter contract",
     )

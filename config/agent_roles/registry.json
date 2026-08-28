@@ -69,6 +69,7 @@
     "fanfiction_story_engine": "fanfiction_architect",
     "fanfiction_design": "fanfiction_architect",
     "fanfiction_design_review": "fanfiction_route_reviewer",
+    "fanfiction_future_knowledge_reassessment": "fanfiction_route_reviewer",
     "story_architecture_design": "semantic_narrative_architect",
     "chapter_semantic_planning": "semantic_narrative_architect",
     "draft_semantic_review": "semantic_narrative_architect",
@@ -759,6 +760,7 @@
       ],
       "trigger_sections": {
         "fanfiction_design_review": "diagnostics",
+        "fanfiction_future_knowledge_reassessment": "diagnostics",
         "route_review_gap": "failure_modes"
       },
       "required_playbook_ids": [

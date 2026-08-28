@@ -2,10 +2,12 @@ import json
 from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from longform_engine import fanfiction_context as context_module
+from longform_engine.agent_tasks import agent_task_events_file, agent_task_index_file
 from longform_engine.config import ConfigDocument
 from longform_engine.editorial.pipeline import (
     build_editorial_context_payload,
@@ -86,17 +88,90 @@ def _add_route_claims(project: dict, claims: list[dict]) -> dict:
     return _rebind_route(project, route)
 
 
+def _chapter_contract(*, claim_refs: list[str]) -> dict:
+    channel = {
+        "schema": "fanfiction_chapter_claim_channel_v1",
+        "active_volume_claim_refs": [],
+        "semantic_obligation_claim_refs": [],
+        "plot_node_claim_refs": [],
+        "chapter_claim_refs": list(claim_refs),
+        "all_claim_refs": list(claim_refs),
+    }
+    return {
+        "schema": "chapter_contract_v5",
+        "contract_id": "contract:ch001",
+        "chapter_number": 1,
+        "forecast_ref": "forecast:ch001",
+        "topology": "relationship",
+        "chapter_duty": "让已批准规则迫使人物作出选择。",
+        "observable_change": "选择改变下一章可采取的行动。",
+        "reader_value": "规则、选择与代价形成因果。",
+        "failure": {
+            "applicability": "optional",
+            "description": "直接方案可能失败。",
+            "reason": "人物选择承担本章转折。",
+        },
+        "choice": {
+            "applicability": "required",
+            "description": "人物采用有代价的替代方案。",
+            "reason": "选择造成可观察变化。",
+        },
+        "cost": {
+            "applicability": "required",
+            "description": "人物失去一种安全选项。",
+            "reason": "收益缩窄后续选择。",
+        },
+        "aftermath": {
+            "applicability": "optional",
+            "description": "余波可延续到下一章。",
+            "reason": "本章在行动后果处结束。",
+        },
+        "plot_node_table_ref": {
+            "table_id": "node-table:ch001",
+            "candidate_sha256": "a" * 64,
+        },
+        "semantic_obligation_refs": ["obligation:choice"],
+        "reader_promise_actions": [],
+        "protected_invariants": ["人物保留拒绝权。"],
+        "prohibited_drift": ["不得让代价自动消失。"],
+        "fanfiction_claim_refs": channel,
+    }
+
+
 def _compile(project: dict, *, explicit: list[str] | None = None, card: dict | None = None):
     return compile_fanfiction_context(
         project["config"],
         chapter_number=1,
-        chapter_contract={
-            "chapter_number": 1,
-            "fanfiction_claim_refs": list(explicit or []),
-        },
+        chapter_contract=_chapter_contract(claim_refs=list(explicit or [])),
         chapter_card=card or {"title": "边界测试", "volume_id": "vol001", "arc_id": "arc001"},
         character_packet={},
     )
+
+
+def _realized_trigger(
+    trigger_id: str,
+    source_claim_id: str,
+    *,
+    confirmed_by: str = "human",
+) -> dict:
+    return {
+        "trigger_id": trigger_id,
+        "source_event_id": f"event:{trigger_id}",
+        "source_claim_id": source_claim_id,
+        "realized_chapter": 1,
+        "impact_level": "major",
+        "knowledge_scope_refs": ["route:knowledge"],
+        "human_confirmation": {
+            "confirmed_by": confirmed_by,
+            "reason": "已核对最终正文与语义证据。",
+        },
+        "evidence": {"start": 0, "end": 1, "excerpt": "证"},
+        "final_path": "40_manuscript/final/ch001.md",
+        "final_sha256": "1" * 64,
+        "semantic_ledger_path": "30_state/semantic_ledger/ch001.json",
+        "semantic_ledger_sha256": "2" * 64,
+        "realization_application_sha256": "3" * 64,
+    }
 
 
 def test_context_v2_exposes_precedence_closure_partitions_and_exact_review_evidence(
@@ -330,9 +405,16 @@ def test_multi_source_collisions_force_source_labels_in_author_projection(
                     claim_id,
                     "跨来源身份",
                     extensions={
-                        "source_id": source_id,
-                        "identity_kind": kind,
-                        "display_name": "星能" if kind == "energy" and source_id == "guest" else display_name,
+                        "identity": {
+                            "identity_id": f"identity:{kind}:{source_id}",
+                            "kind": kind,
+                            "display_name": (
+                                "星能"
+                                if kind == "energy" and source_id == "guest"
+                                else display_name
+                            ),
+                            "source_id": source_id,
+                        },
                     },
                 )
             )
@@ -429,7 +511,12 @@ def test_three_divergence_triggers_create_three_idempotent_hash_bound_workflows(
         ),
     ]
     _add_route_claims(project, extra_claims)
-    explicit = ["route:divergence", "route:event", "route:event_two"]
+    explicit = [
+        "route:divergence",
+        "route:event",
+        "route:event_two",
+        "route:knowledge",
+    ]
     bundle = _compile(project, explicit=explicit)
     bundle_path = write_fanfiction_context_bundle(project["root"], bundle)
     event_path = project["root"] / "30_state/narrative_events/ch001.json"
@@ -437,15 +524,10 @@ def test_three_divergence_triggers_create_three_idempotent_hash_bound_workflows(
     events = {
         "schema": "narrative_event_ledger_v1",
         "realization_application_sha256": "b" * 64,
-        "events": [
-            {
-                "event_id": f"event:{index}",
-                "state": "realized",
-                "dependency_refs": [claim_id],
-                "impact_level": "major",
-                "realization_evidence": {"confirmed_by": "human"},
-            }
-            for index, claim_id in enumerate(explicit, start=1)
+        "events": [],
+        "realized_major_divergences": [
+            _realized_trigger(f"divergence:ch001:{index}", claim_id)
+            for index, claim_id in enumerate(explicit[:3], start=1)
         ],
     }
     event_path.write_text(json.dumps(events, ensure_ascii=False), encoding="utf-8")
@@ -487,21 +569,16 @@ def test_future_knowledge_workflow_rejects_stale_source_bound_bundle(
 ):
     project = current_contract_project
     install_route(project)
-    bundle = _compile(project, explicit=["route:divergence"])
+    bundle = _compile(project, explicit=["route:divergence", "route:knowledge"])
     write_fanfiction_context_bundle(project["root"], bundle)
     event_path = project["root"] / "30_state/narrative_events/ch001.json"
     event_path.parent.mkdir(parents=True)
     events = {
         "schema": "narrative_event_ledger_v1",
         "realization_application_sha256": "b" * 64,
-        "events": [
-            {
-                "event_id": "event:one",
-                "state": "realized",
-                "dependency_refs": ["route:divergence"],
-                "impact_level": "major",
-                "realization_evidence": {"confirmed_by": "human"},
-            }
+        "events": [],
+        "realized_major_divergences": [
+            _realized_trigger("divergence:ch001:one", "route:divergence")
         ],
     }
     event_path.write_text(json.dumps(events), encoding="utf-8")
@@ -521,21 +598,16 @@ def test_existing_trigger_workflow_detects_changed_event_binding(
 ):
     project = current_contract_project
     install_route(project)
-    bundle = _compile(project, explicit=["route:divergence"])
+    bundle = _compile(project, explicit=["route:divergence", "route:knowledge"])
     write_fanfiction_context_bundle(project["root"], bundle)
     event_path = project["root"] / "30_state/narrative_events/ch001.json"
     event_path.parent.mkdir(parents=True)
     events = {
         "schema": "narrative_event_ledger_v1",
         "realization_application_sha256": "b" * 64,
-        "events": [
-            {
-                "event_id": "event:one",
-                "state": "realized",
-                "dependency_refs": ["route:divergence"],
-                "impact_level": "major",
-                "realization_evidence": {"confirmed_by": "human"},
-            }
+        "events": [],
+        "realized_major_divergences": [
+            _realized_trigger("divergence:ch001:one", "route:divergence")
         ],
     }
     event_path.write_text(json.dumps(events), encoding="utf-8")
@@ -564,25 +636,24 @@ def test_future_knowledge_trigger_requires_human_approved_event_ledger(
 ):
     project = current_contract_project
     install_route(project)
-    bundle = _compile(project, explicit=["route:divergence"])
+    bundle = _compile(project, explicit=["route:divergence", "route:knowledge"])
     write_fanfiction_context_bundle(project["root"], bundle)
     event_path = project["root"] / "30_state/narrative_events/ch001.json"
     event_path.parent.mkdir(parents=True)
     events = {
         "schema": "narrative_event_ledger_v1",
-        "events": [
-            {
-                "event_id": "event:unapproved",
-                "state": "realized",
-                "dependency_refs": ["route:divergence"],
-                "impact_level": "major",
-                "realization_evidence": {"confirmed_by": "human"},
-            }
+        "events": [],
+        "realized_major_divergences": [
+            _realized_trigger(
+                "divergence:ch001:unapproved",
+                "route:divergence",
+                confirmed_by="model",
+            )
         ],
     }
     event_path.write_text(json.dumps(events), encoding="utf-8")
 
-    with pytest.raises(FanfictionContextError, match="human_approved"):
+    with pytest.raises(FanfictionContextError, match="not_human_confirmed"):
         context_module.future_knowledge_impact_workflows(
             project["config"],
             chapter_number=1,
@@ -605,6 +676,109 @@ def test_future_knowledge_workflows_leave_original_mode_unchanged(tmp_path):
         event_ledger={"events": []},
         event_ledger_path=root / "missing.json",
     ) == ()
+
+
+def test_chapter_close_creates_three_independent_reassessment_tasks_and_repeats_idempotently(
+    current_contract_project,
+    monkeypatch,
+):
+    project = current_contract_project
+    _add_route_claims(
+        project,
+        [
+            semantic_claim("route:divergence_two", "初始分歧"),
+            semantic_claim("route:divergence_three", "初始分歧"),
+        ],
+    )
+    root = project["root"]
+    claim_ids = [
+        "route:divergence",
+        "route:divergence_two",
+        "route:divergence_three",
+        "route:knowledge",
+    ]
+    write_fanfiction_context_bundle(root, _compile(project, explicit=claim_ids))
+    final_file = manuscript_chapter_path(root, 1, lane="final")
+    ledger_file = root / "30_state/semantic_ledger/ch001.json"
+    event_file = root / "30_state/narrative_events/ch001.json"
+    promise_file = root / "30_state/reader_promise_ledger.json"
+    events = {
+        "schema": "narrative_event_ledger_v1",
+        "chapter_number": 1,
+        "events": [],
+        "realized_major_divergences": [
+            _realized_trigger(f"divergence:ch001:{index}", claim_id)
+            for index, claim_id in enumerate(claim_ids[:3], start=1)
+        ],
+        "realization_application_sha256": "3" * 64,
+        "source_plot_node_table_sha256": "4" * 64,
+    }
+    for path, text in (
+        (final_file, "# 第一章\n\n完成一个有代价的选择。\n"),
+        (ledger_file, "{}\n"),
+        (event_file, json.dumps(events, ensure_ascii=False, indent=2) + "\n"),
+        (promise_file, "{}\n"),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    gate = root / "50_workbench/gate_artifacts/ch001/gate_result.json"
+    gate.parent.mkdir(parents=True, exist_ok=True)
+    gate.write_text(
+        json.dumps({"passed": True, "severity_counts": {"P0": 0, "P1": 0}}),
+        encoding="utf-8",
+    )
+    (root / "30_state/novel_state.json").parent.mkdir(parents=True, exist_ok=True)
+    (root / "30_state/novel_state.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(semantic_pipeline, "verify_materialized_chapter", lambda *args: None)
+    monkeypatch.setattr(
+        semantic_pipeline,
+        "require_v010_close_evidence",
+        lambda *_args: {
+            "event_ledger_path": event_file.relative_to(root).as_posix(),
+            "event_ledger_sha256": sha256(event_file.read_bytes()).hexdigest(),
+            "reader_promise_ledger_path": promise_file.relative_to(root).as_posix(),
+            "reader_promise_ledger_sha256": sha256(promise_file.read_bytes()).hexdigest(),
+        },
+    )
+    monkeypatch.setattr(
+        "longform_engine.author_voice.require_author_voice_pair_for_close",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        semantic_pipeline,
+        "task_reconciliation_status",
+        lambda *_args, **_kwargs: {"status": "ok"},
+    )
+    monkeypatch.setattr(
+        semantic_pipeline,
+        "live_chapter_tasks",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(semantic_pipeline, "compact_closed_artifacts", lambda *_args: ())
+
+    first = chapter_close(project["config"], chapter_number=1, approved_by="human")
+    closure = json.loads(Path(first.closure_file).read_text(encoding="utf-8"))
+
+    assert len(closure["future_knowledge_workflows"]) == 3
+    assert len({item["task_id"] for item in closure["future_knowledge_workflows"]}) == 3
+    assert all((root / item["manifest_path"]).is_file() for item in closure["future_knowledge_workflows"])
+    assert len(
+        list(
+            (root / "50_workbench/agent_tasks").glob(
+                "fanfiction_future_knowledge_reassessment.ch001.*.manifest.json"
+            )
+        )
+    ) == 3
+
+    second = chapter_close(project["config"], chapter_number=1, approved_by="human")
+    assert second.closure_file == first.closure_file
+    assert len(
+        list(
+            (root / "50_workbench/agent_tasks").glob(
+                "fanfiction_future_knowledge_reassessment.ch001.*.manifest.json"
+            )
+        )
+    ) == 3
 
 
 def test_chapter_close_rolls_back_all_workflows_closure_and_state_on_failure(
@@ -646,6 +820,7 @@ def test_chapter_close_rolls_back_all_workflows_closure_and_state_on_failure(
         root / "50_workbench/fanfiction_knowledge_impacts/ch001.a.workflow.json",
         root / "50_workbench/fanfiction_knowledge_impacts/ch001.b.workflow.json",
     )
+    task_artifacts_by_digest: dict[str, dict] = {}
     monkeypatch.setattr(semantic_pipeline, "verify_materialized_chapter", lambda *args: None)
     monkeypatch.setattr(
         semantic_pipeline,
@@ -664,6 +839,54 @@ def test_chapter_close_rolls_back_all_workflows_closure_and_state_on_failure(
             (path, {"workflow_id": f"workflow:{index}"})
             for index, path in enumerate(workflow_paths, start=1)
         ),
+    )
+    def fake_task_artifacts(
+        task_root: Path,
+        *,
+        chapter_number: int,
+        workflow_sha256: str,
+    ) -> dict:
+        base = f"future.ch{chapter_number:03d}.{workflow_sha256[:12]}"
+        artifacts = {
+            "base": base,
+            "task_id": f"future:{workflow_sha256[:12]}",
+            "instruction": task_root / "50_workbench/intelligence_tasks" / f"{base}.md",
+            "candidate": task_root / "50_workbench/intelligence_candidates" / f"{base}.json",
+            "manifest": task_root / "50_workbench/agent_tasks" / f"{base}.manifest.json",
+        }
+        task_artifacts_by_digest[workflow_sha256] = artifacts
+        return artifacts
+
+    def fake_create_task(
+        _config,
+        *,
+        task_type: str,
+        input_files,
+        chapter_number: int,
+    ):
+        workflow_digest = sha256(Path(input_files[0]).read_bytes()).hexdigest()
+        artifacts = task_artifacts_by_digest[workflow_digest]
+        for path in (artifacts["instruction"], artifacts["manifest"]):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("task", encoding="utf-8")
+        for path in (
+            agent_task_index_file(root),
+            agent_task_events_file(root),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("task", encoding="utf-8")
+        return SimpleNamespace(
+            task_id=artifacts["task_id"],
+            manifest_file=artifacts["manifest"].relative_to(root).as_posix(),
+        )
+
+    monkeypatch.setattr(
+        "longform_engine.intelligence.future_knowledge_reassessment_task_artifacts",
+        fake_task_artifacts,
+    )
+    monkeypatch.setattr(
+        "longform_engine.intelligence.create_intelligence_task",
+        fake_create_task,
     )
     monkeypatch.setattr(
         "longform_engine.author_voice.require_author_voice_pair_for_close",
@@ -693,5 +916,12 @@ def test_chapter_close_rolls_back_all_workflows_closure_and_state_on_failure(
 
     assert not (root / "30_state/chapter_closures/ch001.json").exists()
     assert all(not path.exists() for path in workflow_paths)
+    assert all(
+        not artifacts[key].exists()
+        for artifacts in task_artifacts_by_digest.values()
+        for key in ("instruction", "manifest")
+    )
+    assert not agent_task_index_file(root).exists()
+    assert not agent_task_events_file(root).exists()
     assert state_file.read_bytes() == state_before
     assert cursor_file.read_bytes() == cursor_before

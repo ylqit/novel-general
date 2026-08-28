@@ -51,6 +51,7 @@ def planning_bundle() -> dict:
             "evidence_requirement": "The final text must show transfer and lost control.",
             "protected_invariants": ["Ari does not trust without a bounded reason."],
             "dependency_refs": [],
+            "fanfiction_claim_refs": [],
         }
     ]
     forecasts = []
@@ -125,6 +126,14 @@ def planning_bundle() -> dict:
             "reader_promise_actions": [],
             "protected_invariants": ["Ari has a bounded reason for sharing control."],
             "prohibited_drift": ["Do not turn the transfer into a consequence-free gesture."],
+            "fanfiction_claim_refs": {
+                "schema": "fanfiction_chapter_claim_channel_v1",
+                "active_volume_claim_refs": [],
+                "semantic_obligation_claim_refs": [],
+                "plot_node_claim_refs": [],
+                "chapter_claim_refs": [],
+                "all_claim_refs": [],
+            },
         }
         for chapter in range(1, 4)
     ]
@@ -236,6 +245,7 @@ def plot_node(
         "protected_invariants": ["Ari retains a bounded reason for the choice."],
         "allowed_deviation": "Exact dialogue and sensory texture remain free.",
         "human_decision": None,
+        "fanfiction_claim_refs": [],
     }
 
 

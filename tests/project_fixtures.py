@@ -469,6 +469,7 @@ def mark_project_ready(
                     "evidence_requirement": "The final prose must show the transfer and its cost.",
                     "protected_invariants": ["The editor identity remains concealed."],
                     "dependency_refs": [],
+                    "fanfiction_claim_refs": [],
                 }
             ],
             "source_bundle_sha256": "c" * 64,
@@ -650,6 +651,7 @@ def mark_project_ready(
                             "chapter_number": chapter_number,
                             "preconditions": [],
                             "dependency_refs": ["obligation:trust-choice"],
+                            "fanfiction_claim_refs": [],
                             "expected_changes": [card["chapter_turn"]],
                             "reader_effect": card["reader_gain"],
                             "state": "planned_approved",
@@ -657,6 +659,7 @@ def mark_project_ready(
                         }
                     ],
                     "source_plot_node_table_sha256": sha256(node_path.read_bytes()).hexdigest(),
+                    "realized_major_divergences": [],
                 },
             )
             contract = stamp_chapter_contract(
@@ -697,6 +700,14 @@ def mark_project_ready(
                     "reader_promise_actions": card["reader_promise_actions"],
                     "protected_invariants": ["The final editor identity remains concealed."],
                     "prohibited_drift": card["prohibited_drift"],
+                    "fanfiction_claim_refs": {
+                        "schema": "fanfiction_chapter_claim_channel_v1",
+                        "active_volume_claim_refs": [],
+                        "semantic_obligation_claim_refs": [],
+                        "plot_node_claim_refs": [],
+                        "chapter_claim_refs": [],
+                        "all_claim_refs": [],
+                    },
                 }
             )
             contract_path = (

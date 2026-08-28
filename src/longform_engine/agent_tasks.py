@@ -444,6 +444,14 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         "apply_prefixes": ("longform-engine fanfiction design-apply ",),
         "failure_prefixes": ("longform-engine fanfiction design-review-task ",),
     },
+    "fanfiction_future_knowledge_reassessment": {
+        "scope_kinds": ("chapter",),
+        "schemas": (output_protocol_for_task("fanfiction_future_knowledge_reassessment"),),
+        "output_prefixes": ("50_workbench/intelligence_candidates/",),
+        "validate_prefixes": ("longform-engine intelligence validate ",),
+        "apply_prefixes": ("longform-engine intelligence apply ",),
+        "failure_prefixes": ("longform-engine intelligence task ",),
+    },
     "design_semantic_compile": {
         "scope_kinds": ("project", "chapter", "range"),
         "schemas": (output_protocol_for_task("design_semantic_compile"),),

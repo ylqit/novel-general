@@ -78,6 +78,10 @@ TASK_OBJECTIVES: dict[str, str] = {
         "设计分歧链、原著事件处置、责任承担、一二阶后果、原创新问题和人物还原边界。"
     ),
     "fanfiction_design_review": "在隔离会话中复核原著基线、分歧因果、人物自主性、长期发动机与动态跨界规则，不修改路线。",
+    "fanfiction_future_knowledge_reassessment": (
+        "针对一个已由人工确认的重大分歧，逐项判断绑定知识范围为仍可靠、部分可靠、已失效或反向误导；"
+        "只提交候选语义结果，不自动批准或改写 Canon。"
+    ),
     "prose_naturalness": "不改变故事事实，用具身行动和可辨人物声音替换有证据的模板化表达。",
     "prose_revision_review": "按单一修订目标检查场景具体性、声音、信息释放、节奏、重复或文句。",
     "prose_revision_semantic_review": "核验任意双稿修订前后的事实、合同、结果和人物知识是否保持一致。",

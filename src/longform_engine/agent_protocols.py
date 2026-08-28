@@ -90,6 +90,7 @@ SEMANTIC_DOCUMENT_TASK_TYPES = frozenset(
         "character_interpretation",
         "fanfiction_route_design",
         "fanfiction_design",
+        "fanfiction_future_knowledge_reassessment",
         "story_architecture_design",
         "chapter_semantic_planning",
         "draft_semantic_review",

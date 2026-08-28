@@ -116,6 +116,7 @@ INTELLIGENCE_TASK_TYPES = (
     "fanfiction_story_engine",
     "fanfiction_design",
     "fanfiction_design_review",
+    "fanfiction_future_knowledge_reassessment",
     "book_ideation",
     "book_design",
     "character_expression_design",
@@ -268,6 +269,15 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
         "schema": SEMANTIC_DOCUMENT_SCHEMA,
         "scope": "project",
         "human": False,
+        "targets": (),
+        "defaults": (),
+    },
+    "fanfiction_future_knowledge_reassessment": {
+        "schema": SEMANTIC_DOCUMENT_SCHEMA,
+        "scope": "chapter",
+        "human": True,
+        # The approved document owns one payload-derived file, not the directory.
+        # apply_targets() adds that exact semantic_task_target after validation.
         "targets": (),
         "defaults": (),
     },
@@ -443,6 +453,7 @@ FANFICTION_CURRENT_CHAIN_TASK_TYPES = frozenset(
         "outline_extension",
         "chapter_direction",
         "outline_revision",
+        "fanfiction_future_knowledge_reassessment",
     }
 )
 
@@ -516,6 +527,37 @@ class ProjectReadinessResult:
     stage: str
     required_task_type: str
     errors: tuple[str, ...]
+
+
+def future_knowledge_reassessment_task_artifacts(
+    root: Path,
+    *,
+    chapter_number: int,
+    workflow_sha256: str,
+) -> dict[str, Any]:
+    """Own the stable one-trigger task identity used by close and task creation."""
+
+    if chapter_number <= 0 or not re.fullmatch(r"[0-9a-f]{64}", workflow_sha256):
+        raise ValueError("future-knowledge task identity requires chapter and workflow SHA-256")
+    base = (
+        "fanfiction_future_knowledge_reassessment."
+        f"ch{chapter_number:03d}.{workflow_sha256[:12]}"
+    )
+    return {
+        "base": base,
+        "task_id": (
+            "fanfiction_future_knowledge_reassessment:"
+            f"ch{chapter_number:03d}:{workflow_sha256[:12]}:v5"
+        ),
+        "instruction": root / "50_workbench" / "intelligence_tasks" / f"{base}.md",
+        "candidate": (
+            root
+            / "50_workbench"
+            / "intelligence_candidates"
+            / f"{base}.candidate.json"
+        ),
+        "manifest": root / "50_workbench" / "agent_tasks" / f"{base}.manifest.json",
+    }
 
 
 def create_intelligence_task(
@@ -617,6 +659,12 @@ def create_intelligence_task(
             current_engine.paths["story_engine"],
             current_engine.paths["source_canon"],
         ]
+    if task_type == "fanfiction_future_knowledge_reassessment":
+        if len(inputs) != 3:
+            raise ValueError(
+                "fanfiction_future_knowledge_reassessment requires workflow, context bundle, "
+                "and event ledger inputs"
+            )
     if task_type == "chapter_semantic_planning":
         inputs = [write_chapter_direction_context(config, root, int(scope["chapter_number"]))]
     if task_type in {"draft_semantic_review", "prose_revision_review"} and not inputs:
@@ -655,13 +703,36 @@ def create_intelligence_task(
     )
     if task_type == "fanfiction_design_review":
         base += "." + sha256(inputs[0].read_bytes()).hexdigest()[:12]
-    instruction = root / "50_workbench" / "intelligence_tasks" / f"{base}.md"
+    future_task_artifacts: dict[str, Any] | None = None
+    if task_type == "fanfiction_future_knowledge_reassessment":
+        future_task_artifacts = future_knowledge_reassessment_task_artifacts(
+            root,
+            chapter_number=int(scope["chapter_number"]),
+            workflow_sha256=sha256(inputs[0].read_bytes()).hexdigest(),
+        )
+        base = str(future_task_artifacts["base"])
+    instruction = (
+        future_task_artifacts["instruction"]
+        if future_task_artifacts is not None
+        else root / "50_workbench" / "intelligence_tasks" / f"{base}.md"
+    )
     candidate_base = f"{task_type}.{token}" if task_type == "book_ideation" else base
     output_protocol = output_protocol_for_task(task_type)
     document_requires_human = output_protocol == DESIGN_DOCUMENT_SCHEMA
     candidate_suffix = ".candidate.md" if output_protocol == DESIGN_DOCUMENT_SCHEMA else ".candidate.json"
-    candidate = root / "50_workbench" / "intelligence_candidates" / f"{candidate_base}{candidate_suffix}"
-    manifest_file = root / "50_workbench" / "agent_tasks" / f"{base}.manifest.json"
+    candidate = (
+        future_task_artifacts["candidate"]
+        if future_task_artifacts is not None
+        else root
+        / "50_workbench"
+        / "intelligence_candidates"
+        / f"{candidate_base}{candidate_suffix}"
+    )
+    manifest_file = (
+        future_task_artifacts["manifest"]
+        if future_task_artifacts is not None
+        else root / "50_workbench" / "agent_tasks" / f"{base}.manifest.json"
+    )
     input_rel = [relative(root, path) for path in inputs]
     instruction_context = dict(scope)
     if task_type == "book_ideation":
@@ -723,7 +794,11 @@ def create_intelligence_task(
             else (
                 f"fanfiction_design_review:project:{sha256(inputs[0].read_bytes()).hexdigest()[:12]}:v5"
                 if task_type == "fanfiction_design_review"
-                else None
+                else (
+                    str(future_task_artifacts["task_id"])
+                    if future_task_artifacts is not None
+                    else None
+                )
             )
         ),
     )
@@ -894,6 +969,21 @@ def apply_intelligence_candidate(
             "canonical_delta_v1, then apply with --document and --delta."
         )
     candidate = resolve_candidate(root, file_path)
+    if task_type == "fanfiction_future_knowledge_reassessment":
+        applied_target = _current_applied_future_knowledge_target(root, candidate)
+        if applied_target is not None:
+            if approved_by != "human":
+                raise ValueError(
+                    "fanfiction_future_knowledge_reassessment apply requires --approved-by human."
+                )
+            return IntelligenceApplyResult(
+                task_type=task_type,
+                status="applied",
+                candidate_file=relative(root, candidate),
+                touched_paths=(relative(root, applied_target),),
+                transaction_report="",
+                next_command="longform-engine production next project.yaml",
+            )
     validation = validate_intelligence_candidate(
         config,
         task_type=task_type,
@@ -1112,6 +1202,49 @@ def apply_intelligence_candidate(
         transaction_report=relative(root, transaction.report_file),
         next_command="longform-engine production next project.yaml",
     )
+
+
+def _current_applied_future_knowledge_target(
+    root: Path,
+    candidate: Path,
+) -> Path | None:
+    """Recognize a repeated human apply without weakening candidate/task provenance."""
+
+    output = relative(root, candidate)
+    applied = [
+        entry
+        for entry in list_manifests(root)
+        if entry.get("task_type") == "fanfiction_future_knowledge_reassessment"
+        and entry.get("status") == "applied"
+        and manifest_output(entry).get("path") == output
+    ]
+    if len(applied) != 1 or not candidate.is_file():
+        return None
+    payload = read_json(candidate, {})
+    if not isinstance(payload, dict):
+        return None
+    candidate_document = seal_semantic_document(payload)
+    artifact = candidate_document.get("artifact")
+    if not isinstance(artifact, dict):
+        return None
+    target = semantic_task_target(
+        root,
+        "fanfiction_future_knowledge_reassessment",
+        candidate_document,
+    )
+    approved = read_json(target, {})
+    if not isinstance(approved, dict) or approved.get("artifact", {}).get("state") != "approved":
+        return None
+    extensions = approved.get("extensions")
+    if not isinstance(extensions, dict):
+        return None
+    if extensions.get("approved_candidate_sha256") != artifact.get("content_sha256"):
+        return None
+    if extensions.get("trigger_id") != candidate_document.get("extensions", {}).get(
+        "trigger_id"
+    ):
+        return None
+    return target
 
 
 def route_semantic_change_to_revision_branch(
@@ -3780,6 +3913,9 @@ def validate_payload(
         "fanfiction_design_review": lambda value, target: validate_fanfiction_design_review(
             config, root, value, manifest, target
         ),
+        "fanfiction_future_knowledge_reassessment": lambda value, target: (
+            validate_future_knowledge_reassessment(root, value, manifest, target)
+        ),
         "book_design": lambda value, target: validate_book_design(value, target),
         "character_expression_design": lambda value, target: target.extend(
             validate_character_expression_profile(
@@ -4739,7 +4875,11 @@ def validate_fanfiction_design_review(
     manifest: dict[str, Any] | None,
     errors: list[str],
 ) -> None:
-    role = manifest.get("role") if isinstance((manifest or {}).get("role"), dict) else {}
+    role: dict[str, Any] = (
+        manifest["role"]
+        if isinstance(manifest, dict) and isinstance(manifest.get("role"), dict)
+        else {}
+    )
     if role.get("id") != "fanfiction_route_reviewer" or role.get("independence_mode") != "isolated_review":
         errors.append("fanfiction route review must use the isolated fanfiction_route_reviewer role")
     try:
@@ -4762,6 +4902,127 @@ def validate_fanfiction_design_review(
         review_target_path=relative(root, route),
         review_target_sha256=sha256(route.read_bytes()).hexdigest(),
     )
+
+
+def validate_future_knowledge_reassessment(
+    root: Path,
+    payload: dict[str, Any],
+    manifest: dict[str, Any] | None,
+    errors: list[str],
+) -> None:
+    role: dict[str, Any] = (
+        manifest["role"]
+        if isinstance(manifest, dict) and isinstance(manifest.get("role"), dict)
+        else {}
+    )
+    if role.get("independence_mode") != "isolated_review":
+        errors.append("future knowledge reassessment must use an isolated review role")
+    if payload.get("document_type") != "同人未来知识重估":
+        errors.append("document_type must be 同人未来知识重估")
+    artifact: dict[str, Any] = (
+        payload["artifact"] if isinstance(payload.get("artifact"), dict) else {}
+    )
+    scope: dict[str, Any] = (
+        artifact["scope"] if isinstance(artifact.get("scope"), dict) else {}
+    )
+    if scope.get("kind") != "chapter" or int(scope.get("chapter_number") or 0) <= 0:
+        errors.append("future knowledge reassessment must use a chapter scope")
+    extensions: dict[str, Any] = (
+        payload["extensions"] if isinstance(payload.get("extensions"), dict) else {}
+    )
+    if extensions.get("task_type") != "fanfiction_future_knowledge_reassessment":
+        errors.append("extensions.task_type must be fanfiction_future_knowledge_reassessment")
+    input_paths = [root / item for item in manifest_input_paths(manifest or {})]
+    workflow: dict[str, Any] | None = None
+    for path in input_paths:
+        if not path.is_file():
+            continue
+        candidate = read_json(path, {})
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("workflow_kind") == "fanfiction_future_knowledge_impact"
+        ):
+            if workflow is not None:
+                errors.append(
+                    "future knowledge reassessment manifest must bind exactly one workflow input"
+                )
+                return
+            workflow = candidate
+    if not isinstance(workflow, dict):
+        errors.append("future knowledge reassessment manifest is missing its workflow input")
+        return
+    trigger = workflow.get("extensions", {}).get("trigger")
+    if not isinstance(trigger, dict):
+        errors.append("future knowledge workflow trigger is invalid")
+        return
+    trigger_id = str(trigger.get("trigger_id") or "")
+    if extensions.get("trigger_id") != trigger_id:
+        errors.append("extensions.trigger_id must match the workflow trigger")
+    expected_trigger_sha = semantic_json_hash(trigger)
+    expected_inputs = {
+        str(item.get("kind") or ""): str(item.get("sha256") or "")
+        for item in workflow.get("inputs") or []
+        if isinstance(item, dict)
+    }
+    knowledge_scope = list(trigger.get("knowledge_scope_refs") or [])
+    claims = payload.get("claims")
+    if not isinstance(claims, list) or len(claims) != len(knowledge_scope):
+        errors.append("claims must cover every workflow knowledge scope exactly once")
+        return
+    covered: list[str] = []
+    allowed = {"仍可靠", "部分可靠", "已失效", "反向误导"}
+    for index, claim in enumerate(claims):
+        claim_extensions: dict[str, Any] = (
+            claim.get("extensions")
+            if isinstance(claim, dict) and isinstance(claim.get("extensions"), dict)
+            else {}
+        )
+        prefix = f"claims[{index}].extensions"
+        if claim_extensions.get("semantic_type") != "未来知识可靠性":
+            errors.append(f"{prefix}.semantic_type must be 未来知识可靠性")
+        if claim_extensions.get("trigger_id") != trigger_id:
+            errors.append(f"{prefix}.trigger_id must match the workflow trigger")
+        if claim_extensions.get("trigger_sha256") != expected_trigger_sha:
+            errors.append(f"{prefix}.trigger_sha256 is stale")
+        if claim_extensions.get("input_hashes") != expected_inputs:
+            errors.append(f"{prefix}.input_hashes must match workflow inputs")
+        knowledge_claim_id = claim_extensions.get("knowledge_claim_id")
+        if knowledge_claim_id not in knowledge_scope or knowledge_claim_id in covered:
+            errors.append(f"{prefix}.knowledge_claim_id is outside or duplicates workflow scope")
+        covered.append(str(knowledge_claim_id))
+        reliability = claim_extensions.get("reliability")
+        if reliability not in allowed:
+            errors.append(f"{prefix}.reliability must be 仍可靠|部分可靠|已失效|反向误导")
+        knowledge_range = claim_extensions.get("knowledge_range")
+        if not isinstance(knowledge_range, dict) or set(knowledge_range) != {
+            "from_chapter",
+            "to_chapter",
+            "scope_refs",
+        }:
+            errors.append(f"{prefix}.knowledge_range fields are invalid")
+        else:
+            start = knowledge_range.get("from_chapter")
+            end = knowledge_range.get("to_chapter")
+            if (
+                not isinstance(start, int)
+                or isinstance(start, bool)
+                or start <= int(trigger.get("realized_chapter") or 0)
+            ):
+                errors.append(f"{prefix}.knowledge_range.from_chapter must follow realization")
+            if end is not None and (
+                not isinstance(end, int)
+                or isinstance(end, bool)
+                or not isinstance(start, int)
+                or end < start
+            ):
+                errors.append(f"{prefix}.knowledge_range.to_chapter is invalid")
+            if knowledge_range.get("scope_refs") != [knowledge_claim_id]:
+                errors.append(f"{prefix}.knowledge_range.scope_refs must bind its knowledge claim")
+        dependencies = claim_extensions.get("depends_on_claims")
+        if dependencies != [knowledge_claim_id, trigger.get("source_claim_id")]:
+            errors.append(f"{prefix}.depends_on_claims must bind knowledge and divergence")
+    if covered != knowledge_scope:
+        errors.append("claims must preserve workflow knowledge scope order")
 
 
 def validate_sources(
@@ -5277,6 +5538,7 @@ def apply_targets(
         "reader_feedback_analysis",
         "source_discovery_planning",
         "source_candidate_triage",
+        "fanfiction_future_knowledge_reassessment",
     }:
         targets.append(semantic_task_target(root, task_type, payload))
     return list(dict.fromkeys(targets))
@@ -5308,6 +5570,10 @@ def semantic_task_target(root: Path, task_type: str, payload: dict[str, Any]) ->
         "reader_feedback_analysis": root / "50_workbench" / "读者反馈" / "分析",
         "source_discovery_planning": root / "50_workbench" / "同人原著资料" / "搜索规划",
         "source_candidate_triage": root / "50_workbench" / "同人原著资料" / "来源筛选",
+        "fanfiction_future_knowledge_reassessment": root
+        / "10_bible"
+        / "fanfiction"
+        / "future_knowledge",
     }
     return directories[task_type] / f"{token[:120]}.json"
 
@@ -5418,6 +5684,7 @@ def write_targets(
         "reader_feedback_analysis",
         "source_discovery_planning",
         "source_candidate_triage",
+        "fanfiction_future_knowledge_reassessment",
     }:
         document = seal_semantic_document(payload)
         if TASK_SPECS[task_type]["human"]:
@@ -6005,14 +6272,21 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
         "fanfiction_canon": (
             "只读取已绑定、已提取且满足当前设计核心覆盖的中文资料包；以自然中文正文表达项目原著基线，"
             "只有需进入 Canon、图谱、检索或依赖传播的可断言内容才拆成 claim。每条 claim 使用其资料源"
-            "命名空间并引用 evidence_reference_v1；不保存连续原文，不自行扩大资料范围。"
+            "命名空间并引用 evidence_reference_v1；不保存连续原文，不自行扩大资料范围。需要限定适用域时，"
+            "只在 claim.extensions 使用 source_ids、character_ids、event_ids、volume_ids、arc_ids、"
+            "chapter_numbers、from_chapter、to_chapter；多个已声明维度同时满足才适用。人物、能力、地点、"
+            "组织或能量术语的可检索身份统一写入 extensions.identity，字段必须恰为 identity_id、kind、"
+            "display_name、source_id，kind 只允许 character、ability、location、organization、energy。"
         ),
         "fanfiction_story_engine": (
             "把批准的原著基线转成可持续的中文长篇故事发动机。extensions.route_family 必须明确选择 "
             "oc_si_progression、canon_character_centered 或 hybrid；必须分别形成唯一初始变量、独立长期目标、"
             "可持续阻力、原著人物自主性、原作事件结束后的故事来源、主角与原著关系、读者识别承诺和"
             "原创主线承诺主张。正文还要说明优势边界与代价、终局问题和禁止体验。资料范围不是人物知识，"
-            "不得把作者掌握的后期事实自动交给角色。CLI 会绑定 Canon、连续性和哈希。"
+            "不得把作者掌握的后期事实自动交给角色。claim 适用域和跨来源实体身份只能使用正式 "
+            "extensions.source_ids/character_ids/event_ids/volume_ids/arc_ids/chapter_numbers/from_chapter/"
+            "to_chapter 与 extensions.identity(identity_id,kind,display_name,source_id)；多个适用维度按 AND。"
+            "CLI 会绑定 Canon、连续性和哈希。"
         ),
         "fanfiction_design": (
             "基于已批准故事发动机建立同人形态、初始分歧、故事切入点、分阶段人物知识边界、原著人物职责、"
@@ -6031,7 +6305,10 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "声明卷恰好指定一个 host_source_id。按 transfer 卷域与卷宿主归并实际 source-volume-host interaction，"
             "每个实际 interaction 恰好一个载荷精确匹配的适配器，每卷至少一个实际 interaction；不要求无关来源与卷的笛卡尔积。"
             "跨界宪法 topics 按实际载荷派生，不做全量主题集、N×N 数值"
-            "换算或导入未批准元素。"
+            "换算或导入未批准元素。路线 claim 的适用域只能使用 source_ids、character_ids、event_ids、"
+            "volume_ids、arc_ids、chapter_numbers、from_chapter、to_chapter，所有声明维度按 AND。人物、能力、"
+            "地点、组织和能量名的结构化身份只写 extensions.identity(identity_id,kind,display_name,source_id)，"
+            "不得使用旧式扁平 identity_kind/display_name。"
         ),
         "fanfiction_design_review": (
             "作为与路线生成隔离的独立复核者，分别检查原著一致性与同人创造性：基线、唯一分歧、一二阶后果、"
@@ -6045,6 +6322,12 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "interaction；不要求无关来源与卷的笛卡尔积。extensions.verdict 只允许 "
             "pass、need_human、"
             "reject；阻断意见用 severity=blocking 的语义主张表达。复核不能修改路线或代替人工批准。"
+        ),
+        "fanfiction_future_knowledge_reassessment": (
+            "作为与章节作者和路线生成隔离的复核者，只评估 workflow 声明的重大分歧触发和知识范围。"
+            "每个知识 claim 恰好产生一条未来知识可靠性主张，reliability 只能是仍可靠、部分可靠、"
+            "已失效或反向误导；绑定 trigger_id、trigger_sha256、workflow 输入 hashes、knowledge_claim_id、"
+            "从下一章开始的 knowledge_range，以及原知识和分歧 claim 依赖。只生成候选，不自动批准或修改 Canon。"
         ),
         "book_design": (
             "明确读者承诺、核心卖点、世界规则、主角欲望与缺陷、长期冲突、升级方式和结局边界。"

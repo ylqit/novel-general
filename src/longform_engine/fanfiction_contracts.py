@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from longform_engine.config import ConfigDocument
@@ -96,6 +97,18 @@ _CROSSOVER_TRIGGER_ELEMENTS = frozenset(
         "world",
         "世界",
     }
+)
+
+FANFICTION_IDENTITY_KINDS = frozenset(
+    {"character", "ability", "location", "organization", "energy"}
+)
+_STABLE_METADATA_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+_APPLICABILITY_LIST_FIELDS = (
+    "source_ids",
+    "character_ids",
+    "event_ids",
+    "volume_ids",
+    "arc_ids",
 )
 
 
@@ -877,6 +890,7 @@ def validate_fanfiction_source_canon(
         for item in configured.get("sources") or []
         if isinstance(item, dict) and item.get("source_id")
     }
+    validate_fanfiction_claim_metadata(payload, configured_sources, errors)
     raw_contracts = extensions.get("source_contracts")
     contracts = raw_contracts if isinstance(raw_contracts, list) else []
     stored_by_source = {
@@ -1023,6 +1037,12 @@ def validate_fanfiction_story_engine(
     extensions = payload["extensions"]
     configured = config.data.get("fanfiction")
     configured = configured if isinstance(configured, dict) else {}
+    configured_sources = {
+        str(item.get("source_id") or "")
+        for item in configured.get("sources") or []
+        if isinstance(item, dict) and item.get("source_id")
+    }
+    validate_fanfiction_claim_metadata(payload, configured_sources, errors)
     if extensions.get("continuity_mode") != configured.get("continuity_mode"):
         errors.append("extensions.continuity_mode must match project.yaml")
     try:
@@ -1168,6 +1188,12 @@ def validate_fanfiction_route_contract(
         return
     configured_value = config.data.get("fanfiction")
     configured: dict[str, Any] = configured_value if isinstance(configured_value, dict) else {}
+    configured_sources = {
+        str(item.get("source_id") or "")
+        for item in configured.get("sources") or []
+        if isinstance(item, dict) and item.get("source_id")
+    }
+    validate_fanfiction_claim_metadata(payload, configured_sources, errors)
     artifact_value = payload.get("artifact")
     artifact: dict[str, Any] = artifact_value if isinstance(artifact_value, dict) else {}
     scope_value = artifact.get("scope")
@@ -1235,6 +1261,92 @@ def validate_fanfiction_route_contract(
         _source_canon=source_canon,
         _story_engine=story_engine,
     )
+
+
+def validate_fanfiction_claim_metadata(
+    payload: dict[str, Any],
+    configured_sources: set[str] | dict[str, Any],
+    errors: list[str],
+) -> None:
+    """Validate the only supported structured applicability and identity extension fields."""
+
+    source_ids = set(configured_sources)
+    for index, claim in enumerate(payload.get("claims") or []):
+        if not isinstance(claim, dict):
+            continue
+        extensions = claim.get("extensions")
+        if not isinstance(extensions, dict):
+            continue
+        prefix = f"claims[{index}].extensions"
+        for field in _APPLICABILITY_LIST_FIELDS:
+            if field not in extensions:
+                continue
+            values = extensions.get(field)
+            if values is None and field == "volume_ids":
+                continue
+            if (
+                not isinstance(values, list)
+                or any(not isinstance(item, str) or not item.strip() for item in values)
+                or len(values) != len(set(values))
+            ):
+                errors.append(f"{prefix}.{field} must be a unique non-empty string list")
+        declared_sources = extensions.get("source_ids")
+        if isinstance(declared_sources, list):
+            unknown = sorted(set(declared_sources) - source_ids)
+            if unknown:
+                errors.append(
+                    f"{prefix}.source_ids reference unconfigured sources: " + ", ".join(unknown)
+                )
+        chapters = extensions.get("chapter_numbers")
+        if "chapter_numbers" in extensions and (
+            not isinstance(chapters, list)
+            or any(
+                not isinstance(item, int) or isinstance(item, bool) or item <= 0
+                for item in chapters or []
+            )
+            or len(chapters) != len(set(chapters or []))
+        ):
+            errors.append(f"{prefix}.chapter_numbers must be a unique positive integer list")
+        start = extensions.get("from_chapter")
+        end = extensions.get("to_chapter")
+        for field, value in (("from_chapter", start), ("to_chapter", end)):
+            if field in extensions and (
+                not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            ):
+                errors.append(f"{prefix}.{field} must be a positive integer")
+        if (
+            isinstance(start, int)
+            and not isinstance(start, bool)
+            and isinstance(end, int)
+            and not isinstance(end, bool)
+            and end < start
+        ):
+            errors.append(f"{prefix}.to_chapter must not precede from_chapter")
+        legacy_identity = {"identity_kind", "identity_id", "display_name"} & set(extensions)
+        if legacy_identity:
+            errors.append(
+                f"{prefix} legacy flat identity fields are unsupported; use extensions.identity"
+            )
+        identity = extensions.get("identity")
+        if identity is None:
+            continue
+        fields = {"identity_id", "kind", "display_name", "source_id"}
+        if not isinstance(identity, dict) or set(identity) != fields:
+            errors.append(f"{prefix}.identity fields must be identity_id, kind, display_name, source_id")
+            continue
+        identity_id = identity.get("identity_id")
+        if not isinstance(identity_id, str) or not _STABLE_METADATA_ID.fullmatch(identity_id):
+            errors.append(f"{prefix}.identity.identity_id must be stable")
+        if identity.get("kind") not in FANFICTION_IDENTITY_KINDS:
+            errors.append(f"{prefix}.identity.kind is invalid")
+        if not isinstance(identity.get("display_name"), str) or not identity["display_name"].strip():
+            errors.append(f"{prefix}.identity.display_name must be non-empty")
+        source_id = identity.get("source_id")
+        if source_id not in source_ids:
+            errors.append(f"{prefix}.identity.source_id must name a configured source")
+        claim_source = extensions.get("source_id")
+        if isinstance(claim_source, str) and claim_source and claim_source != source_id:
+            errors.append(f"{prefix}.identity.source_id must match extensions.source_id")
 
 
 def validate_fanfiction_review_contract(

@@ -10,6 +10,7 @@ from typing import Any, Iterable, Mapping
 import unicodedata
 
 from longform_engine.config import ConfigDocument
+from longform_engine.chapter_contract import validate_chapter_contract
 from longform_engine.fanfiction_contracts import (
     CurrentFanfictionDocuments,
     EVENT_CAUSAL_REFERENCE_FIELDS,
@@ -19,7 +20,7 @@ from longform_engine.fanfiction_contracts import (
 )
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.rag import query as rag_query
-from longform_engine.semantic_protocols import build_workflow_record
+from longform_engine.semantic_protocols import build_workflow_record, validate_semantic_document
 from longform_engine.storage import atomic_write_text, resolve_project_root
 
 
@@ -81,16 +82,48 @@ def compile_fanfiction_context(
 
     if chapter_number <= 0:
         raise FanfictionContextError("fanfiction context requires a positive chapter number")
+    contract_errors = validate_chapter_contract(chapter_contract)
+    if contract_errors:
+        raise FanfictionContextError(
+            "fanfiction_context_requires_current_chapter_contract_v5: "
+            + "; ".join(contract_errors)
+        )
+    if chapter_contract.get("chapter_number") != chapter_number:
+        raise FanfictionContextError("fanfiction_context_chapter_contract_mismatch")
     root = resolve_project_root(config)
+    chapter_contract_path = (
+        root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
+    )
+    chapter_card_path = (
+        root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    )
+    if chapter_contract_path.is_file():
+        persisted_contract = _read_json(chapter_contract_path)
+        if not isinstance(persisted_contract, dict):
+            raise FanfictionContextError("fanfiction_context_chapter_contract_unreadable")
+        persisted_contract = {
+            key: value
+            for key, value in persisted_contract.items()
+            if key != "chapter_contract_hash"
+        }
+        if persisted_contract != chapter_contract:
+            raise FanfictionContextError("fanfiction_context_chapter_contract_stale")
+    if chapter_card_path.is_file() and _read_json(chapter_card_path) != chapter_card:
+        raise FanfictionContextError("fanfiction_context_chapter_card_stale")
     try:
         current = load_current_fanfiction_documents(config, root)
     except FanfictionContractError as exc:
         raise FanfictionContextError(str(exc)) from exc
-    paths = current.paths
+    knowledge_documents, knowledge_paths, knowledge_sha256 = _current_future_knowledge_documents(
+        root
+    )
+    paths = {**current.paths, **knowledge_paths}
+    source_sha256 = {**current.sha256, **knowledge_sha256}
     documents = {
         "source_canon": current.source_canon,
         "story_engine": current.story_engine,
         "route_design": current.route,
+        **knowledge_documents,
     }
     all_claims: dict[str, dict[str, Any]] = {}
     conflicts: list[dict[str, Any]] = []
@@ -115,8 +148,40 @@ def compile_fanfiction_context(
                 continue
             all_claims[claim_id] = record
 
-    explicit_ids, missing_explicit = _stable_claim_references(
-        (chapter_contract, chapter_card, character_packet), set(all_claims)
+    for update_claim in list(all_claims.values()):
+        if update_claim.get("namespace", "").startswith("future_knowledge:"):
+            knowledge_claim_id = str(
+                update_claim.get("extensions", {}).get("knowledge_claim_id") or ""
+            )
+            knowledge_claim = all_claims.get(knowledge_claim_id)
+            if knowledge_claim is None:
+                raise FanfictionContextError(
+                    f"future_knowledge_update_missing_base_claim:{knowledge_claim_id}"
+                )
+            if not _claim_applies(
+                update_claim,
+                chapter_number=chapter_number,
+                chapter_card=chapter_card,
+            ):
+                continue
+            knowledge_claim["dependency_edges"].append(
+                {
+                    "field": "approved_future_knowledge_update",
+                    "claim_id": update_claim["claim_id"],
+                }
+            )
+            knowledge_claim["dependency_claim_ids"] = _dedupe(
+                [
+                    *knowledge_claim.get("dependency_claim_ids", []),
+                    update_claim["claim_id"],
+                ]
+            )
+
+    explicit_ids, missing_explicit = _chapter_explicit_claim_references(
+        chapter_contract=chapter_contract,
+        chapter_card=chapter_card,
+        character_packet=character_packet,
+        known_ids=set(all_claims),
     )
     if missing_explicit:
         raise FanfictionContextError(
@@ -152,9 +217,10 @@ def compile_fanfiction_context(
         raise FanfictionContextError(
             "fanfiction_context_claim_out_of_scope: " + ", ".join(sorted(out_of_scope))
         )
-    required_ids = set(global_ids) | set(explicit_ids)
-    closure_ids, dependency_edges = _dependency_closure(required_ids, all_claims)
-    dependency_ids = closure_ids - required_ids
+    required_ids = set(explicit_ids) - global_ids
+    closure_seed_ids = global_ids | required_ids
+    closure_ids, dependency_edges = _dependency_closure(closure_seed_ids, all_claims)
+    dependency_ids = closure_ids - closure_seed_ids
     dependency_out_of_scope = {
         claim_id
         for claim_id in dependency_ids
@@ -191,7 +257,7 @@ def compile_fanfiction_context(
             if all_claims[claim_id]["namespace"] == "story_engine"
             else "global_invariant"
         )
-    for claim_id in sorted(explicit_ids):
+    for claim_id in sorted(required_ids):
         selection_reasons.setdefault(claim_id, []).append("chapter_explicit_ref")
     for edge in dependency_edges:
         selection_reasons.setdefault(edge["to_claim_id"], []).append(
@@ -224,8 +290,10 @@ def compile_fanfiction_context(
         all_claims=all_claims,
         excluded_ids=hard_ids,
         token_budget=max(256, bundle_budget - hard_units),
+        current_scope=current_scope,
     )
     included_ids = [
+        *sorted(global_ids),
         *sorted(required_ids),
         *sorted(dependency_ids),
         *sorted(relevant_ids),
@@ -265,12 +333,14 @@ def compile_fanfiction_context(
         "source_files": [
             {
                 "path": path.relative_to(root).as_posix(),
-                "sha256": current.sha256[name],
+                "sha256": source_sha256[name],
             }
             for name, path in paths.items()
         ],
         "required_claim_ids": sorted(required_ids),
+        "global_claim_ids": sorted(global_ids),
         "dependency_claim_ids": sorted(dependency_ids),
+        "relevant_claim_ids": sorted(relevant_ids),
         "dependency_closure": dependency_edges,
         "optional_claim_ids": included_optional_ids,
         "included_claim_ids": included_ids,
@@ -283,6 +353,32 @@ def compile_fanfiction_context(
         },
         "source_partitions": partitions,
         "namespace_collisions": collisions,
+        "chapter_provenance": {
+            "chapter_number": chapter_number,
+            "chapter_contract_path": (
+                chapter_contract_path.relative_to(root).as_posix()
+                if chapter_contract_path.is_file()
+                else ""
+            ),
+            "chapter_contract_sha256": _canonical_json_hash(chapter_contract),
+            "chapter_card_path": (
+                chapter_card_path.relative_to(root).as_posix()
+                if chapter_card_path.is_file()
+                else ""
+            ),
+            "chapter_card_sha256": _canonical_json_hash(chapter_card),
+            "character_packet_sha256": _canonical_json_hash(character_packet),
+        },
+        "projection_inputs": {
+            "show_source_labels": (
+                len(config.data.get("fanfiction", {}).get("sources") or []) > 1
+                or bool(collisions)
+            ),
+            "chapter_card": {
+                "local_freedom": str(chapter_card.get("local_freedom") or ""),
+                "observable_change": str(chapter_card.get("observable_change") or ""),
+            },
+        },
         "author_projection": _author_projection(
             included,
             chapter_card,
@@ -302,6 +398,7 @@ def compile_fanfiction_context(
             units_by_claim=units_by_claim,
             partitions=partitions,
             required_ids=required_ids,
+            global_ids=global_ids,
             dependency_ids=dependency_ids,
             relevant_ids=relevant_ids,
             optional_ids=set(included_optional_ids),
@@ -405,7 +502,17 @@ def fanfiction_context_status(
                 "contract_errors": [str(exc)],
             },
         }
-    stale_reasons = _bundle_stale_sources(root, payload, current.paths, current.sha256)
+    _documents, knowledge_paths, knowledge_sha256 = _current_future_knowledge_documents(root)
+    stale_reasons = _bundle_stale_sources(
+        root,
+        payload,
+        {**current.paths, **knowledge_paths},
+        {**current.sha256, **knowledge_sha256},
+    )
+    stale_reasons = sorted(
+        set(stale_reasons)
+        | set(_chapter_provenance_stale(root, payload, chapter_number=chapter_number))
+    )
     status = "stale" if stale_reasons else "current"
     return {
         "schema": "fanfiction_context_status_v1",
@@ -478,10 +585,44 @@ def _contract_error_status(error: FanfictionContractError) -> str:
 
 def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
-    list_fields = (
+    expected_fields = {
+        "schema",
+        "chapter_number",
+        "continuity_mode",
         "source_files",
+        "global_claim_ids",
         "required_claim_ids",
         "dependency_claim_ids",
+        "relevant_claim_ids",
+        "dependency_closure",
+        "optional_claim_ids",
+        "included_claim_ids",
+        "omitted_claims",
+        "claims",
+        "selection_reasons",
+        "source_partitions",
+        "namespace_collisions",
+        "chapter_provenance",
+        "projection_inputs",
+        "author_projection",
+        "review_projection",
+        "budget_usage",
+        "diagnostics",
+        "bundle_sha256",
+    }
+    if set(payload) != expected_fields:
+        missing = sorted(expected_fields - set(payload))
+        extra = sorted(set(payload) - expected_fields)
+        if missing:
+            errors.append("bundle is missing fields: " + ", ".join(missing))
+        if extra:
+            errors.append("bundle has unexpected fields: " + ", ".join(extra))
+    list_fields = (
+        "source_files",
+        "global_claim_ids",
+        "required_claim_ids",
+        "dependency_claim_ids",
+        "relevant_claim_ids",
         "dependency_closure",
         "optional_claim_ids",
         "included_claim_ids",
@@ -492,6 +633,8 @@ def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
     dict_fields = (
         "selection_reasons",
         "source_partitions",
+        "chapter_provenance",
+        "projection_inputs",
         "author_projection",
         "review_projection",
         "budget_usage",
@@ -503,27 +646,205 @@ def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
     for field in dict_fields:
         if not isinstance(payload.get(field), dict):
             errors.append(f"{field} must be an object")
-    review = payload.get("review_projection")
-    if isinstance(review, dict) and review.get("schema") != "fanfiction_review_projection_v2":
-        errors.append("review_projection.schema must be fanfiction_review_projection_v2")
-    partitions = payload.get("source_partitions")
-    if isinstance(partitions, dict) and set(partitions) != {
-        "source",
-        "character",
-        "event",
-        "volume",
-        "arc",
+    chapter = payload.get("chapter_number")
+    if not isinstance(chapter, int) or isinstance(chapter, bool) or chapter <= 0:
+        errors.append("chapter_number must be positive")
+    provenance = payload.get("chapter_provenance")
+    if not isinstance(provenance, dict) or set(provenance) != {
+        "chapter_number",
+        "chapter_contract_path",
+        "chapter_contract_sha256",
+        "chapter_card_path",
+        "chapter_card_sha256",
+        "character_packet_sha256",
     }:
-        errors.append("source_partitions must contain source, character, event, volume, and arc")
-    claim_ids = [
-        str(item.get("claim_id") or "")
-        for item in payload.get("claims") or []
-        if isinstance(item, dict)
-    ]
-    if isinstance(payload.get("included_claim_ids"), list) and claim_ids != payload.get(
-        "included_claim_ids"
+        errors.append("chapter_provenance fields are invalid")
+    elif provenance.get("chapter_number") != chapter:
+        errors.append("chapter_provenance chapter_number does not match bundle")
+    elif any(
+        not _is_sha256(provenance.get(field))
+        for field in (
+            "chapter_contract_sha256",
+            "chapter_card_sha256",
+            "character_packet_sha256",
+        )
     ):
+        errors.append("chapter_provenance hashes must be SHA-256")
+    elif any(
+        not isinstance(provenance.get(field), str)
+        for field in ("chapter_contract_path", "chapter_card_path")
+    ):
+        errors.append("chapter_provenance paths must be text")
+
+    id_fields = (
+        "global_claim_ids",
+        "required_claim_ids",
+        "dependency_claim_ids",
+        "relevant_claim_ids",
+        "optional_claim_ids",
+        "included_claim_ids",
+    )
+    id_lists: dict[str, list[str]] = {}
+    for field in id_fields:
+        raw = payload.get(field)
+        if not isinstance(raw, list):
+            continue
+        if any(not isinstance(item, str) or not item for item in raw):
+            errors.append(f"{field} must contain stable non-empty IDs")
+            continue
+        if len(raw) != len(set(raw)):
+            errors.append(f"{field} must not contain duplicates")
+        id_lists[field] = list(raw)
+    category_fields = id_fields[:-1]
+    for index, left in enumerate(category_fields):
+        for right in category_fields[index + 1 :]:
+            overlap = set(id_lists.get(left, ())) & set(id_lists.get(right, ()))
+            if overlap:
+                errors.append(f"{left} and {right} must be disjoint: {', '.join(sorted(overlap))}")
+    expected_included = [
+        *id_lists.get("global_claim_ids", []),
+        *id_lists.get("required_claim_ids", []),
+        *id_lists.get("dependency_claim_ids", []),
+        *id_lists.get("relevant_claim_ids", []),
+        *id_lists.get("optional_claim_ids", []),
+    ]
+    if id_lists.get("included_claim_ids") != expected_included:
+        errors.append("included_claim_ids must equal the ordered category union")
+
+    claims_value = payload.get("claims")
+    claims = claims_value if isinstance(claims_value, list) else []
+    claim_ids = [
+        str(item.get("claim_id") or "") for item in claims if isinstance(item, dict)
+    ]
+    if len(claim_ids) != len(claims) or claim_ids != id_lists.get("included_claim_ids"):
         errors.append("claims must match included_claim_ids in order")
+    claims_by_id = {
+        str(item.get("claim_id")): item
+        for item in claims
+        if isinstance(item, dict) and item.get("claim_id")
+    }
+    try:
+        closure_ids, expected_edges = _dependency_closure(
+            set(id_lists.get("global_claim_ids", ()))
+            | set(id_lists.get("required_claim_ids", ())),
+            claims_by_id,
+        )
+    except FanfictionContextError as exc:
+        errors.append(str(exc))
+        closure_ids, expected_edges = set(), []
+    expected_dependency_ids = sorted(
+        closure_ids
+        - set(id_lists.get("global_claim_ids", ()))
+        - set(id_lists.get("required_claim_ids", ()))
+    )
+    if id_lists.get("dependency_claim_ids") != expected_dependency_ids:
+        errors.append("dependency_claim_ids do not match the recursive closure")
+    if payload.get("dependency_closure") != expected_edges:
+        errors.append("dependency_closure edges or reasons are not exact")
+
+    expected_reasons: dict[str, list[str]] = {}
+    for claim_id in id_lists.get("global_claim_ids", []):
+        claim = claims_by_id.get(claim_id, {})
+        expected_reasons[claim_id] = [
+            "global_story_promise"
+            if claim.get("namespace") == "story_engine"
+            else "global_invariant"
+        ]
+    for claim_id in id_lists.get("required_claim_ids", []):
+        expected_reasons.setdefault(claim_id, []).append("chapter_explicit_ref")
+    for edge in expected_edges:
+        expected_reasons.setdefault(edge["to_claim_id"], []).append(
+            f"dependency:{edge['field']}:{edge['from_claim_id']}"
+        )
+    for claim_id in id_lists.get("relevant_claim_ids", []):
+        expected_reasons.setdefault(claim_id, []).append("current_structured_scope")
+    for claim_id in id_lists.get("optional_claim_ids", []):
+        expected_reasons.setdefault(claim_id, []).append("optional_rag")
+    expected_reasons = {
+        claim_id: _dedupe(reasons) for claim_id, reasons in sorted(expected_reasons.items())
+    }
+    if payload.get("selection_reasons") != expected_reasons:
+        errors.append("selection_reasons do not match semantic precedence")
+
+    expected_partitions = _source_partitions(claims)
+    if payload.get("source_partitions") != expected_partitions:
+        errors.append("source_partitions are not an exact projection of selected claims")
+    expected_collisions = _namespace_collisions(claims)
+    if payload.get("namespace_collisions") != expected_collisions:
+        errors.append("namespace_collisions are not an exact projection of selected claims")
+    review = payload.get("review_projection")
+    expected_review = _review_projection(
+        claims,
+        selection_reasons=expected_reasons,
+        dependency_edges=expected_edges,
+        namespace_collisions=expected_collisions,
+    )
+    if review != expected_review:
+        errors.append("review_projection is not the exact selected claim/evidence projection")
+
+    projection_inputs = payload.get("projection_inputs")
+    if not isinstance(projection_inputs, dict) or set(projection_inputs) != {
+        "show_source_labels",
+        "chapter_card",
+    }:
+        errors.append("projection_inputs fields are invalid")
+    else:
+        projection_card = projection_inputs.get("chapter_card")
+        if not isinstance(projection_card, dict) or set(projection_card) != {
+            "local_freedom",
+            "observable_change",
+        }:
+            errors.append("projection_inputs.chapter_card fields are invalid")
+        elif not isinstance(projection_inputs.get("show_source_labels"), bool):
+            errors.append("projection_inputs.show_source_labels must be boolean")
+        else:
+            expected_author = _author_projection(
+                claims,
+                projection_card,
+                show_source_labels=projection_inputs["show_source_labels"],
+            )
+            if payload.get("author_projection") != expected_author:
+                errors.append("author_projection is not exact or has incorrect source labels")
+
+    budget = payload.get("budget_usage")
+    if isinstance(budget, dict):
+        estimator = budget.get("estimator")
+        units_by_claim = {
+            claim_id: _claim_units(claims_by_id[claim_id], estimator)
+            for claim_id in claim_ids
+            if claim_id in claims_by_id
+        }
+        expected_budget = _budget_usage(
+            claims,
+            units_by_claim=units_by_claim,
+            partitions=expected_partitions,
+            global_ids=set(id_lists.get("global_claim_ids", ())),
+            required_ids=set(id_lists.get("required_claim_ids", ())),
+            dependency_ids=set(id_lists.get("dependency_claim_ids", ())),
+            relevant_ids=set(id_lists.get("relevant_claim_ids", ())),
+            optional_ids=set(id_lists.get("optional_claim_ids", ())),
+            budget_units=int(budget.get("budget_units") or 0),
+            used_units=sum(units_by_claim.values()),
+            estimator=estimator,
+        )
+        if budget != expected_budget:
+            errors.append("budget_usage totals, categories, or partitions are not exact")
+    source_files = payload.get("source_files")
+    if isinstance(source_files, list):
+        paths: list[str] = []
+        for index, item in enumerate(source_files):
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"path", "sha256"}
+                or not isinstance(item.get("path"), str)
+                or not item["path"]
+                or not _is_sha256(item.get("sha256"))
+            ):
+                errors.append(f"source_files[{index}] is invalid")
+                continue
+            paths.append(item["path"])
+        if len(paths) != len(set(paths)):
+            errors.append("source_files paths must be unique")
     if not isinstance(payload.get("bundle_sha256"), str) or not payload.get("bundle_sha256"):
         errors.append("bundle_sha256 must be non-empty")
     elif payload.get("bundle_sha256") != _bundle_hash(dict(payload)):
@@ -568,6 +889,48 @@ def _bundle_stale_sources(
     return sorted(stale_reasons)
 
 
+def _chapter_provenance_stale(
+    root: Path,
+    payload: Mapping[str, Any],
+    *,
+    chapter_number: int,
+) -> list[str]:
+    provenance = payload.get("chapter_provenance")
+    if not isinstance(provenance, dict):
+        return ["chapter_provenance"]
+    stale: list[str] = []
+    expected = {
+        "chapter_contract": (
+            root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
+        ),
+        "chapter_card": (
+            root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+        ),
+    }
+    for kind, path in expected.items():
+        declared_path = str(provenance.get(f"{kind}_path") or "")
+        expected_relative = path.relative_to(root).as_posix()
+        if path.is_file():
+            if declared_path != expected_relative:
+                stale.append(f"{kind}_path")
+                continue
+            current = _read_json(path)
+            if not isinstance(current, dict):
+                stale.append(kind)
+                continue
+            if kind == "chapter_contract":
+                current = {
+                    key: value
+                    for key, value in current.items()
+                    if key != "chapter_contract_hash"
+                }
+            if provenance.get(f"{kind}_sha256") != _canonical_json_hash(current):
+                stale.append(kind)
+        elif declared_path:
+            stale.append(f"{kind}_path")
+    return stale
+
+
 def require_current_fanfiction_context_bundle(
     config: ConfigDocument,
     *,
@@ -592,15 +955,87 @@ def require_current_fanfiction_context_bundle(
             "fanfiction_context_missing: current chapter requires "
             f"{FANFICTION_CONTEXT_BUNDLE_SCHEMA}; found {found or 'no readable bundle'}"
         )
+    if payload.get("chapter_number") != chapter_number:
+        raise FanfictionContextError("fanfiction_context_invalid: requested chapter mismatch")
     bundle_errors = _validate_bundle_v2(payload)
     if bundle_errors:
         raise FanfictionContextError("fanfiction_context_invalid: " + "; ".join(bundle_errors))
-    stale_sources = _bundle_stale_sources(root, payload, current.paths, current.sha256)
+    knowledge_documents, knowledge_paths, knowledge_sha256 = _current_future_knowledge_documents(
+        root
+    )
+    stale_sources = _bundle_stale_sources(
+        root,
+        payload,
+        {**current.paths, **knowledge_paths},
+        {**current.sha256, **knowledge_sha256},
+    )
     if stale_sources:
         raise FanfictionContextError(
             "fanfiction_context_stale: "
             + ", ".join(stale_sources)
         )
+    provenance_stale = _chapter_provenance_stale(
+        root,
+        payload,
+        chapter_number=chapter_number,
+    )
+    if provenance_stale:
+        raise FanfictionContextError(
+            "fanfiction_context_stale: " + ", ".join(provenance_stale)
+        )
+    canonical_claims: dict[str, dict[str, Any]] = {}
+    for namespace, document in (
+        ("source_canon", current.source_canon),
+        ("story_engine", current.story_engine),
+        ("route_design", current.route),
+        *knowledge_documents.items(),
+    ):
+        for claim in document.get("claims") or []:
+            if isinstance(claim, dict) and claim.get("claim_id"):
+                canonical_claims[str(claim["claim_id"])] = _claim_record(
+                    namespace, claim, document
+                )
+    projection_inputs = payload.get("projection_inputs")
+    projection_card: dict[str, Any] = {}
+    if isinstance(projection_inputs, dict):
+        persisted_projection_card = projection_inputs.get("chapter_card")
+        if isinstance(persisted_projection_card, dict):
+            projection_card = dict(persisted_projection_card)
+    for update_claim in list(canonical_claims.values()):
+        if not str(update_claim.get("namespace") or "").startswith("future_knowledge:"):
+            continue
+        if not _claim_applies(
+            update_claim,
+            chapter_number=chapter_number,
+            chapter_card=projection_card,
+        ):
+            continue
+        knowledge_claim_id = str(
+            update_claim.get("extensions", {}).get("knowledge_claim_id") or ""
+        )
+        knowledge_claim = canonical_claims.get(knowledge_claim_id)
+        if knowledge_claim is None:
+            continue
+        knowledge_claim["dependency_edges"].append(
+            {
+                "field": "approved_future_knowledge_update",
+                "claim_id": update_claim["claim_id"],
+            }
+        )
+        knowledge_claim["dependency_claim_ids"] = _dedupe(
+            [
+                *knowledge_claim.get("dependency_claim_ids", []),
+                update_claim["claim_id"],
+            ]
+        )
+    for claim in payload.get("claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        claim_id = str(claim.get("claim_id") or "")
+        if canonical_claims.get(claim_id) != claim:
+            raise FanfictionContextError(
+                f"fanfiction_context_stale: selected claim record drifted: {claim_id}"
+            )
     return path, payload
 
 
@@ -641,54 +1076,64 @@ def future_knowledge_impact_workflows(
         for item in bundle.get("review_projection", {}).get("claims") or []
         if isinstance(item, dict) and item.get("claim_id")
     }
-    triggers: list[dict[str, str]] = []
-    for event in event_ledger.get("events") or []:
-        if not isinstance(event, dict) or event.get("state") != "realized":
+    triggers: list[dict[str, Any]] = []
+    for raw_trigger in event_ledger.get("realized_major_divergences") or []:
+        if not isinstance(raw_trigger, dict):
             continue
-        evidence = event.get("realization_evidence")
-        if not isinstance(evidence, dict) or evidence.get("confirmed_by") != "human":
-            continue
-        explicit_impact = str(event.get("impact_level") or "").strip()
-        if explicit_impact and explicit_impact not in {"major", "重大", "high", "P1"}:
-            continue
-        for dependency in event.get("dependency_refs") or []:
-            claim = claims.get(str(dependency))
-            if not claim:
-                continue
-            semantic_type = str(claim.get("semantic_type") or "")
-            disposition = str(claim.get("extensions", {}).get("disposition") or "")
-            if semantic_type == "初始分歧" or (
-                semantic_type == "原著事件命运" and disposition not in {"", "保留"}
-            ):
-                triggers.append(
-                    {
-                        "trigger_claim_id": str(dependency),
-                        "source_event_id": str(event.get("event_id") or ""),
-                        "realized_chapter": str(chapter_number),
-                        "impact_level": "major",
-                    }
+        trigger = dict(raw_trigger)
+        claim = claims.get(str(trigger.get("source_claim_id") or ""))
+        if claim is None:
+            raise FanfictionContextError(
+                "future_knowledge_trigger_claim_missing:"
+                + str(trigger.get("source_claim_id") or "")
+            )
+        semantic_type = str(claim.get("semantic_type") or "")
+        disposition = str(claim.get("extensions", {}).get("disposition") or "")
+        if semantic_type != "初始分歧" and not (
+            semantic_type == "原著事件命运" and disposition not in {"", "保留"}
+        ):
+            raise FanfictionContextError(
+                "future_knowledge_trigger_is_not_major_divergence:"
+                + str(trigger.get("source_claim_id") or "")
+            )
+        if trigger.get("realized_chapter") != chapter_number or trigger.get(
+            "impact_level"
+        ) != "major":
+            raise FanfictionContextError("future_knowledge_trigger_scope_invalid")
+        confirmation = trigger.get("human_confirmation")
+        if not isinstance(confirmation, dict) or confirmation.get("confirmed_by") != "human":
+            raise FanfictionContextError("future_knowledge_trigger_not_human_confirmed")
+        knowledge_scope_refs = trigger.get("knowledge_scope_refs")
+        if not isinstance(knowledge_scope_refs, list) or not knowledge_scope_refs:
+            raise FanfictionContextError("future_knowledge_scope_missing")
+        for knowledge_claim_id in knowledge_scope_refs:
+            knowledge_claim = claims.get(str(knowledge_claim_id))
+            if knowledge_claim is None or knowledge_claim.get("semantic_type") not in {
+                "人物知识边界",
+                "人物阶段与知识边界",
+                "未来知识可靠性",
+            }:
+                raise FanfictionContextError(
+                    f"future_knowledge_scope_claim_invalid:{knowledge_claim_id}"
                 )
+        triggers.append(trigger)
     if not triggers:
         return ()
-    knowledge_claims = [
-        str(item.get("claim_id") or "")
-        for item in bundle.get("review_projection", {}).get("claims") or []
-        if isinstance(item, dict)
-        and item.get("semantic_type") in {"人物知识边界", "人物阶段与知识边界", "未来知识可靠性"}
-    ]
     bundle_hash = sha256(bundle_path.read_bytes()).hexdigest()
     event_hash = sha256(event_ledger_path.read_bytes()).hexdigest()
     workflows: list[tuple[Path, dict[str, Any]]] = []
     seen_trigger_ids: set[str] = set()
     for trigger in triggers:
-        trigger_identity = sha256(
-            json.dumps(trigger, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        ).hexdigest()
-        if trigger_identity in seen_trigger_ids:
-            continue
-        seen_trigger_ids.add(trigger_identity)
+        trigger_id = str(trigger.get("trigger_id") or "")
+        if not trigger_id:
+            raise FanfictionContextError("future_knowledge_trigger_id_missing")
+        if trigger_id in seen_trigger_ids:
+            raise FanfictionContextError(f"future_knowledge_trigger_id_duplicate:{trigger_id}")
+        seen_trigger_ids.add(trigger_id)
+        # File/workflow identity is intentionally derived from the formal stable trigger ID,
+        # not from the mutable evidence or confirmation record.  Any later record drift then
+        # resolves to this same path and is reported as stale instead of creating a second task.
+        trigger_identity = sha256(trigger_id.encode("utf-8")).hexdigest()
         target = directory / f"ch{chapter_number:03d}.{trigger_identity[:16]}.workflow.json"
         workflow_id = f"future_knowledge_impact_ch{chapter_number:03d}_{trigger_identity[:16]}"
         if target.exists():
@@ -736,14 +1181,14 @@ def future_knowledge_impact_workflows(
             diagnostics=[
                 {
                     "code": "major_divergence_realized",
-                    "trigger_claim_ids": [trigger["trigger_claim_id"]],
+                    "trigger_claim_ids": [trigger["source_claim_id"]],
                     "source_event_id": trigger["source_event_id"],
-                    "knowledge_claim_ids": knowledge_claims,
+                    "knowledge_claim_ids": trigger["knowledge_scope_refs"],
                 }
             ],
             extensions={
                 "trigger": trigger,
-                "knowledge_scope_refs": knowledge_claims,
+                "knowledge_scope_refs": trigger["knowledge_scope_refs"],
                 "allowed_reliability_states": ["仍可靠", "部分可靠", "已失效", "反向误导"],
                 "instruction": (
                     "由独立语义任务评估每条未来知识在本次分歧后的可靠性；只生成候选。"
@@ -787,7 +1232,15 @@ def _claim_record(
     return {
         "claim_id": str(claim.get("claim_id") or ""),
         "namespace": namespace,
-        "source_id": str(extensions.get("source_id") or ""),
+        "source_id": str(
+            extensions.get("source_id")
+            or (
+                extensions.get("identity", {}).get("source_id")
+                if isinstance(extensions.get("identity"), dict)
+                else ""
+            )
+            or ""
+        ),
         "semantic_type": str(extensions.get("semantic_type") or "语义主张"),
         "statement": str(claim.get("statement") or ""),
         "applicability": claim.get("applicability"),
@@ -824,43 +1277,30 @@ def _source_claim_allowed(config: ConfigDocument, claim: dict[str, Any]) -> bool
     return element.lower() in allowed or semantic_type.lower() in allowed
 
 
-def _stable_claim_references(
-    values: Iterable[Any], known_ids: set[str]
+def _chapter_explicit_claim_references(
+    *,
+    chapter_contract: Mapping[str, Any],
+    chapter_card: Mapping[str, Any],
+    character_packet: Mapping[str, Any],
+    known_ids: set[str],
 ) -> tuple[set[str], set[str]]:
     references: set[str] = set()
     missing: set[str] = set()
-    explicit_fields = {
-        "fanfiction_claim_refs",
-        "fanfiction_claim_ids",
-        "fanfiction_context_refs",
-        "canon_claim_refs",
-    }
-
-    def register_explicit(value: Any) -> None:
-        candidates = value if isinstance(value, list) else [value]
-        for candidate in candidates:
-            if not isinstance(candidate, str) or not candidate.strip():
-                continue
-            if candidate in known_ids:
-                references.add(candidate)
-            else:
-                missing.add(candidate)
-
-    def walk(value: Any, *, fanfiction_projection: bool = False) -> None:
-        if isinstance(value, str) and value in known_ids:
-            references.add(value)
-        elif isinstance(value, dict):
-            for key, child in value.items():
-                if key in explicit_fields or (fanfiction_projection and key == "claim_refs"):
-                    register_explicit(child)
-                else:
-                    walk(child, fanfiction_projection=key == "fanfiction_projection")
-        elif isinstance(value, list):
-            for child in value:
-                walk(child, fanfiction_projection=fanfiction_projection)
-
-    for value in values:
-        walk(value)
+    channel = chapter_contract.get("fanfiction_claim_refs")
+    candidates: list[Any] = []
+    if isinstance(channel, dict):
+        candidates.extend(channel.get("all_claim_refs") or [])
+    for value in (chapter_card, character_packet):
+        explicit = value.get("fanfiction_claim_refs")
+        if isinstance(explicit, list):
+            candidates.extend(explicit)
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        if candidate in known_ids:
+            references.add(candidate)
+        else:
+            missing.add(candidate)
     return references, missing
 
 
@@ -915,9 +1355,12 @@ def _claim_applies(
     extensions: dict[str, Any] = extensions_value if isinstance(extensions_value, dict) else {}
     chapters = extensions.get("chapter_numbers")
     if isinstance(chapters, list) and chapters:
-        return chapter_number in {int(item) for item in chapters if str(item).isdigit()}
-    start = int(extensions.get("from_chapter") or 0)
-    end = int(extensions.get("to_chapter") or 0)
+        if chapter_number not in {int(item) for item in chapters if str(item).isdigit()}:
+            return False
+    knowledge_range = extensions.get("knowledge_range")
+    knowledge_range = knowledge_range if isinstance(knowledge_range, dict) else {}
+    start = int(extensions.get("from_chapter") or knowledge_range.get("from_chapter") or 0)
+    end = int(extensions.get("to_chapter") or knowledge_range.get("to_chapter") or 0)
     if start and chapter_number < start:
         return False
     if end and chapter_number > end:
@@ -1053,9 +1496,11 @@ def _claim_partition_values(claim: Mapping[str, Any], kind: str) -> list[str]:
         for field in fields:
             raw = extensions.get(field)
             values.extend(raw if isinstance(raw, list) else [raw])
-        identity_kind = str(extensions.get("identity_kind") or "")
+        identity = extensions.get("identity")
+        identity = identity if isinstance(identity, dict) else {}
+        identity_kind = str(identity.get("kind") or "")
         if kind == "character" and identity_kind == "character":
-            values.append(extensions.get("identity_id") or extensions.get("display_name"))
+            values.append(identity.get("identity_id") or identity.get("display_name"))
         if kind == "event" and claim.get("semantic_type") == "原著事件命运":
             values.append(claim.get("claim_id"))
     return _dedupe(str(item) for item in values if isinstance(item, (str, int)) and str(item))
@@ -1095,9 +1540,11 @@ def _namespace_collisions(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for claim in claims:
         extensions = claim.get("extensions")
         extensions = extensions if isinstance(extensions, dict) else {}
-        kind = str(extensions.get("identity_kind") or "")
-        name = str(extensions.get("display_name") or "")
-        source_id = str(claim.get("source_id") or extensions.get("source_id") or "")
+        identity = extensions.get("identity")
+        identity = identity if isinstance(identity, dict) else {}
+        kind = str(identity.get("kind") or "")
+        name = str(identity.get("display_name") or "")
+        source_id = str(claim.get("source_id") or identity.get("source_id") or "")
         if kind not in allowed_kinds or not name or not source_id:
             continue
         key = (kind, _normalized_identity_name(name, kind=kind))
@@ -1171,6 +1618,7 @@ def _budget_usage(
     units_by_claim: Mapping[str, int],
     partitions: Mapping[str, Mapping[str, list[str]]],
     required_ids: set[str],
+    global_ids: set[str],
     dependency_ids: set[str],
     relevant_ids: set[str],
     optional_ids: set[str],
@@ -1200,6 +1648,7 @@ def _budget_usage(
         "budget_units": budget_units,
         "used_units": used_units,
         "required": category(required_ids),
+        "global": category(global_ids),
         "dependency": category(dependency_ids),
         "relevant": category(relevant_ids),
         "optional": category(optional_ids),
@@ -1218,6 +1667,7 @@ def _optional_project_canon_claims(
     all_claims: dict[str, dict[str, Any]],
     excluded_ids: set[str],
     token_budget: int,
+    current_scope: Mapping[str, set[str]],
 ) -> tuple[list[str], dict[str, Any]]:
     query_text = " ".join(
         str(value)
@@ -1264,6 +1714,7 @@ def _optional_project_canon_claims(
                 claim,
                 chapter_number=chapter_number,
                 chapter_card=chapter_card,
+                current_scope=current_scope,
             )
         ):
             selected.append(claim_id)
@@ -1316,7 +1767,7 @@ def _author_projection(
             else str(claim.get("statement") or "")
         )
         for claim in claims
-        if str(claim.get("extensions", {}).get("identity_kind") or "")
+        if isinstance(claim.get("extensions", {}).get("identity"), dict)
         and str(claim.get("statement") or "")
     )
     return {
@@ -1386,6 +1837,59 @@ def _bundle_hash(bundle: dict[str, Any]) -> str:
             "utf-8"
         )
     ).hexdigest()
+
+
+def _current_future_knowledge_documents(
+    root: Path,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Path], dict[str, str]]:
+    documents: dict[str, dict[str, Any]] = {}
+    paths: dict[str, Path] = {}
+    digests: dict[str, str] = {}
+    directory = root / "10_bible" / "fanfiction" / "future_knowledge"
+    for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
+        payload = _read_json(path)
+        if not isinstance(payload, dict):
+            raise FanfictionContextError(
+                f"future_knowledge_document_invalid:{path.relative_to(root).as_posix()}"
+            )
+        semantic_errors = validate_semantic_document(payload, require_approved=True)
+        extensions = payload.get("extensions")
+        extensions = extensions if isinstance(extensions, dict) else {}
+        if extensions.get("task_type") != "fanfiction_future_knowledge_reassessment":
+            semantic_errors.append(
+                "extensions.task_type must be fanfiction_future_knowledge_reassessment"
+            )
+        for claim in payload.get("claims") or []:
+            claim_extensions: dict[str, Any] = {}
+            if isinstance(claim, dict) and isinstance(claim.get("extensions"), dict):
+                claim_extensions = dict(claim["extensions"])
+            if claim_extensions.get("semantic_type") != "未来知识可靠性" or claim_extensions.get(
+                "reliability"
+            ) not in {"仍可靠", "部分可靠", "已失效", "反向误导"}:
+                semantic_errors.append("future knowledge claim reliability contract is invalid")
+        if semantic_errors:
+            raise FanfictionContextError(
+                f"future_knowledge_document_invalid:{path.relative_to(root).as_posix()}:"
+                + ";".join(semantic_errors)
+            )
+        key = f"future_knowledge:{path.stem}"
+        documents[key] = payload
+        paths[key] = path
+        digests[key] = sha256(path.read_bytes()).hexdigest()
+    return documents, paths, digests
+
+
+def _canonical_json_hash(value: Any) -> str:
+    return sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
+def _is_sha256(value: Any) -> bool:
+    token = str(value or "")
+    return len(token) == 64 and all(character in "0123456789abcdef" for character in token)
 
 
 def _read_json(path: Path) -> Any:
