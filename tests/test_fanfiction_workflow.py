@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from longform_engine.agent_pipeline import validate_production_agent_result
+from longform_engine.agent_results import build_agent_result_template
+from longform_engine.agent_isolation import TASK_OBJECTIVES
 from longform_engine.agent_tasks import load_manifest
 from longform_engine.fanfiction_sources import project_source_contract
 from longform_engine.fanfiction_context import event_disposition_status
@@ -23,6 +25,7 @@ from longform_engine.intelligence.pipeline import (
 )
 from longform_engine.orchestration.pipeline import WorkflowError, load_fanfiction_writing_contract
 from longform_engine.production import production_next
+from longform_engine.roles import load_role_registry
 from longform_engine.semantic_protocols import build_semantic_document, seal_semantic_document
 from tests.test_fanfiction_source_library import (
     apply_project_canon,
@@ -52,9 +55,87 @@ def candidate_copy(document: dict) -> dict:
     return seal_semantic_document(candidate)
 
 
-def apply_story_engine(config, root: Path) -> dict:
+def write_story_engine_candidate(
+    config,
+    root: Path,
+    *,
+    route_family: object = "hybrid",
+    omitted_semantic_type: str | None = None,
+):
     task = create_intelligence_task(config, task_type="fanfiction_story_engine")
     candidate_file = root / task.candidate_file
+    claims = [
+        {
+            "claim_id": "engine:initial_variable",
+            "statement": "林舟要求公开验证青铜门规则，成为唯一主要初始变量。",
+            "applicability": "全书",
+            "evidence_refs": [],
+            "uncertainty": "验证方法在分卷设计中具体化。",
+            "extensions": {"semantic_type": "唯一初始变量"},
+        },
+        {
+            "claim_id": "engine:long_goal",
+            "statement": "林舟要建立任何人都不能绕过的遗迹规则验证机制。",
+            "applicability": "全书",
+            "evidence_refs": [],
+            "uncertainty": "终局制度形态尚未决定。",
+            "extensions": {"semantic_type": "独立长期目标"},
+        },
+        {
+            "claim_id": "engine:resistance",
+            "statement": "守门利益集团、倒计时和验证本身的资源成本持续阻碍目标。",
+            "applicability": "全书",
+            "evidence_refs": [],
+            "uncertainty": "各卷主要承担者不同。",
+            "extensions": {"semantic_type": "可持续阻力"},
+        },
+        {
+            "claim_id": "engine:agency",
+            "statement": "守门人可以拒绝林舟，并在林舟不在场时推进自己的保密目标。",
+            "applicability": "全书",
+            "evidence_refs": [],
+            "uncertainty": "拒绝造成的关系代价按卷确定。",
+            "extensions": {"semantic_type": "原著人物自主性"},
+        },
+        {
+            "claim_id": "engine:after_canon",
+            "statement": "青铜门原作事件结束后，验证制度与既得利益的冲突继续产生新案件。",
+            "applicability": "原作事件结束后",
+            "evidence_refs": [],
+            "uncertainty": "终局案件只保留方向。",
+            "extensions": {"semantic_type": "原作后续故事来源"},
+        },
+        {
+            "claim_id": "engine:protagonist_canon_relation",
+            "statement": "林舟既依赖守门人的原著职责，也必须接受对方拒绝其验证方案。",
+            "applicability": "全书",
+            "evidence_refs": [],
+            "uncertainty": "关系债务随事件处置变化。",
+            "extensions": {"semantic_type": "主角与原著关系"},
+        },
+        {
+            "claim_id": "engine:recognition_promise",
+            "statement": "读者持续看见青铜门规则、守门人选择方式和原著关系债务的可识别回响。",
+            "applicability": "全书",
+            "evidence_refs": [],
+            "uncertainty": "每卷选取不同识别载体。",
+            "extensions": {"semantic_type": "读者识别承诺"},
+        },
+        {
+            "claim_id": "engine:original_mainline_promise",
+            "statement": "公开验证机制会产生原作未解决的新案件、制度冲突和终局选择。",
+            "applicability": "全书",
+            "evidence_refs": [],
+            "uncertainty": "具体案件由分卷路线决定。",
+            "extensions": {"semantic_type": "原创主线承诺"},
+        },
+    ]
+    claims = [
+        claim
+        for claim in claims
+        if claim["extensions"]["semantic_type"] != omitted_semantic_type
+    ]
+    extensions = {} if route_family is None else {"route_family": route_family}
     document = build_semantic_document(
         document_id="sem_story_engine_gate",
         document_type="同人故事发动机",
@@ -62,49 +143,9 @@ def apply_story_engine(config, root: Path) -> dict:
         scope={"kind": "project", "project": root.name},
         continuity="原作分歧",
         body="以规则验证取代无条件开门，长期追踪信任、责任和安全通道关闭造成的代价。",
-        claims=[
-            {
-                "claim_id": "engine:initial_variable",
-                "statement": "林舟要求公开验证青铜门规则，成为唯一主要初始变量。",
-                "applicability": "全书",
-                "evidence_refs": [],
-                "uncertainty": "验证方法在分卷设计中具体化。",
-                "extensions": {"semantic_type": "唯一初始变量"},
-            },
-            {
-                "claim_id": "engine:long_goal",
-                "statement": "林舟要建立任何人都不能绕过的遗迹规则验证机制。",
-                "applicability": "全书",
-                "evidence_refs": [],
-                "uncertainty": "终局制度形态尚未决定。",
-                "extensions": {"semantic_type": "独立长期目标"},
-            },
-            {
-                "claim_id": "engine:resistance",
-                "statement": "守门利益集团、倒计时和验证本身的资源成本持续阻碍目标。",
-                "applicability": "全书",
-                "evidence_refs": [],
-                "uncertainty": "各卷主要承担者不同。",
-                "extensions": {"semantic_type": "可持续阻力"},
-            },
-            {
-                "claim_id": "engine:agency",
-                "statement": "守门人可以拒绝林舟，并在林舟不在场时推进自己的保密目标。",
-                "applicability": "全书",
-                "evidence_refs": [],
-                "uncertainty": "拒绝造成的关系代价按卷确定。",
-                "extensions": {"semantic_type": "原著人物自主性"},
-            },
-            {
-                "claim_id": "engine:after_canon",
-                "statement": "青铜门原作事件结束后，验证制度与既得利益的冲突继续产生新案件。",
-                "applicability": "原作事件结束后",
-                "evidence_refs": [],
-                "uncertainty": "终局案件只保留方向。",
-                "extensions": {"semantic_type": "原作后续故事来源"},
-            },
-        ],
+        claims=claims,
         evidence_references=[],
+        extensions=extensions,
     )
     candidate_file.write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
     control = validate_production_agent_result(
@@ -113,6 +154,11 @@ def apply_story_engine(config, root: Path) -> dict:
         result_file=candidate_file,
     )
     assert control.ok, control.normalization.errors
+    return task, candidate_file
+
+
+def apply_story_engine(config, root: Path) -> dict:
+    _task, candidate_file = write_story_engine_candidate(config, root)
     validation = validate_intelligence_candidate(
         config,
         task_type="fanfiction_story_engine",
@@ -203,6 +249,14 @@ def apply_route_design(
                 "extensions": {"semantic_type": "分歧后果"},
             },
             {
+                "claim_id": "route:organizational_debt",
+                "statement": "规则公开迫使守门组织重新分配保密责任并追究失败成本。",
+                "applicability": "第二卷",
+                "evidence_refs": [evidence_id],
+                "uncertainty": "具体追责对象按第一卷结局确定。",
+                "extensions": {"semantic_type": "分歧后果"},
+            },
+            {
                 "claim_id": "route:lin_voice",
                 "statement": "林舟的对白保持短促、先追问证据再承诺行动。",
                 "applicability": "当前卷的高压谈判场景",
@@ -220,6 +274,9 @@ def apply_route_design(
                     "semantic_type": "原著事件命运",
                     "disposition": "结果改变",
                     "depends_on_claims": ["route:initial_divergence"],
+                    "responsibility_owner_ids": ["route:canon_duty"],
+                    "first_order_effect_claim_ids": ["route:gate_divergence"],
+                    "second_order_effect_claim_ids": ["route:organizational_debt"],
                 },
             },
         ],
@@ -287,6 +344,187 @@ def apply_route_design(
             encoding="utf-8"
         )
     )
+
+
+def test_story_engine_accepts_exactly_the_three_route_families(tmp_path, monkeypatch):
+    config, root, _item, _source_text, _canon = prepared_project(tmp_path, monkeypatch)
+
+    for route_family in ("oc_si_progression", "canon_character_centered", "hybrid"):
+        _task, candidate_file = write_story_engine_candidate(
+            config,
+            root,
+            route_family=route_family,
+        )
+
+        validation = validate_intelligence_candidate(
+            config,
+            task_type="fanfiction_story_engine",
+            file_path=candidate_file,
+        )
+
+        assert validation.ok, (route_family, validation.errors)
+
+
+@pytest.mark.parametrize("route_family", [None, "canon_replay", "", ["hybrid"]])
+def test_story_engine_rejects_missing_or_unknown_route_family(
+    tmp_path,
+    monkeypatch,
+    route_family,
+):
+    config, root, _item, _source_text, _canon = prepared_project(tmp_path, monkeypatch)
+    _task, candidate_file = write_story_engine_candidate(
+        config,
+        root,
+        route_family=route_family,
+    )
+
+    validation = validate_intelligence_candidate(
+        config,
+        task_type="fanfiction_story_engine",
+        file_path=candidate_file,
+    )
+
+    assert not validation.ok
+    assert any("extensions.route_family" in error for error in validation.errors)
+
+
+@pytest.mark.parametrize(
+    "semantic_type",
+    ["主角与原著关系", "读者识别承诺", "原创主线承诺"],
+)
+def test_story_engine_requires_new_semantic_claims(
+    tmp_path,
+    monkeypatch,
+    semantic_type,
+):
+    config, root, _item, _source_text, _canon = prepared_project(tmp_path, monkeypatch)
+    _task, candidate_file = write_story_engine_candidate(
+        config,
+        root,
+        omitted_semantic_type=semantic_type,
+    )
+
+    validation = validate_intelligence_candidate(
+        config,
+        task_type="fanfiction_story_engine",
+        file_path=candidate_file,
+    )
+
+    assert not validation.ok
+    assert any(semantic_type in error for error in validation.errors)
+
+
+def test_story_engine_contract_renderer_and_role_guidance_cover_both_routes(
+    tmp_path,
+    monkeypatch,
+):
+    config, root, _item, _source_text, _canon = prepared_project(tmp_path, monkeypatch)
+    task = create_intelligence_task(config, task_type="fanfiction_story_engine")
+    manifest = load_manifest(root, task.task_id)
+    template = build_agent_result_template(manifest)
+    instruction = (root / task.instruction_file).read_text(encoding="utf-8")
+    registry = load_role_registry()
+    architect = registry.roles["fanfiction_architect"]
+    playbook = registry.playbooks["fanfiction_canon"].source
+
+    assert template["document_type"] == "同人故事发动机"
+    assert template["extensions"]["route_family"] == ""
+    assert "oc_si_progression" in instruction
+    assert "canon_character_centered" in instruction
+    assert "主角与原著关系" in instruction
+    assert "读者识别承诺" in instruction
+    assert "原创主线承诺" in instruction
+    assert "主角中心" in architect.prompt_sections["decision_model"]
+    assert "原著角色中心" in architect.prompt_sections["decision_model"]
+    assert "双路线" in playbook.sections["creation"]
+    assert "读者识别承诺" in TASK_OBJECTIVES["fanfiction_story_engine"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "responsibility_owner_ids",
+        "first_order_effect_claim_ids",
+        "second_order_effect_claim_ids",
+    ],
+)
+def test_event_fate_requires_non_empty_responsibility_and_effect_refs(
+    tmp_path,
+    monkeypatch,
+    field,
+):
+    config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
+    baseline = candidate_copy(apply_route_design(config, root, canon))
+    event = next(
+        claim
+        for claim in baseline["claims"]
+        if claim["extensions"]["semantic_type"] == "原著事件命运"
+    )
+    event["extensions"].pop(field)
+    errors: list[str] = []
+    validate_fanfiction_design(config, root, seal_semantic_document(baseline), errors)
+
+    assert errors
+    assert any(
+        field in error and "non-empty" in error for error in errors
+    ), errors
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "responsibility_owner_ids",
+        "first_order_effect_claim_ids",
+        "second_order_effect_claim_ids",
+    ],
+)
+def test_event_fate_rejects_refs_outside_route_canon_and_story_engine(
+    tmp_path,
+    monkeypatch,
+    field,
+):
+    config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
+    baseline = candidate_copy(apply_route_design(config, root, canon))
+    event = next(
+        claim
+        for claim in baseline["claims"]
+        if claim["extensions"]["semantic_type"] == "原著事件命运"
+    )
+    event["extensions"][field] = ["outside:unstable_claim"]
+    errors: list[str] = []
+    validate_fanfiction_design(config, root, seal_semantic_document(baseline), errors)
+
+    assert errors
+    assert any(
+        field in error and "current stable claims" in error for error in errors
+    ), errors
+
+
+def test_route_work_order_and_role_guidance_require_full_event_causal_chain(
+    tmp_path,
+    monkeypatch,
+):
+    config, root, _item, _source_text, _canon = prepared_project(tmp_path, monkeypatch)
+    apply_story_engine(config, root)
+    task = create_intelligence_task(config, task_type="fanfiction_design")
+    instruction = (root / task.instruction_file).read_text(encoding="utf-8")
+    context = json.loads(
+        (
+            root
+            / "50_workbench"
+            / "intelligence_context"
+            / "fanfiction_design.project.context.json"
+        ).read_text(encoding="utf-8")
+    )
+    registry = load_role_registry()
+    architect = registry.roles["fanfiction_architect"]
+    reviewer = registry.roles["fanfiction_route_reviewer"]
+
+    causal_chain = "原著基线→变量→处置→职责→一阶→二阶→新问题"
+    assert context["approved_story_engine"]["route_family"] == "hybrid"
+    assert causal_chain in instruction
+    assert causal_chain in architect.prompt_sections["workflow"]
+    assert causal_chain in reviewer.prompt_sections["decision_model"]
 
 
 def test_validated_route_requires_independent_review_and_production_routes_it(
@@ -383,6 +621,11 @@ def test_semantic_canon_compiles_to_readable_bounded_writing_context(tmp_path, m
     assert any("延迟开门" in item for item in contract["approved_divergences"])
     assert "route:gate_divergence" in contract["required_claim_ids"]
     assert contract["context_bundle_sha256"]
+    assert {
+        "engine:protagonist_canon_relation",
+        "engine:recognition_promise",
+        "engine:original_mainline_promise",
+    } <= set(contract["included_claim_ids"])
     serialized = json.dumps(contract, ensure_ascii=False)
     assert "normalization_sha256" not in serialized
     assert "source-library://" not in serialized
@@ -448,6 +691,9 @@ def test_event_fate_status_and_exact_dependency_closure(tmp_path, monkeypatch):
             "statement": "青铜门仍会开启，但结果改为在公开验证后由双方共同承担。",
             "disposition": "结果改变",
             "depends_on_claims": ["route:initial_divergence"],
+            "responsibility_owner_ids": ["route:canon_duty"],
+            "first_order_effect_claim_ids": ["route:gate_divergence"],
+            "second_order_effect_claim_ids": ["route:organizational_debt"],
             "uncertainty": "验证失败时保留取消开启的人工决定。",
         }
     ]

@@ -28,6 +28,9 @@ MANDATORY_STORY_TYPES = frozenset(
         "可持续阻力",
         "原著人物自主性",
         "原作后续故事来源",
+        "主角与原著关系",
+        "读者识别承诺",
+        "原创主线承诺",
     }
 )
 
@@ -293,6 +296,15 @@ def event_disposition_status(config: ConfigDocument) -> dict[str, Any]:
                     "statement": str(claim.get("statement") or ""),
                     "disposition": str(extensions.get("disposition") or ""),
                     "depends_on_claims": list(extensions.get("depends_on_claims") or []),
+                    "responsibility_owner_ids": list(
+                        extensions.get("responsibility_owner_ids") or []
+                    ),
+                    "first_order_effect_claim_ids": list(
+                        extensions.get("first_order_effect_claim_ids") or []
+                    ),
+                    "second_order_effect_claim_ids": list(
+                        extensions.get("second_order_effect_claim_ids") or []
+                    ),
                     "uncertainty": str(claim.get("uncertainty") or ""),
                 }
             )

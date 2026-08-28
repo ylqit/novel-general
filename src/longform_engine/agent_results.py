@@ -217,6 +217,7 @@ def build_agent_result_template(
         scope = manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {}
         document_types = {
             "fanfiction_canon": "项目原著基线Canon候选",
+            "fanfiction_story_engine": "同人故事发动机",
             "fanfiction_design": "同人路线设计候选",
             "source_discovery_planning": "原著资料搜索规划",
             "source_candidate_triage": "原著来源候选筛选",
@@ -245,6 +246,8 @@ def build_agent_result_template(
                 "source_coverage_gap_analysis": "coverage_gap",
             }.get(contract.task_type, ""),
         }
+        if contract.task_type == "fanfiction_story_engine":
+            extensions = {"route_family": ""}
         if scope.get("bundle_sha256"):
             extensions["bundle_sha256"] = str(scope["bundle_sha256"])
         return build_semantic_document(

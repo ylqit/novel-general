@@ -70,8 +70,13 @@ TASK_OBJECTIVES: dict[str, str] = {
     "draft_semantic_review": "分别审查章节因果、人物选择、Canon、承诺兑现与读者价值。",
     "editorial_review": "只从声明的专业编辑视角审稿，并引用可观察证据。",
     "fanfiction_canon": "转述 canon 事实、时间线、人物声音和来源证据，不复制连续原文。",
-    "fanfiction_story_engine": "建立唯一初始变量、长期目标、持续阻力、原著人物自主性和原作事件结束后的原创主线。",
-    "fanfiction_design": "设计分歧链、后果、原创贡献和人物还原边界。",
+    "fanfiction_story_engine": (
+        "选择主角中心、原著角色中心或混合路线，建立唯一初始变量、长期目标、持续阻力、"
+        "主角与原著关系、读者识别承诺和原作结束后的原创主线承诺。"
+    ),
+    "fanfiction_design": (
+        "设计分歧链、原著事件处置、责任承担、一二阶后果、原创新问题和人物还原边界。"
+    ),
     "fanfiction_design_review": "在隔离会话中复核原著基线、分歧因果、人物自主性、长期发动机与动态跨界规则，不修改路线。",
     "prose_naturalness": "不改变故事事实，用具身行动和可辨人物声音替换有证据的模板化表达。",
     "prose_revision_review": "按单一修订目标检查场景具体性、声音、信息释放、节奏、重复或文句。",

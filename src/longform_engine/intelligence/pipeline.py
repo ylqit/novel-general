@@ -2471,6 +2471,9 @@ def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
         "approved_story_engine": {
             "document_type": story_engine.get("document_type"),
             "title": story_engine.get("title"),
+            "route_family": str(
+                (story_engine.get("extensions") or {}).get("route_family") or ""
+            ),
             "body": str(story_engine.get("body") or "")[:6_000],
             "claims": [
                 {
@@ -4565,6 +4568,13 @@ STORY_ENGINE_REQUIRED_SEMANTIC_TYPES = (
     "可持续阻力",
     "原著人物自主性",
     "原作后续故事来源",
+    "主角与原著关系",
+    "读者识别承诺",
+    "原创主线承诺",
+)
+
+STORY_ENGINE_ROUTE_FAMILIES = frozenset(
+    {"oc_si_progression", "canon_character_centered", "hybrid"}
 )
 
 EVENT_DISPOSITIONS = frozenset(
@@ -4622,6 +4632,12 @@ def validate_fanfiction_story_engine(
         errors.append("extensions.task_type must be fanfiction_story_engine")
     if extensions.get("continuity_mode") != configured.get("continuity_mode"):
         errors.append("extensions.continuity_mode must match project.yaml")
+    route_family = extensions.get("route_family")
+    if not isinstance(route_family, str) or route_family not in STORY_ENGINE_ROUTE_FAMILIES:
+        errors.append(
+            "extensions.route_family must be oc_si_progression, "
+            "canon_character_centered, or hybrid"
+        )
     canon_path = root / "10_bible" / "fanfiction" / "source_canon.json"
     canon = read_json(canon_path, {})
     if not isinstance(canon, dict) or validate_semantic_document(canon, require_approved=True):
@@ -4652,7 +4668,10 @@ def validate_event_disposition_claims(
         root / "10_bible" / "fanfiction" / "story_engine.json",
     ):
         document = read_json(path, {})
-        if isinstance(document, dict):
+        if isinstance(document, dict) and not validate_semantic_document(
+            document,
+            require_approved=True,
+        ):
             claim_ids.update(
                 str(item.get("claim_id") or "")
                 for item in document.get("claims") or []
@@ -4676,6 +4695,24 @@ def validate_event_disposition_claims(
             errors.append(
                 f"claims[{index}].extensions.depends_on_claims must reference current stable claims"
             )
+        for field in (
+            "responsibility_owner_ids",
+            "first_order_effect_claim_ids",
+            "second_order_effect_claim_ids",
+        ):
+            references = extensions.get(field)
+            if (
+                not isinstance(references, list)
+                or not references
+                or any(not isinstance(value, str) or not value.strip() for value in references)
+            ):
+                errors.append(
+                    f"claims[{index}].extensions.{field} must be a non-empty string list"
+                )
+            elif any(value not in claim_ids for value in references):
+                errors.append(
+                    f"claims[{index}].extensions.{field} must reference current stable claims"
+                )
         if disposition == "待决定" and not str(claim.get("uncertainty") or "").strip():
             errors.append(f"claims[{index}] 待决定 requires a non-empty uncertainty")
 
@@ -6050,14 +6087,16 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "命名空间并引用 evidence_reference_v1；不保存连续原文，不自行扩大资料范围。"
         ),
         "fanfiction_story_engine": (
-            "把批准的原著基线转成可持续的中文长篇故事发动机。必须分别形成唯一初始变量、独立长期目标、"
-            "可持续阻力、原著人物自主性和原作事件结束后的故事来源主张；正文还要说明核心阅读承诺、"
-            "优势边界与代价、终局问题、禁止体验、原著识别价值和原创价值。资料范围不是人物知识，"
+            "把批准的原著基线转成可持续的中文长篇故事发动机。extensions.route_family 必须明确选择 "
+            "oc_si_progression、canon_character_centered 或 hybrid；必须分别形成唯一初始变量、独立长期目标、"
+            "可持续阻力、原著人物自主性、原作事件结束后的故事来源、主角与原著关系、读者识别承诺和"
+            "原创主线承诺主张。正文还要说明优势边界与代价、终局问题和禁止体验。资料范围不是人物知识，"
             "不得把作者掌握的后期事实自动交给角色。CLI 会绑定 Canon、连续性和哈希。"
         ),
         "fanfiction_design": (
             "基于已批准故事发动机建立同人形态、初始分歧、故事切入点、分阶段人物知识边界、原著人物职责、"
-            "原创主线和保护揭露。为进入路线的原著重大事件建立命运主张，并说明前提、分歧影响和依赖。"
+            "原创主线和保护揭露。为进入路线的原著重大事件按“原著基线→变量→处置→职责→一阶→二阶→新问题”"
+            "建立命运主张；extensions 必须列出非空责任承担、一阶影响和二阶影响稳定 claim 引用，并说明依赖。"
             "未来知识必须有首次重大分歧后的退化机制。联动作品按实际 allowed_elements 建立主世界适配器和"
             "跨界宪法，不做简单数值换算，也不导入未批准的作品元素。"
         ),

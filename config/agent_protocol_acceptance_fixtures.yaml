@@ -188,7 +188,7 @@ professional_prompt_calibration:
       negative: "让所有原角色立即认同原创主角以证明分歧成功。"
       boundary: "保留原作事件骨架可以成立，但必须由新选择产生不同过程或后果。"
     fanfiction_route_reviewer:
-      positive: "沿唯一初始变量复核一阶选择、二阶组织反应和原著事件命运，指出原作事件结束后仍可运行的原创卷级矛盾。"
+      positive: "沿原著基线、变量、事件处置、责任承担、一阶选择、二阶组织反应和新问题复核路线，指出原作事件结束后仍可运行的原创卷级矛盾。"
       negative: "只因路线救下原作死亡角色，就把与原作结果不同直接判为不合格。"
       boundary: "路线可以保留暂未回答的远期问题，但当前卷依赖的未来知识退化、人物拒绝权和跨界作用边界必须明确。"
     fanfiction_canon_archivist:
