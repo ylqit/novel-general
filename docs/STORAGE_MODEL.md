@@ -32,8 +32,8 @@
 | `50_workbench/同人原著资料/<作品名>/` | 项目级中文资料包、覆盖计划、固定绑定、批准提取和短证据；不含完整原件 |
 | `10_bible/fanfiction/story_engine.json` | 人工批准的同人故事发动机语义文档 |
 | `10_bible/fanfiction/fanfiction_bible.json` | 绑定独立复核 hash 的正式同人连续性与路线语义文档 |
-| `50_workbench/fanfiction_context/chNNN.json` | 可重建的内部 `fanfiction_context_bundle_v1`；包含稳定 claim 选择、依赖、预算和诊断，不是作者稿 |
-| `50_workbench/fanfiction_knowledge_impacts/chNNN.workflow.json` | 首次重大分歧后的未来知识可靠性待审工作流；不自动改变 Canon |
+| `50_workbench/fanfiction_context/chNNN.json` | 可重建且仅接受当前版本的内部 `fanfiction_context_bundle_v2`；包含显式必需 claim、带理由依赖闭包、结构化分区、作者/审阅双投影、命名冲突和预算，不是作者稿 |
+| `50_workbench/fanfiction_knowledge_impacts/chNNN.<trigger-digest>.workflow.json` | 每项经人工确认的重大分歧各自对应的未来知识可靠性待审工作流；按触发身份幂等，不自动改变 Canon 或路线 |
 | `50_workbench/创作沙盒/` | 可自由试验的非 Canon `semantic_document_v1` |
 | `50_workbench/语义候选/` | 沙盒提升或 Host Agent 生成、仍待复核/审批的候选 |
 

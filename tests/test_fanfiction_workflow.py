@@ -889,11 +889,14 @@ def test_event_causal_targets_join_required_cross_namespace_dependency_closure(
         config,
         root,
         chapter_number=1,
-        chapter_contract={"chapter_number": 1},
+        chapter_contract={
+            "chapter_number": 1,
+            "fanfiction_claim_refs": ["route:gate_event_fate"],
+        },
         card={"title": "因果闭包"},
     )
 
-    assert causal_targets <= set(contract["required_claim_ids"])
+    assert causal_targets <= set(contract["dependency_claim_ids"])
     assert causal_targets <= set(contract["included_claim_ids"])
 
 
@@ -906,7 +909,10 @@ def test_event_causal_dependency_outside_chapter_scope_blocks_context(tmp_path, 
             config,
             root,
             chapter_number=1,
-            chapter_contract={"chapter_number": 1},
+            chapter_contract={
+                "chapter_number": 1,
+                "fanfiction_claim_refs": ["route:gate_event_fate"],
+            },
             card={"title": "越界因果依赖"},
         )
 

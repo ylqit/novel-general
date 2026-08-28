@@ -98,7 +98,7 @@ creation.mode = fanfiction
 -> outline_design
 -> active volume projects canon range, character stage, event fates, original problem and crossover rules
 -> major state-changing nodes receive human decisions; dialogue, transitions and local beats do not become approval quotas
--> current chapter compiles fanfiction_context_bundle_v1 from stable claim dependencies and a token budget
+-> current chapter compiles fanfiction_context_bundle_v2 from explicit refs, reasoned dependencies, structured scope, namespaces and an explainable budget
 -> chapter_story_brief_v5 exposes only readable Chinese fanfiction context
 -> chapter writing and dual-axis canon fidelity / fanfiction originality review
 ```

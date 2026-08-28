@@ -87,8 +87,8 @@
     },
     {
       "path": "config/agent_roles/prompts/canon_fidelity_reviewer.md",
-      "sha256": "b8d944c08371e531a6de4373f8758e98eb3f4291df8d2baeec3a5e854e860222",
-      "size": 6422
+      "sha256": "fc962e3b2cbc2bad5ab6069143073c1787fb2a30e74d126547a48bebeab58f09",
+      "size": 6704
     },
     {
       "path": "config/agent_roles/prompts/canonical_semantic_archivist.md",
@@ -362,8 +362,8 @@
     },
     {
       "path": "longform-novel-claude/references/command_protocol.md",
-      "sha256": "267ca9fddc83dcfa8dc6bde906327a7bc26dcc882be0465ef10cdae8249eb258",
-      "size": 48345
+      "sha256": "f6b4cbd35b9f3e8242ddaf3e068508eb29a5fc84857ee3cea7dd68e7a2e05c9a",
+      "size": 48402
     },
     {
       "path": "longform-novel-claude/references/creative_operator_protocol.md",
@@ -372,18 +372,18 @@
     },
     {
       "path": "longform-novel-claude/references/iron_laws.md",
-      "sha256": "c03ece5aab6ff547517aaa0b37e159038c3e461acfe397c0b43176e2304ca606",
-      "size": 14411
+      "sha256": "c3594a766536676e44c5f3bd035d5fb7ec05f5770644e47cdec98af97a189bd7",
+      "size": 14637
     },
     {
       "path": "longform-novel-claude/references/workflow_mapping.md",
-      "sha256": "84bbca744b809647104adc4c3a30e0bb77ebf93e1a53a73d131db4313f7c25c8",
-      "size": 11442
+      "sha256": "bc29ad184afadaa7158045f86d57ac78dd5c0e5ddc302a50d51eb7a0eeea3e38",
+      "size": 11490
     },
     {
       "path": "longform-novel-claude/SKILL.md",
-      "sha256": "16ba58bcdd4f49e94aa76ba0bba4cdaa23503c76852c7476be5393edc3004048",
-      "size": 10137
+      "sha256": "204efe3d1f1746d54f64191b3adc9b8c09a08aa06d42a5e1d19fd85e6e9611bd",
+      "size": 10298
     },
     {
       "path": "longform-novel-codex/agents/openai.yaml",
@@ -397,8 +397,8 @@
     },
     {
       "path": "longform-novel-codex/references/command_protocol.md",
-      "sha256": "267ca9fddc83dcfa8dc6bde906327a7bc26dcc882be0465ef10cdae8249eb258",
-      "size": 48345
+      "sha256": "f6b4cbd35b9f3e8242ddaf3e068508eb29a5fc84857ee3cea7dd68e7a2e05c9a",
+      "size": 48402
     },
     {
       "path": "longform-novel-codex/references/creative_operator_protocol.md",
@@ -407,18 +407,18 @@
     },
     {
       "path": "longform-novel-codex/references/iron_laws.md",
-      "sha256": "c03ece5aab6ff547517aaa0b37e159038c3e461acfe397c0b43176e2304ca606",
-      "size": 14411
+      "sha256": "c3594a766536676e44c5f3bd035d5fb7ec05f5770644e47cdec98af97a189bd7",
+      "size": 14637
     },
     {
       "path": "longform-novel-codex/references/workflow_mapping.md",
-      "sha256": "84bbca744b809647104adc4c3a30e0bb77ebf93e1a53a73d131db4313f7c25c8",
-      "size": 11442
+      "sha256": "bc29ad184afadaa7158045f86d57ac78dd5c0e5ddc302a50d51eb7a0eeea3e38",
+      "size": 11490
     },
     {
       "path": "longform-novel-codex/SKILL.md",
-      "sha256": "247fe0578986bb2accf9ee5b342aa2c9c7573fec5be4b6ee3932bc97b0cb620f",
-      "size": 10102
+      "sha256": "ece28172c49983ef546a588ddd7bba57df7e97f9b2ea2b2b102226b2cc65c352",
+      "size": 10263
     },
     {
       "path": "pyproject.toml",
@@ -432,8 +432,8 @@
     },
     {
       "path": "shared/command_protocol.md",
-      "sha256": "267ca9fddc83dcfa8dc6bde906327a7bc26dcc882be0465ef10cdae8249eb258",
-      "size": 48345
+      "sha256": "f6b4cbd35b9f3e8242ddaf3e068508eb29a5fc84857ee3cea7dd68e7a2e05c9a",
+      "size": 48402
     },
     {
       "path": "shared/creative_operator_protocol.md",
@@ -442,13 +442,13 @@
     },
     {
       "path": "shared/iron_laws.md",
-      "sha256": "c03ece5aab6ff547517aaa0b37e159038c3e461acfe397c0b43176e2304ca606",
-      "size": 14411
+      "sha256": "c3594a766536676e44c5f3bd035d5fb7ec05f5770644e47cdec98af97a189bd7",
+      "size": 14637
     },
     {
       "path": "shared/workflow_mapping.md",
-      "sha256": "84bbca744b809647104adc4c3a30e0bb77ebf93e1a53a73d131db4313f7c25c8",
-      "size": 11442
+      "sha256": "bc29ad184afadaa7158045f86d57ac78dd5c0e5ddc302a50d51eb7a0eeea3e38",
+      "size": 11490
     },
     {
       "path": "templates/qidian-longform/project.yaml",

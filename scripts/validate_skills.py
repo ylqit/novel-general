@@ -132,7 +132,7 @@ def validate_skill(name: str, platform: str, forbidden_platform: str) -> list[st
         "fanfiction story-engine-task",
         "fanfiction design-task",
         "design-review-task",
-        "fanfiction_context_bundle_v1",
+        "fanfiction_context_bundle_v2",
         "human_chapter_intent_v2",
         "chapter_contract_v5",
         "chapter_story_brief_v5",

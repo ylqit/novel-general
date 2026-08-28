@@ -1108,16 +1108,22 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
     ledger_file = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
     verify_materialized_chapter(config, root, chapter_number)
     close_evidence = require_v010_close_evidence(root, chapter_number)
-    knowledge_impact: tuple[Path, dict[str, Any]] | None = None
+    knowledge_impacts: tuple[tuple[Path, dict[str, Any]], ...] = ()
+    fanfiction_context_path: Path | None = None
     if str(config.data.get("creation", {}).get("mode") or "") == "fanfiction":
-        from longform_engine.fanfiction_context import future_knowledge_impact_workflow
+        from longform_engine.fanfiction_context import future_knowledge_impact_workflows
 
-        event_ledger = read_json(root / close_evidence["event_ledger_path"], {})
+        event_ledger_path = root / close_evidence["event_ledger_path"]
+        event_ledger = read_json(event_ledger_path, {})
         if isinstance(event_ledger, dict):
-            knowledge_impact = future_knowledge_impact_workflow(
+            knowledge_impacts = future_knowledge_impact_workflows(
                 config,
                 chapter_number=chapter_number,
                 event_ledger=event_ledger,
+                event_ledger_path=event_ledger_path,
+            )
+            fanfiction_context_path = (
+                root / "50_workbench" / "fanfiction_context" / f"ch{chapter_number:03d}.json"
             )
     closure_file = root / "30_state" / "chapter_closures" / f"ch{chapter_number:03d}.json"
     if closure_file.exists():
@@ -1134,6 +1140,24 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
             raise ValueError(f"Existing chapter closure ch{chapter_number:03d} has stale event evidence.")
         if closure.get("reader_promise_ledger_sha256") != close_evidence["reader_promise_ledger_sha256"]:
             raise ValueError(f"Existing chapter closure ch{chapter_number:03d} has stale promise evidence.")
+        if knowledge_impacts:
+            raise ValueError(
+                f"Existing chapter closure ch{chapter_number:03d} is missing one or more "
+                "future-knowledge reassessment workflows."
+            )
+        for item in closure.get("future_knowledge_workflows") or []:
+            if not isinstance(item, dict) or not str(item.get("path") or ""):
+                raise ValueError(
+                    f"Existing chapter closure ch{chapter_number:03d} has invalid future-knowledge workflow provenance."
+                )
+            workflow_path = root / str(item["path"])
+            if (
+                not workflow_path.is_file()
+                or sha256(workflow_path.read_bytes()).hexdigest() != item.get("sha256")
+            ):
+                raise ValueError(
+                    f"Existing chapter closure ch{chapter_number:03d} has stale future-knowledge workflow evidence."
+                )
         archive_through = int(closure.get("archive_through") or max(0, chapter_number - 2))
         archives = compact_closed_artifacts(config, chapter_number)
         return ChapterCloseResult(
@@ -1187,14 +1211,19 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
             ledger_file,
             root / close_evidence["event_ledger_path"],
             root / close_evidence["reader_promise_ledger_path"],
+            *([fanfiction_context_path] if fanfiction_context_path is not None else []),
         ],
         touched_paths=[
             closure_file,
             state_file,
             planning_cursor_file,
-            *([knowledge_impact[0]] if knowledge_impact is not None else []),
+            *(path for path, _payload in knowledge_impacts),
         ],
-        metadata={"approved_by": approved_by, "active_buffer_chapters": 2},
+        metadata={
+            "approved_by": approved_by,
+            "active_buffer_chapters": 2,
+            "future_knowledge_workflow_count": len(knowledge_impacts),
+        },
     ) as transaction:
         closure = {
             "schema": "chapter_closure_v2",
@@ -1204,15 +1233,28 @@ def chapter_close(config: ConfigDocument, *, chapter_number: int, approved_by: s
             "semantic_ledger_sha256": sha256(ledger_file.read_bytes()).hexdigest(),
             "event_ledger_sha256": close_evidence["event_ledger_sha256"],
             "reader_promise_ledger_sha256": close_evidence["reader_promise_ledger_sha256"],
+            "fanfiction_context_sha256": (
+                sha256(fanfiction_context_path.read_bytes()).hexdigest()
+                if fanfiction_context_path is not None
+                else ""
+            ),
             "closed_at": utc_now(),
             "archive_through": archive_through,
+            "future_knowledge_workflows": [],
         }
-        atomic_write_text(closure_file, json.dumps(closure, ensure_ascii=False, indent=2) + "\n")
-        if knowledge_impact is not None:
+        for workflow_path, workflow_payload in knowledge_impacts:
             atomic_write_text(
-                knowledge_impact[0],
-                json.dumps(knowledge_impact[1], ensure_ascii=False, indent=2) + "\n",
+                workflow_path,
+                json.dumps(workflow_payload, ensure_ascii=False, indent=2) + "\n",
             )
+            closure["future_knowledge_workflows"].append(
+                {
+                    "path": relative_path(root, workflow_path),
+                    "sha256": sha256(workflow_path.read_bytes()).hexdigest(),
+                    "workflow_id": str(workflow_payload.get("workflow_id") or ""),
+                }
+            )
+        atomic_write_text(closure_file, json.dumps(closure, ensure_ascii=False, indent=2) + "\n")
         state = read_json(state_file, {})
         if not isinstance(state, dict):
             state = {}

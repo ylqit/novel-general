@@ -101,7 +101,7 @@
 | `/查看原著事件命运` | `longform-engine fanfiction event-disposition-status project.yaml --json` | `project.yaml` | 只读 | 显示保留、提前、延迟、结果改变、换人承担、取消、转化或待决定，以及稳定依赖。 |
 | `/查看人物知识边界` | `longform-engine fanfiction context-status project.yaml --chapter N --json` | 当前章 | 只读 | 核对资料范围、项目截止点、切入点、人物知识与未来知识可靠性是否进入当前语义投影。 |
 | `/查看跨界规则` | `longform-engine fanfiction context-status project.yaml --chapter N --json` | crossover 当前章 | 只读 | 显示当前章实际纳入的宿主世界适配器、跨界宪法、能力条件/代价/反制和冲突诊断。 |
-| `/查看同人章节上下文` | `longform-engine fanfiction context-status project.yaml --chapter N --json` | 当前章 | 只读 | 检查 `fanfiction_context_bundle_v1` 的必要/纳入/省略/stale 状态；作者稿不会暴露 claim ID、hash 或检索分数。 |
+| `/查看同人章节上下文` | `longform-engine fanfiction context-status project.yaml --chapter N --json` | 当前章 | 只读 | 检查 `fanfiction_context_bundle_v2` 的显式必要项、依赖闭包、结构化分区、命名冲突、预算、省略和 stale；作者稿不会暴露 claim ID、hash 或检索分数。 |
 | `/工程同人状态` | `longform-engine fanfiction status project.yaml` | `project.yaml` | 只读 | 查看 canon/design 状态与非阻断权利提示。 |
 | `/查看原著资料升级` | `longform-engine fanfiction upgrade-status project.yaml --json` | 固定项目绑定 | 只读 | 比较全局新版本，但不改变项目。 |
 | `/申请原著资料升级` | `longform-engine fanfiction upgrade-propose project.yaml --source-id SOURCE --target-item-id ITEM --created-by human` | 人工选择升级 | `资料升级提案/` | 用稳定事实 ID 和显式引用生成影响，不应用。 |

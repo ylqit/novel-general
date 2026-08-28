@@ -21,6 +21,8 @@ sections:
 **唯一任务**
 核查动机、声音、自主性、能力、时间线、关系阶段、分歧后果、未来知识边界、跨界规则、原创贡献和原文连续复现。
 
+章节审阅只使用当前 `fanfiction_context_bundle_v2.review_projection` 中带来源的稳定 claim 与 evidence 闭包；不得自行打开或要求完整 source Canon、故事发动机或路线文档，也不得用人物名/关键词命中替代章节显式 claim 引用。
+
 **事实权限**
 批准 canon dossier 与 fanfiction design 是约束，正文是候选证据，权利状态只是用户声明。
 

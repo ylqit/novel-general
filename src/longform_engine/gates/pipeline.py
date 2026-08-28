@@ -33,6 +33,11 @@ from longform_engine.agent_tasks import (
     write_manifest,
 )
 from longform_engine.config import ConfigDocument
+from longform_engine.fanfiction_context import (
+    FANFICTION_CONTEXT_BUNDLE_SCHEMA,
+    FanfictionContextError,
+    require_current_fanfiction_context_bundle,
+)
 from longform_engine.fanfiction_sources import (
     FanfictionSourceError,
     library_item_texts,
@@ -176,12 +181,23 @@ def build_semantic_review_context(
         verified_contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
     except ChapterContractError as exc:
         raise GateError(str(exc)) from exc
-    source_canon = payloads.get("10_bible/fanfiction/source_canon.json", {})
-    fanfiction_bible = payloads.get("10_bible/fanfiction/fanfiction_bible.json", {})
+    bundle_ref = f"50_workbench/fanfiction_context/ch{chapter_number:03d}.json"
+    fanfiction_bundle = payloads.get(bundle_ref, {})
+    review_projection = (
+        fanfiction_bundle.get("review_projection")
+        if isinstance(fanfiction_bundle, dict)
+        else None
+    )
+    if fanfiction and (
+        not isinstance(fanfiction_bundle, dict)
+        or fanfiction_bundle.get("schema") != FANFICTION_CONTEXT_BUNDLE_SCHEMA
+        or not isinstance(review_projection, dict)
+    ):
+        raise GateError(f"context_evidence_incomplete:{bundle_ref}")
     participant_ids = semantic_review_participant_ids(
         chapter_card,
         source_text=source_text,
-        identity_sources=(character_payload, source_canon, fanfiction_bible),
+        identity_sources=(character_payload, review_projection or {}),
     )
     canon_refs = dedupe_strings(normalize_strings(chapter_card.get("canon_refs")))
     match_terms = dedupe_strings([*participant_ids, *canon_refs])
@@ -193,12 +209,7 @@ def build_semantic_review_context(
         "story_graph": semantic_review_matching_records(graph_payload, participant_ids),
     }
     if fanfiction:
-        raw_sections["fanfiction"] = {
-            "source_canon_matches": semantic_review_matching_records(source_canon, match_terms),
-            "design_matches": semantic_review_matching_records(fanfiction_bible, participant_ids),
-            "voice_contracts": semantic_review_voice_contracts(fanfiction_bible, participant_ids),
-            "declared_continuity": semantic_review_declared_fanfiction_policy(fanfiction_bible),
-        }
+        raw_sections["fanfiction"] = review_projection
 
     budget_contract = resolve_context_budget_contract(root)
     visible_character_units = max(
@@ -264,6 +275,16 @@ def build_semantic_review_context(
         "allowed_canonical_refs": list(payloads),
         "sections": sections,
         "provenance": provenance,
+        "fanfiction_bundle_provenance": (
+            {
+                "path": bundle_ref,
+                "file_sha256": sha256_text(safe_read_text(root / bundle_ref)),
+                "bundle_sha256": str(fanfiction_bundle.get("bundle_sha256") or ""),
+                "source_files": list(fanfiction_bundle.get("source_files") or []),
+            }
+            if fanfiction and isinstance(fanfiction_bundle, dict)
+            else {}
+        ),
         "selection": {
             "mode": "deterministic_relevant_projection",
             "full_canonical_files_exposed": False,
@@ -494,6 +515,8 @@ def semantic_review_selection_reason(path: str, *, fanfiction: bool) -> str:
         return "declared canon references"
     if fanfiction and path.endswith("fanfiction_bible.json"):
         return "continuity, divergence, and voice contract"
+    if fanfiction and "/fanfiction_context/" in path:
+        return "current v2 fanfiction review projection and evidence closure"
     return "declared semantic review source"
 
 
@@ -526,7 +549,12 @@ def gate_check(
             current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
                 config, root
             )
-        except fanfiction_contracts.FanfictionContractError as exc:
+            require_current_fanfiction_context_bundle(
+                config,
+                chapter_number=chapter_number,
+                current_documents=current_fanfiction,
+            )
+        except (fanfiction_contracts.FanfictionContractError, FanfictionContextError) as exc:
             raise GateError(str(exc)) from exc
     draft_path = chapter_text_path(root, chapter_number, source=source)
     if draft_path is None:
@@ -654,13 +682,14 @@ def semantic_review_task(
     if chapter_number <= 0:
         raise GateError("chapter_number must be positive.")
     root = resolve_project_root(config)
-    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None
+    current_fanfiction_bundle: Path | None = None
     if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
         try:
-            current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
-                config, root
+            current_fanfiction_bundle, _bundle = require_current_fanfiction_context_bundle(
+                config,
+                chapter_number=chapter_number,
             )
-        except fanfiction_contracts.FanfictionContractError as exc:
+        except (fanfiction_contracts.FanfictionContractError, FanfictionContextError) as exc:
             raise GateError(str(exc)) from exc
     chapter_path = chapter_text_path(root, chapter_number, source=source)
     if chapter_path is None:
@@ -677,14 +706,8 @@ def semantic_review_task(
         root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
         root / "10_bible" / "characters.json",
     ]
-    if current_fanfiction is not None:
-        canonical_inputs.extend(
-            [
-                current_fanfiction.paths["source_canon"],
-                current_fanfiction.paths["story_engine"],
-                current_fanfiction.paths["route_design"],
-            ]
-        )
+    if current_fanfiction_bundle is not None:
+        canonical_inputs.append(current_fanfiction_bundle)
     canonical_inputs = [path for path in canonical_inputs if path.exists()]
     source_text = safe_read_text(chapter_path)
     source_rel = relative_path(root, chapter_path)
@@ -784,8 +807,11 @@ def semantic_review_validate(
     root = resolve_project_root(config)
     if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
         try:
-            fanfiction_contracts.load_current_fanfiction_documents(config, root)
-        except fanfiction_contracts.FanfictionContractError as exc:
+            require_current_fanfiction_context_bundle(
+                config,
+                chapter_number=chapter_number,
+            )
+        except FanfictionContextError as exc:
             raise GateError(str(exc)) from exc
     artifact_dir = gate_artifact_dir(root, chapter_number)
     path = resolve_semantic_review_result_path(root, artifact_dir, file_path)

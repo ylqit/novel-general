@@ -1,0 +1,697 @@
+import json
+from copy import deepcopy
+from hashlib import sha256
+from pathlib import Path
+
+import pytest
+
+from longform_engine import fanfiction_context as context_module
+from longform_engine.config import ConfigDocument
+from longform_engine.editorial.pipeline import (
+    build_editorial_context_payload,
+    editorial_review,
+    editorial_role_source_inputs,
+)
+from longform_engine.fanfiction_context import (
+    FANFICTION_CONTEXT_BUNDLE_SCHEMA,
+    FanfictionContextError,
+    compile_fanfiction_context,
+    fanfiction_context_status,
+    write_fanfiction_context_bundle,
+)
+from longform_engine.gates.pipeline import (
+    GateError,
+    build_semantic_review_context,
+    semantic_review_task,
+)
+from longform_engine.semantic_protocols import seal_semantic_document
+from longform_engine.semantic import chapter_close
+from longform_engine.semantic import pipeline as semantic_pipeline
+from longform_engine.storage.layout import manuscript_chapter_path
+from tests.test_fanfiction_contracts import (
+    configure_crossover_project,
+    install_route,
+    reapprove,
+    reviewed_route_projection_sha256,
+    semantic_claim,
+    write_document,
+)
+
+pytest_plugins = ("tests.test_fanfiction_contracts",)
+
+
+def _candidate_route(route: dict) -> dict:
+    candidate = deepcopy(route)
+    candidate["artifact"]["state"] = "candidate"
+    candidate["extensions"].pop("human_decision", None)
+    candidate["extensions"].pop("approved_candidate_sha256", None)
+    candidate["extensions"].pop("independent_review", None)
+    return seal_semantic_document(candidate)
+
+
+def _rebind_route(project: dict, route: dict) -> dict:
+    root = project["root"]
+    review_binding = route["extensions"]["independent_review"]
+    review_path = root / review_binding["review_path"]
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    target_path = root / review["extensions"]["review_target_path"]
+    candidate = _candidate_route(route)
+    target_sha = write_document(target_path, candidate)
+    review["extensions"].update(
+        {
+            "review_target_sha256": target_sha,
+            "source_canon_sha256": route["extensions"]["source_canon_sha256"],
+            "story_engine_sha256": route["extensions"]["story_engine_sha256"],
+        }
+    )
+    review = reapprove(review)
+    review_sha = write_document(review_path, review)
+    route["extensions"]["independent_review"].update(
+        {
+            "review_sha256": review_sha,
+            "review_artifact_id": review["artifact"]["artifact_id"],
+            "review_target_sha256": target_sha,
+            "reviewed_route_projection_sha256": reviewed_route_projection_sha256(candidate),
+        }
+    )
+    route = reapprove(route)
+    write_document(root / "10_bible/fanfiction/fanfiction_bible.json", route)
+    return route
+
+
+def _add_route_claims(project: dict, claims: list[dict]) -> dict:
+    route, _path = install_route(project)
+    route = deepcopy(route)
+    route["claims"].extend(claims)
+    return _rebind_route(project, route)
+
+
+def _compile(project: dict, *, explicit: list[str] | None = None, card: dict | None = None):
+    return compile_fanfiction_context(
+        project["config"],
+        chapter_number=1,
+        chapter_contract={
+            "chapter_number": 1,
+            "fanfiction_claim_refs": list(explicit or []),
+        },
+        chapter_card=card or {"title": "边界测试", "volume_id": "vol001", "arc_id": "arc001"},
+        character_packet={},
+    )
+
+
+def test_context_v2_exposes_precedence_closure_partitions_and_exact_review_evidence(
+    current_contract_project,
+):
+    project = current_contract_project
+    install_route(project)
+
+    bundle = _compile(project, explicit=["route:event", "classic:canon"])
+
+    assert FANFICTION_CONTEXT_BUNDLE_SCHEMA == "fanfiction_context_bundle_v2"
+    assert bundle["schema"] == "fanfiction_context_bundle_v2"
+    assert bundle["diagnostics"]["selection_precedence"] == [
+        "global_non_negotiable",
+        "chapter_explicit_refs",
+        "recursive_dependency_closure",
+        "current_structured_scope",
+        "optional_rag",
+    ]
+    assert {"route:event", "classic:canon"} <= set(bundle["required_claim_ids"])
+    edges = {
+        (item["from_claim_id"], item["to_claim_id"], item["field"])
+        for item in bundle["dependency_closure"]
+    }
+    assert {
+        ("route:event", "route:divergence", "depends_on_claims"),
+        ("route:event", "route:owner", "responsibility_owner_ids"),
+        ("route:event", "route:first", "first_order_effect_claim_ids"),
+        ("route:event", "route:second", "second_order_effect_claim_ids"),
+    } <= edges
+    assert set(bundle["source_partitions"]) >= {"source", "character", "event", "volume", "arc"}
+    assert set(bundle["budget_usage"]) >= {
+        "estimator",
+        "units",
+        "budget_units",
+        "required",
+        "dependency",
+        "optional",
+        "partitions",
+    }
+    reviewed = {item["claim_id"]: item for item in bundle["review_projection"]["claims"]}
+    canon = reviewed["classic:canon"]
+    assert canon["namespace"] == "source_canon"
+    assert canon["source_id"] == "classic"
+    assert canon["evidence_refs"] == ["evidence:classic"]
+    assert canon["evidence_records"][0]["evidence_id"] == "evidence:classic"
+    assert set(reviewed) == set(bundle["included_claim_ids"])
+
+
+def test_legacy_v1_bundle_is_rejected_and_reported_missing(current_contract_project):
+    project = current_contract_project
+    install_route(project)
+    path = project["root"] / "50_workbench/fanfiction_context/ch001.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        json.dumps({"schema": "fanfiction_context_bundle_v1", "chapter_number": 1}),
+        encoding="utf-8",
+    )
+
+    status = fanfiction_context_status(project["config"], chapter_number=1)
+
+    assert status["status"] == "missing"
+    assert status["found_schema"] == "fanfiction_context_bundle_v1"
+    assert status["required_schema"] == "fanfiction_context_bundle_v2"
+
+
+def test_malformed_v2_bundle_is_invalid_and_writer_refuses_it(current_contract_project):
+    project = current_contract_project
+    install_route(project)
+    malformed = _compile(project)
+    malformed.pop("review_projection")
+
+    with pytest.raises(FanfictionContextError, match="review_projection"):
+        write_fanfiction_context_bundle(project["root"], malformed)
+
+    path = project["root"] / "50_workbench/fanfiction_context/ch001.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(malformed, ensure_ascii=False), encoding="utf-8")
+    status = fanfiction_context_status(project["config"], chapter_number=1)
+    assert status["status"] == "invalid"
+    assert any("review_projection" in item for item in status["diagnostics"]["bundle_errors"])
+
+
+def test_v1_bundle_blocks_review_task_creation_without_partial_artifacts(
+    current_contract_project,
+):
+    project = current_contract_project
+    install_route(project)
+    bundle_path = project["root"] / "50_workbench/fanfiction_context/ch001.json"
+    bundle_path.parent.mkdir(parents=True)
+    bundle_path.write_text(
+        json.dumps({"schema": "fanfiction_context_bundle_v1", "chapter_number": 1}),
+        encoding="utf-8",
+    )
+    draft = project["root"] / "40_manuscript/draft/ch001.md"
+    draft.parent.mkdir(parents=True)
+    draft.write_text("# 第一章\n\n角色作出选择。\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="fanfiction_context_missing"):
+        editorial_review(project["config"], chapter_number=1)
+    with pytest.raises(GateError, match="fanfiction_context_missing"):
+        semantic_review_task(project["config"], chapter_number=1)
+
+    assert not (project["root"] / "50_workbench/editorial_reviews").exists()
+    assert not (project["root"] / "50_workbench/gate_artifacts").exists()
+
+
+def test_source_change_stales_bundle_and_blocks_review_tasks_before_writes(
+    current_contract_project,
+):
+    project = current_contract_project
+    install_route(project)
+    write_fanfiction_context_bundle(project["root"], _compile(project))
+    draft = project["root"] / "40_manuscript/draft/ch001.md"
+    draft.parent.mkdir(parents=True)
+    draft.write_text("# 第一章\n\n角色作出选择。\n", encoding="utf-8")
+    project["canon_path"].write_bytes(project["canon_path"].read_bytes() + b"\n")
+
+    with pytest.raises(ValueError, match="stale"):
+        editorial_review(project["config"], chapter_number=1)
+    with pytest.raises(GateError, match="stale"):
+        semantic_review_task(project["config"], chapter_number=1)
+
+    assert not (project["root"] / "50_workbench/editorial_reviews").exists()
+    assert not (project["root"] / "50_workbench/gate_artifacts").exists()
+
+
+def test_explicit_ref_wins_without_name_or_keyword_match(current_contract_project):
+    project = current_contract_project
+    install_route(project)
+
+    bundle = _compile(
+        project,
+        explicit=["route:knowledge"],
+        card={"title": "完全不含任何人物或规则词", "volume_id": "vol001"},
+    )
+
+    assert "route:knowledge" in bundle["required_claim_ids"]
+    assert "route:knowledge" in bundle["included_claim_ids"]
+    assert bundle["selection_reasons"]["route:knowledge"] == ["chapter_explicit_ref"]
+
+
+def test_required_overflow_reports_top_claims_and_writes_nothing(
+    current_contract_project, monkeypatch
+):
+    project = current_contract_project
+    install_route(project)
+    before = {
+        path.relative_to(project["root"]).as_posix(): path.read_bytes()
+        for path in project["root"].rglob("*")
+        if path.is_file()
+    }
+    original = context_module._claim_units
+
+    def huge_required(claim: dict, estimator: object) -> int:
+        if claim["claim_id"] == "route:knowledge":
+            return 100_000
+        return original(claim, estimator)
+
+    monkeypatch.setattr(context_module, "_claim_units", huge_required)
+
+    with pytest.raises(FanfictionContextError) as exc_info:
+        _compile(project, explicit=["route:knowledge"])
+
+    message = str(exc_info.value)
+    assert "prompt_budget_exceeded" in message
+    assert "route:knowledge" in message
+    assert "top_contributors" in message
+    assert '"partitions":' in message
+    assert "scope-reduction" in message
+    after = {
+        path.relative_to(project["root"]).as_posix(): path.read_bytes()
+        for path in project["root"].rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+
+
+def test_optional_claim_can_be_omitted_without_truncating_required(
+    current_contract_project, monkeypatch
+):
+    project = current_contract_project
+    install_route(project)
+    original = context_module._claim_units
+    monkeypatch.setattr(
+        context_module,
+        "_optional_project_canon_claims",
+        lambda *args, **kwargs: (["classic:canon"], {"status": "completed"}),
+    )
+
+    def expensive_optional(claim: dict, estimator: object) -> int:
+        if claim["claim_id"] == "classic:canon":
+            return 100_000
+        return original(claim, estimator)
+
+    monkeypatch.setattr(context_module, "_claim_units", expensive_optional)
+
+    bundle = _compile(project)
+
+    assert "classic:canon" not in bundle["included_claim_ids"]
+    assert bundle["optional_claim_ids"] == []
+    assert bundle["omitted_claims"] == [
+        {
+            "claim_id": "classic:canon",
+            "reason": "optional_budget_omitted",
+            "required": False,
+            "units": 100_000,
+        }
+    ]
+
+
+def test_multi_source_collisions_force_source_labels_in_author_projection(
+    current_contract_project,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    identity_claims = []
+    explicit = []
+    for kind, display_name in (
+        ("character", "镜"),
+        ("ability", "回响"),
+        ("location", "环城"),
+        ("organization", "守望会"),
+        ("energy", "星 能"),
+    ):
+        for source_id in ("classic", "guest"):
+            claim_id = f"route:{kind}:{source_id}"
+            explicit.append(claim_id)
+            identity_claims.append(
+                semantic_claim(
+                    claim_id,
+                    "跨来源身份",
+                    extensions={
+                        "source_id": source_id,
+                        "identity_kind": kind,
+                        "display_name": "星能" if kind == "energy" and source_id == "guest" else display_name,
+                    },
+                )
+            )
+    _add_route_claims(project, identity_claims)
+
+    bundle = _compile(project, explicit=explicit)
+
+    kinds = {item["kind"] for item in bundle["namespace_collisions"]}
+    assert {"character", "ability", "location", "organization", "energy"} <= kinds
+    rendered = json.dumps(bundle["author_projection"], ensure_ascii=False)
+    assert "【classic】" in rendered
+    assert "【guest】" in rendered
+
+
+def test_canon_reviewer_uses_only_v2_review_projection_even_when_canon_is_large(
+    current_contract_project, monkeypatch
+):
+    project = current_contract_project
+    route, _path = install_route(project)
+    canon_path = project["canon_path"]
+    raw = json.loads(canon_path.read_text(encoding="utf-8"))
+    raw["body"] = "不进入章节审阅投影的体量填充。" * 2_000
+    raw = reapprove(raw)
+    canon_sha = write_document(canon_path, raw)
+    engine_path = project["root"] / "10_bible/fanfiction/story_engine.json"
+    engine = json.loads(engine_path.read_text(encoding="utf-8"))
+    engine["extensions"]["source_canon_sha256"] = canon_sha
+    engine = reapprove(engine)
+    engine_sha = write_document(engine_path, engine)
+    route["extensions"].update(
+        {"source_canon_sha256": canon_sha, "story_engine_sha256": engine_sha}
+    )
+    _rebind_route(project, route)
+    bundle = _compile(project, explicit=["classic:canon"])
+    bundle_path = write_fanfiction_context_bundle(project["root"], bundle)
+    chapter = project["root"] / "40_manuscript/draft/ch001.md"
+    chapter.parent.mkdir(parents=True)
+    chapter.write_text("# 第一章\n\n角色依据已批准边界作出选择。\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "longform_engine.editorial.pipeline.load_verified_chapter_contract",
+        lambda _root, _chapter: ({"chapter_number": 1, "featured_character_ids": []}, "a" * 64),
+    )
+    monkeypatch.setattr(
+        "longform_engine.gates.pipeline.load_verified_chapter_contract",
+        lambda _root, _chapter: ({"chapter_number": 1, "featured_character_ids": []}, "a" * 64),
+    )
+
+    inputs = editorial_role_source_inputs(
+        project["root"],
+        {"chapter_number": 1, "source_path": "40_manuscript/draft/ch001.md"},
+        "canon_fidelity_reviewer",
+    )
+    context = build_editorial_context_payload(
+        project["root"],
+        payload={"chapter_number": 1, "source_path": "40_manuscript/draft/ch001.md", "review_round": 1},
+        role_id="canon_fidelity_reviewer",
+        source_inputs=inputs,
+    )
+
+    assert inputs == [chapter, bundle_path]
+    projection = context["source_projections"]["50_workbench/fanfiction_context/ch001.json"]
+    assert projection == bundle["review_projection"]
+    serialized = json.dumps(context, ensure_ascii=False)
+    assert "不进入章节审阅投影" not in serialized
+    assert "source_canon.json" not in context["provenance_source_files"]
+
+    gate_context = build_semantic_review_context(
+        project["root"],
+        chapter_number=1,
+        source_path=chapter,
+        source_text=chapter.read_text(encoding="utf-8"),
+        canonical_inputs=[bundle_path],
+        fanfiction=True,
+    )
+    assert gate_context["sections"]["fanfiction"] == bundle["review_projection"]
+
+
+def test_three_divergence_triggers_create_three_idempotent_hash_bound_workflows(
+    current_contract_project,
+):
+    project = current_contract_project
+    extra_claims = [
+        semantic_claim("route:divergence_two", "初始分歧"),
+        semantic_claim(
+            "route:event_two",
+            "原著事件命运",
+            extensions={
+                "disposition": "取消",
+                "depends_on_claims": ["route:divergence_two"],
+                "responsibility_owner_ids": ["route:owner"],
+                "first_order_effect_claim_ids": ["route:first"],
+                "second_order_effect_claim_ids": ["route:second"],
+            },
+        ),
+    ]
+    _add_route_claims(project, extra_claims)
+    explicit = ["route:divergence", "route:event", "route:event_two"]
+    bundle = _compile(project, explicit=explicit)
+    bundle_path = write_fanfiction_context_bundle(project["root"], bundle)
+    event_path = project["root"] / "30_state/narrative_events/ch001.json"
+    event_path.parent.mkdir(parents=True)
+    events = {
+        "schema": "narrative_event_ledger_v1",
+        "realization_application_sha256": "b" * 64,
+        "events": [
+            {
+                "event_id": f"event:{index}",
+                "state": "realized",
+                "dependency_refs": [claim_id],
+                "impact_level": "major",
+                "realization_evidence": {"confirmed_by": "human"},
+            }
+            for index, claim_id in enumerate(explicit, start=1)
+        ],
+    }
+    event_path.write_text(json.dumps(events, ensure_ascii=False), encoding="utf-8")
+
+    workflows = context_module.future_knowledge_impact_workflows(
+        project["config"],
+        chapter_number=1,
+        event_ledger=events,
+        event_ledger_path=event_path,
+    )
+
+    assert len(workflows) == 3
+    assert len({path.name for path, _payload in workflows}) == 3
+    for path, payload in workflows:
+        assert payload["extensions"]["allowed_reliability_states"] == [
+            "仍可靠",
+            "部分可靠",
+            "已失效",
+            "反向误导",
+        ]
+        assert payload["authorization"]["requires_human_decision"] is True
+        assert payload["extensions"]["trigger"]["impact_level"] == "major"
+        inputs = {item["kind"]: item for item in payload["inputs"]}
+        assert inputs["fanfiction_context_bundle"]["sha256"] == sha256(bundle_path.read_bytes()).hexdigest()
+        assert inputs["narrative_event_ledger"]["sha256"] == sha256(event_path.read_bytes()).hexdigest()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    assert context_module.future_knowledge_impact_workflows(
+        project["config"],
+        chapter_number=1,
+        event_ledger=events,
+        event_ledger_path=event_path,
+    ) == ()
+
+
+def test_future_knowledge_workflow_rejects_stale_source_bound_bundle(
+    current_contract_project,
+):
+    project = current_contract_project
+    install_route(project)
+    bundle = _compile(project, explicit=["route:divergence"])
+    write_fanfiction_context_bundle(project["root"], bundle)
+    event_path = project["root"] / "30_state/narrative_events/ch001.json"
+    event_path.parent.mkdir(parents=True)
+    events = {
+        "schema": "narrative_event_ledger_v1",
+        "realization_application_sha256": "b" * 64,
+        "events": [
+            {
+                "event_id": "event:one",
+                "state": "realized",
+                "dependency_refs": ["route:divergence"],
+                "impact_level": "major",
+                "realization_evidence": {"confirmed_by": "human"},
+            }
+        ],
+    }
+    event_path.write_text(json.dumps(events), encoding="utf-8")
+    project["canon_path"].write_bytes(project["canon_path"].read_bytes() + b"\n")
+
+    with pytest.raises(FanfictionContextError, match="stale"):
+        context_module.future_knowledge_impact_workflows(
+            project["config"],
+            chapter_number=1,
+            event_ledger=events,
+            event_ledger_path=event_path,
+        )
+
+
+def test_existing_trigger_workflow_detects_changed_event_binding(
+    current_contract_project,
+):
+    project = current_contract_project
+    install_route(project)
+    bundle = _compile(project, explicit=["route:divergence"])
+    write_fanfiction_context_bundle(project["root"], bundle)
+    event_path = project["root"] / "30_state/narrative_events/ch001.json"
+    event_path.parent.mkdir(parents=True)
+    events = {
+        "schema": "narrative_event_ledger_v1",
+        "realization_application_sha256": "b" * 64,
+        "events": [
+            {
+                "event_id": "event:one",
+                "state": "realized",
+                "dependency_refs": ["route:divergence"],
+                "impact_level": "major",
+                "realization_evidence": {"confirmed_by": "human"},
+            }
+        ],
+    }
+    event_path.write_text(json.dumps(events), encoding="utf-8")
+    workflow_path, payload = context_module.future_knowledge_impact_workflows(
+        project["config"],
+        chapter_number=1,
+        event_ledger=events,
+        event_ledger_path=event_path,
+    )[0]
+    workflow_path.parent.mkdir(parents=True)
+    workflow_path.write_text(json.dumps(payload), encoding="utf-8")
+    events["human_note"] = "事件账本已经由人修改。"
+    event_path.write_text(json.dumps(events, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(FanfictionContextError, match="workflow_stale"):
+        context_module.future_knowledge_impact_workflows(
+            project["config"],
+            chapter_number=1,
+            event_ledger=events,
+            event_ledger_path=event_path,
+        )
+
+
+def test_future_knowledge_trigger_requires_human_approved_event_ledger(
+    current_contract_project,
+):
+    project = current_contract_project
+    install_route(project)
+    bundle = _compile(project, explicit=["route:divergence"])
+    write_fanfiction_context_bundle(project["root"], bundle)
+    event_path = project["root"] / "30_state/narrative_events/ch001.json"
+    event_path.parent.mkdir(parents=True)
+    events = {
+        "schema": "narrative_event_ledger_v1",
+        "events": [
+            {
+                "event_id": "event:unapproved",
+                "state": "realized",
+                "dependency_refs": ["route:divergence"],
+                "impact_level": "major",
+                "realization_evidence": {"confirmed_by": "human"},
+            }
+        ],
+    }
+    event_path.write_text(json.dumps(events), encoding="utf-8")
+
+    with pytest.raises(FanfictionContextError, match="human_approved"):
+        context_module.future_knowledge_impact_workflows(
+            project["config"],
+            chapter_number=1,
+            event_ledger=events,
+            event_ledger_path=event_path,
+        )
+
+
+def test_future_knowledge_workflows_leave_original_mode_unchanged(tmp_path):
+    root = tmp_path / "original"
+    config = ConfigDocument(
+        data={"creation": {"mode": "original"}, "project": {"root_dir": str(root)}},
+        path=root / "project.yaml",
+        sources=(),
+    )
+
+    assert context_module.future_knowledge_impact_workflows(
+        config,
+        chapter_number=1,
+        event_ledger={"events": []},
+        event_ledger_path=root / "missing.json",
+    ) == ()
+
+
+def test_chapter_close_rolls_back_all_workflows_closure_and_state_on_failure(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "project"
+    config = ConfigDocument(
+        data={"creation": {"mode": "fanfiction"}, "project": {"root_dir": str(root)}},
+        path=root / "project.yaml",
+        sources=(),
+    )
+    final_file = manuscript_chapter_path(root, 1, lane="final")
+    ledger_file = root / "30_state/semantic_ledger/ch001.json"
+    event_file = root / "30_state/narrative_events/ch001.json"
+    promise_file = root / "30_state/reader_promise_ledger.json"
+    context_file = root / "50_workbench/fanfiction_context/ch001.json"
+    for path, text in (
+        (final_file, "# 第一章\n\n完成选择。\n"),
+        (ledger_file, "{}"),
+        (event_file, json.dumps({"events": []})),
+        (promise_file, "{}"),
+        (context_file, json.dumps({"schema": "fanfiction_context_bundle_v2"})),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    gate = root / "50_workbench/gate_artifacts/ch001/gate_result.json"
+    gate.parent.mkdir(parents=True)
+    gate.write_text(
+        json.dumps({"passed": True, "severity_counts": {"P0": 0, "P1": 0}}),
+        encoding="utf-8",
+    )
+    state_file = root / "30_state/novel_state.json"
+    cursor_file = root / "30_state/planning_cursor.json"
+    state_file.write_text('{"status":"before"}', encoding="utf-8")
+    cursor_file.write_text('{"cursor":"before"}', encoding="utf-8")
+    state_before = state_file.read_bytes()
+    cursor_before = cursor_file.read_bytes()
+    workflow_paths = (
+        root / "50_workbench/fanfiction_knowledge_impacts/ch001.a.workflow.json",
+        root / "50_workbench/fanfiction_knowledge_impacts/ch001.b.workflow.json",
+    )
+    monkeypatch.setattr(semantic_pipeline, "verify_materialized_chapter", lambda *args: None)
+    monkeypatch.setattr(
+        semantic_pipeline,
+        "require_v010_close_evidence",
+        lambda *_args: {
+            "event_ledger_path": event_file.relative_to(root).as_posix(),
+            "event_ledger_sha256": sha256(event_file.read_bytes()).hexdigest(),
+            "reader_promise_ledger_path": promise_file.relative_to(root).as_posix(),
+            "reader_promise_ledger_sha256": sha256(promise_file.read_bytes()).hexdigest(),
+        },
+    )
+    monkeypatch.setattr(
+        context_module,
+        "future_knowledge_impact_workflows",
+        lambda *args, **kwargs: tuple(
+            (path, {"workflow_id": f"workflow:{index}"})
+            for index, path in enumerate(workflow_paths, start=1)
+        ),
+    )
+    monkeypatch.setattr(
+        "longform_engine.author_voice.require_author_voice_pair_for_close",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        semantic_pipeline,
+        "task_reconciliation_status",
+        lambda *_args, **_kwargs: {"status": "ok"},
+    )
+    monkeypatch.setattr(
+        semantic_pipeline,
+        "live_chapter_tasks",
+        lambda *_args, **_kwargs: [],
+    )
+    original_write = semantic_pipeline.atomic_write_text
+
+    def fail_on_cursor(path: Path, text: str) -> None:
+        if path == cursor_file:
+            raise RuntimeError("injected chapter-close failure")
+        original_write(path, text)
+
+    monkeypatch.setattr(semantic_pipeline, "atomic_write_text", fail_on_cursor)
+
+    with pytest.raises(RuntimeError, match="injected chapter-close failure"):
+        chapter_close(config, chapter_number=1, approved_by="human")
+
+    assert not (root / "30_state/chapter_closures/ch001.json").exists()
+    assert all(not path.exists() for path in workflow_paths)
+    assert state_file.read_bytes() == state_before
+    assert cursor_file.read_bytes() == cursor_before

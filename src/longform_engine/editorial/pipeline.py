@@ -28,6 +28,11 @@ from longform_engine.agent_tasks import (
 from longform_engine.character_expression import character_expression_diagnostics
 from longform_engine.chapter_contract import ChapterContractError, load_verified_chapter_contract
 from longform_engine.config import ConfigDocument
+from longform_engine.fanfiction_context import (
+    FANFICTION_CONTEXT_BUNDLE_SCHEMA,
+    FanfictionContextError,
+    require_current_fanfiction_context_bundle,
+)
 from longform_engine.quality import (
     editorial_pattern_observations,
     editorial_patterns_for_task,
@@ -168,13 +173,13 @@ def editorial_review(config: ConfigDocument, *, chapter_number: int) -> Editoria
     if chapter_number <= 0:
         raise ValueError("chapter_number must be positive.")
     root = resolve_project_root(config)
-    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None
     if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
         try:
-            current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
-                config, root
+            require_current_fanfiction_context_bundle(
+                config,
+                chapter_number=chapter_number,
             )
-        except fanfiction_contracts.FanfictionContractError as exc:
+        except (fanfiction_contracts.FanfictionContractError, FanfictionContextError) as exc:
             raise ValueError(str(exc)) from exc
     chapter_path = find_chapter(root, chapter_number)
     if chapter_path is None:
@@ -230,11 +235,7 @@ def editorial_review(config: ConfigDocument, *, chapter_number: int) -> Editoria
     payload["conditional_pass_streak"] = streak
     payload["need_human"] = bool(reasons)
     payload["need_human_reasons"] = reasons
-    payload["agent_task_files"] = write_multi_agent_task_files(
-        root,
-        payload,
-        current_fanfiction=current_fanfiction,
-    )
+    payload["agent_task_files"] = write_multi_agent_task_files(root, payload)
 
     atomic_write_text(review_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     atomic_write_text(task_file, format_review_task(payload))
@@ -423,8 +424,11 @@ def editorial_submit_review(
     root = resolve_project_root(config)
     if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
         try:
-            fanfiction_contracts.load_current_fanfiction_documents(config, root)
-        except fanfiction_contracts.FanfictionContractError as exc:
+            require_current_fanfiction_context_bundle(
+                config,
+                chapter_number=chapter_number,
+            )
+        except FanfictionContextError as exc:
             raise ValueError(str(exc)) from exc
     role_id = role_definition(role)["id"]
     path = resolve_editorial_result_path(root, file_path)
@@ -502,8 +506,11 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
     root = resolve_project_root(config)
     if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
         try:
-            fanfiction_contracts.load_current_fanfiction_documents(config, root)
-        except fanfiction_contracts.FanfictionContractError as exc:
+            require_current_fanfiction_context_bundle(
+                config,
+                chapter_number=chapter_number,
+            )
+        except FanfictionContextError as exc:
             raise ValueError(str(exc)) from exc
     result_dir = review_root(root) / "results"
     result_dir.mkdir(parents=True, exist_ok=True)
@@ -988,8 +995,6 @@ def format_review_task(payload: dict[str, Any]) -> str:
 def write_multi_agent_task_files(
     root: Path,
     payload: dict[str, Any],
-    *,
-    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None,
 ) -> list[str]:
     task_dir = review_root(root) / "agent_tasks" / f"ch{payload['chapter_number']:03d}"
     result_dir = review_root(root) / "results"
@@ -1006,7 +1011,6 @@ def write_multi_agent_task_files(
             root,
             payload,
             role_id,
-            current_fanfiction=current_fanfiction,
         )
         context_payload = build_editorial_context_payload(
             root,
@@ -1063,8 +1067,6 @@ def editorial_role_source_inputs(
     root: Path,
     payload: dict[str, Any],
     role_id: str,
-    *,
-    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None,
 ) -> list[Path]:
     chapter_number = int(payload["chapter_number"])
     chapter = root / str(payload.get("source_path") or "")
@@ -1106,15 +1108,6 @@ def editorial_role_source_inputs(
         "canon_fidelity_reviewer": [
             chapter,
             root / "50_workbench" / "fanfiction_context" / f"ch{chapter_number:03d}.json",
-            *(
-                [
-                    current_fanfiction.paths["source_canon"],
-                    current_fanfiction.paths["story_engine"],
-                    current_fanfiction.paths["route_design"],
-                ]
-                if current_fanfiction is not None
-                else []
-            ),
         ],
     }
     candidates = candidates_by_role.get(
@@ -1147,23 +1140,40 @@ def build_editorial_context_payload(
         if relative == f"20_outline/chapter_cards/ch{chapter_number:03d}.json":
             projections[relative] = chapter_contract
             continue
+        if (
+            role_id == "canon_fidelity_reviewer"
+            and relative == f"50_workbench/fanfiction_context/ch{chapter_number:03d}.json"
+        ):
+            bundle = load_json(path, default={})
+            if (
+                not isinstance(bundle, dict)
+                or bundle.get("schema") != FANFICTION_CONTEXT_BUNDLE_SCHEMA
+                or not isinstance(bundle.get("review_projection"), dict)
+            ):
+                raise ValueError(f"context_evidence_incomplete:{relative}")
+            projections[relative] = bundle["review_projection"]
+            continue
         projection = editorial_source_projection(
             path,
-            max_chars=12_000 if role_id == "canon_fidelity_reviewer" else 1_200,
+            max_chars=1_200,
             match_terms=[
                 *chapter_contract.get("featured_character_ids", []),
                 *chapter_contract.get("canon_refs", []),
                 *chapter_contract.get("world_rule_refs", []),
             ],
         )
-        if role_id == "canon_fidelity_reviewer" and relative in {
-            f"50_workbench/fanfiction_context/ch{chapter_number:03d}.json",
-            "10_bible/fanfiction/source_canon.json",
-            "10_bible/fanfiction/story_engine.json",
-            "10_bible/fanfiction/fanfiction_bible.json",
-        } and (not projection or projection == "[context-evidence-incomplete]"):
-            raise ValueError(f"context_evidence_incomplete:{relative}")
         projections[relative] = projection
+    fanfiction_bundle_provenance: dict[str, Any] = {}
+    if role_id == "canon_fidelity_reviewer":
+        bundle_path = root / "50_workbench" / "fanfiction_context" / f"ch{chapter_number:03d}.json"
+        bundle = load_json(bundle_path, default={})
+        if isinstance(bundle, dict) and bundle.get("schema") == FANFICTION_CONTEXT_BUNDLE_SCHEMA:
+            fanfiction_bundle_provenance = {
+                "path": relative_path(root, bundle_path),
+                "file_sha256": hashlib.sha256(bundle_path.read_bytes()).hexdigest(),
+                "bundle_sha256": str(bundle.get("bundle_sha256") or ""),
+                "source_files": list(bundle.get("source_files") or []),
+            }
     return {
         "schema": "editorial_context_isolation_v1",
         "chapter_number": chapter_number,
@@ -1188,6 +1198,7 @@ def build_editorial_context_payload(
             if path.resolve() != chapter_source.resolve()
         ],
         "source_projections": projections,
+        "fanfiction_bundle_provenance": fanfiction_bundle_provenance,
         "excluded_peer_results": [
             f"50_workbench/editorial_reviews/results/ch{chapter_number:03d}.*.json",
             f"50_workbench/editorial_reviews/ch{chapter_number:03d}.aggregate.json",

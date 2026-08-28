@@ -9,7 +9,7 @@ v0.12.0 语义优先稳定版的正式生产主链只接受当前协议。创作
 -> 同人故事发动机 / 人工 apply
 -> 同人路线 / 隔离独立复核 / 人工 apply
 -> 活动卷同人投影、原著事件命运和重大节点决定
--> fanfiction_context_bundle_v1
+-> fanfiction_context_bundle_v2
 ```
 
 ```text

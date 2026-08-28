@@ -4378,6 +4378,11 @@ def render_chapter_story_brief_markdown(payload: dict[str, Any]) -> str:
                 "",
                 "- 当前原著时间和场景基线："
                 + readable(fanfiction.get("current_canon_time_and_scene")),
+                *(
+                    ["- 跨来源同名/近名辨析：" + readable(fanfiction.get("source_identity_notes"))]
+                    if fanfiction.get("source_identity_notes")
+                    else []
+                ),
                 "- 当前已批准分歧：" + readable(fanfiction.get("approved_divergences")),
                 "- 本章人物知识边界："
                 + readable(fanfiction.get("character_knowledge_boundaries")),
@@ -4538,7 +4543,13 @@ def load_fanfiction_writing_contract(
         "context_bundle_sha256": str(bundle.get("bundle_sha256") or ""),
         "source_files": list(bundle.get("source_files") or []),
         "required_claim_ids": list(bundle.get("required_claim_ids") or []),
+        "dependency_claim_ids": list(bundle.get("dependency_claim_ids") or []),
+        "dependency_closure": list(bundle.get("dependency_closure") or []),
+        "optional_claim_ids": list(bundle.get("optional_claim_ids") or []),
         "included_claim_ids": list(bundle.get("included_claim_ids") or []),
+        "source_partitions": bundle.get("source_partitions") or {},
+        "namespace_collisions": list(bundle.get("namespace_collisions") or []),
+        "budget_usage": bundle.get("budget_usage") or {},
         "continuity_mode": str(bundle.get("continuity_mode") or ""),
         "author_projection": projection,
         "current_canon_time_and_scene": projection.get("current_canon_time_and_scene") or [],
@@ -4550,6 +4561,7 @@ def load_fanfiction_writing_contract(
         "canon_character_agency": projection.get("canon_character_agency") or [],
         "original_contribution": projection.get("original_contribution") or [],
         "protected_reveals": projection.get("protected_reveals") or [],
+        "source_identity_notes": projection.get("source_identity_notes") or [],
         "free_play": str(projection.get("free_play") or ""),
         "ending_state": str(projection.get("ending_state") or ""),
         "diagnostics": bundle.get("diagnostics") or {},
