@@ -715,7 +715,15 @@ def test_chapter_direction_apply_failure_rolls_back_card_and_plan(tmp_path, monk
     plan = root / "20_outline" / "chapter_plan.json"
     before = {"card": card.read_bytes(), "plan": plan.read_bytes()}
 
-    def fail_after_partial_write(project_config, project_root, task_type, payload, *, scope=None):
+    def fail_after_partial_write(
+        project_config,
+        project_root,
+        task_type,
+        payload,
+        *,
+        scope=None,
+        current_fanfiction=None,
+    ):
         card.write_text('{"partial": true}', encoding="utf-8")
         plan.write_text("[]", encoding="utf-8")
         raise RuntimeError("injected direction apply failure")
