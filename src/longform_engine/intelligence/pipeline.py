@@ -2641,6 +2641,23 @@ def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
                 )
             },
             "adapter_scope": "只覆盖实际 transfers 引用的 configured source_id",
+            "adapter_fields": [
+                "source_id",
+                "payload_kinds",
+                "host_source_id",
+                "volume_ids",
+            ],
+            "topology_rules": {
+                "fixed_host": (
+                    "at least one non-host transfer into default_host_source_id; "
+                    "host self-transfer is invalid"
+                ),
+                "fusion_world": "at least two distinct participating transfers.source_id",
+                "sequential_worlds": (
+                    "explicit extensions.crossover.volume_ids and exactly one 卷宿主世界 "
+                    "host per declared volume"
+                ),
+            },
         },
         "approved_decisions": decisions.get("decisions") or {},
         "approved_story_engine": {
@@ -5845,15 +5862,21 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "fixed_host、fusion_world 或 sequential_worlds，并填写 default_host_source_id 与非空 transfers；每个 "
             "transfer 用 configured source_id 和实际 payload_kinds 声明 character、body_or_soul、ability、"
             "item_or_contract、knowledge、organization 或 world_rule。主世界适配器只覆盖实际 transfers 引用的来源，"
-            "跨界宪法 topics 按实际载荷派生，不做全量主题集、N×N 数值换算或导入未批准元素。fusion_world 说明"
-            "世界规则优先级；sequential_worlds 以卷宿主世界 claim 声明 volume_ids 与 host_source_id。"
+            "并以 payload_kinds、host_source_id、volume_ids 绑定实际载荷和宿主范围；fixed_host 至少有一个非宿主"
+            "来源转入且禁止宿主自转移，fusion_world 至少有两个实际参与来源并说明世界规则优先级。"
+            "sequential_worlds 先在 extensions.crossover.volume_ids 声明适用卷域，再以卷宿主世界 claim 为每个"
+            "声明卷恰好指定一个 host_source_id。跨界宪法 topics 按实际载荷派生，不做全量主题集、N×N 数值"
+            "换算或导入未批准元素。"
         ),
         "fanfiction_design_review": (
             "作为与路线生成隔离的独立复核者，分别检查原著一致性与同人创造性：基线、唯一分歧、一二阶后果、"
             "未来知识退化、原著人物目标与拒绝权、原著事件命运、原作结束后的原创发动机、主角资源垄断、"
             "跨界规则、原著复演风险和中文长篇卷级可持续性。跨界时逐项核对 fixed_host、fusion_world 或 "
             "sequential_worlds 的宿主规则、transfers 中实际 payload_kinds 的派生主题、实际来源适配器，以及"
-            "世界规则优先级或卷宿主世界。extensions.verdict 只允许 pass、need_human、"
+            "适配器 payload_kinds、host_source_id、volume_ids 与 transfer/宿主卷域一致；还要核对 fixed_host "
+            "无宿主自转移、fusion_world 至少两个实际参与来源、sequential_worlds 的 "
+            "extensions.crossover.volume_ids 中每个声明卷恰好一个卷宿主世界。extensions.verdict 只允许 "
+            "pass、need_human、"
             "reject；阻断意见用 severity=blocking 的语义主张表达。复核不能修改路线或代替人工批准。"
         ),
         "book_design": (

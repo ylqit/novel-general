@@ -180,22 +180,51 @@ def crossover_route(
     default_host_source_id: str | None,
     payload_kinds: list[str] | None = None,
 ) -> dict:
+    actual_payload_kinds = list(payload_kinds or ["ability"])
+    transfers = [
+        {
+            "source_id": "guest",
+            "payload_kinds": actual_payload_kinds,
+        }
+    ]
+    if topology == "fusion_world":
+        transfers.append(
+            {
+                "source_id": "host",
+                "payload_kinds": actual_payload_kinds,
+            }
+        )
     crossover = {
         "topology": topology,
         "default_host_source_id": default_host_source_id,
-        "transfers": [
-            {
-                "source_id": "guest",
-                "payload_kinds": list(payload_kinds or ["ability"]),
-            }
-        ],
+        "transfers": transfers,
+    }
+    if topology == "sequential_worlds":
+        crossover["volume_ids"] = ["vol001"]
+    adapter_scopes = {
+        "fixed_host": {
+            "host_source_id": default_host_source_id,
+            "volume_ids": None,
+        },
+        "fusion_world": {"host_source_id": None, "volume_ids": None},
+        "sequential_worlds": {
+            "host_source_id": "host",
+            "volume_ids": ["vol001"],
+        },
     }
     claims = [
-        semantic_claim(
-            "route:guest_adapter",
-            "主世界适配器",
-            extensions={"source_id": "guest"},
-        ),
+        *[
+            semantic_claim(
+                f"route:{transfer['source_id']}_adapter",
+                "主世界适配器",
+                extensions={
+                    "source_id": transfer["source_id"],
+                    "payload_kinds": list(transfer["payload_kinds"]),
+                    **adapter_scopes[topology],
+                },
+            )
+            for transfer in transfers
+        ],
         semantic_claim(
             "route:constitution",
             "跨界宪法",
@@ -375,10 +404,82 @@ def test_only_sources_used_by_transfers_require_host_adapters(tmp_path):
         semantic_claim(
             "route:invalid_adapter",
             "主世界适配器",
-            extensions={"source_id": "not-configured"},
+            extensions={
+                "source_id": "not-configured",
+                "payload_kinds": ["ability"],
+                "host_source_id": "host",
+                "volume_ids": None,
+            },
         )
     )
     assert any("configured" in error for error in validate_crossover(config, route))
+
+
+def test_fixed_host_rejects_host_self_transfer(tmp_path):
+    route = crossover_route(topology="fixed_host", default_host_source_id="host")
+    route["extensions"]["crossover"]["transfers"] = [
+        {"source_id": "host", "payload_kinds": ["ability"]}
+    ]
+    route["claims"][0]["extensions"]["source_id"] = "host"
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("non-host" in error or "self-transfer" in error for error in errors)
+
+
+def test_fusion_world_requires_two_actual_participating_sources(tmp_path):
+    route = crossover_route(topology="fusion_world", default_host_source_id=None)
+    route["extensions"]["crossover"]["transfers"] = route["extensions"]["crossover"][
+        "transfers"
+    ][:1]
+    route["claims"] = [
+        claim
+        for claim in route["claims"]
+        if claim["extensions"].get("source_id") != "host"
+    ]
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("at least two participating" in error for error in errors)
+
+
+def test_adapter_rejects_configured_source_outside_actual_transfers(tmp_path):
+    config = crossover_config(tmp_path, third_source=True)
+    route = crossover_route(topology="fixed_host", default_host_source_id="host")
+    route["claims"].append(
+        semantic_claim(
+            "route:unused_adapter",
+            "主世界适配器",
+            extensions={
+                "source_id": "unused",
+                "payload_kinds": ["ability"],
+                "host_source_id": "host",
+                "volume_ids": None,
+            },
+        )
+    )
+
+    errors = validate_crossover(config, route)
+
+    assert any("outside actual transfers" in error for error in errors)
+
+
+def test_adapter_payload_kinds_must_match_actual_transfer(tmp_path):
+    route = crossover_route(topology="fixed_host", default_host_source_id="host")
+    route["claims"][0]["extensions"]["payload_kinds"] = ["knowledge"]
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("payload_kinds" in error and "actual transfer" in error for error in errors)
+
+
+def test_fixed_host_adapter_must_bind_declared_host(tmp_path):
+    route = crossover_route(topology="fixed_host", default_host_source_id="host")
+    route["claims"][0]["extensions"]["host_source_id"] = "guest"
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("host_source_id" in error and "fixed_host" in error for error in errors)
 
 
 def test_crossover_constitution_topics_must_cover_derived_payload_topics(tmp_path):
@@ -431,6 +532,51 @@ def test_sequential_worlds_validates_every_volume_host_claim(tmp_path, extension
         )
 
     assert any(expected in error for error in validate_crossover(crossover_config(tmp_path), route))
+
+
+def test_sequential_worlds_requires_explicit_route_volume_scope(tmp_path):
+    route = crossover_route(topology="sequential_worlds", default_host_source_id=None)
+    route["extensions"]["crossover"].pop("volume_ids")
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("extensions.crossover.volume_ids" in error for error in errors)
+
+
+def test_sequential_worlds_rejects_missing_declared_volume_host(tmp_path):
+    route = crossover_route(topology="sequential_worlds", default_host_source_id=None)
+    route["extensions"]["crossover"]["volume_ids"] = ["vol001", "vol002"]
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("vol002" in error and "exactly one" in error for error in errors)
+
+
+def test_sequential_worlds_rejects_duplicate_volume_host_assignment(tmp_path):
+    route = crossover_route(topology="sequential_worlds", default_host_source_id=None)
+    route["claims"].append(
+        semantic_claim(
+            "route:duplicate_volume_host",
+            "卷宿主世界",
+            extensions={"volume_ids": ["vol001"], "host_source_id": "guest"},
+        )
+    )
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("vol001" in error and "exactly one" in error for error in errors)
+
+
+def test_sequential_adapter_volume_and_host_must_match_assignments(tmp_path):
+    route = crossover_route(topology="sequential_worlds", default_host_source_id=None)
+    route["claims"][0]["extensions"].update(
+        {"volume_ids": ["vol001", "vol002"], "host_source_id": "guest"}
+    )
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("volume_ids" in error and "declared" in error for error in errors)
+    assert any("host_source_id" in error and "卷宿主世界" in error for error in errors)
 
 
 def test_non_crossover_routes_do_not_require_topology(tmp_path):

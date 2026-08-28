@@ -543,12 +543,25 @@ def test_route_compiled_work_order_requires_event_chain_and_crossover_topology(
         "当地反制",
     }
     assert "实际 transfers" in crossover_contract["adapter_scope"]
+    assert crossover_contract["adapter_fields"] == [
+        "source_id",
+        "payload_kinds",
+        "host_source_id",
+        "volume_ids",
+    ]
+    assert "non-host" in crossover_contract["topology_rules"]["fixed_host"]
+    assert "at least two" in crossover_contract["topology_rules"]["fusion_world"]
+    assert "extensions.crossover.volume_ids" in crossover_contract["topology_rules"][
+        "sequential_worlds"
+    ]
     assert causal_chain in instruction
     assert "fixed_host" in instruction
     assert "fusion_world" in instruction
     assert "sequential_worlds" in instruction
     assert "payload_kinds" in instruction
     assert "实际 transfers" in instruction
+    assert "host_source_id" in instruction
+    assert "extensions.crossover.volume_ids" in instruction
 
 
 def test_route_review_compiled_prompt_checks_topology_and_actual_payloads(
@@ -575,6 +588,8 @@ def test_route_review_compiled_prompt_checks_topology_and_actual_payloads(
     assert "sequential_worlds" in instruction
     assert "payload_kinds" in instruction
     assert "卷宿主世界" in instruction
+    assert "host_source_id" in instruction
+    assert "extensions.crossover.volume_ids" in instruction
 
 
 @pytest.mark.parametrize("gap", ["route_family", "原创主线承诺"])
