@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from longform_engine.config import ConfigDocument
+from longform_engine.fanfiction_contracts import (
+    FanfictionContractError,
+    load_current_fanfiction_route,
+    load_current_fanfiction_story_engine,
+)
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.rag import query as rag_query
 from longform_engine.semantic_protocols import build_workflow_record, validate_semantic_document
@@ -97,9 +102,15 @@ def compile_fanfiction_context(
         "story_engine": root / "10_bible" / "fanfiction" / "story_engine.json",
         "route_design": root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
     }
+    try:
+        story_engine = load_current_fanfiction_story_engine(config, root)
+        route_design = load_current_fanfiction_route(config, root)
+    except FanfictionContractError as exc:
+        raise FanfictionContextError(str(exc)) from exc
     documents = {
-        name: _load_approved_document(path, name=name)
-        for name, path in paths.items()
+        "source_canon": _load_approved_document(paths["source_canon"], name="source_canon"),
+        "story_engine": story_engine,
+        "route_design": route_design,
     }
     all_claims: dict[str, dict[str, Any]] = {}
     conflicts: list[dict[str, Any]] = []
@@ -278,7 +289,12 @@ def fanfiction_context_status(
 
 def event_disposition_status(config: ConfigDocument) -> dict[str, Any]:
     root = resolve_project_root(config)
-    route = _read_json(root / "10_bible" / "fanfiction" / "fanfiction_bible.json")
+    diagnostics: list[str] = []
+    try:
+        route: dict[str, Any] | None = load_current_fanfiction_route(config, root)
+    except FanfictionContractError as exc:
+        route = None
+        diagnostics.append(str(exc))
     rows = []
     if isinstance(route, dict):
         for claim in route.get("claims") or []:
@@ -310,11 +326,10 @@ def event_disposition_status(config: ConfigDocument) -> dict[str, Any]:
             )
     return {
         "schema": "fanfiction_event_disposition_status_v1",
-        "route_status": "approved" if isinstance(route, dict) and not validate_semantic_document(
-            route, require_approved=True
-        ) else "missing_or_stale",
+        "route_status": "approved" if isinstance(route, dict) else "missing_or_stale",
         "events": rows,
         "pending_count": sum(item["disposition"] == "待决定" for item in rows),
+        "diagnostics": diagnostics,
     }
 
 
