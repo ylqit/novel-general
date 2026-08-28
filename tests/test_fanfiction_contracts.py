@@ -54,6 +54,7 @@ from longform_engine.semantic_protocols import (
     canonical_json_hash,
     seal_semantic_document,
 )
+from longform_engine.storage.layout import manuscript_chapter_path
 
 
 def approve(document: dict) -> dict:
@@ -188,6 +189,11 @@ def crossover_route(
         {
             "source_id": "guest",
             "payload_kinds": actual_payload_kinds,
+            **(
+                {"volume_ids": ["vol001"]}
+                if topology == "sequential_worlds"
+                else {}
+            ),
         }
     ]
     if topology == "fusion_world":
@@ -245,6 +251,68 @@ def crossover_route(
             )
         )
     return {"extensions": {"crossover": crossover}, "claims": claims}
+
+
+def asymmetric_sequential_route() -> dict:
+    crossover = {
+        "topology": "sequential_worlds",
+        "default_host_source_id": None,
+        "volume_ids": ["vol001", "vol002"],
+        "transfers": [
+            {
+                "source_id": "guest",
+                "payload_kinds": ["character"],
+                "volume_ids": ["vol001"],
+            },
+            {
+                "source_id": "host",
+                "payload_kinds": ["ability"],
+                "volume_ids": ["vol002"],
+            },
+        ],
+    }
+    return {
+        "extensions": {"crossover": crossover},
+        "claims": [
+            semantic_claim(
+                "route:guest_vol001_adapter",
+                "主世界适配器",
+                extensions={
+                    "source_id": "guest",
+                    "payload_kinds": ["character"],
+                    "host_source_id": "host",
+                    "volume_ids": ["vol001"],
+                },
+            ),
+            semantic_claim(
+                "route:host_vol002_adapter",
+                "主世界适配器",
+                extensions={
+                    "source_id": "host",
+                    "payload_kinds": ["ability"],
+                    "host_source_id": "guest",
+                    "volume_ids": ["vol002"],
+                },
+            ),
+            semantic_claim(
+                "route:constitution",
+                "跨界宪法",
+                extensions={
+                    "topics": sorted(contracts.crossover_required_topics(crossover))
+                },
+            ),
+            semantic_claim(
+                "route:vol001_host",
+                "卷宿主世界",
+                extensions={"volume_ids": ["vol001"], "host_source_id": "host"},
+            ),
+            semantic_claim(
+                "route:vol002_host",
+                "卷宿主世界",
+                extensions={"volume_ids": ["vol002"], "host_source_id": "guest"},
+            ),
+        ],
+    }
 
 
 def validate_crossover(config: ConfigDocument, route: dict) -> list[str]:
@@ -580,6 +648,102 @@ def test_sequential_adapter_volume_and_host_must_match_assignments(tmp_path):
 
     assert any("volume_ids" in error and "declared" in error for error in errors)
     assert any("host_source_id" in error and "卷宿主世界" in error for error in errors)
+
+
+def test_sequential_worlds_accepts_only_actual_asymmetric_source_volume_interactions(
+    tmp_path,
+):
+    route = asymmetric_sequential_route()
+
+    assert validate_crossover(crossover_config(tmp_path), route) == []
+    assert sum(
+        claim["extensions"].get("semantic_type") == "主世界适配器"
+        for claim in route["claims"]
+    ) == 2
+
+
+def test_sequential_worlds_merges_payloads_for_the_same_actual_interaction(tmp_path):
+    route = asymmetric_sequential_route()
+    route["extensions"]["crossover"]["transfers"].insert(
+        1,
+        {
+            "source_id": "guest",
+            "payload_kinds": ["knowledge"],
+            "volume_ids": ["vol001"],
+        },
+    )
+    route["claims"][0]["extensions"]["payload_kinds"] = ["character", "knowledge"]
+    route["claims"][2]["extensions"]["topics"] = sorted(
+        contracts.crossover_required_topics(route["extensions"]["crossover"])
+    )
+
+    assert validate_crossover(crossover_config(tmp_path), route) == []
+
+
+def test_sequential_worlds_rejects_duplicate_adapter_for_actual_interaction(tmp_path):
+    route = asymmetric_sequential_route()
+    duplicate = deepcopy(route["claims"][0])
+    duplicate["claim_id"] = "route:duplicate_guest_vol001_adapter"
+    route["claims"].append(duplicate)
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any(
+        "exactly one" in error and "guest" in error and "vol001" in error
+        for error in errors
+    )
+
+
+def test_sequential_worlds_rejects_transfer_volume_outside_declared_scope(tmp_path):
+    route = asymmetric_sequential_route()
+    route["extensions"]["crossover"]["transfers"][0]["volume_ids"] = ["vol003"]
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any(
+        "transfers[0].volume_ids" in error and "undeclared" in error
+        for error in errors
+    )
+
+
+def test_sequential_worlds_requires_an_actual_interaction_for_every_declared_volume(
+    tmp_path,
+):
+    route = asymmetric_sequential_route()
+    route["extensions"]["crossover"]["transfers"] = route["extensions"][
+        "crossover"
+    ]["transfers"][:1]
+    route["claims"] = [
+        claim
+        for claim in route["claims"]
+        if claim["extensions"].get("source_id") != "host"
+    ]
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("vol002" in error and "actual interaction" in error for error in errors)
+
+
+def test_sequential_transfer_requires_explicit_nonempty_volume_scope(tmp_path):
+    route = crossover_route(topology="sequential_worlds", default_host_source_id=None)
+    route["extensions"]["crossover"]["transfers"][0].pop("volume_ids")
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("transfers[0].volume_ids" in error for error in errors)
+
+
+@pytest.mark.parametrize("topology", ["fixed_host", "fusion_world"])
+def test_non_sequential_transfer_rejects_non_null_volume_scope(tmp_path, topology):
+    route = crossover_route(
+        topology=topology,
+        default_host_source_id="host" if topology == "fixed_host" else None,
+    )
+    route["extensions"]["crossover"]["transfers"][0]["volume_ids"] = ["vol001"]
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("transfers[0].volume_ids" in error and topology in error for error in errors)
 
 
 def test_non_crossover_routes_do_not_require_topology(tmp_path):
@@ -1014,6 +1178,155 @@ def prepare_fanfiction_book_design_delta(
     )
     submit_result(project["root"], compile_task.task_id, delta)
     return delta, compile_task.task_id
+
+
+def prepare_fanfiction_open_semantic_task(
+    project: dict,
+    *,
+    task_type: str,
+) -> tuple[Path, str]:
+    from tests.test_intelligence_tasks import submit_result
+
+    install_route(project, variant="route-A")
+    document_types = {
+        "story_architecture_design": "故事架构设计候选",
+        "draft_semantic_review": "章节因果与人物选择审查",
+    }
+    chapter_number = 1 if task_type == "draft_semantic_review" else None
+    if chapter_number is not None:
+        draft = manuscript_chapter_path(project["root"], chapter_number, lane="draft")
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_text("林舟在门前核对代价，然后作出选择。", encoding="utf-8")
+    task = create_intelligence_task(
+        project["config"],
+        task_type=task_type,
+        chapter_number=chapter_number,
+    )
+    candidate = project["root"] / task.candidate_file
+    scope = (
+        {"kind": "chapter", "chapter_number": chapter_number}
+        if chapter_number is not None
+        else {"kind": "project", "project": project["root"].name}
+    )
+    document = build_semantic_document(
+        document_id=f"sem:{task_type}",
+        document_type=document_types[task_type],
+        title=f"{task_type} 测试候选",
+        scope=scope,
+        continuity="跨界连续性",
+        body="只记录当前任务声明范围内的开放中文语义。",
+        claims=[semantic_claim(f"{task_type}:claim", "测试语义")],
+        extensions={"task_type": task_type},
+    )
+    write_document(candidate, document)
+    submit_result(project["root"], task.task_id, candidate)
+    return candidate, task.task_id
+
+
+@pytest.mark.parametrize(
+    "task_type",
+    ["story_architecture_design", "draft_semantic_review"],
+)
+def test_open_semantic_validation_rejects_valid_but_different_fanfiction_chain(
+    current_contract_project,
+    task_type,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    candidate, _task_id = prepare_fanfiction_open_semantic_task(
+        project,
+        task_type=task_type,
+    )
+    install_route(project, variant="route-B")
+    before = project_file_snapshot(project["root"])
+
+    with pytest.raises(ValueError, match="fanfiction chain"):
+        validate_intelligence_candidate(
+            project["config"],
+            task_type=task_type,
+            file_path=candidate,
+        )
+
+    assert project_file_snapshot(project["root"]) == before
+
+
+@pytest.mark.parametrize(
+    "task_type",
+    ["story_architecture_design", "draft_semantic_review"],
+)
+def test_open_semantic_apply_rejects_chain_drift_without_any_write(
+    current_contract_project,
+    task_type,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    candidate, _task_id = prepare_fanfiction_open_semantic_task(
+        project,
+        task_type=task_type,
+    )
+    validation = validate_intelligence_candidate(
+        project["config"],
+        task_type=task_type,
+        file_path=candidate,
+    )
+    assert validation.ok, validation.errors
+    install_route(project, variant="route-B")
+    before = project_file_snapshot(project["root"])
+
+    with pytest.raises(ValueError, match="fanfiction chain"):
+        apply_intelligence_candidate(
+            project["config"],
+            task_type=task_type,
+            file_path=candidate,
+            approved_by="human" if task_type == "story_architecture_design" else None,
+        )
+
+    assert project_file_snapshot(project["root"]) == before
+
+
+@pytest.mark.parametrize(
+    "task_type",
+    ["story_architecture_design", "draft_semantic_review"],
+)
+def test_open_semantic_manifest_and_apply_transaction_bind_complete_chain(
+    current_contract_project,
+    task_type,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    candidate, task_id = prepare_fanfiction_open_semantic_task(
+        project,
+        task_type=task_type,
+    )
+    current = contracts.load_current_fanfiction_documents(
+        project["config"], project["root"]
+    )
+    binding = contracts.current_fanfiction_chain_binding(project["root"], current)
+    expected = {item["path"]: item["sha256"] for item in binding["documents"]}
+    manifest = load_manifest(project["root"], task_id)
+    actual_inputs = {
+        item["path"]: item["sha256"] for item in manifest["io"]["inputs"]
+    }
+    assert expected.items() <= actual_inputs.items()
+    validation = validate_intelligence_candidate(
+        project["config"],
+        task_type=task_type,
+        file_path=candidate,
+    )
+    assert validation.ok, validation.errors
+
+    applied = apply_intelligence_candidate(
+        project["config"],
+        task_type=task_type,
+        file_path=candidate,
+        approved_by="human" if task_type == "story_architecture_design" else None,
+    )
+
+    transaction = json.loads(
+        (project["root"] / applied.transaction_report).read_text(encoding="utf-8")
+    )
+    assert set(expected) <= set(transaction["source_paths"])
+    assert transaction["metadata"]["fanfiction_chain"] == binding
 
 
 def test_design_approval_rejects_valid_but_different_current_chain_without_write(

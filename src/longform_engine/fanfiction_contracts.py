@@ -345,54 +345,6 @@ def validate_crossover_route_contract(
     elif topology in {"fusion_world", "sequential_worlds"} and default_host_source_id is not None:
         errors.append(f"{topology} requires default_host_source_id to be null")
 
-    transfers_value = crossover.get("transfers")
-    transfers: list[Any] = transfers_value if isinstance(transfers_value, list) else []
-    if not transfers:
-        errors.append("extensions.crossover.transfers must be a non-empty list")
-    transferred_sources: set[str] = set()
-    transfer_payloads: dict[str, set[str]] = {}
-    for index, transfer in enumerate(transfers):
-        if not isinstance(transfer, dict):
-            errors.append(f"extensions.crossover.transfers[{index}] must be a mapping")
-            continue
-        source_id = transfer.get("source_id")
-        source_valid = isinstance(source_id, str) and source_id in source_ids
-        if not source_valid:
-            errors.append(
-                f"extensions.crossover.transfers[{index}].source_id must name a configured source"
-            )
-        else:
-            transferred_sources.add(str(source_id))
-        payload_kinds = transfer.get("payload_kinds")
-        payloads_valid = (
-            isinstance(payload_kinds, list)
-            and bool(payload_kinds)
-            and not any(
-                not isinstance(item, str)
-                or not item.strip()
-                or item not in CROSSOVER_PAYLOAD_KINDS
-                for item in payload_kinds
-            )
-        )
-        if not payloads_valid:
-            errors.append(
-                f"extensions.crossover.transfers[{index}].payload_kinds must be a non-empty "
-                "list containing only character, body_or_soul, ability, item_or_contract, "
-                "knowledge, organization, or world_rule"
-            )
-        elif source_valid and isinstance(source_id, str) and isinstance(payload_kinds, list):
-            transfer_payloads.setdefault(source_id, set()).update(
-                str(item) for item in payload_kinds
-            )
-
-    if topology == "fixed_host" and isinstance(default_host_source_id, str):
-        if default_host_source_id in transferred_sources:
-            errors.append("fixed_host rejects a host self-transfer in extensions.crossover.transfers")
-        if not (transferred_sources - {default_host_source_id}):
-            errors.append("fixed_host requires at least one actual non-host transfer into the host")
-    if topology == "fusion_world" and len(transferred_sources) < 2:
-        errors.append("fusion_world requires at least two participating configured transfer sources")
-
     declared_volume_ids: list[str] = []
     declared_volume_set: set[str] = set()
     if topology == "sequential_worlds":
@@ -411,8 +363,107 @@ def validate_crossover_route_contract(
                 "list for sequential_worlds"
             )
         else:
-            declared_volume_ids = list(route_volume_ids)
-            declared_volume_set = set(route_volume_ids)
+            declared_volume_ids = [str(item) for item in route_volume_ids]
+            declared_volume_set = set(declared_volume_ids)
+
+    transfers_value = crossover.get("transfers")
+    transfers: list[Any] = transfers_value if isinstance(transfers_value, list) else []
+    if not transfers:
+        errors.append("extensions.crossover.transfers must be a non-empty list")
+    transferred_sources: set[str] = set()
+    transfer_payloads: dict[str, set[str]] = {}
+    sequential_transfer_records: list[dict[str, Any]] = []
+    for index, transfer in enumerate(transfers):
+        if not isinstance(transfer, dict):
+            errors.append(f"extensions.crossover.transfers[{index}] must be a mapping")
+            continue
+        source_id = transfer.get("source_id")
+        source_valid = isinstance(source_id, str) and source_id in source_ids
+        if not source_valid:
+            errors.append(
+                f"extensions.crossover.transfers[{index}].source_id must name a configured source"
+            )
+        payload_kinds = transfer.get("payload_kinds")
+        payloads_valid = (
+            isinstance(payload_kinds, list)
+            and bool(payload_kinds)
+            and not any(
+                not isinstance(item, str)
+                or not item.strip()
+                or item not in CROSSOVER_PAYLOAD_KINDS
+                for item in payload_kinds
+            )
+        )
+        if not payloads_valid:
+            errors.append(
+                f"extensions.crossover.transfers[{index}].payload_kinds must be a non-empty "
+                "list containing only character, body_or_soul, ability, item_or_contract, "
+                "knowledge, organization, or world_rule"
+            )
+        transfer_scope_valid = True
+        transfer_volume_ids = transfer.get("volume_ids")
+        normalized_transfer_volumes: set[str] = set()
+        if topology == "sequential_worlds":
+            if (
+                not isinstance(transfer_volume_ids, list)
+                or not transfer_volume_ids
+                or any(
+                    not isinstance(item, str) or not item.strip()
+                    for item in transfer_volume_ids
+                )
+                or len(set(transfer_volume_ids)) != len(transfer_volume_ids)
+            ):
+                errors.append(
+                    f"extensions.crossover.transfers[{index}].volume_ids must be a non-empty "
+                    "unique string list for sequential_worlds"
+                )
+                transfer_scope_valid = False
+            else:
+                normalized_transfer_volumes = {
+                    str(item) for item in transfer_volume_ids
+                }
+                undeclared = sorted(
+                    normalized_transfer_volumes - declared_volume_set
+                )
+                if undeclared:
+                    errors.append(
+                        f"extensions.crossover.transfers[{index}].volume_ids contains "
+                        "undeclared sequential volumes: " + ", ".join(undeclared)
+                    )
+                    transfer_scope_valid = False
+        elif transfer_volume_ids is not None:
+            errors.append(
+                f"extensions.crossover.transfers[{index}].volume_ids must be null or absent "
+                f"for {topology}"
+            )
+            transfer_scope_valid = False
+        if (
+            source_valid
+            and payloads_valid
+            and transfer_scope_valid
+            and isinstance(source_id, str)
+            and isinstance(payload_kinds, list)
+        ):
+            transferred_sources.add(source_id)
+            transfer_payloads.setdefault(source_id, set()).update(
+                str(item) for item in payload_kinds
+            )
+            if topology == "sequential_worlds":
+                sequential_transfer_records.append(
+                    {
+                        "source_id": source_id,
+                        "payload_kinds": {str(item) for item in payload_kinds},
+                        "volume_ids": normalized_transfer_volumes,
+                    }
+                )
+
+    if topology == "fixed_host" and isinstance(default_host_source_id, str):
+        if default_host_source_id in transferred_sources:
+            errors.append("fixed_host rejects a host self-transfer in extensions.crossover.transfers")
+        if not (transferred_sources - {default_host_source_id}):
+            errors.append("fixed_host requires at least one actual non-host transfer into the host")
+    if topology == "fusion_world" and len(transferred_sources) < 2:
+        errors.append("fusion_world requires at least two participating configured transfer sources")
 
     claims_value = payload.get("claims")
     claims: list[Any] = claims_value if isinstance(claims_value, list) else []
@@ -514,7 +565,8 @@ def validate_crossover_route_contract(
                 "crossover payload-kind list"
             )
         elif (
-            source_valid
+            topology in {"fixed_host", "fusion_world"}
+            and source_valid
             and isinstance(source_id, str)
             and isinstance(adapter_payloads, list)
             and source_id in transfer_payloads
@@ -575,6 +627,12 @@ def validate_crossover_route_contract(
                 scope_valid = False
             elif isinstance(adapter_volume_ids, list):
                 adapter_volume_set = {str(item) for item in adapter_volume_ids}
+                if len(adapter_volume_set) != 1:
+                    errors.append(
+                        f"claims[{index}].extensions.volume_ids must identify exactly one "
+                        "sequential volume"
+                    )
+                    scope_valid = False
                 outside_scope = sorted(adapter_volume_set - declared_volume_set)
                 if outside_scope:
                     errors.append(
@@ -587,12 +645,18 @@ def validate_crossover_route_contract(
                 "index": index,
                 "source_id": source_id if source_valid else "",
                 "payloads_valid": payloads_valid,
+                "payload_kinds": (
+                    {str(item) for item in adapter_payloads}
+                    if isinstance(adapter_payloads, list)
+                    else set()
+                ),
                 "scope_valid": scope_valid,
                 "host_source_id": adapter_host,
                 "volume_ids": adapter_volume_set,
             }
         )
 
+    actual_interactions: dict[tuple[str, str, str], set[str]] = {}
     if topology == "sequential_worlds":
         for volume_id in declared_volume_ids:
             assignments = volume_host_assignments.get(volume_id, [])
@@ -600,6 +664,25 @@ def validate_crossover_route_contract(
                 errors.append(
                     f"sequential_worlds volume {volume_id} must have exactly one 卷宿主世界 "
                     "host assignment"
+                )
+        for transfer in sequential_transfer_records:
+            for volume_id in transfer["volume_ids"]:
+                assignments = volume_host_assignments.get(volume_id, [])
+                if len(assignments) != 1:
+                    continue
+                key = (
+                    str(transfer["source_id"]),
+                    str(volume_id),
+                    assignments[0],
+                )
+                actual_interactions.setdefault(key, set()).update(
+                    transfer["payload_kinds"]
+                )
+        for volume_id in declared_volume_ids:
+            if not any(key[1] == volume_id for key in actual_interactions):
+                errors.append(
+                    f"sequential_worlds volume {volume_id} requires at least one actual "
+                    "interaction"
                 )
         for adapter in adapter_records:
             for volume_id in adapter["volume_ids"]:
@@ -609,6 +692,28 @@ def validate_crossover_route_contract(
                         f"claims[{adapter['index']}].extensions.host_source_id must match the "
                         f"卷宿主世界 host for {volume_id}"
                     )
+                if not (
+                    adapter["source_id"]
+                    and adapter["payloads_valid"]
+                    and adapter["scope_valid"]
+                ):
+                    continue
+                key = (
+                    str(adapter["source_id"]),
+                    str(volume_id),
+                    str(adapter["host_source_id"]),
+                )
+                expected_payloads = actual_interactions.get(key)
+                if expected_payloads is None:
+                    errors.append(
+                        f"claims[{adapter['index']}] is outside actual sequential interaction "
+                        f"{key[0]}@{key[1]}->{key[2]}"
+                    )
+                elif adapter["payload_kinds"] != expected_payloads:
+                    errors.append(
+                        f"claims[{adapter['index']}].extensions.payload_kinds must exactly "
+                        f"match actual sequential interaction {key[0]}@{key[1]}->{key[2]}"
+                    )
 
     missing_topics = sorted(crossover_required_topics(crossover) - covered_topics)
     if missing_topics:
@@ -616,20 +721,20 @@ def validate_crossover_route_contract(
             "crossover constitution topics are missing derived topics: "
             + ", ".join(missing_topics)
         )
-    valid_adapter_sources = {
-        str(adapter["source_id"])
-        for adapter in adapter_records
-        if adapter["source_id"]
-        and adapter["payloads_valid"]
-        and adapter["scope_valid"]
-    }
-    missing_adapters = sorted(transferred_sources - valid_adapter_sources)
-    if missing_adapters:
-        errors.append(
-            "crossover route is missing valid host-world adapters for transfer sources: "
-            + ", ".join(missing_adapters)
-        )
     if topology in {"fixed_host", "fusion_world"}:
+        valid_adapter_sources = {
+            str(adapter["source_id"])
+            for adapter in adapter_records
+            if adapter["source_id"]
+            and adapter["payloads_valid"]
+            and adapter["scope_valid"]
+        }
+        missing_adapters = sorted(transferred_sources - valid_adapter_sources)
+        if missing_adapters:
+            errors.append(
+                "crossover route is missing valid host-world adapters for transfer sources: "
+                + ", ".join(missing_adapters)
+            )
         for source_id in sorted(transferred_sources):
             matching = [
                 adapter
@@ -644,21 +749,21 @@ def validate_crossover_route_contract(
                     f"transfer source {source_id}"
                 )
     elif topology == "sequential_worlds":
-        for source_id in sorted(transferred_sources):
-            for volume_id in declared_volume_ids:
-                matching = [
-                    adapter
-                    for adapter in adapter_records
-                    if adapter["source_id"] == source_id
-                    and adapter["payloads_valid"]
-                    and adapter["scope_valid"]
-                    and volume_id in adapter["volume_ids"]
-                ]
-                if len(matching) != 1:
-                    errors.append(
-                        "sequential_worlds requires exactly one scoped host-world adapter for "
-                        f"transfer source {source_id} in volume {volume_id}"
-                    )
+        for source_id, volume_id, host_source_id in sorted(actual_interactions):
+            matching = [
+                adapter
+                for adapter in adapter_records
+                if adapter["source_id"] == source_id
+                and adapter["payloads_valid"]
+                and adapter["scope_valid"]
+                and adapter["host_source_id"] == host_source_id
+                and adapter["volume_ids"] == {volume_id}
+            ]
+            if len(matching) != 1:
+                errors.append(
+                    "sequential_worlds requires exactly one host-world adapter for actual "
+                    f"interaction {source_id}@{volume_id}->{host_source_id}"
+                )
     if topology == "fusion_world" and not has_world_rule_priority:
         errors.append("fusion_world requires a 世界规则优先级 semantic claim")
     if topology == "sequential_worlds" and volume_host_claim_count == 0:

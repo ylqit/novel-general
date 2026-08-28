@@ -80,19 +80,20 @@ def test_studio_renders_current_crossover_topology_and_transfer_contract(tmp_pat
         "fusion_world": None,
         "sequential_worlds": None,
     }
-    assert contract["transfer_fields"] == ["source_id", "payload_kinds"]
+    assert contract["transfer_fields"] == ["source_id", "payload_kinds", "volume_ids"]
     assert contract["adapter_fields"] == [
         "source_id",
         "payload_kinds",
         "host_source_id",
         "volume_ids",
     ]
-    assert contract["adapter_coverage"] == "transfers.source_id only"
+    assert contract["adapter_coverage"] == "actual source-volume-host interactions only"
     assert contract["topology_rules"] == {
         "fixed_host": "non-host transfers into default_host_source_id; no host self-transfer",
         "fusion_world": "at least two distinct transfers.source_id participants",
         "sequential_worlds": (
-            "extensions.crossover.volume_ids; exactly one 卷宿主世界 host per declared volume"
+            "extensions.crossover.volume_ids; exactly one 卷宿主世界 host and at least one "
+            "actual source-volume-host interaction per declared volume; no Cartesian coverage"
         ),
     }
     assert contract["topology_claims"] == {
@@ -103,12 +104,15 @@ def test_studio_renders_current_crossover_topology_and_transfer_contract(tmp_pat
     assert "default_host_source_id" in page
     assert "transfers[].source_id" in page
     assert "transfers[].payload_kinds" in page
+    assert "transfers[].volume_ids" in page
     assert "只覆盖 transfers 实际引用的 source_id" in page
     assert "adapter.payload_kinds" in page
     assert "adapter.host_source_id" in page
     assert "adapter.volume_ids" in page
     assert "extensions.crossover.volume_ids" in page
     assert "每个声明卷恰好一个宿主" in page
+    assert "实际 source-volume-host interaction" in page
+    assert "不要求无关来源与卷的笛卡尔积" in page
     assert "世界规则优先级" in page
     assert "卷宿主世界" in page
     assert 'show("crossoverContract",state.crossover_contract)' in page

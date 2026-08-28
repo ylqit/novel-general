@@ -543,6 +543,11 @@ def test_route_compiled_work_order_requires_event_chain_and_crossover_topology(
         "当地反制",
     }
     assert "实际 transfers" in crossover_contract["adapter_scope"]
+    assert crossover_contract["transfer_fields"] == [
+        "source_id",
+        "payload_kinds",
+        "volume_ids",
+    ]
     assert crossover_contract["adapter_fields"] == [
         "source_id",
         "payload_kinds",
@@ -554,6 +559,9 @@ def test_route_compiled_work_order_requires_event_chain_and_crossover_topology(
     assert "extensions.crossover.volume_ids" in crossover_contract["topology_rules"][
         "sequential_worlds"
     ]
+    assert "actual source-volume-host interaction" in crossover_contract[
+        "topology_rules"
+    ]["sequential_worlds"]
     assert causal_chain in instruction
     assert "fixed_host" in instruction
     assert "fusion_world" in instruction
@@ -562,6 +570,8 @@ def test_route_compiled_work_order_requires_event_chain_and_crossover_topology(
     assert "实际 transfers" in instruction
     assert "host_source_id" in instruction
     assert "extensions.crossover.volume_ids" in instruction
+    assert "实际 source-volume-host interaction" in instruction
+    assert "不要求无关来源与卷的笛卡尔积" in instruction
 
 
 def test_route_review_compiled_prompt_checks_topology_and_actual_payloads(
@@ -590,6 +600,8 @@ def test_route_review_compiled_prompt_checks_topology_and_actual_payloads(
     assert "卷宿主世界" in instruction
     assert "host_source_id" in instruction
     assert "extensions.crossover.volume_ids" in instruction
+    assert "实际 source-volume-host interaction" in instruction
+    assert "不要求无关来源与卷的笛卡尔积" in instruction
 
 
 @pytest.mark.parametrize("gap", ["route_family", "原创主线承诺"])

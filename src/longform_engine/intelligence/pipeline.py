@@ -641,7 +641,7 @@ def create_intelligence_task(
         raise ValueError(f"{task_type} requires at least one --input file.")
     if task_type.startswith("fanfiction_") and str(config.data.get("creation", {}).get("mode") or "") != "fanfiction":
         raise ValueError(f"{task_type} requires creation.mode=fanfiction.")
-    if current_fanfiction is not None and task_type in DESIGN_INTELLIGENCE_TASK_TYPES:
+    if current_fanfiction is not None and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES:
         for path in current_fanfiction.paths.values():
             if path not in inputs:
                 inputs.append(path)
@@ -764,8 +764,8 @@ def validate_intelligence_candidate(
     if manifest is None:
         errors.append("candidate is not declared by an active AgentTaskManifest.")
     else:
-        if current_fanfiction is not None and task_type in DESIGN_INTELLIGENCE_TASK_TYPES:
-            _require_current_fanfiction_design_task(
+        if current_fanfiction is not None and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES:
+            _require_current_fanfiction_task_provenance(
                 root,
                 manifest,
                 current_fanfiction,
@@ -894,7 +894,12 @@ def apply_intelligence_candidate(
             "canonical_delta_v1, then apply with --document and --delta."
         )
     candidate = resolve_candidate(root, file_path)
-    validation = validate_intelligence_candidate(config, task_type=task_type, file_path=candidate)
+    validation = validate_intelligence_candidate(
+        config,
+        task_type=task_type,
+        file_path=candidate,
+        current_fanfiction=current_fanfiction,
+    )
     if not validation.ok:
         raise ValueError("Intelligence candidate is invalid: " + "; ".join(validation.errors))
     if spec["human"] and approved_by != "human":
@@ -912,7 +917,10 @@ def apply_intelligence_candidate(
     )
     if payload is None or load_errors:
         raise ValueError("Validated intelligence candidate could not be reloaded: " + "; ".join(load_errors))
-    source_paths = [candidate]
+    source_paths = [
+        candidate,
+        *(current_fanfiction.paths.values() if current_fanfiction is not None else ()),
+    ]
     review_manifest: dict[str, Any] | None = None
     review_candidate: Path | None = None
     approved_review_payload: dict[str, Any] | None = None
@@ -1043,6 +1051,17 @@ def apply_intelligence_candidate(
             "task_id": scope.get("task_id", ""),
             "approved_by": approved_by or "explicit_cli",
             "requires_human_apply": bool(spec["human"]),
+            **(
+                {
+                    "fanfiction_chain": (
+                        fanfiction_contracts.current_fanfiction_chain_binding(
+                            root, current_fanfiction
+                        )
+                    )
+                }
+                if current_fanfiction is not None
+                else {}
+            ),
         },
     ) as transaction:
         if reviewed_route_payload is not None:
@@ -1468,7 +1487,7 @@ def create_design_compile_task(
     if source_manifest is None:
         raise ValueError("Approved design document has no active source task.")
     if current_fanfiction is not None:
-        _require_current_fanfiction_design_task(
+        _require_current_fanfiction_task_provenance(
             root,
             source_manifest,
             current_fanfiction,
@@ -1601,7 +1620,7 @@ def validate_design_compile_delta(
     if source_manifest is None:
         errors.append("approved design document has no active source task.")
     elif current_fanfiction is not None:
-        _require_current_fanfiction_design_task(
+        _require_current_fanfiction_task_provenance(
             root,
             source_manifest,
             current_fanfiction,
@@ -1612,7 +1631,7 @@ def validate_design_compile_delta(
         errors.append("delta is not declared by an active design_semantic_compile task.")
     else:
         if current_fanfiction is not None:
-            _require_current_fanfiction_design_task(
+            _require_current_fanfiction_task_provenance(
                 root,
                 manifest,
                 current_fanfiction,
@@ -2743,7 +2762,8 @@ def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
                     fanfiction_contracts.CROSSOVER_TOPICS_BY_PAYLOAD_KIND.items()
                 )
             },
-            "adapter_scope": "只覆盖实际 transfers 引用的 configured source_id",
+            "adapter_scope": "只覆盖实际 transfers 形成的 source-volume-host interactions",
+            "transfer_fields": ["source_id", "payload_kinds", "volume_ids"],
             "adapter_fields": [
                 "source_id",
                 "payload_kinds",
@@ -2758,7 +2778,8 @@ def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
                 "fusion_world": "at least two distinct participating transfers.source_id",
                 "sequential_worlds": (
                     "explicit extensions.crossover.volume_ids and exactly one 卷宿主世界 "
-                    "host per declared volume"
+                    "host plus at least one actual source-volume-host interaction per "
+                    "declared volume; no Cartesian coverage"
                 ),
             },
         },
@@ -3372,7 +3393,7 @@ def manifest_for_output(root: Path, task_type: str, candidate: Path) -> dict[str
     return None
 
 
-def _require_current_fanfiction_design_task(
+def _require_current_fanfiction_task_provenance(
     root: Path,
     manifest: dict[str, Any],
     current: fanfiction_contracts.CurrentFanfictionDocuments,
@@ -6000,11 +6021,15 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "未来知识必须有首次重大分歧后的退化机制。触发联动合同时 extensions.crossover.topology 只允许 "
             "fixed_host、fusion_world 或 sequential_worlds，并填写 default_host_source_id 与非空 transfers；每个 "
             "transfer 用 configured source_id 和实际 payload_kinds 声明 character、body_or_soul、ability、"
-            "item_or_contract、knowledge、organization 或 world_rule。主世界适配器只覆盖实际 transfers 引用的来源，"
+            "item_or_contract、knowledge、organization 或 world_rule。sequential_worlds 的每条 transfer 还必须用"
+            "非空 volume_ids 声明实际适用卷；fixed_host/fusion_world 的 transfer volume_ids 只能缺省或为 null。"
+            "主世界适配器只覆盖实际 transfers 引用的来源，"
             "并以 payload_kinds、host_source_id、volume_ids 绑定实际载荷和宿主范围；fixed_host 至少有一个非宿主"
             "来源转入且禁止宿主自转移，fusion_world 至少有两个实际参与来源并说明世界规则优先级。"
             "sequential_worlds 先在 extensions.crossover.volume_ids 声明适用卷域，再以卷宿主世界 claim 为每个"
-            "声明卷恰好指定一个 host_source_id。跨界宪法 topics 按实际载荷派生，不做全量主题集、N×N 数值"
+            "声明卷恰好指定一个 host_source_id。按 transfer 卷域与卷宿主归并实际 source-volume-host interaction，"
+            "每个实际 interaction 恰好一个载荷精确匹配的适配器，每卷至少一个实际 interaction；不要求无关来源与卷的笛卡尔积。"
+            "跨界宪法 topics 按实际载荷派生，不做全量主题集、N×N 数值"
             "换算或导入未批准元素。"
         ),
         "fanfiction_design_review": (
@@ -6014,7 +6039,9 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "sequential_worlds 的宿主规则、transfers 中实际 payload_kinds 的派生主题、实际来源适配器，以及"
             "适配器 payload_kinds、host_source_id、volume_ids 与 transfer/宿主卷域一致；还要核对 fixed_host "
             "无宿主自转移、fusion_world 至少两个实际参与来源、sequential_worlds 的 "
-            "extensions.crossover.volume_ids 中每个声明卷恰好一个卷宿主世界。extensions.verdict 只允许 "
+            "extensions.crossover.volume_ids 中每个声明卷恰好一个卷宿主世界，并按 transfer.volume_ids 检查"
+            "每个实际 source-volume-host interaction 恰好一个 payload 精确匹配的适配器、每卷至少一个实际"
+            "interaction；不要求无关来源与卷的笛卡尔积。extensions.verdict 只允许 "
             "pass、need_human、"
             "reject；阻断意见用 severity=blocking 的语义主张表达。复核不能修改路线或代替人工批准。"
         ),

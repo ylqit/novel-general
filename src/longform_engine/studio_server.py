@@ -120,7 +120,7 @@ class StudioService:
                     "fusion_world": None,
                     "sequential_worlds": None,
                 },
-                "transfer_fields": ["source_id", "payload_kinds"],
+                "transfer_fields": ["source_id", "payload_kinds", "volume_ids"],
                 "adapter_fields": [
                     "source_id",
                     "payload_kinds",
@@ -128,7 +128,7 @@ class StudioService:
                     "volume_ids",
                 ],
                 "payload_kinds": sorted(fanfiction_contracts.CROSSOVER_PAYLOAD_KINDS),
-                "adapter_coverage": "transfers.source_id only",
+                "adapter_coverage": "actual source-volume-host interactions only",
                 "topology_rules": {
                     "fixed_host": (
                         "non-host transfers into default_host_source_id; no host self-transfer"
@@ -137,8 +137,9 @@ class StudioService:
                         "at least two distinct transfers.source_id participants"
                     ),
                     "sequential_worlds": (
-                        "extensions.crossover.volume_ids; exactly one 卷宿主世界 host per "
-                        "declared volume"
+                        "extensions.crossover.volume_ids; exactly one 卷宿主世界 host and at "
+                        "least one actual source-volume-host interaction per declared volume; "
+                        "no Cartesian coverage"
                     ),
                 },
                 "always_required_topics": sorted(
@@ -748,8 +749,8 @@ longform-engine source-library evidence-review-apply --item-id ITEM --file REVIE
 <section data-panel="原著事件命运"><h2>原著事件命运</h2><p>重大原著事件使用保留、提前、延迟、结果改变、换人承担、取消、转化或待决定；修改只传播到显式依赖。</p><pre>longform-engine fanfiction event-disposition-status project.yaml --json</pre></section>
 <section data-panel="原著人物职责"><h2>原著人物职责</h2><p>路线必须保留原著人物的独立目标、拒绝权、场外行动和不能被原创主角无因果接管的职责。</p><pre>longform-engine fanfiction design-task project.yaml</pre></section>
 <section data-panel="同人路线复核"><h2>同人路线复核</h2><p>路线生成会话不能自审；独立复核通过并绑定当前路线、故事发动机和 Canon 哈希后才允许人工 apply。</p><pre>longform-engine fanfiction design-review-task project.yaml --file ROUTE</pre></section>
-<section data-panel="跨界宪法"><h2>跨界宪法</h2><p>路线必须选择 fixed_host | fusion_world | sequential_worlds，并显式写 default_host_source_id：fixed_host 使用已配置来源且禁止宿主自转移；fusion_world 必须为 null 且至少两个来源实际参与；sequential_worlds 必须为 null，并以 extensions.crossover.volume_ids 声明适用卷域、为每个声明卷恰好一个宿主。兼容主题只由 transfers[].payload_kinds 的实际载荷派生，始终包含宿主世界与不可逆后果，不建立全作品两两矩阵。</p><pre id="crossoverContract"></pre><pre>transfers[].source_id + transfers[].payload_kinds；fusion_world → 世界规则优先级；sequential_worlds → 卷宿主世界(volume_ids, host_source_id)</pre></section>
-<section data-panel="主世界适配器"><h2>主世界适配器</h2><p>主世界适配器只覆盖 transfers 实际引用的 source_id；未转移的已配置来源不需要空适配器。每条适配器以 adapter.payload_kinds 精确绑定实际载荷，以 adapter.host_source_id 和 adapter.volume_ids 绑定固定宿主、融合空宿主或顺序卷域，再进入跨界宪法。</p><pre>实际 transfer source → 主世界适配器(payload_kinds, host_source_id, volume_ids) → 跨界宪法 → 当前卷例外规则</pre></section>
+<section data-panel="跨界宪法"><h2>跨界宪法</h2><p>路线必须选择 fixed_host | fusion_world | sequential_worlds，并显式写 default_host_source_id：fixed_host 使用已配置来源且禁止宿主自转移；fusion_world 必须为 null 且至少两个来源实际参与；sequential_worlds 必须为 null，并以 extensions.crossover.volume_ids 声明适用卷域、为每个声明卷恰好一个宿主。sequential transfer 以 transfers[].volume_ids 声明实际适用卷；fixed_host/fusion_world 中该字段只能缺省或为 null。兼容主题只由 transfers[].payload_kinds 的实际载荷派生，始终包含宿主世界与不可逆后果，不建立全作品两两矩阵。</p><pre id="crossoverContract"></pre><pre>transfers[].source_id + transfers[].payload_kinds + transfers[].volume_ids；fusion_world → 世界规则优先级；sequential_worlds → 卷宿主世界(volume_ids, host_source_id)</pre></section>
+<section data-panel="主世界适配器"><h2>主世界适配器</h2><p>主世界适配器只覆盖 transfers 实际引用的 source_id；未转移的已配置来源不需要空适配器。顺序世界按 transfer 卷域与卷宿主归并实际 source-volume-host interaction，每个实际 interaction 恰好一个载荷精确匹配的适配器，每个声明卷至少一个 interaction；不要求无关来源与卷的笛卡尔积。每条适配器以 adapter.payload_kinds 精确绑定实际载荷，以 adapter.host_source_id 和单个 adapter.volume_ids 绑定顺序卷域，再进入跨界宪法。</p><pre>实际 transfer source-volume-host interaction → 主世界适配器(payload_kinds, host_source_id, volume_ids) → 跨界宪法 → 当前卷例外规则</pre></section>
 <section data-panel="当前卷同人设计"><h2>当前卷同人设计</h2><p>当前卷同时投影原著范围、人物阶段、原创问题、事件命运、能力规则、原著价值与原创价值。</p><pre>longform-engine intelligence task project.yaml --task-type story_architecture_design</pre></section>
 <section data-panel="当前章同人上下文诊断"><h2>当前章同人上下文诊断</h2><p>这里显示纳入、遗漏、冲突、stale 和 Token 预算诊断；作者工作单不会暴露 ID、哈希或检索分数。</p><pre>longform-engine fanfiction context-status project.yaml --chapter N --json</pre></section>
 <section data-panel="全书与分卷"><h2>全书与分卷</h2><pre>longform-engine intelligence task project.yaml --task-type story_architecture_design
