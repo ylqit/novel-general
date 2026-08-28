@@ -836,6 +836,7 @@ def apply_intelligence_candidate(
     source_paths = [candidate]
     review_manifest: dict[str, Any] | None = None
     review_candidate: Path | None = None
+    approved_review_payload: dict[str, Any] | None = None
     if task_type == "fanfiction_design":
         if approved_by != "human":
             raise ValueError("fanfiction_design apply requires --approved-by human.")
@@ -872,11 +873,37 @@ def apply_intelligence_candidate(
             )
         if str(review_payload.get("extensions", {}).get("verdict") or "") != "pass":
             raise ValueError("fanfiction_design requires an independent review verdict of pass.")
+        review_document = seal_semantic_document(review_payload)
+        review_envelope = review_document["artifact"]
+        review_decision = build_human_decision(
+            decision_id="decision_"
+            + semantic_json_hash(
+                {
+                    "target": review_envelope["artifact_id"],
+                    "hash": review_envelope["content_sha256"],
+                }
+            )[:24],
+            target_id=str(review_envelope["artifact_id"]),
+            target_sha256=str(review_envelope["content_sha256"]),
+            decision="approve",
+            decided_by="human",
+            reason="人工批准独立同人路线复核与其固定输入。",
+            scope=dict(review_envelope.get("scope") or {"kind": "project"}),
+        )
+        approved_review_payload = approved_semantic_document(
+            review_document,
+            decision=review_decision,
+        )
+        approved_review_bytes = (
+            json.dumps(approved_review_payload, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
         payload = json.loads(json.dumps(payload, ensure_ascii=False))
         payload["extensions"]["independent_review"] = {
             "review_path": relative(root, review_candidate),
-            "review_sha256": sha256(review_candidate.read_bytes()).hexdigest(),
-            "review_artifact_id": str(review_payload.get("artifact", {}).get("artifact_id") or ""),
+            "review_sha256": sha256(approved_review_bytes).hexdigest(),
+            "review_artifact_id": str(
+                approved_review_payload.get("artifact", {}).get("artifact_id") or ""
+            ),
             "reviewer_role": "fanfiction_route_reviewer",
             "verdict": "pass",
         }
@@ -904,6 +931,9 @@ def apply_intelligence_candidate(
     if stale_dependents:
         touched.append(stale_registry)
         touched = list(dict.fromkeys(touched))
+    if review_candidate is not None and approved_review_payload is not None:
+        touched.append(review_candidate)
+        touched = list(dict.fromkeys(touched))
     task_chapter = manifest_chapter_number(scope)
     with apply_transaction(
         root,
@@ -918,6 +948,8 @@ def apply_intelligence_candidate(
             "requires_human_apply": bool(spec["human"]),
         },
     ) as transaction:
+        if review_candidate is not None and approved_review_payload is not None:
+            write_json(review_candidate, approved_review_payload)
         write_targets(config, root, task_type, payload, scope=manifest_scope)
         if stale_dependents:
             mark_fanfiction_semantic_dependents_stale(
@@ -4468,21 +4500,6 @@ def validate_fanfiction_design_review(
     manifest: dict[str, Any] | None,
     errors: list[str],
 ) -> None:
-    errors.extend(validate_semantic_document(payload))
-    if errors:
-        return
-    extensions = payload.get("extensions") if isinstance(payload.get("extensions"), dict) else {}
-    artifact = payload.get("artifact") if isinstance(payload.get("artifact"), dict) else {}
-    scope = artifact.get("scope") if isinstance(artifact.get("scope"), dict) else {}
-    if payload.get("document_type") != "同人路线独立复核":
-        errors.append("document_type must be 同人路线独立复核")
-    if scope.get("kind") != "project":
-        errors.append("fanfiction route review must use project scope")
-    if extensions.get("task_type") != "fanfiction_design_review":
-        errors.append("extensions.task_type must be fanfiction_design_review")
-    verdict = str(extensions.get("verdict") or "")
-    if verdict not in {"pass", "need_human", "reject"}:
-        errors.append("extensions.verdict must be pass, need_human, or reject")
     role = manifest.get("role") if isinstance((manifest or {}).get("role"), dict) else {}
     if role.get("id") != "fanfiction_route_reviewer" or role.get("independence_mode") != "isolated_review":
         errors.append("fanfiction route review must use the isolated fanfiction_route_reviewer role")
@@ -4491,10 +4508,6 @@ def validate_fanfiction_design_review(
     except ValueError as exc:
         errors.append(str(exc))
         return
-    if extensions.get("review_target_path") != relative(root, route):
-        errors.append("extensions.review_target_path is stale")
-    if extensions.get("review_target_sha256") != sha256(route.read_bytes()).hexdigest():
-        errors.append("extensions.review_target_sha256 is stale")
     try:
         current = fanfiction_contracts.load_current_fanfiction_story_engine_documents(
             config, root
@@ -4502,23 +4515,14 @@ def validate_fanfiction_design_review(
     except fanfiction_contracts.FanfictionContractError as exc:
         errors.append(str(exc))
         return
-    for name, digest in (
-        ("story_engine_sha256", current.sha256["story_engine"]),
-        ("source_canon_sha256", current.sha256["source_canon"]),
-    ):
-        if extensions.get(name) != digest:
-            errors.append(f"extensions.{name} is stale")
-    blocking = [
-        claim
-        for claim in payload.get("claims") or []
-        if isinstance(claim, dict)
-        and isinstance(claim.get("extensions"), dict)
-        and claim["extensions"].get("severity") == "blocking"
-    ]
-    if verdict == "pass" and blocking:
-        errors.append("a pass review cannot contain blocking claims")
-    if verdict in {"need_human", "reject"} and not blocking:
-        errors.append(f"a {verdict} review requires at least one blocking claim")
+    fanfiction_contracts.validate_fanfiction_review_contract(
+        payload,
+        errors,
+        source_canon_sha256=current.sha256["source_canon"],
+        story_engine_sha256=current.sha256["story_engine"],
+        review_target_path=relative(root, route),
+        review_target_sha256=sha256(route.read_bytes()).hexdigest(),
+    )
 
 
 def validate_sources(

@@ -32,6 +32,8 @@ from longform_engine.intelligence.pipeline import (
 from longform_engine.orchestration.pipeline import WorkflowError, load_fanfiction_writing_contract
 from longform_engine.production import production_next
 from longform_engine.semantic_protocols import (
+    approved_semantic_document,
+    build_human_decision,
     build_semantic_document,
     seal_semantic_document,
     validate_semantic_document,
@@ -62,6 +64,21 @@ def candidate_copy(document: dict) -> dict:
     candidate["extensions"].pop("human_decision", None)
     candidate["extensions"].pop("approved_candidate_sha256", None)
     return seal_semantic_document(candidate)
+
+
+def approved_copy(document: dict) -> dict:
+    candidate = candidate_copy(document)
+    artifact = candidate["artifact"]
+    decision = build_human_decision(
+        decision_id=f"decision:{artifact['artifact_id']}",
+        target_id=artifact["artifact_id"],
+        target_sha256=artifact["content_sha256"],
+        decision="approve",
+        decided_by="human",
+        reason="测试夹具模拟人工批准当前语义链。",
+        scope=artifact["scope"],
+    )
+    return approved_semantic_document(candidate, decision=decision)
 
 
 def event_fate_claim(document: dict) -> dict:
@@ -736,7 +753,7 @@ def install_cross_namespace_event_dependencies(
             "extensions": {"semantic_type": "因果辅助"},
         }
     )
-    engine = seal_semantic_document(engine)
+    engine = approved_copy(engine)
     engine_path.write_text(
         json.dumps(engine, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -760,8 +777,28 @@ def install_cross_namespace_event_dependencies(
             "second_order_effect_claim_ids": ["route:causal_target"],
         }
     )
-    route["extensions"]["story_engine_sha256"] = sha256(engine_path.read_bytes()).hexdigest()
-    route = seal_semantic_document(route)
+    engine_sha = sha256(engine_path.read_bytes()).hexdigest()
+    route["extensions"]["story_engine_sha256"] = engine_sha
+    review_path = root / route["extensions"]["independent_review"]["review_path"]
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    target_path = root / review["extensions"]["review_target_path"]
+    route_target = candidate_copy(route)
+    route_target["extensions"].pop("independent_review", None)
+    route_target = seal_semantic_document(route_target)
+    target_path.write_text(
+        json.dumps(route_target, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    review["extensions"]["story_engine_sha256"] = engine_sha
+    review["extensions"]["review_target_sha256"] = sha256(target_path.read_bytes()).hexdigest()
+    review = approved_copy(review)
+    review_path.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
+    route["extensions"]["independent_review"]["review_sha256"] = sha256(
+        review_path.read_bytes()
+    ).hexdigest()
+    route["extensions"]["independent_review"]["review_artifact_id"] = review["artifact"][
+        "artifact_id"
+    ]
+    route = approved_copy(route)
     (root / "10_bible" / "fanfiction" / "fanfiction_bible.json").write_text(
         json.dumps(route, ensure_ascii=False, indent=2), encoding="utf-8"
     )

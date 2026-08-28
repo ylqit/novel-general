@@ -5,7 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from longform_engine.config import ConfigDocument
 from longform_engine.fanfiction_contracts import (
@@ -275,13 +275,58 @@ def fanfiction_context_status(
             "bundle_path": path.relative_to(root).as_posix(),
             "next_command": "longform-engine production next project.yaml",
         }
-    stale_reasons = []
-    for item in payload.get("source_files") or []:
+    bundle_diagnostics_value = payload.get("diagnostics")
+    bundle_diagnostics: dict[str, Any] = (
+        bundle_diagnostics_value if isinstance(bundle_diagnostics_value, dict) else {}
+    )
+    try:
+        current = load_current_fanfiction_documents(config, root)
+    except FanfictionContractError as exc:
+        status = _contract_error_status(exc)
+        return {
+            "schema": "fanfiction_context_status_v1",
+            "chapter_number": chapter_number,
+            "status": status,
+            "bundle_path": path.relative_to(root).as_posix(),
+            "bundle_sha256": str(payload.get("bundle_sha256") or ""),
+            "required_claim_count": len(payload.get("required_claim_ids") or []),
+            "included_claim_count": len(payload.get("included_claim_ids") or []),
+            "omitted_claims": payload.get("omitted_claims") or [],
+            "stale_sources": [],
+            "diagnostics": {
+                **bundle_diagnostics,
+                "contract_errors": [str(exc)],
+            },
+        }
+    expected_sources = {
+        source_path.relative_to(root).as_posix(): current.sha256[name]
+        for name, source_path in current.paths.items()
+    }
+    declared_sources: dict[str, str] = {}
+    malformed_sources: list[str] = []
+    source_files_value = payload.get("source_files")
+    source_files: list[Any] = source_files_value if isinstance(source_files_value, list) else []
+    for index, item in enumerate(source_files):
         if not isinstance(item, dict):
+            malformed_sources.append(f"source_files[{index}]")
             continue
-        source = root / str(item.get("path") or "")
-        if not source.is_file() or sha256(source.read_bytes()).hexdigest() != item.get("sha256"):
-            stale_reasons.append(str(item.get("path") or ""))
+        source_path = item.get("path")
+        digest = item.get("sha256")
+        if not isinstance(source_path, str) or not source_path or not isinstance(digest, str):
+            malformed_sources.append(f"source_files[{index}]")
+            continue
+        if source_path in declared_sources:
+            malformed_sources.append(source_path)
+            continue
+        declared_sources[source_path] = digest
+    stale_reasons = sorted(
+        set(malformed_sources)
+        | {
+            source_path
+            for source_path in set(expected_sources) | set(declared_sources)
+            if expected_sources.get(source_path) != declared_sources.get(source_path)
+        }
+    )
     status = "stale" if stale_reasons else "current"
     return {
         "schema": "fanfiction_context_status_v1",
@@ -293,7 +338,10 @@ def fanfiction_context_status(
         "included_claim_count": len(payload.get("included_claim_ids") or []),
         "omitted_claims": payload.get("omitted_claims") or [],
         "stale_sources": stale_reasons,
-        "diagnostics": payload.get("diagnostics") or {},
+        "diagnostics": {
+            **bundle_diagnostics,
+            "contract_errors": [],
+        },
     }
 
 
@@ -305,7 +353,7 @@ def event_disposition_status(config: ConfigDocument) -> dict[str, Any]:
         route: dict[str, Any] | None = load_current_fanfiction_route(config, root)
     except FanfictionContractError as exc:
         route = None
-        route_status = exc.code if exc.code in {"missing", "stale"} else "invalid"
+        route_status = _contract_error_status(exc)
         diagnostics.append(str(exc))
     rows = []
     if isinstance(route, dict):
@@ -343,6 +391,10 @@ def event_disposition_status(config: ConfigDocument) -> dict[str, Any]:
         "pending_count": sum(item["disposition"] == "待决定" for item in rows),
         "diagnostics": diagnostics,
     }
+
+
+def _contract_error_status(error: FanfictionContractError) -> str:
+    return error.code if error.code in {"missing", "stale"} else "invalid"
 
 
 def future_knowledge_impact_workflow(
@@ -440,6 +492,10 @@ def _claim_record(namespace: str, claim: dict[str, Any]) -> dict[str, Any]:
             dependency_claim_ids.extend(
                 item for item in values if isinstance(item, str) and item
             )
+    depends_on_value = extensions.get("depends_on_claims")
+    depends_on_claims: list[Any] = (
+        depends_on_value if isinstance(depends_on_value, list) else []
+    )
     return {
         "claim_id": str(claim.get("claim_id") or ""),
         "namespace": namespace,
@@ -450,11 +506,7 @@ def _claim_record(namespace: str, claim: dict[str, Any]) -> dict[str, Any]:
         "uncertainty": str(claim.get("uncertainty") or ""),
         "depends_on_claims": [
             item
-            for item in (
-                extensions.get("depends_on_claims")
-                if isinstance(extensions.get("depends_on_claims"), list)
-                else []
-            )
+            for item in depends_on_claims
             if isinstance(item, str) and item
         ],
         "dependency_claim_ids": _dedupe(dependency_claim_ids),
@@ -689,7 +741,7 @@ def _claim_units(claim: dict[str, Any], estimator: str) -> int:
 
 
 def _stale_diagnostics(
-    documents: dict[str, dict[str, Any]], digests: dict[str, str]
+    documents: Mapping[str, Mapping[str, Any]], digests: Mapping[str, str]
 ) -> list[dict[str, str]]:
     route = documents["route_design"]
     engine = documents["story_engine"]

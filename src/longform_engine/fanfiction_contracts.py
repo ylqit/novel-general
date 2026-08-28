@@ -59,6 +59,7 @@ class CurrentFanfictionDocuments:
     source_canon: CurrentFanfictionDocument
     story_engine: CurrentFanfictionDocument
     route: CurrentFanfictionDocument
+    independent_review: CurrentFanfictionDocument
     paths: dict[str, Path]
     sha256: dict[str, str]
 
@@ -189,11 +190,14 @@ def validate_fanfiction_source_canon(
     errors.extend(validate_semantic_document(payload, require_approved=require_approved))
     if errors:
         return
-    configured = config.data.get("fanfiction")
-    configured = configured if isinstance(configured, dict) else {}
-    artifact = payload.get("artifact") if isinstance(payload.get("artifact"), dict) else {}
-    scope = artifact.get("scope") if isinstance(artifact.get("scope"), dict) else {}
-    extensions = payload["extensions"]
+    configured_value = config.data.get("fanfiction")
+    configured: dict[str, Any] = configured_value if isinstance(configured_value, dict) else {}
+    artifact_value = payload.get("artifact")
+    artifact: dict[str, Any] = artifact_value if isinstance(artifact_value, dict) else {}
+    scope_value = artifact.get("scope")
+    scope: dict[str, Any] = scope_value if isinstance(scope_value, dict) else {}
+    extensions_value = payload.get("extensions")
+    extensions: dict[str, Any] = extensions_value if isinstance(extensions_value, dict) else {}
     if payload.get("document_type") != "项目原著基线Canon候选":
         errors.append("fanfiction source Canon document_type must be 项目原著基线Canon候选")
     if scope.get("kind") != "project":
@@ -262,7 +266,10 @@ def validate_fanfiction_source_canon(
     for index, claim in enumerate(claims):
         if not isinstance(claim, dict):
             continue
-        claim_extensions = claim.get("extensions") if isinstance(claim.get("extensions"), dict) else {}
+        claim_extensions_value = claim.get("extensions")
+        claim_extensions: dict[str, Any] = (
+            claim_extensions_value if isinstance(claim_extensions_value, dict) else {}
+        )
         source_id = str(claim_extensions.get("source_id") or "")
         if source_id not in configured_sources:
             errors.append(f"claims[{index}].extensions.source_id must name a configured source")
@@ -308,9 +315,12 @@ def _validate_story_engine_semantics(
     payload: dict[str, Any],
     errors: list[str],
 ) -> None:
-    extensions = payload.get("extensions") if isinstance(payload.get("extensions"), dict) else {}
-    artifact = payload.get("artifact") if isinstance(payload.get("artifact"), dict) else {}
-    scope = artifact.get("scope") if isinstance(artifact.get("scope"), dict) else {}
+    extensions_value = payload.get("extensions")
+    extensions: dict[str, Any] = extensions_value if isinstance(extensions_value, dict) else {}
+    artifact_value = payload.get("artifact")
+    artifact: dict[str, Any] = artifact_value if isinstance(artifact_value, dict) else {}
+    scope_value = artifact.get("scope")
+    scope: dict[str, Any] = scope_value if isinstance(scope_value, dict) else {}
     if payload.get("document_type") != "同人故事发动机":
         errors.append("document_type must be 同人故事发动机")
     if scope.get("kind") != "project":
@@ -490,11 +500,14 @@ def validate_fanfiction_route_contract(
     errors.extend(validate_semantic_document(payload, require_approved=require_approved))
     if errors:
         return
-    configured = config.data.get("fanfiction")
-    configured = configured if isinstance(configured, dict) else {}
-    artifact = payload.get("artifact") if isinstance(payload.get("artifact"), dict) else {}
-    scope = artifact.get("scope") if isinstance(artifact.get("scope"), dict) else {}
-    extensions = payload["extensions"]
+    configured_value = config.data.get("fanfiction")
+    configured: dict[str, Any] = configured_value if isinstance(configured_value, dict) else {}
+    artifact_value = payload.get("artifact")
+    artifact: dict[str, Any] = artifact_value if isinstance(artifact_value, dict) else {}
+    scope_value = artifact.get("scope")
+    scope: dict[str, Any] = scope_value if isinstance(scope_value, dict) else {}
+    extensions_value = payload.get("extensions")
+    extensions: dict[str, Any] = extensions_value if isinstance(extensions_value, dict) else {}
     if payload.get("document_type") != "同人路线设计候选":
         errors.append("document_type must be 同人路线设计候选")
     if scope.get("kind") != "project":
@@ -557,17 +570,91 @@ def validate_fanfiction_route_contract(
     )
 
 
-def _validate_independent_review(root: Path, route: dict[str, Any]) -> None:
-    extensions = route.get("extensions") if isinstance(route.get("extensions"), dict) else {}
-    review = (
-        extensions.get("independent_review")
-        if isinstance(extensions.get("independent_review"), dict)
-        else {}
-    )
+def validate_fanfiction_review_contract(
+    payload: dict[str, Any],
+    errors: list[str],
+    *,
+    require_approved: bool = False,
+    require_pass: bool = False,
+    source_canon_sha256: str,
+    story_engine_sha256: str,
+    review_target_path: str | None = None,
+    review_target_sha256: str | None = None,
+) -> None:
+    """Validate the semantic and pinned-input contract of an isolated route review."""
+
+    errors.extend(validate_semantic_document(payload, require_approved=require_approved))
+    if errors:
+        return
+    artifact_value = payload.get("artifact")
+    artifact: dict[str, Any] = artifact_value if isinstance(artifact_value, dict) else {}
+    scope_value = artifact.get("scope")
+    scope: dict[str, Any] = scope_value if isinstance(scope_value, dict) else {}
+    extensions_value = payload.get("extensions")
+    extensions: dict[str, Any] = extensions_value if isinstance(extensions_value, dict) else {}
+    if payload.get("document_type") != "同人路线独立复核":
+        errors.append("document_type must be 同人路线独立复核")
+    if scope.get("kind") != "project":
+        errors.append("fanfiction route review must use project scope")
+    if extensions.get("task_type") != "fanfiction_design_review":
+        errors.append("extensions.task_type must be fanfiction_design_review")
+    verdict = extensions.get("verdict")
+    if verdict not in {"pass", "need_human", "reject"}:
+        errors.append("extensions.verdict must be pass, need_human, or reject")
+    elif require_pass and verdict != "pass":
+        errors.append("extensions.verdict must be pass for the current route")
+    for field, digest in (
+        ("source_canon_sha256", source_canon_sha256),
+        ("story_engine_sha256", story_engine_sha256),
+    ):
+        if extensions.get(field) != digest:
+            errors.append(f"extensions.{field} is stale")
+    declared_target_path = extensions.get("review_target_path")
+    if not isinstance(declared_target_path, str) or not declared_target_path.strip():
+        errors.append("extensions.review_target_path must be a non-empty project-relative path")
+    elif review_target_path is not None and declared_target_path != review_target_path:
+        errors.append("extensions.review_target_path is stale")
+    declared_target_sha256 = extensions.get("review_target_sha256")
+    if not isinstance(declared_target_sha256, str) or len(declared_target_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in declared_target_sha256
+    ):
+        errors.append("extensions.review_target_sha256 must be a SHA-256 digest")
+    elif review_target_sha256 is not None and declared_target_sha256 != review_target_sha256:
+        errors.append("extensions.review_target_sha256 is stale")
+    claims_value = payload.get("claims")
+    claims: list[Any] = claims_value if isinstance(claims_value, list) else []
+    blocking = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        claim_extensions_value = claim.get("extensions")
+        claim_extensions = (
+            claim_extensions_value if isinstance(claim_extensions_value, dict) else {}
+        )
+        if claim_extensions.get("severity") == "blocking":
+            blocking.append(claim)
+    if verdict == "pass" and blocking:
+        errors.append("a pass review cannot contain blocking claims")
+    if verdict in {"need_human", "reject"} and not blocking:
+        errors.append(f"a {verdict} review requires at least one blocking claim")
+
+
+def _validate_independent_review(
+    root: Path,
+    route: dict[str, Any],
+    *,
+    source_canon: CurrentFanfictionDocument,
+    story_engine: CurrentFanfictionDocument,
+) -> CurrentFanfictionDocument:
+    extensions_value = route.get("extensions")
+    extensions: dict[str, Any] = extensions_value if isinstance(extensions_value, dict) else {}
+    review_value = extensions.get("independent_review")
+    review: dict[str, Any] = review_value if isinstance(review_value, dict) else {}
+    route_path = root / "10_bible" / "fanfiction" / "fanfiction_bible.json"
     review_path_value = review.get("review_path")
     if not isinstance(review_path_value, str) or not review_path_value.strip():
         raise FanfictionContractError(
-            path=root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
+            path=route_path,
             code="invalid",
             detail="current route independent review path is missing",
         )
@@ -586,6 +673,12 @@ def _validate_independent_review(root: Path, route: dict[str, Any]) -> None:
             code="invalid",
             detail="current route independent review verdict must be pass",
         )
+    if review.get("reviewer_role") != "fanfiction_route_reviewer":
+        raise FanfictionContractError(
+            path=review_path,
+            code="invalid",
+            detail="current route independent review must use the isolated fanfiction_route_reviewer role",
+        )
     try:
         review_payload = _read_document(review_path)
     except FanfictionContractError as exc:
@@ -600,23 +693,56 @@ def _validate_independent_review(root: Path, route: dict[str, Any]) -> None:
             code="stale",
             detail="current route independent review binding is stale",
         )
-    review_extensions = (
-        review_payload.get("extensions")
-        if isinstance(review_payload.get("extensions"), dict)
-        else {}
+    review_errors: list[str] = []
+    validate_fanfiction_review_contract(
+        review_payload,
+        review_errors,
+        require_approved=True,
+        require_pass=True,
+        source_canon_sha256=source_canon.sha256,
+        story_engine_sha256=story_engine.sha256,
     )
-    if review_extensions.get("verdict") != "pass":
-        raise FanfictionContractError(
-            path=review_path,
-            code="invalid",
-            detail="current route independent review artifact verdict must be pass",
-        )
-    if review.get("review_artifact_id") != review_payload.get("artifact", {}).get("artifact_id"):
+    if review_errors:
+        raise _contract_error(review_path, "fanfiction route independent review", review_errors)
+    artifact_value = review_payload.get("artifact")
+    artifact: dict[str, Any] = artifact_value if isinstance(artifact_value, dict) else {}
+    review_extensions_value = review_payload.get("extensions")
+    review_extensions: dict[str, Any] = (
+        review_extensions_value if isinstance(review_extensions_value, dict) else {}
+    )
+    if review.get("review_artifact_id") != artifact.get("artifact_id"):
         raise FanfictionContractError(
             path=review_path,
             code="stale",
             detail="current route independent review artifact binding is stale",
         )
+    target_path_value = review_extensions.get("review_target_path")
+    if not isinstance(target_path_value, str):
+        raise FanfictionContractError(path=review_path, code="invalid", detail="review target is invalid")
+    target_path = (root / target_path_value).resolve()
+    try:
+        target_path.relative_to(root.resolve())
+    except ValueError as exc:
+        raise FanfictionContractError(
+            path=target_path,
+            code="invalid",
+            detail="current route independent review target path escapes the project",
+        ) from exc
+    try:
+        target = _read_document(target_path)
+    except FanfictionContractError as exc:
+        raise FanfictionContractError(
+            path=target_path,
+            code=exc.code,
+            detail=f"current route independent review target is unavailable: {exc.detail}",
+        ) from exc
+    if review_extensions.get("review_target_sha256") != target.sha256:
+        raise FanfictionContractError(
+            path=target_path,
+            code="stale",
+            detail="current route independent review target hash is stale",
+        )
+    return review_payload
 
 
 def _load_current_route(
@@ -625,7 +751,7 @@ def _load_current_route(
     *,
     source_canon: CurrentFanfictionDocument | None = None,
     story_engine: CurrentFanfictionDocument | None = None,
-) -> CurrentFanfictionDocument:
+) -> tuple[CurrentFanfictionDocument, CurrentFanfictionDocument]:
     current_source = source_canon or _load_current_source_canon(config, root)
     current_engine = story_engine or _load_current_story_engine(
         config,
@@ -646,15 +772,21 @@ def _load_current_route(
     )
     if errors:
         raise _contract_error(path, "fanfiction route", errors)
-    _validate_independent_review(root, payload)
-    return payload
+    review = _validate_independent_review(
+        root,
+        payload,
+        source_canon=current_source,
+        story_engine=current_engine,
+    )
+    return payload, review
 
 
 def load_current_fanfiction_route(
     config: ConfigDocument,
     root: Path,
 ) -> CurrentFanfictionDocument:
-    return _load_current_route(config, root)
+    route, _review = _load_current_route(config, root)
+    return route
 
 
 def load_current_fanfiction_documents(
@@ -666,7 +798,7 @@ def load_current_fanfiction_documents(
     engine_documents = load_current_fanfiction_story_engine_documents(config, root)
     source_canon = engine_documents.source_canon
     story_engine = engine_documents.story_engine
-    route = _load_current_route(
+    route, review = _load_current_route(
         config,
         root,
         source_canon=source_canon,
@@ -676,16 +808,19 @@ def load_current_fanfiction_documents(
         "source_canon": root / "10_bible" / "fanfiction" / "source_canon.json",
         "story_engine": root / "10_bible" / "fanfiction" / "story_engine.json",
         "route_design": root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
+        "independent_review": review.path,
     }
     return CurrentFanfictionDocuments(
         source_canon=source_canon,
         story_engine=story_engine,
         route=route,
+        independent_review=review,
         paths=paths,
         sha256={
             "source_canon": source_canon.sha256,
             "story_engine": story_engine.sha256,
             "route_design": route.sha256,
+            "independent_review": review.sha256,
         },
     )
 
@@ -707,6 +842,7 @@ __all__ = [
     "load_current_fanfiction_story_engine",
     "load_current_fanfiction_story_engine_documents",
     "validate_event_disposition_claims",
+    "validate_fanfiction_review_contract",
     "validate_fanfiction_route_contract",
     "validate_fanfiction_source_canon",
     "validate_fanfiction_story_engine",

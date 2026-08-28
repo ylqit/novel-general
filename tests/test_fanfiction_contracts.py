@@ -11,6 +11,8 @@ from longform_engine.fanfiction_context import (
     FanfictionContextError,
     compile_fanfiction_context,
     event_disposition_status,
+    fanfiction_context_status,
+    write_fanfiction_context_bundle,
 )
 from longform_engine.semantic_protocols import (
     EVIDENCE_REFERENCE_SCHEMA,
@@ -33,6 +35,18 @@ def approve(document: dict) -> dict:
         scope={"kind": "project"},
     )
     return approved_semantic_document(candidate, decision=decision)
+
+
+def reapprove(document: dict) -> dict:
+    candidate = deepcopy(document)
+    artifact = candidate.get("artifact")
+    if isinstance(artifact, dict):
+        artifact["state"] = "candidate"
+    extensions = candidate.get("extensions")
+    if isinstance(extensions, dict):
+        extensions.pop("approved_candidate_sha256", None)
+        extensions.pop("human_decision", None)
+    return approve(candidate)
 
 
 def write_document(path: Path, document: dict) -> str:
@@ -206,17 +220,6 @@ def install_story_engine(project: dict) -> tuple[dict, str]:
 
 def install_route(project: dict) -> tuple[dict, Path]:
     _engine, engine_sha = install_story_engine(project)
-    review = build_semantic_document(
-        document_id="sem:route_review",
-        document_type="同人路线独立复核",
-        title="当前路线复核",
-        scope={"kind": "project", "project": project["root"].name},
-        continuity="原作分歧",
-        body="独立复核通过。",
-        extensions={"task_type": "fanfiction_design_review", "verdict": "pass"},
-    )
-    review_path = project["root"] / "50_workbench" / "route_review.json"
-    review_sha = write_document(review_path, review)
     claims = [
         semantic_claim("route:divergence", "初始分歧"),
         semantic_claim("route:entry", "故事切入点"),
@@ -236,34 +239,68 @@ def install_route(project: dict) -> tuple[dict, Path]:
             },
         ),
     ]
-    route = approve(
+    route_candidate = build_semantic_document(
+        document_id="sem:route",
+        document_type="同人路线设计候选",
+        title="当前同人路线",
+        scope={"kind": "project", "project": project["root"].name},
+        continuity="原作分歧",
+        body="从原著基线产生可追责的分歧后果。",
+        claims=claims,
+        extensions={
+            "task_type": "fanfiction_design",
+            "continuity_mode": "canon_divergent",
+            "source_canon_sha256": project["canon_sha"],
+            "story_engine_sha256": engine_sha,
+            "future_knowledge_used": False,
+        },
+    )
+    target_path = project["root"] / "50_workbench" / "route_candidate.json"
+    target_sha = write_document(target_path, route_candidate)
+    review = approve(
         build_semantic_document(
-            document_id="sem:route",
-            document_type="同人路线设计候选",
-            title="当前同人路线",
+            document_id="sem:route_review",
+            document_type="同人路线独立复核",
+            title="当前路线复核",
             scope={"kind": "project", "project": project["root"].name},
             continuity="原作分歧",
-            body="从原著基线产生可追责的分歧后果。",
-            claims=claims,
+            body="独立复核通过。",
             extensions={
-                "task_type": "fanfiction_design",
-                "continuity_mode": "canon_divergent",
+                "task_type": "fanfiction_design_review",
+                "verdict": "pass",
+                "review_target_path": target_path.relative_to(project["root"]).as_posix(),
+                "review_target_sha256": target_sha,
                 "source_canon_sha256": project["canon_sha"],
                 "story_engine_sha256": engine_sha,
-                "future_knowledge_used": False,
-                "independent_review": {
-                    "review_path": review_path.relative_to(project["root"]).as_posix(),
-                    "review_sha256": review_sha,
-                    "review_artifact_id": review["artifact"]["artifact_id"],
-                    "reviewer_role": "fanfiction_route_reviewer",
-                    "verdict": "pass",
-                },
             },
         )
     )
+    review_path = project["root"] / "50_workbench" / "route_review.json"
+    review_sha = write_document(review_path, review)
+    route_candidate["extensions"]["independent_review"] = {
+        "review_path": review_path.relative_to(project["root"]).as_posix(),
+        "review_sha256": review_sha,
+        "review_artifact_id": review["artifact"]["artifact_id"],
+        "reviewer_role": "fanfiction_route_reviewer",
+        "verdict": "pass",
+    }
+    route = approve(route_candidate)
     route_path = project["root"] / "10_bible" / "fanfiction" / "fanfiction_bible.json"
     write_document(route_path, route)
     return route, route_path
+
+
+def bind_review_to_route(project: dict, route: dict, review: dict, review_sha: str) -> dict:
+    changed = deepcopy(route)
+    binding = changed["extensions"]["independent_review"]
+    binding["review_sha256"] = review_sha
+    artifact = review.get("artifact")
+    if isinstance(artifact, dict) and isinstance(artifact.get("artifact_id"), str):
+        binding["review_artifact_id"] = artifact["artifact_id"]
+    canonical = reapprove(changed)
+    route_path = project["root"] / "10_bible" / "fanfiction" / "fanfiction_bible.json"
+    write_document(route_path, canonical)
+    return canonical
 
 
 def event_fate_claim(route: dict) -> dict:
@@ -517,6 +554,145 @@ def test_current_route_requires_current_independent_pass_review(
 
     assert exc_info.value.code in {"missing", "stale", "invalid"}
     assert "independent review" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("malformation", "expected_status"),
+    [
+        ("artifact_null", "invalid"),
+        ("extensions_list", "invalid"),
+        ("missing_task_type", "invalid"),
+        ("wrong_task_type", "invalid"),
+        ("wrong_document_type", "invalid"),
+        ("wrong_source_hash", "stale"),
+        ("wrong_story_hash", "stale"),
+        ("wrong_target_path", "missing"),
+        ("wrong_target_hash", "stale"),
+    ],
+)
+def test_current_review_contract_rejects_malformed_or_stale_documents(
+    current_contract_project, malformation, expected_status
+):
+    project = current_contract_project
+    route, _route_path = install_route(project)
+    bundle = compile_fanfiction_context(
+        project["config"],
+        chapter_number=1,
+        chapter_contract={"chapter_number": 1},
+        chapter_card={"title": "复核合同"},
+        character_packet={},
+    )
+    write_fanfiction_context_bundle(project["root"], bundle)
+    review_path = project["root"] / route["extensions"]["independent_review"]["review_path"]
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    if malformation == "artifact_null":
+        review["artifact"] = None
+    elif malformation == "extensions_list":
+        review["extensions"] = []
+    else:
+        extensions = review["extensions"]
+        if malformation == "missing_task_type":
+            extensions.pop("task_type")
+        elif malformation == "wrong_task_type":
+            extensions["task_type"] = "fanfiction_design"
+        elif malformation == "wrong_document_type":
+            review["document_type"] = "同人路线设计候选"
+        elif malformation == "wrong_source_hash":
+            extensions["source_canon_sha256"] = "f" * 64
+        elif malformation == "wrong_story_hash":
+            extensions["story_engine_sha256"] = "f" * 64
+        elif malformation == "wrong_target_path":
+            extensions["review_target_path"] = "50_workbench/missing_route.json"
+        else:
+            extensions["review_target_sha256"] = "f" * 64
+        review = reapprove(review)
+    review_sha = write_document(review_path, review)
+    bind_review_to_route(project, route, review, review_sha)
+
+    with pytest.raises(contracts.FanfictionContractError) as exc_info:
+        contracts.load_current_fanfiction_route(project["config"], project["root"])
+    with pytest.raises(FanfictionContextError, match="fanfiction_contract"):
+        compile_fanfiction_context(
+            project["config"],
+            chapter_number=1,
+            chapter_contract={"chapter_number": 1},
+            chapter_card={"title": "畸形复核"},
+            character_packet={},
+        )
+
+    assert exc_info.value.code == expected_status
+    context_status = fanfiction_context_status(project["config"], chapter_number=1)
+    event_status = event_disposition_status(project["config"])
+    assert context_status["status"] == expected_status
+    assert event_status["route_status"] == expected_status
+    assert context_status["diagnostics"]
+    assert event_status["diagnostics"]
+
+
+def test_context_bundle_records_independent_review_provenance(current_contract_project):
+    project = current_contract_project
+    route, _route_path = install_route(project)
+
+    bundle = compile_fanfiction_context(
+        project["config"],
+        chapter_number=1,
+        chapter_contract={"chapter_number": 1},
+        chapter_card={"title": "复核来源"},
+        character_packet={},
+    )
+
+    review_path = route["extensions"]["independent_review"]["review_path"]
+    provenance = {item["path"]: item["sha256"] for item in bundle["source_files"]}
+    assert provenance[review_path] == route["extensions"]["independent_review"]["review_sha256"]
+
+
+@pytest.mark.parametrize(
+    ("drift", "expected_status"),
+    [
+        ("configured_source", "stale"),
+        ("review_missing", "missing"),
+        ("review_replaced", "stale"),
+        ("review_verdict", "invalid"),
+        ("review_target_hash", "stale"),
+    ],
+)
+def test_context_status_revalidates_complete_current_chain(
+    current_contract_project, drift, expected_status
+):
+    project = current_contract_project
+    route, _route_path = install_route(project)
+    bundle = compile_fanfiction_context(
+        project["config"],
+        chapter_number=1,
+        chapter_contract={"chapter_number": 1},
+        chapter_card={"title": "状态重验"},
+        character_packet={},
+    )
+    write_fanfiction_context_bundle(project["root"], bundle)
+    review_path = project["root"] / route["extensions"]["independent_review"]["review_path"]
+    if drift == "configured_source":
+        project["config"].data["fanfiction"]["sources"][0]["source_id"] = "renamed"
+    elif drift == "review_missing":
+        review_path.unlink()
+    elif drift == "review_replaced":
+        review_path.write_bytes(review_path.read_bytes() + b"\n")
+    else:
+        review = json.loads(review_path.read_text(encoding="utf-8"))
+        if drift == "review_verdict":
+            review["extensions"]["verdict"] = "reject"
+        else:
+            review["extensions"]["review_target_sha256"] = "f" * 64
+        review = reapprove(review)
+        review_sha = write_document(review_path, review)
+        bind_review_to_route(project, route, review, review_sha)
+
+    context_status = fanfiction_context_status(project["config"], chapter_number=1)
+    event_status = event_disposition_status(project["config"])
+
+    assert context_status["status"] == expected_status
+    assert event_status["route_status"] == expected_status
+    assert context_status["diagnostics"]
+    assert event_status["diagnostics"]
 
 
 @pytest.mark.parametrize(
