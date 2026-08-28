@@ -37,6 +37,58 @@ EVENT_CAUSAL_REFERENCE_FIELDS = (
     "second_order_effect_claim_ids",
 )
 
+CROSSOVER_TOPOLOGIES = frozenset(
+    {"fixed_host", "fusion_world", "sequential_worlds"}
+)
+
+CROSSOVER_PAYLOAD_KINDS = frozenset(
+    {
+        "character",
+        "body_or_soul",
+        "ability",
+        "item_or_contract",
+        "knowledge",
+        "organization",
+        "world_rule",
+    }
+)
+
+CROSSOVER_ALWAYS_REQUIRED_TOPICS = frozenset({"宿主世界", "不可逆后果"})
+
+CROSSOVER_TOPICS_BY_PAYLOAD_KIND = {
+    "character": frozenset(
+        {"身体与灵魂", "感知", "身份组织法律", "死亡与复活", "返回"}
+    ),
+    "body_or_soul": frozenset(
+        {"身体与灵魂", "感知", "身份组织法律", "死亡与复活", "返回"}
+    ),
+    "ability": frozenset(
+        {"能量关系", "能力作用对象", "激活与补充", "代价", "当地反制"}
+    ),
+    "item_or_contract": frozenset(
+        {"装备召唤物契约", "激活与补充", "代价", "当地反制"}
+    ),
+    "knowledge": frozenset({"来源时间点", "信息传播"}),
+    "organization": frozenset({"身份组织法律", "信息传播"}),
+    "world_rule": frozenset({"身份组织法律", "信息传播"}),
+}
+
+_CROSSOVER_TRIGGER_ELEMENTS = frozenset(
+    {
+        "characters",
+        "人物",
+        "character",
+        "abilities",
+        "能力",
+        "power",
+        "powers",
+        "organizations",
+        "组织",
+        "world",
+        "世界",
+    }
+)
+
 
 class CurrentFanfictionDocument(dict[str, Any]):
     """A validated canonical payload plus the digest of the exact bytes parsed."""
@@ -133,6 +185,200 @@ def fanfiction_semantic_types(payload: dict[str, Any]) -> set[str]:
         for claim in payload.get("claims") or []
         if isinstance(claim, dict) and isinstance(claim.get("extensions"), dict)
     }
+
+
+def requires_crossover_contract(config: ConfigDocument) -> bool:
+    """Return whether the current source configuration activates the route topology contract."""
+
+    configured_value = config.data.get("fanfiction")
+    configured: dict[str, Any] = configured_value if isinstance(configured_value, dict) else {}
+    sources = [
+        source
+        for source in configured.get("sources") or []
+        if isinstance(source, dict) and source.get("source_id")
+    ]
+    if configured.get("continuity_mode") == "crossover":
+        return True
+    if len(sources) <= 1:
+        return False
+    allowed_elements = {
+        str(element).strip().lower()
+        for source in sources
+        for element in source.get("allowed_elements") or []
+    }
+    return bool(allowed_elements.intersection(_CROSSOVER_TRIGGER_ELEMENTS))
+
+
+def crossover_required_topics(crossover: dict[str, Any]) -> set[str]:
+    """Derive constitution topics from only the payload kinds actually transferred."""
+
+    topics = set(CROSSOVER_ALWAYS_REQUIRED_TOPICS)
+    for transfer in crossover.get("transfers") or []:
+        if not isinstance(transfer, dict):
+            continue
+        for payload_kind in transfer.get("payload_kinds") or []:
+            if isinstance(payload_kind, str):
+                topics.update(CROSSOVER_TOPICS_BY_PAYLOAD_KIND.get(payload_kind, ()))
+    return topics
+
+
+def validate_crossover_route_contract(
+    config: ConfigDocument,
+    payload: dict[str, Any],
+    errors: list[str],
+) -> None:
+    """Validate the topology, transfers, adapters, and constitution of one crossover route."""
+
+    if not requires_crossover_contract(config):
+        return
+
+    configured_value = config.data.get("fanfiction")
+    configured: dict[str, Any] = configured_value if isinstance(configured_value, dict) else {}
+    source_ids = {
+        str(source.get("source_id"))
+        for source in configured.get("sources") or []
+        if isinstance(source, dict) and source.get("source_id")
+    }
+    extensions_value = payload.get("extensions")
+    if not isinstance(extensions_value, dict):
+        errors.append("extensions.crossover must be a mapping for a crossover route")
+        return
+    crossover_value = extensions_value.get("crossover")
+    if not isinstance(crossover_value, dict):
+        errors.append("extensions.crossover must be a mapping for a crossover route")
+        return
+    crossover = crossover_value
+
+    topology = crossover.get("topology")
+    if topology not in CROSSOVER_TOPOLOGIES:
+        errors.append(
+            "extensions.crossover.topology must be fixed_host, fusion_world, or "
+            "sequential_worlds"
+        )
+
+    default_host_source_id = crossover.get("default_host_source_id")
+    if "default_host_source_id" not in crossover:
+        errors.append(
+            "extensions.crossover.default_host_source_id must be explicitly set to a "
+            "configured source or null"
+        )
+    elif default_host_source_id is not None and (
+        not isinstance(default_host_source_id, str)
+        or default_host_source_id not in source_ids
+    ):
+        errors.append(
+            "extensions.crossover.default_host_source_id must be a configured source or null"
+        )
+    if topology == "fixed_host" and (
+        not isinstance(default_host_source_id, str)
+        or default_host_source_id not in source_ids
+    ):
+        errors.append("fixed_host requires a configured default_host_source_id")
+    elif topology in {"fusion_world", "sequential_worlds"} and default_host_source_id is not None:
+        errors.append(f"{topology} requires default_host_source_id to be null")
+
+    transfers_value = crossover.get("transfers")
+    transfers: list[Any] = transfers_value if isinstance(transfers_value, list) else []
+    if not transfers:
+        errors.append("extensions.crossover.transfers must be a non-empty list")
+    transferred_sources: set[str] = set()
+    for index, transfer in enumerate(transfers):
+        if not isinstance(transfer, dict):
+            errors.append(f"extensions.crossover.transfers[{index}] must be a mapping")
+            continue
+        source_id = transfer.get("source_id")
+        if not isinstance(source_id, str) or source_id not in source_ids:
+            errors.append(
+                f"extensions.crossover.transfers[{index}].source_id must name a configured source"
+            )
+        else:
+            transferred_sources.add(source_id)
+        payload_kinds = transfer.get("payload_kinds")
+        if (
+            not isinstance(payload_kinds, list)
+            or not payload_kinds
+            or any(
+                not isinstance(item, str)
+                or not item.strip()
+                or item not in CROSSOVER_PAYLOAD_KINDS
+                for item in payload_kinds
+            )
+        ):
+            errors.append(
+                f"extensions.crossover.transfers[{index}].payload_kinds must be a non-empty "
+                "list containing only character, body_or_soul, ability, item_or_contract, "
+                "knowledge, organization, or world_rule"
+            )
+
+    claims_value = payload.get("claims")
+    claims: list[Any] = claims_value if isinstance(claims_value, list) else []
+    covered_topics: set[str] = set()
+    adapted_sources: set[str] = set()
+    has_world_rule_priority = False
+    volume_host_claim_count = 0
+    for index, claim in enumerate(claims):
+        if not isinstance(claim, dict):
+            continue
+        claim_extensions_value = claim.get("extensions")
+        if not isinstance(claim_extensions_value, dict):
+            continue
+        claim_extensions = claim_extensions_value
+        semantic_type = str(claim_extensions.get("semantic_type") or "")
+        if semantic_type in {"跨界宪法", "跨界兼容规则"}:
+            topics = claim_extensions.get("topics")
+            if (
+                not isinstance(topics, list)
+                or not topics
+                or any(not isinstance(item, str) or not item.strip() for item in topics)
+            ):
+                errors.append(
+                    f"claims[{index}].extensions.topics must be a non-empty string list"
+                )
+            else:
+                covered_topics.update(item.strip() for item in topics)
+        elif semantic_type == "主世界适配器":
+            source_id = claim_extensions.get("source_id")
+            if not isinstance(source_id, str) or source_id not in source_ids:
+                errors.append(
+                    f"claims[{index}].extensions.source_id must name a configured source"
+                )
+            else:
+                adapted_sources.add(source_id)
+        elif semantic_type == "世界规则优先级":
+            has_world_rule_priority = True
+        elif semantic_type == "卷宿主世界":
+            volume_host_claim_count += 1
+            volume_ids = claim_extensions.get("volume_ids")
+            if (
+                not isinstance(volume_ids, list)
+                or not volume_ids
+                or any(not isinstance(item, str) or not item.strip() for item in volume_ids)
+            ):
+                errors.append(
+                    f"claims[{index}].extensions.volume_ids must be a non-empty string list"
+                )
+            host_source_id = claim_extensions.get("host_source_id")
+            if not isinstance(host_source_id, str) or host_source_id not in source_ids:
+                errors.append(
+                    f"claims[{index}].extensions.host_source_id must name a configured source"
+                )
+
+    missing_topics = sorted(crossover_required_topics(crossover) - covered_topics)
+    if missing_topics:
+        errors.append(
+            "crossover constitution topics are missing derived topics: "
+            + ", ".join(missing_topics)
+        )
+    missing_adapters = sorted(transferred_sources - adapted_sources)
+    if missing_adapters:
+        errors.append(
+            "crossover route is missing host-world adapters for transfer sources: "
+            + ", ".join(missing_adapters)
+        )
+    if topology == "fusion_world" and not has_world_rule_priority:
+        errors.append("fusion_world requires a 世界规则优先级 semantic claim")
+    if topology == "sequential_worlds" and volume_host_claim_count == 0:
+        errors.append("sequential_worlds requires at least one 卷宿主世界 semantic claim")
 
 
 def fanfiction_route_review_projection(payload: dict[str, Any]) -> dict[str, Any]:
@@ -547,6 +793,7 @@ def validate_fanfiction_route_contract(
         errors.append("extensions.task_type must be fanfiction_design")
     if extensions.get("continuity_mode") != configured.get("continuity_mode"):
         errors.append("extensions.continuity_mode must match project.yaml")
+    validate_crossover_route_contract(config, payload, errors)
     try:
         source_canon = _source_canon or _load_current_source_canon(config, root)
         story_engine = _story_engine or _load_current_story_engine(
@@ -905,6 +1152,10 @@ def load_current_fanfiction_documents(
 
 
 __all__ = [
+    "CROSSOVER_ALWAYS_REQUIRED_TOPICS",
+    "CROSSOVER_PAYLOAD_KINDS",
+    "CROSSOVER_TOPOLOGIES",
+    "CROSSOVER_TOPICS_BY_PAYLOAD_KIND",
     "EVENT_CAUSAL_REFERENCE_FIELDS",
     "EVENT_DISPOSITIONS",
     "CurrentFanfictionDocument",
@@ -914,6 +1165,7 @@ __all__ = [
     "STORY_ENGINE_REQUIRED_SEMANTIC_TYPES",
     "STORY_ENGINE_ROUTE_FAMILIES",
     "current_fanfiction_source_contracts",
+    "crossover_required_topics",
     "fanfiction_route_review_projection",
     "fanfiction_route_review_projection_sha256",
     "fanfiction_semantic_types",
@@ -922,6 +1174,8 @@ __all__ = [
     "load_current_fanfiction_source_canon",
     "load_current_fanfiction_story_engine",
     "load_current_fanfiction_story_engine_documents",
+    "requires_crossover_contract",
+    "validate_crossover_route_contract",
     "validate_event_disposition_claims",
     "validate_fanfiction_review_contract",
     "validate_fanfiction_route_contract",

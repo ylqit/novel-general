@@ -96,6 +96,374 @@ def semantic_claim(
     }
 
 
+def crossover_config(
+    tmp_path: Path,
+    *,
+    continuity_mode: str = "crossover",
+    third_source: bool = False,
+    cross_source_elements: bool = True,
+) -> ConfigDocument:
+    sources = [
+        {
+            "source_id": "host",
+            "title": "宿主作品",
+            "allowed_elements": ["world"] if cross_source_elements else ["timeline"],
+        },
+        {
+            "source_id": "guest",
+            "title": "来访作品",
+            "allowed_elements": ["characters"] if cross_source_elements else ["relationships"],
+        },
+    ]
+    if third_source:
+        sources.append(
+            {
+                "source_id": "unused",
+                "title": "未参与作品",
+                "allowed_elements": ["timeline"],
+            }
+        )
+    return ConfigDocument(
+        data={
+            "creation": {"mode": "fanfiction"},
+            "project": {"root_dir": str(tmp_path / "project")},
+            "fanfiction": {
+                "continuity_mode": continuity_mode,
+                "sources": sources,
+            },
+        },
+        path=tmp_path / "project" / "project.yaml",
+        sources=(),
+    )
+
+
+def crossover_route(
+    *,
+    topology: str,
+    default_host_source_id: str | None,
+    payload_kinds: list[str] | None = None,
+) -> dict:
+    crossover = {
+        "topology": topology,
+        "default_host_source_id": default_host_source_id,
+        "transfers": [
+            {
+                "source_id": "guest",
+                "payload_kinds": list(payload_kinds or ["ability"]),
+            }
+        ],
+    }
+    claims = [
+        semantic_claim(
+            "route:guest_adapter",
+            "主世界适配器",
+            extensions={"source_id": "guest"},
+        ),
+        semantic_claim(
+            "route:constitution",
+            "跨界宪法",
+            extensions={"topics": sorted(contracts.crossover_required_topics(crossover))},
+        ),
+    ]
+    if topology == "fusion_world":
+        claims.append(semantic_claim("route:world_priority", "世界规则优先级"))
+    elif topology == "sequential_worlds":
+        claims.append(
+            semantic_claim(
+                "route:volume_host",
+                "卷宿主世界",
+                extensions={"volume_ids": ["vol001"], "host_source_id": "host"},
+            )
+        )
+    return {"extensions": {"crossover": crossover}, "claims": claims}
+
+
+def validate_crossover(config: ConfigDocument, route: dict) -> list[str]:
+    errors: list[str] = []
+    contracts.validate_crossover_route_contract(config, route, errors)
+    return errors
+
+
+@pytest.mark.parametrize(
+    ("payload_kind", "expected_topics"),
+    [
+        (
+            "character",
+            {"身体与灵魂", "感知", "身份组织法律", "死亡与复活", "返回"},
+        ),
+        (
+            "body_or_soul",
+            {"身体与灵魂", "感知", "身份组织法律", "死亡与复活", "返回"},
+        ),
+        (
+            "ability",
+            {"能量关系", "能力作用对象", "激活与补充", "代价", "当地反制"},
+        ),
+        (
+            "item_or_contract",
+            {"装备召唤物契约", "激活与补充", "代价", "当地反制"},
+        ),
+        ("knowledge", {"来源时间点", "信息传播"}),
+        ("organization", {"身份组织法律", "信息传播"}),
+        ("world_rule", {"身份组织法律", "信息传播"}),
+    ],
+)
+def test_crossover_topics_are_derived_only_from_actual_payload_kinds(
+    payload_kind, expected_topics
+):
+    crossover = {
+        "transfers": [{"source_id": "guest", "payload_kinds": [payload_kind]}]
+    }
+
+    assert contracts.crossover_required_topics(crossover) == {
+        "宿主世界",
+        "不可逆后果",
+        *expected_topics,
+    }
+
+
+@pytest.mark.parametrize(
+    ("topology", "default_host_source_id"),
+    [
+        ("fixed_host", "host"),
+        ("fusion_world", None),
+        ("sequential_worlds", None),
+    ],
+)
+def test_crossover_contract_accepts_each_topology(
+    tmp_path, topology, default_host_source_id
+):
+    route = crossover_route(
+        topology=topology,
+        default_host_source_id=default_host_source_id,
+    )
+
+    assert validate_crossover(crossover_config(tmp_path), route) == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected"),
+    [
+        (lambda route: route["extensions"].pop("crossover"), "extensions.crossover"),
+        (
+            lambda route: route["extensions"]["crossover"].pop("topology"),
+            "topology",
+        ),
+        (
+            lambda route: route["extensions"]["crossover"].__setitem__(
+                "topology", "portal_network"
+            ),
+            "topology",
+        ),
+        (
+            lambda route: route["extensions"]["crossover"].pop(
+                "default_host_source_id"
+            ),
+            "default_host_source_id",
+        ),
+        (
+            lambda route: route["extensions"]["crossover"].__setitem__(
+                "default_host_source_id", None
+            ),
+            "fixed_host",
+        ),
+        (
+            lambda route: route["extensions"]["crossover"].__setitem__(
+                "default_host_source_id", "unknown"
+            ),
+            "default_host_source_id",
+        ),
+    ],
+)
+def test_crossover_contract_rejects_missing_or_invalid_topology_and_host(
+    tmp_path, mutation, expected
+):
+    route = crossover_route(topology="fixed_host", default_host_source_id="host")
+    mutation(route)
+
+    assert any(expected in error for error in validate_crossover(crossover_config(tmp_path), route))
+
+
+@pytest.mark.parametrize("topology", ["fusion_world", "sequential_worlds"])
+def test_non_fixed_topology_rejects_a_default_host(tmp_path, topology):
+    route = crossover_route(topology=topology, default_host_source_id=None)
+    route["extensions"]["crossover"]["default_host_source_id"] = "host"
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any(topology in error and "null" in error for error in errors)
+
+
+@pytest.mark.parametrize("topology", ["fusion_world", "sequential_worlds"])
+def test_non_fixed_topology_still_requires_explicit_null_host(tmp_path, topology):
+    route = crossover_route(topology=topology, default_host_source_id=None)
+    route["extensions"]["crossover"].pop("default_host_source_id")
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("default_host_source_id" in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("transfers", "expected"),
+    [
+        (None, "transfers"),
+        ([], "transfers"),
+        (["guest"], "transfers[0]"),
+        ([{"source_id": "unknown", "payload_kinds": ["ability"]}], "source_id"),
+        ([{"source_id": "guest"}], "payload_kinds"),
+        ([{"source_id": "guest", "payload_kinds": []}], "payload_kinds"),
+        ([{"source_id": "guest", "payload_kinds": [""]}], "payload_kinds"),
+        ([{"source_id": "guest", "payload_kinds": [7]}], "payload_kinds"),
+        ([{"source_id": "guest", "payload_kinds": ["spell"]}], "payload_kinds"),
+    ],
+)
+def test_crossover_contract_rejects_invalid_transfers(tmp_path, transfers, expected):
+    route = crossover_route(topology="fixed_host", default_host_source_id="host")
+    if transfers is None:
+        route["extensions"]["crossover"].pop("transfers")
+    else:
+        route["extensions"]["crossover"]["transfers"] = transfers
+
+    assert any(expected in error for error in validate_crossover(crossover_config(tmp_path), route))
+
+
+def test_only_sources_used_by_transfers_require_host_adapters(tmp_path):
+    config = crossover_config(tmp_path, third_source=True)
+    route = crossover_route(topology="fixed_host", default_host_source_id="host")
+
+    assert validate_crossover(config, route) == []
+
+    route["claims"].append(
+        semantic_claim(
+            "route:invalid_adapter",
+            "主世界适配器",
+            extensions={"source_id": "not-configured"},
+        )
+    )
+    assert any("configured" in error for error in validate_crossover(config, route))
+
+
+def test_crossover_constitution_topics_must_cover_derived_payload_topics(tmp_path):
+    route = crossover_route(
+        topology="fixed_host",
+        default_host_source_id="host",
+        payload_kinds=["knowledge"],
+    )
+    route["claims"][1]["extensions"]["topics"].remove("信息传播")
+
+    errors = validate_crossover(crossover_config(tmp_path), route)
+
+    assert any("信息传播" in error and "topics" in error for error in errors)
+
+
+def test_fusion_world_requires_world_rule_priority_claim(tmp_path):
+    route = crossover_route(topology="fusion_world", default_host_source_id=None)
+    route["claims"] = [
+        claim
+        for claim in route["claims"]
+        if claim["extensions"]["semantic_type"] != "世界规则优先级"
+    ]
+
+    assert any(
+        "世界规则优先级" in error
+        for error in validate_crossover(crossover_config(tmp_path), route)
+    )
+
+
+@pytest.mark.parametrize(
+    ("extensions", "expected"),
+    [
+        (None, "卷宿主世界"),
+        ({"volume_ids": [], "host_source_id": "host"}, "volume_ids"),
+        ({"volume_ids": [""], "host_source_id": "host"}, "volume_ids"),
+        ({"volume_ids": ["vol001", 2], "host_source_id": "host"}, "volume_ids"),
+        ({"volume_ids": ["vol001"], "host_source_id": "unknown"}, "host_source_id"),
+    ],
+)
+def test_sequential_worlds_validates_every_volume_host_claim(tmp_path, extensions, expected):
+    route = crossover_route(topology="sequential_worlds", default_host_source_id=None)
+    route["claims"] = [
+        claim
+        for claim in route["claims"]
+        if claim["extensions"]["semantic_type"] != "卷宿主世界"
+    ]
+    if extensions is not None:
+        route["claims"].append(
+            semantic_claim("route:bad_volume_host", "卷宿主世界", extensions=extensions)
+        )
+
+    assert any(expected in error for error in validate_crossover(crossover_config(tmp_path), route))
+
+
+def test_non_crossover_routes_do_not_require_topology(tmp_path):
+    single_source = crossover_config(tmp_path, continuity_mode="canon_divergent")
+    single_source.data["fanfiction"]["sources"] = single_source.data["fanfiction"]["sources"][:1]
+    multi_source_without_cross_elements = crossover_config(
+        tmp_path,
+        continuity_mode="canon_divergent",
+        cross_source_elements=False,
+    )
+
+    assert validate_crossover(single_source, {"extensions": {}, "claims": []}) == []
+    assert validate_crossover(
+        multi_source_without_cross_elements, {"extensions": {}, "claims": []}
+    ) == []
+
+
+def test_multiple_sources_with_actual_cross_elements_trigger_topology(tmp_path):
+    config = crossover_config(tmp_path, continuity_mode="canon_divergent")
+
+    errors = validate_crossover(config, {"extensions": {}, "claims": []})
+
+    assert any("extensions.crossover" in error for error in errors)
+
+
+def test_full_route_contract_rejects_legacy_crossover_without_topology(
+    current_contract_project,
+):
+    project = current_contract_project
+    route, _route_path = install_route(project)
+    engine_path = project["root"] / "10_bible" / "fanfiction" / "story_engine.json"
+    engine = json.loads(engine_path.read_text(encoding="utf-8"))
+    engine_sha = sha256(engine_path.read_bytes()).hexdigest()
+    project["config"].data["fanfiction"]["continuity_mode"] = "crossover"
+    project["config"].data["fanfiction"]["sources"].append(
+        {
+            "source_id": "guest",
+            "title": "来访作品",
+            "allowed_elements": ["abilities"],
+        }
+    )
+    legacy = deepcopy(route)
+    legacy["extensions"]["continuity_mode"] = "crossover"
+    legacy["extensions"].pop("crossover", None)
+    legacy = reapprove(legacy)
+    source_canon = contracts.CurrentFanfictionDocument(
+        project["canon"],
+        path=project["canon_path"],
+        digest=project["canon_sha"],
+    )
+    story_engine = contracts.CurrentFanfictionDocument(
+        engine,
+        path=engine_path,
+        digest=engine_sha,
+    )
+    errors: list[str] = []
+
+    contracts.validate_fanfiction_route_contract(
+        project["config"],
+        project["root"],
+        legacy,
+        errors,
+        require_approved=True,
+        _source_canon=source_canon,
+        _story_engine=story_engine,
+    )
+
+    assert any("extensions.crossover" in error for error in errors), errors
+
+
 @pytest.fixture
 def current_contract_project(tmp_path, monkeypatch):
     root = tmp_path / "project"

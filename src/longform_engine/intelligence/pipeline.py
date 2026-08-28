@@ -2488,6 +2488,21 @@ def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
             "length": forecast.to_dict(),
             "story_profile": config.data.get("story_profile", {}),
         },
+        "crossover_contract": {
+            "required": fanfiction_contracts.requires_crossover_contract(config),
+            "topologies": sorted(fanfiction_contracts.CROSSOVER_TOPOLOGIES),
+            "payload_kinds": sorted(fanfiction_contracts.CROSSOVER_PAYLOAD_KINDS),
+            "always_required_topics": sorted(
+                fanfiction_contracts.CROSSOVER_ALWAYS_REQUIRED_TOPICS
+            ),
+            "topics_by_payload_kind": {
+                payload_kind: sorted(topics)
+                for payload_kind, topics in sorted(
+                    fanfiction_contracts.CROSSOVER_TOPICS_BY_PAYLOAD_KIND.items()
+                )
+            },
+            "adapter_scope": "只覆盖实际 transfers 引用的 configured source_id",
+        },
         "approved_decisions": decisions.get("decisions") or {},
         "approved_story_engine": {
             "document_type": story_engine.get("document_type"),
@@ -4402,115 +4417,6 @@ def validate_fanfiction_design(
     errors: list[str],
 ) -> None:
     fanfiction_contracts.validate_fanfiction_route_contract(config, root, payload, errors)
-    if errors:
-        return
-    validate_dynamic_crossover_requirements(config, payload, errors)
-
-
-CROSSOVER_BASE_TOPICS = frozenset(
-    {
-        "宿主世界",
-        "来源时间点",
-        "身体与灵魂",
-        "感知",
-        "能量关系",
-        "能力作用对象",
-        "激活与补充",
-        "代价",
-        "当地反制",
-        "装备召唤物契约",
-        "身份组织法律",
-        "信息传播",
-        "死亡与复活",
-        "返回",
-        "不可逆后果",
-    }
-)
-
-
-def crossover_required_topics(config: ConfigDocument) -> set[str]:
-    fanfiction = config.data.get("fanfiction")
-    fanfiction = fanfiction if isinstance(fanfiction, dict) else {}
-    sources = [
-        source
-        for source in fanfiction.get("sources") or []
-        if isinstance(source, dict) and source.get("source_id")
-    ]
-    allowed = {
-        str(element).strip().lower()
-        for source in sources
-        for element in source.get("allowed_elements") or []
-    }
-    crossover_elements = {
-        "characters",
-        "人物",
-        "character",
-        "abilities",
-        "能力",
-        "power",
-        "powers",
-        "organizations",
-        "组织",
-        "world",
-        "世界",
-    }
-    if fanfiction.get("continuity_mode") != "crossover" and not (
-        len(sources) > 1 and allowed.intersection(crossover_elements)
-    ):
-        return set()
-    topics = set(CROSSOVER_BASE_TOPICS)
-    if not allowed.intersection({"characters", "人物", "character"}):
-        topics.discard("返回")
-    if not allowed.intersection({"abilities", "能力", "power", "powers"}):
-        for topic in ("能量关系", "能力作用对象", "激活与补充", "代价", "当地反制"):
-            topics.discard(topic)
-    if not allowed.intersection({"organizations", "组织", "world", "世界"}):
-        topics.discard("身份组织法律")
-    return topics
-
-
-def validate_dynamic_crossover_requirements(
-    config: ConfigDocument,
-    payload: dict[str, Any],
-    errors: list[str],
-) -> None:
-    required_topics = crossover_required_topics(config)
-    if not required_topics:
-        return
-    configured = config.data.get("fanfiction")
-    configured = configured if isinstance(configured, dict) else {}
-    source_ids = {
-        str(item.get("source_id") or "")
-        for item in configured.get("sources") or []
-        if isinstance(item, dict) and item.get("source_id")
-    }
-    covered_topics: set[str] = set()
-    adapted_sources: set[str] = set()
-    for index, claim in enumerate(payload.get("claims") or []):
-        if not isinstance(claim, dict) or not isinstance(claim.get("extensions"), dict):
-            continue
-        extensions = claim["extensions"]
-        semantic_type = str(extensions.get("semantic_type") or "")
-        if semantic_type in {"跨界宪法", "跨界兼容规则"}:
-            topics = extensions.get("topics")
-            if not isinstance(topics, list) or any(not str(item).strip() for item in topics):
-                errors.append(f"claims[{index}].extensions.topics must be a non-empty text list")
-            else:
-                covered_topics.update(str(item) for item in topics)
-        if semantic_type == "主世界适配器":
-            source_id = str(extensions.get("source_id") or "")
-            if source_id not in source_ids:
-                errors.append(
-                    f"claims[{index}].extensions.source_id must identify a configured crossover source"
-                )
-            else:
-                adapted_sources.add(source_id)
-    missing_topics = sorted(required_topics - covered_topics)
-    if missing_topics:
-        errors.append("crossover constitution is missing dynamic topics: " + ", ".join(missing_topics))
-    missing_adapters = sorted(source_ids - adapted_sources)
-    if missing_adapters:
-        errors.append("crossover route is missing host-world adapters for: " + ", ".join(missing_adapters))
 
 
 def validate_fanfiction_design_review(
@@ -5788,13 +5694,19 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "基于已批准故事发动机建立同人形态、初始分歧、故事切入点、分阶段人物知识边界、原著人物职责、"
             "原创主线和保护揭露。为进入路线的原著重大事件按“原著基线→变量→处置→职责→一阶→二阶→新问题”"
             "建立命运主张；extensions 必须列出非空责任承担、一阶影响和二阶影响稳定 claim 引用，并说明依赖。"
-            "未来知识必须有首次重大分歧后的退化机制。联动作品按实际 allowed_elements 建立主世界适配器和"
-            "跨界宪法，不做简单数值换算，也不导入未批准的作品元素。"
+            "未来知识必须有首次重大分歧后的退化机制。触发联动合同时 extensions.crossover.topology 只允许 "
+            "fixed_host、fusion_world 或 sequential_worlds，并填写 default_host_source_id 与非空 transfers；每个 "
+            "transfer 用 configured source_id 和实际 payload_kinds 声明 character、body_or_soul、ability、"
+            "item_or_contract、knowledge、organization 或 world_rule。主世界适配器只覆盖实际 transfers 引用的来源，"
+            "跨界宪法 topics 按实际载荷派生，不做全量主题集、N×N 数值换算或导入未批准元素。fusion_world 说明"
+            "世界规则优先级；sequential_worlds 以卷宿主世界 claim 声明 volume_ids 与 host_source_id。"
         ),
         "fanfiction_design_review": (
             "作为与路线生成隔离的独立复核者，分别检查原著一致性与同人创造性：基线、唯一分歧、一二阶后果、"
             "未来知识退化、原著人物目标与拒绝权、原著事件命运、原作结束后的原创发动机、主角资源垄断、"
-            "跨界规则、原著复演风险和中文长篇卷级可持续性。extensions.verdict 只允许 pass、need_human、"
+            "跨界规则、原著复演风险和中文长篇卷级可持续性。跨界时逐项核对 fixed_host、fusion_world 或 "
+            "sequential_worlds 的宿主规则、transfers 中实际 payload_kinds 的派生主题、实际来源适配器，以及"
+            "世界规则优先级或卷宿主世界。extensions.verdict 只允许 pass、need_human、"
             "reject；阻断意见用 severity=blocking 的语义主张表达。复核不能修改路线或代替人工批准。"
         ),
         "book_design": (

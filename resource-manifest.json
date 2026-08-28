@@ -32,8 +32,8 @@
     },
     {
       "path": "config/agent_roles/playbooks/fanfiction_canon.md",
-      "sha256": "cfbcbe231a5338a4570d5b0d846e101a2871c38b5ef96207b812bcc9b5c461df",
-      "size": 3401
+      "sha256": "6e68fed1bf27c9e00d54d6d56a1b8f05054bd22abd9c593a45932cf2d71ceccc",
+      "size": 3811
     },
     {
       "path": "config/agent_roles/playbooks/foreshadow_and_mystery.md",
@@ -137,8 +137,8 @@
     },
     {
       "path": "config/agent_roles/prompts/fanfiction_architect.md",
-      "sha256": "963dcffb733cb8820bba051266a22e08c10a6acf62a45c527196cfb0e6f3e1f5",
-      "size": 5285
+      "sha256": "734fa2a7068a5cc45a1538a2d5b6f267083a74dbe79d9c9e7e0cd0e989ae874c",
+      "size": 7003
     },
     {
       "path": "config/agent_roles/prompts/fanfiction_canon_archivist.md",
@@ -147,8 +147,8 @@
     },
     {
       "path": "config/agent_roles/prompts/fanfiction_route_reviewer.md",
-      "sha256": "ac07828e457120cb9c009ef373e3c1cdc0dcbbfb97892220b0d0cd2515c74543",
-      "size": 3825
+      "sha256": "50ed1d520279b20dbb32271a76be4cd0ab73117cb16c74e0ae7a58708a6fd4b7",
+      "size": 5011
     },
     {
       "path": "config/agent_roles/prompts/human_author_advisor.md",
@@ -242,7 +242,7 @@
     },
     {
       "path": "config/agent_roles/registry.json",
-      "sha256": "d655ca65bf2c2ff19b5ece5e437947c1b6bddf287657a0ffabaab76b35d2b20d",
+      "sha256": "72aaeb271fe28f55d379fd26b9364e9b94e528f86d808132e3411aaaa8f30799",
       "size": 43595
     },
     {

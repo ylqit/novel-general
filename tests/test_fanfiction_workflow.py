@@ -15,6 +15,7 @@ from longform_engine.fanfiction_context import (
     event_disposition_status,
 )
 from longform_engine.fanfiction_contracts import (
+    crossover_required_topics,
     fanfiction_route_review_projection_sha256,
     validate_fanfiction_source_canon,
 )
@@ -26,7 +27,6 @@ from longform_engine.intelligence import (
 )
 from longform_engine.intelligence.pipeline import (
     BOOK_IDEATION_DIMENSIONS,
-    crossover_required_topics,
     fanfiction_semantic_dependency_paths,
     validate_fanfiction_design,
 )
@@ -509,7 +509,7 @@ def test_story_engine_compiled_work_order_covers_both_routes(
     assert "原创主线承诺" in instruction
 
 
-def test_route_compiled_work_order_requires_full_event_causal_chain(
+def test_route_compiled_work_order_requires_event_chain_and_crossover_topology(
     tmp_path,
     monkeypatch,
 ):
@@ -527,7 +527,54 @@ def test_route_compiled_work_order_requires_full_event_causal_chain(
     )
     causal_chain = "原著基线→变量→处置→职责→一阶→二阶→新问题"
     assert context["approved_story_engine"]["route_family"] == "hybrid"
+    crossover_contract = context["crossover_contract"]
+    assert crossover_contract["required"] is False
+    assert set(crossover_contract["topologies"]) == {
+        "fixed_host",
+        "fusion_world",
+        "sequential_worlds",
+    }
+    assert "body_or_soul" in crossover_contract["payload_kinds"]
+    assert set(crossover_contract["topics_by_payload_kind"]["ability"]) == {
+        "能量关系",
+        "能力作用对象",
+        "激活与补充",
+        "代价",
+        "当地反制",
+    }
+    assert "实际 transfers" in crossover_contract["adapter_scope"]
     assert causal_chain in instruction
+    assert "fixed_host" in instruction
+    assert "fusion_world" in instruction
+    assert "sequential_worlds" in instruction
+    assert "payload_kinds" in instruction
+    assert "实际 transfers" in instruction
+
+
+def test_route_review_compiled_prompt_checks_topology_and_actual_payloads(
+    tmp_path,
+    monkeypatch,
+):
+    config, root, _item, _source_text, canon = prepared_project(tmp_path, monkeypatch)
+    candidate_file = apply_route_design(
+        config,
+        root,
+        canon,
+        stop_after_validation=True,
+    )
+    review_task = create_intelligence_task(
+        config,
+        task_type="fanfiction_design_review",
+        input_files=[candidate_file],
+    )
+
+    instruction = (root / review_task.instruction_file).read_text(encoding="utf-8")
+
+    assert "fixed_host" in instruction
+    assert "fusion_world" in instruction
+    assert "sequential_worlds" in instruction
+    assert "payload_kinds" in instruction
+    assert "卷宿主世界" in instruction
 
 
 @pytest.mark.parametrize("gap", ["route_family", "原创主线承诺"])
@@ -678,28 +725,20 @@ def test_validated_route_requires_independent_review_and_production_routes_it(
     )
 
 
-def test_cross_source_allowed_elements_trigger_dynamic_crossover_topics(
-    tmp_path, monkeypatch
-):
-    config, _root = project_config(tmp_path)
-    config.data["fanfiction"]["sources"].append(
+def test_actual_crossover_transfer_derives_only_its_payload_topics():
+    topics = crossover_required_topics(
         {
-            "source_id": "guest",
-            "title": "异界术式",
-            "creator": "测试作者",
-            "source_type": "animation",
-            "edition": "动画版",
-            "canon_cutoff": "第一季",
-            "role": "guest_source",
-            "allowed_elements": ["abilities"],
+            "transfers": [
+                {"source_id": "guest", "payload_kinds": ["ability"]}
+            ]
         }
     )
-
-    topics = crossover_required_topics(config)
 
     assert "宿主世界" in topics
     assert "能量关系" in topics
     assert "当地反制" in topics
+    assert "身体与灵魂" not in topics
+    assert "信息传播" not in topics
     assert "组织迁移" not in topics
 
 
