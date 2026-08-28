@@ -49,6 +49,11 @@ from .workflow import (
     validate_planning_semantic_application,
     write_workbench_record,
 )
+from .task import (
+    PLANNING_GENERATION_TASK_SCHEMA,
+    PlanningGenerationTaskResult,
+    write_planning_generation_task,
+)
 
 __all__ = [
     "EVENT_TYPE_POOL",
@@ -94,4 +99,7 @@ __all__ = [
     "validate_human_planning_approval",
     "validate_planning_semantic_application",
     "write_workbench_record",
+    "PLANNING_GENERATION_TASK_SCHEMA",
+    "PlanningGenerationTaskResult",
+    "write_planning_generation_task",
 ]

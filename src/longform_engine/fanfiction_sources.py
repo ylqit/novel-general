@@ -3197,6 +3197,10 @@ def source_fact_records(source: dict[str, Any], *types: str) -> list[dict[str, A
             continue
         raw_extensions = claim.get("extensions")
         extensions: dict[str, Any] = raw_extensions if isinstance(raw_extensions, dict) else {}
+        identity_value = extensions.get("identity")
+        identity: dict[str, Any] = (
+            identity_value if isinstance(identity_value, dict) else {}
+        )
         semantic_type = str(extensions.get("semantic_type") or "语义主张")
         if accepted and semantic_type not in accepted:
             continue
@@ -3205,11 +3209,7 @@ def source_fact_records(source: dict[str, Any], *types: str) -> list[dict[str, A
             {
                 "id": str(claim.get("claim_id") or ""),
                 "type": semantic_type,
-                "name": str(
-                    extensions.get("display_name")
-                    or extensions.get("name")
-                    or statement[:80]
-                ),
+                "name": str(identity.get("display_name") or statement[:80]),
                 "summary": statement,
                 "attributes": extensions,
                 "evidence_refs": list(claim.get("evidence_refs") or []),

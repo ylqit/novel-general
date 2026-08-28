@@ -157,8 +157,8 @@
     },
     {
       "path": "config/agent_roles/prompts/longform_outline_architect.md",
-      "sha256": "9c05a32dc5facebeb8d2057c0773f3702e14cbab7c9fb192f4f5dc03869c08a7",
-      "size": 4644
+      "sha256": "bb04563d15699a5701e739852899415505e4d064cafe83b00237bda11f1feb6a",
+      "size": 5219
     },
     {
       "path": "config/agent_roles/prompts/planning_chief_editor.md",
@@ -372,13 +372,13 @@
     },
     {
       "path": "longform-novel-claude/references/iron_laws.md",
-      "sha256": "c3594a766536676e44c5f3bd035d5fb7ec05f5770644e47cdec98af97a189bd7",
-      "size": 14637
+      "sha256": "ec0334751d3949ad8150fbaa5a0f5088b5c8697e4d78fea4f749e6aa19f7cfc8",
+      "size": 15003
     },
     {
       "path": "longform-novel-claude/references/workflow_mapping.md",
-      "sha256": "bc29ad184afadaa7158045f86d57ac78dd5c0e5ddc302a50d51eb7a0eeea3e38",
-      "size": 11490
+      "sha256": "9b0bbbca9777e925d3910baab48d4e1e39c0c8e53b2650d9e7d81b0739393ca2",
+      "size": 11598
     },
     {
       "path": "longform-novel-claude/SKILL.md",
@@ -407,13 +407,13 @@
     },
     {
       "path": "longform-novel-codex/references/iron_laws.md",
-      "sha256": "c3594a766536676e44c5f3bd035d5fb7ec05f5770644e47cdec98af97a189bd7",
-      "size": 14637
+      "sha256": "ec0334751d3949ad8150fbaa5a0f5088b5c8697e4d78fea4f749e6aa19f7cfc8",
+      "size": 15003
     },
     {
       "path": "longform-novel-codex/references/workflow_mapping.md",
-      "sha256": "bc29ad184afadaa7158045f86d57ac78dd5c0e5ddc302a50d51eb7a0eeea3e38",
-      "size": 11490
+      "sha256": "9b0bbbca9777e925d3910baab48d4e1e39c0c8e53b2650d9e7d81b0739393ca2",
+      "size": 11598
     },
     {
       "path": "longform-novel-codex/SKILL.md",
@@ -442,13 +442,13 @@
     },
     {
       "path": "shared/iron_laws.md",
-      "sha256": "c3594a766536676e44c5f3bd035d5fb7ec05f5770644e47cdec98af97a189bd7",
-      "size": 14637
+      "sha256": "ec0334751d3949ad8150fbaa5a0f5088b5c8697e4d78fea4f749e6aa19f7cfc8",
+      "size": 15003
     },
     {
       "path": "shared/workflow_mapping.md",
-      "sha256": "bc29ad184afadaa7158045f86d57ac78dd5c0e5ddc302a50d51eb7a0eeea3e38",
-      "size": 11490
+      "sha256": "9b0bbbca9777e925d3910baab48d4e1e39c0c8e53b2650d9e7d81b0739393ca2",
+      "size": 11598
     },
     {
       "path": "templates/qidian-longform/project.yaml",

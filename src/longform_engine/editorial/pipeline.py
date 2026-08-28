@@ -1174,6 +1174,18 @@ def build_editorial_context_payload(
                 "bundle_sha256": str(bundle.get("bundle_sha256") or ""),
                 "source_files": list(bundle.get("source_files") or []),
             }
+    allowed_canonical_refs = [
+        {
+            "path": item["path"],
+            "sha256": item["file_sha256"],
+            "source_ref": item["path"],
+        }
+        for item in (
+            [fanfiction_bundle_provenance]
+            if role_id == "canon_fidelity_reviewer" and fanfiction_bundle_provenance
+            else []
+        )
+    ]
     return {
         "schema": "editorial_context_isolation_v1",
         "chapter_number": chapter_number,
@@ -1197,6 +1209,7 @@ def build_editorial_context_payload(
             for path in source_inputs
             if path.resolve() != chapter_source.resolve()
         ],
+        "allowed_canonical_refs": allowed_canonical_refs,
         "source_projections": projections,
         "fanfiction_bundle_provenance": fanfiction_bundle_provenance,
         "excluded_peer_results": [

@@ -4958,6 +4958,27 @@ def validate_future_knowledge_reassessment(
     trigger_id = str(trigger.get("trigger_id") or "")
     if extensions.get("trigger_id") != trigger_id:
         errors.append("extensions.trigger_id must match the workflow trigger")
+    try:
+        owned_target = semantic_task_target(
+            root,
+            "fanfiction_future_knowledge_reassessment",
+            payload,
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
+    else:
+        if owned_target.is_file():
+            approved = read_json(owned_target, {})
+            approved_extensions = (
+                approved.get("extensions")
+                if isinstance(approved, dict)
+                and isinstance(approved.get("extensions"), dict)
+                else {}
+            )
+            if approved_extensions.get("trigger_id") != trigger_id:
+                errors.append(
+                    "future knowledge target is already owned by a different trigger"
+                )
     expected_trigger_sha = semantic_json_hash(trigger)
     expected_inputs = {
         str(item.get("kind") or ""): str(item.get("sha256") or "")
@@ -5546,9 +5567,24 @@ def apply_targets(
 
 def semantic_task_target(root: Path, task_type: str, payload: dict[str, Any]) -> Path:
     artifact = payload.get("artifact") if isinstance(payload.get("artifact"), dict) else {}
-    token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(artifact.get("artifact_id") or "semantic"))
     scope = artifact.get("scope") if isinstance(artifact.get("scope"), dict) else {}
     chapter = int(scope.get("chapter_number") or 0)
+    if task_type == "fanfiction_future_knowledge_reassessment":
+        extensions = (
+            payload.get("extensions") if isinstance(payload.get("extensions"), dict) else {}
+        )
+        trigger_id = str(extensions.get("trigger_id") or "")
+        if not trigger_id:
+            raise ValueError("future knowledge target requires a stable trigger_id")
+        trigger_digest = sha256(trigger_id.encode("utf-8")).hexdigest()[:24]
+        return (
+            root
+            / "10_bible"
+            / "fanfiction"
+            / "future_knowledge"
+            / f"ch{chapter:03d}.{trigger_digest}.json"
+        )
+    token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(artifact.get("artifact_id") or "semantic"))
     directories = {
         "character_interpretation": root / "10_bible" / "semantic" / "人物理解",
         "story_architecture_design": root / "20_outline" / "semantic" / "全书架构",
@@ -5570,10 +5606,6 @@ def semantic_task_target(root: Path, task_type: str, payload: dict[str, Any]) ->
         "reader_feedback_analysis": root / "50_workbench" / "读者反馈" / "分析",
         "source_discovery_planning": root / "50_workbench" / "同人原著资料" / "搜索规划",
         "source_candidate_triage": root / "50_workbench" / "同人原著资料" / "来源筛选",
-        "fanfiction_future_knowledge_reassessment": root
-        / "10_bible"
-        / "fanfiction"
-        / "future_knowledge",
     }
     return directories[task_type] / f"{token[:120]}.json"
 

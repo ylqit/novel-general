@@ -156,7 +156,12 @@ def approved_library_item(
                 "uncertainty": "后续阶段的价值排序仍需单独证据。",
                 "extensions": {
                     "semantic_type": "人物",
-                    "display_name": "林舟",
+                    "identity": {
+                        "identity_id": "character:lin_zhou",
+                        "kind": "character",
+                        "display_name": "林舟",
+                        "source_id": "classic",
+                    },
                     "目标": "确认青铜门规则",
                 },
             },
@@ -166,7 +171,15 @@ def approved_library_item(
                 "applicability": "第一卷门后规则",
                 "evidence_refs": [f"{item['item_id']}:e2"],
                 "uncertainty": "只确认普通水无效，不推断其他灭火方式。",
-                "extensions": {"semantic_type": "世界规则", "display_name": "门后之火"},
+                "extensions": {
+                    "semantic_type": "世界规则",
+                    "identity": {
+                        "identity_id": "energy:gate_fire",
+                        "kind": "energy",
+                        "display_name": "门后之火",
+                        "source_id": "classic",
+                    },
+                },
             },
         ],
         evidence_references=[
@@ -313,7 +326,12 @@ def apply_project_canon(config, root: Path, *, interpretation: str) -> dict:
                 "extensions": {
                     "source_id": "classic",
                     "semantic_type": "人物",
-                    "display_name": "林舟",
+                    "identity": {
+                        "identity_id": "character:lin_zhou",
+                        "kind": "character",
+                        "display_name": "林舟",
+                        "source_id": "classic",
+                    },
                 },
             },
             {
@@ -325,7 +343,12 @@ def apply_project_canon(config, root: Path, *, interpretation: str) -> dict:
                 "extensions": {
                     "source_id": "classic",
                     "semantic_type": "世界规则",
-                    "display_name": "门后之火",
+                    "identity": {
+                        "identity_id": "energy:gate_fire",
+                        "kind": "energy",
+                        "display_name": "门后之火",
+                        "source_id": "classic",
+                    },
                 },
             },
         ],
@@ -512,7 +535,6 @@ def test_discovered_version_conflicts_require_explicit_human_resolution(tmp_path
             "uncertainty": "需要项目人工选择、隔离或排除版本。",
             "extensions": {
                 "semantic_type": "版本冲突",
-                "display_name": "门后之火规则冲突",
                 "versions": ["小说版", "动画版"],
             },
         }

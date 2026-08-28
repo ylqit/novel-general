@@ -360,7 +360,6 @@ def v010_planning_action(config: ConfigDocument, root: Path) -> dict[str, Any] |
             reasons.append(f"firm_contract_ch{chapter:03d}_invalid:{exc}")
     if not reasons:
         return None
-    candidate = "50_workbench/planning/planning_bundle_v1.json"
     return base_action(
         status="planning_refresh_required",
         chapter_number=next_chapter,
@@ -368,8 +367,7 @@ def v010_planning_action(config: ConfigDocument, root: Path) -> dict[str, Any] |
         blocked_by=";".join(dict.fromkeys(reasons)),
         waiting_for="planning_agent_then_independent_semantic_reviewer_then_human_node_approval",
         next_command=(
-            "longform-engine planning structural-validate project.yaml "
-            f"--file {candidate}"
+            "longform-engine planning task project.yaml"
         ),
         human_summary=(
             "Prepare or refresh the active-volume rolling plan, validate the exact bundle, run an "

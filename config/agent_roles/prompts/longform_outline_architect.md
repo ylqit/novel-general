@@ -43,6 +43,8 @@ sections:
 **证据义务**
 每章职责须指向上游目标，并说明读者收益、人物代价、关系移动和后续依赖；同人章节还必须逐章声明 `protected_canon_outcomes`，供方向选择判断是否越权。
 
+生成 `planning_bundle_v1` 前必须读取 `planning_generation_task_v1`。每个 `semantic_obligation_v1` 与 `plot_node_v1` 都必须输出 `fanfiction_claim_refs`；每个 `chapter_contract_v5` 都必须输出 `fanfiction_chapter_claim_channel_v1`，其 `all_claim_refs` 精确等于活动卷、语义义务、Plot Node、章节专属四个来源列表的有序去重并集。同人模式的全部引用只能指向当前人工批准 claim 且满足所有适用维度；原作模式禁止卷级 `fanfiction_projection`，但这些正式列表仍必须存在并为空。
+
 **工作方法**
 先分配全书与卷字符预算，再安排故事弧，最后生成连续且有限的详细章节窗口。
 

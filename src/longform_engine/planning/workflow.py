@@ -575,19 +575,14 @@ def apply_planning_bundle(
             current.paths["story_engine"]: current.sha256["story_engine"],
             current.paths["route_design"]: current.sha256["route_design"],
         }
-        documents = [current.source_canon, current.story_engine, current.route]
-        claim_ids = {
-            str(claim.get("claim_id") or "")
-            for document in documents
-            if isinstance(document, dict)
-            for claim in document.get("claims") or []
-            if isinstance(claim, dict) and claim.get("claim_id")
-        }
-        unresolved = sorted(set(projection.get("claim_refs") or []) - claim_ids)
-        if unresolved:
+        claim_errors = _validate_all_planning_fanfiction_claim_refs(
+            config,
+            bundle,
+            documents=(current.source_canon, current.story_engine, current.route),
+        )
+        if claim_errors:
             raise ValueError(
-                "fanfiction volume projection has unresolved stable claims: "
-                + ", ".join(unresolved)
+                "fanfiction planning claim preflight failed: " + "; ".join(claim_errors)
             )
     application = _read_json(application_file)
     review = validate_planning_semantic_application(root, application)
@@ -773,6 +768,210 @@ def apply_planning_bundle(
         planned_events=planned_events,
         micro_nodes=micro_nodes,
     )
+
+
+def _validate_all_planning_fanfiction_claim_refs(
+    config: ConfigDocument,
+    bundle: dict[str, Any],
+    *,
+    documents: tuple[dict[str, Any], ...],
+) -> list[str]:
+    """Resolve every formal planning claim origin before a planning transaction starts."""
+
+    errors: list[str] = []
+    claims_by_id: dict[str, dict[str, Any]] = {}
+    provenance: dict[str, list[str]] = {}
+    for namespace, document in zip(
+        ("source_canon", "story_engine", "route_design"), documents, strict=True
+    ):
+        for claim in document.get("claims") or []:
+            if not isinstance(claim, dict) or not str(claim.get("claim_id") or ""):
+                continue
+            claim_id = str(claim["claim_id"])
+            provenance.setdefault(claim_id, []).append(namespace)
+            claims_by_id.setdefault(claim_id, claim)
+    for claim_id, owners in sorted(provenance.items()):
+        if len(owners) > 1:
+            errors.append(
+                f"duplicate claim provenance for {claim_id}: " + ", ".join(owners)
+            )
+
+    active = bundle["active_volume_plan"]
+    volume_id = str(active.get("volume_id") or "")
+    volume_range = active.get("chapter_range")
+    volume_chapters = (
+        set(range(int(volume_range[0]), int(volume_range[1]) + 1))
+        if isinstance(volume_range, list)
+        and len(volume_range) == 2
+        and all(isinstance(item, int) and not isinstance(item, bool) for item in volume_range)
+        else set()
+    )
+    configured_sources = {
+        str(item.get("source_id") or "")
+        for item in config.data.get("fanfiction", {}).get("sources") or []
+        if isinstance(item, dict) and item.get("source_id")
+    }
+    active_arc_ids = {
+        str(item.get("id") or "")
+        for item in active.get("character_arcs") or []
+        if isinstance(item, dict) and item.get("id")
+    }
+    active_event_ids = {
+        str(item.get("id") or "")
+        for item in active.get("event_graph") or []
+        if isinstance(item, dict) and item.get("id")
+    }
+    all_character_ids = {
+        str(actor)
+        for table in bundle.get("plot_node_tables") or []
+        if isinstance(table, dict)
+        for node in table.get("nodes") or []
+        if isinstance(node, dict)
+        for actor in node.get("actors") or []
+        if isinstance(actor, str) and actor
+    }
+    all_character_ids.update(
+        str(subject)
+        for obligation in bundle.get("semantic_obligations") or []
+        if isinstance(obligation, dict)
+        for subject in obligation.get("subject_refs") or []
+        if isinstance(subject, str) and subject
+    )
+
+    origins: list[tuple[str, list[Any], set[int], set[str]]] = []
+    projection = active.get("fanfiction_projection")
+    projection_refs = projection.get("claim_refs") if isinstance(projection, dict) else []
+    origins.append(
+        (
+            "active_volume_plan.fanfiction_projection",
+            list(projection_refs or []),
+            volume_chapters,
+            active_event_ids,
+        )
+    )
+    obligation_chapters: dict[str, set[int]] = {}
+    for contract in bundle.get("chapter_contracts") or []:
+        if not isinstance(contract, dict):
+            continue
+        chapter = contract.get("chapter_number")
+        if not isinstance(chapter, int) or isinstance(chapter, bool):
+            continue
+        for obligation_id in contract.get("semantic_obligation_refs") or []:
+            obligation_chapters.setdefault(str(obligation_id), set()).add(chapter)
+    for obligation in bundle.get("semantic_obligations") or []:
+        if not isinstance(obligation, dict):
+            continue
+        obligation_id = str(obligation.get("obligation_id") or "")
+        origins.append(
+            (
+                f"semantic_obligation:{obligation_id}",
+                list(obligation.get("fanfiction_claim_refs") or []),
+                obligation_chapters.get(obligation_id, set()),
+                active_event_ids,
+            )
+        )
+    for table in bundle.get("plot_node_tables") or []:
+        if not isinstance(table, dict):
+            continue
+        chapter = table.get("chapter_number")
+        chapters = {chapter} if isinstance(chapter, int) and not isinstance(chapter, bool) else set()
+        for node in table.get("nodes") or []:
+            if not isinstance(node, dict):
+                continue
+            origins.append(
+                (
+                    f"plot_node:{str(node.get('node_id') or '')}",
+                    list(node.get("fanfiction_claim_refs") or []),
+                    chapters,
+                    active_event_ids | {str(node.get("node_id") or "")},
+                )
+            )
+    for contract in bundle.get("chapter_contracts") or []:
+        if not isinstance(contract, dict):
+            continue
+        chapter = contract.get("chapter_number")
+        chapters = {chapter} if isinstance(chapter, int) and not isinstance(chapter, bool) else set()
+        channel = contract.get("fanfiction_claim_refs")
+        if not isinstance(channel, dict):
+            continue
+        for field in (
+            "active_volume_claim_refs",
+            "semantic_obligation_claim_refs",
+            "plot_node_claim_refs",
+            "chapter_claim_refs",
+            "all_claim_refs",
+        ):
+            origins.append(
+                (
+                    f"chapter_contract:{chapter}:{field}",
+                    list(channel.get(field) or []),
+                    chapters,
+                    active_event_ids,
+                )
+            )
+
+    for origin, refs, chapters, event_ids in origins:
+        for claim_id in refs:
+            claim = claims_by_id.get(str(claim_id))
+            if claim is None:
+                errors.append(f"{origin} has unresolved stable claim: {claim_id}")
+                continue
+            if not _planning_claim_applies(
+                claim,
+                chapter_numbers=chapters,
+                volume_id=volume_id,
+                source_ids=configured_sources,
+                character_ids=all_character_ids,
+                event_ids=event_ids,
+                arc_ids=active_arc_ids,
+            ):
+                errors.append(f"{origin} claim is out of scope: {claim_id}")
+    return list(dict.fromkeys(errors))
+
+
+def _planning_claim_applies(
+    claim: dict[str, Any],
+    *,
+    chapter_numbers: set[int],
+    volume_id: str,
+    source_ids: set[str],
+    character_ids: set[str],
+    event_ids: set[str],
+    arc_ids: set[str],
+) -> bool:
+    extensions = claim.get("extensions")
+    extensions = extensions if isinstance(extensions, dict) else {}
+    for field, active_values in (
+        ("source_ids", source_ids),
+        ("character_ids", character_ids),
+        ("event_ids", event_ids),
+        ("volume_ids", {volume_id}),
+        ("arc_ids", arc_ids),
+    ):
+        declared = extensions.get(field)
+        if isinstance(declared, list) and declared and not set(declared) & active_values:
+            return False
+    applicable_chapters = set(chapter_numbers)
+    declared_chapters = extensions.get("chapter_numbers")
+    has_chapter_scope = False
+    if isinstance(declared_chapters, list) and declared_chapters:
+        has_chapter_scope = True
+        applicable_chapters &= set(declared_chapters)
+    start = extensions.get("from_chapter")
+    end = extensions.get("to_chapter")
+    if isinstance(start, int) and not isinstance(start, bool):
+        has_chapter_scope = True
+        applicable_chapters = {
+            chapter for chapter in applicable_chapters if chapter >= start
+        }
+    if isinstance(end, int) and not isinstance(end, bool):
+        has_chapter_scope = True
+        applicable_chapters = {
+            chapter for chapter in applicable_chapters if chapter <= end
+        }
+    if has_chapter_scope and not applicable_chapters:
+        return False
+    return True
 
 
 def write_workbench_record(root: Path, relative: str, payload: dict[str, Any]) -> Path:

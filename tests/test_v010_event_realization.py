@@ -68,9 +68,9 @@ def observation(text: str) -> dict:
 
 
 def test_realization_requires_exact_final_span_and_human_confirmation(tmp_path: Path):
-    _config, root, text = seed_event_project(tmp_path)
+    config, root, text = seed_event_project(tmp_path)
     application = build_event_realization_application(
-        root,
+        config,
         chapter_number=1,
         observations=[observation(text)],
         discovered_causal_nodes=[],
@@ -78,16 +78,16 @@ def test_realization_requires_exact_final_span_and_human_confirmation(tmp_path: 
     )
     application["observations"][0]["evidence"]["excerpt"] = "不匹配"
 
-    validation = validate_event_realization_application(root, application)
+    validation = validate_event_realization_application(config, application)
 
     assert not validation.ok
     assert any("does not match final text" in error for error in validation.errors)
 
 
 def test_unapproved_causal_node_redirects_instead_of_silent_realization(tmp_path: Path):
-    _config, root, text = seed_event_project(tmp_path)
+    config, root, text = seed_event_project(tmp_path)
     application = build_event_realization_application(
-        root,
+        config,
         chapter_number=1,
         observations=[observation(text)],
         discovered_causal_nodes=[
@@ -96,7 +96,7 @@ def test_unapproved_causal_node_redirects_instead_of_silent_realization(tmp_path
         confirmed_by="human",
     )
 
-    validation = validate_event_realization_application(root, application)
+    validation = validate_event_realization_application(config, application)
 
     assert not validation.ok
     assert validation.redirect_required
@@ -106,7 +106,7 @@ def test_unapproved_causal_node_redirects_instead_of_silent_realization(tmp_path
 def test_realization_apply_binds_final_and_semantic_ledger_hashes(tmp_path: Path):
     config, root, text = seed_event_project(tmp_path)
     application = build_event_realization_application(
-        root,
+        config,
         chapter_number=1,
         observations=[observation(text)],
         discovered_causal_nodes=[],
@@ -130,18 +130,18 @@ def test_realization_apply_binds_final_and_semantic_ledger_hashes(tmp_path: Path
 
 
 def test_lexical_mentions_cannot_be_submitted_as_unknown_event_ids(tmp_path: Path):
-    _config, root, text = seed_event_project(tmp_path)
+    config, root, text = seed_event_project(tmp_path)
     unknown = observation(text)
     unknown["event_id"] = "event:lexical:battle"
     application = build_event_realization_application(
-        root,
+        config,
         chapter_number=1,
         observations=[unknown],
         discovered_causal_nodes=[],
         confirmed_by="human",
     )
 
-    validation = validate_event_realization_application(root, application)
+    validation = validate_event_realization_application(config, application)
 
     assert not validation.ok
     assert any("not an approved planned event" in error for error in validation.errors)

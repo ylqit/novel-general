@@ -22,6 +22,7 @@ open-book
 -> character_expression_design when the current book design requests expression enrichment
 -> outline_design
 -> explicit reader_promise_ledger_v2 expectation windows
+-> planning task renders planning_generation_task_v1 with exact original/fanfiction claim-channel ownership
 -> planning_bundle_v1 establishes active volume and a three-chapter firm rolling window
 -> independent planning semantic review
 -> human decisions for every state-changing plot node; micro dialogue/action/transition beats remain inside the chapter contract

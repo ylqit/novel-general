@@ -247,6 +247,7 @@ from longform_engine.planning import (
     validate_human_node_decisions,
     validate_planning_bundle,
     validate_planning_semantic_application,
+    write_planning_generation_task,
     write_workbench_record,
 )
 from longform_engine.publication import (
@@ -2470,6 +2471,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate and apply v0.10 semantic planning with explicit human ownership.",
     )
     planning_subparsers = planning.add_subparsers(dest="planning_command", required=True)
+
+    planning_task = planning_subparsers.add_parser(
+        "task",
+        help="Render the formal planning_bundle_v1 generation contract for the current mode.",
+    )
+    planning_task.add_argument("config", nargs="?", default="project.yaml")
+    planning_task.add_argument("--json", action="store_true")
+    planning_task.set_defaults(func=cmd_planning_task)
 
     planning_structural = planning_subparsers.add_parser(
         "structural-validate",
@@ -6232,7 +6241,7 @@ def cmd_chapter_event_realization_validate(args: argparse.Namespace) -> int:
     path = (root / args.file).resolve() if not Path(args.file).is_absolute() else Path(args.file).resolve()
     path.relative_to(root.resolve())
     payload = json.loads(path.read_text(encoding="utf-8"))
-    result = validate_event_realization_application(root, payload)
+    result = validate_event_realization_application(config, payload)
     rendered = asdict(result)
     if args.json:
         print(json.dumps(rendered, ensure_ascii=False, indent=2))
@@ -6759,6 +6768,19 @@ def cmd_impact_analyze(args: argparse.Namespace) -> int:
         print(f"Chapters: {len(result.impacted_chapters)}")
         print(f"Graph nodes: {len(result.impacted_graph_nodes)}")
         print(f"Future cards: {len(result.impacted_future_cards)}")
+    return 0
+
+
+def cmd_planning_task(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = write_planning_generation_task(config)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: formal planning generation task rendered")
+        print(f"Contract: {result.contract_file}")
+        print(f"Instruction: {result.instruction_file}")
+        print(f"Output: {result.output_file}")
     return 0
 
 

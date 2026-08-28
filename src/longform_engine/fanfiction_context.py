@@ -179,8 +179,6 @@ def compile_fanfiction_context(
 
     explicit_ids, missing_explicit = _chapter_explicit_claim_references(
         chapter_contract=chapter_contract,
-        chapter_card=chapter_card,
-        character_packet=character_packet,
         known_ids=set(all_claims),
     )
     if missing_explicit:
@@ -202,9 +200,10 @@ def compile_fanfiction_context(
         chapter_card=chapter_card,
         character_packet=character_packet,
     )
+    explicit_id_set = set(explicit_ids)
     out_of_scope = {
         claim_id
-        for claim_id in explicit_ids
+        for claim_id in explicit_id_set
         if claim_id not in global_ids
         if not _claim_applies(
             all_claims[claim_id],
@@ -217,7 +216,7 @@ def compile_fanfiction_context(
         raise FanfictionContextError(
             "fanfiction_context_claim_out_of_scope: " + ", ".join(sorted(out_of_scope))
         )
-    required_ids = set(explicit_ids) - global_ids
+    required_ids = explicit_id_set
     closure_seed_ids = global_ids | required_ids
     closure_ids, dependency_edges = _dependency_closure(closure_seed_ids, all_claims)
     dependency_ids = closure_ids - closure_seed_ids
@@ -292,12 +291,12 @@ def compile_fanfiction_context(
         token_budget=max(256, bundle_budget - hard_units),
         current_scope=current_scope,
     )
-    included_ids = [
+    included_ids = _dedupe([
         *sorted(global_ids),
-        *sorted(required_ids),
+        *explicit_ids,
         *sorted(dependency_ids),
         *sorted(relevant_ids),
-    ]
+    ])
     omitted: list[dict[str, Any]] = []
     used_units = hard_units
     included_optional_ids: list[str] = []
@@ -337,7 +336,7 @@ def compile_fanfiction_context(
             }
             for name, path in paths.items()
         ],
-        "required_claim_ids": sorted(required_ids),
+        "required_claim_ids": explicit_ids,
         "global_claim_ids": sorted(global_ids),
         "dependency_claim_ids": sorted(dependency_ids),
         "relevant_claim_ids": sorted(relevant_ids),
@@ -378,6 +377,7 @@ def compile_fanfiction_context(
                 "local_freedom": str(chapter_card.get("local_freedom") or ""),
                 "observable_change": str(chapter_card.get("observable_change") or ""),
             },
+            "chapter_claim_channel": dict(chapter_contract["fanfiction_claim_refs"]),
         },
         "author_projection": _author_projection(
             included,
@@ -699,15 +699,15 @@ def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
     for index, left in enumerate(category_fields):
         for right in category_fields[index + 1 :]:
             overlap = set(id_lists.get(left, ())) & set(id_lists.get(right, ()))
-            if overlap:
+            if overlap and {left, right} != {"global_claim_ids", "required_claim_ids"}:
                 errors.append(f"{left} and {right} must be disjoint: {', '.join(sorted(overlap))}")
-    expected_included = [
+    expected_included = _dedupe([
         *id_lists.get("global_claim_ids", []),
         *id_lists.get("required_claim_ids", []),
         *id_lists.get("dependency_claim_ids", []),
         *id_lists.get("relevant_claim_ids", []),
         *id_lists.get("optional_claim_ids", []),
-    ]
+    ])
     if id_lists.get("included_claim_ids") != expected_included:
         errors.append("included_claim_ids must equal the ordered category union")
 
@@ -786,9 +786,51 @@ def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
     if not isinstance(projection_inputs, dict) or set(projection_inputs) != {
         "show_source_labels",
         "chapter_card",
+        "chapter_claim_channel",
     }:
         errors.append("projection_inputs fields are invalid")
     else:
+        channel = projection_inputs.get("chapter_claim_channel")
+        claim_channel_fields = {
+            "schema",
+            "active_volume_claim_refs",
+            "semantic_obligation_claim_refs",
+            "plot_node_claim_refs",
+            "chapter_claim_refs",
+            "all_claim_refs",
+        }
+        if not isinstance(channel, dict) or set(channel) != claim_channel_fields:
+            errors.append("projection_inputs.chapter_claim_channel fields are invalid")
+        else:
+            claim_channel_list_fields = (
+                "active_volume_claim_refs",
+                "semantic_obligation_claim_refs",
+                "plot_node_claim_refs",
+                "chapter_claim_refs",
+                "all_claim_refs",
+            )
+            for field in claim_channel_list_fields:
+                values = channel.get(field)
+                if (
+                    not isinstance(values, list)
+                    or any(not isinstance(item, str) or not item.strip() for item in values)
+                    or len(values) != len(set(values or []))
+                ):
+                    errors.append(
+                        f"projection_inputs.chapter_claim_channel.{field} must be a unique string list"
+                    )
+            contributors = [
+                *list(channel.get("active_volume_claim_refs") or []),
+                *list(channel.get("semantic_obligation_claim_refs") or []),
+                *list(channel.get("plot_node_claim_refs") or []),
+                *list(channel.get("chapter_claim_refs") or []),
+            ]
+            if channel.get("schema") != "fanfiction_chapter_claim_channel_v1":
+                errors.append("projection_inputs.chapter_claim_channel schema is invalid")
+            if channel.get("all_claim_refs") != _dedupe(contributors):
+                errors.append("projection_inputs.chapter_claim_channel union is invalid")
+            if id_lists.get("required_claim_ids") != channel.get("all_claim_refs"):
+                errors.append("required_claim_ids must equal the formal chapter claim channel")
         projection_card = projection_inputs.get("chapter_card")
         if not isinstance(projection_card, dict) or set(projection_card) != {
             "local_freedom",
@@ -1280,25 +1322,20 @@ def _source_claim_allowed(config: ConfigDocument, claim: dict[str, Any]) -> bool
 def _chapter_explicit_claim_references(
     *,
     chapter_contract: Mapping[str, Any],
-    chapter_card: Mapping[str, Any],
-    character_packet: Mapping[str, Any],
     known_ids: set[str],
-) -> tuple[set[str], set[str]]:
-    references: set[str] = set()
+) -> tuple[list[str], set[str]]:
+    references: list[str] = []
     missing: set[str] = set()
     channel = chapter_contract.get("fanfiction_claim_refs")
     candidates: list[Any] = []
     if isinstance(channel, dict):
         candidates.extend(channel.get("all_claim_refs") or [])
-    for value in (chapter_card, character_packet):
-        explicit = value.get("fanfiction_claim_refs")
-        if isinstance(explicit, list):
-            candidates.extend(explicit)
     for candidate in candidates:
         if not isinstance(candidate, str) or not candidate.strip():
             continue
         if candidate in known_ids:
-            references.add(candidate)
+            if candidate not in references:
+                references.append(candidate)
         else:
             missing.add(candidate)
     return references, missing

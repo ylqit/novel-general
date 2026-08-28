@@ -801,6 +801,13 @@ def complete_editorial_reviews(root: Path, config, *, chapter_number: int = 1) -
                 "editorial_review",
                 declared_role_id=role_id,
             )
+            canonical_ref = (
+                f"50_workbench/fanfiction_context/ch{chapter_number:03d}.json"
+                if role_id == "canon_fidelity_reviewer"
+                and str(config.data.get("creation", {}).get("mode") or "original")
+                == "fanfiction"
+                else f"20_outline/chapter_cards/ch{chapter_number:03d}.json"
+            )
             write_json(
                 result_path,
                 {
@@ -811,7 +818,7 @@ def complete_editorial_reviews(root: Path, config, *, chapter_number: int = 1) -
                         source,
                         contract.review_dimensions,
                         canonical_dimensions=contract.canonical_ref_dimensions,
-                        canonical_ref=f"20_outline/chapter_cards/ch{chapter_number:03d}.json",
+                        canonical_ref=canonical_ref,
                     ),
                     "findings": [],
                 },
@@ -1388,6 +1395,7 @@ def complete_unified_semantic_lifecycle(
     *,
     approved_by: str = "human",
     approve_voice: bool = True,
+    close: bool = True,
 ) -> None:
     ledger = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
     if not ledger.exists():
@@ -1411,7 +1419,7 @@ def complete_unified_semantic_lifecycle(
     ]
     if pending_events:
         application = build_event_realization_application(
-            root,
+            config,
             chapter_number=chapter_number,
             observations=[
                 {
@@ -1484,7 +1492,8 @@ def complete_unified_semantic_lifecycle(
         apply_promise_evidence(config, application_path=promise_application_file)
     if approve_voice and 1 <= chapter_number <= 3:
         approve_author_voice_fixture(root, config, chapter_number=chapter_number)
-    chapter_close(config, chapter_number=chapter_number, approved_by=approved_by)
+    if close:
+        chapter_close(config, chapter_number=chapter_number, approved_by=approved_by)
 
 
 def approve_author_voice_fixture(root: Path, config, *, chapter_number: int) -> None:

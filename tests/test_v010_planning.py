@@ -21,6 +21,7 @@ from longform_engine.planning import (
     validate_human_node_decisions,
     validate_planning_bundle,
     validate_planning_semantic_application,
+    write_planning_generation_task,
 )
 from longform_engine.storage import init_project
 
@@ -285,6 +286,40 @@ def test_structural_validation_is_explicitly_not_a_semantic_verdict():
     assert validation.ok, validation.errors
     assert validation.as_dict()["schema"] == STRUCTURAL_VALIDATION_SCHEMA
     assert validation.as_dict()["semantic_verdict"] == "not_evaluated"
+
+
+def test_planning_generation_task_renders_exact_fanfiction_claim_contract(tmp_path):
+    config, root = seed_project(tmp_path)
+    config.data["creation"]["mode"] = "fanfiction"
+
+    result = write_planning_generation_task(config)
+    contract = json.loads((root / result.contract_file).read_text(encoding="utf-8"))
+    instruction = (root / result.instruction_file).read_text(encoding="utf-8")
+
+    assert contract["schema"] == "planning_generation_task_v1"
+    assert contract["creation_mode"] == "fanfiction"
+    assert contract["output_schema"] == "planning_bundle_v1"
+    assert contract["semantic_obligation_fields"][-1] == "fanfiction_claim_refs"
+    assert contract["plot_node_fields"][-1] == "fanfiction_claim_refs"
+    assert contract["fanfiction_chapter_claim_channel_fields"] == [
+        "schema",
+        "active_volume_claim_refs",
+        "semantic_obligation_claim_refs",
+        "plot_node_claim_refs",
+        "chapter_claim_refs",
+        "all_claim_refs",
+    ]
+    assert "所有 claim_refs 必须解析到当前人工批准同人语义文档" in instruction
+    assert "all_claim_refs 必须等于四个来源字段的有序去重并集" in instruction
+
+    original = load_project_config(root / "project.yaml")
+    original_result = write_planning_generation_task(original)
+    original_contract = json.loads(
+        (root / original_result.contract_file).read_text(encoding="utf-8")
+    )
+    assert original_contract["creation_mode"] == "original"
+    assert original_contract["mode_rules"]["fanfiction_projection"] == "forbidden"
+    assert original_contract["mode_rules"]["fanfiction_claim_refs"] == "required_empty"
 
 
 def test_chapter_contract_v5_uses_topology_specific_applicability():

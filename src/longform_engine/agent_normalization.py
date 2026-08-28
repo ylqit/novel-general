@@ -58,6 +58,9 @@ CANONICAL_READ_PREFIXES = (
     "20_outline/",
     "30_state/",
     "40_manuscript/final/",
+    # Hash-bound v2 fanfiction bundles are the sole canonical review projection in
+    # the workbench; reviewers never receive the whole semantic source documents.
+    "50_workbench/fanfiction_context/",
 )
 CONTROL_PLANE_FIELDS = frozenset(
     {

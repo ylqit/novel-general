@@ -113,12 +113,64 @@ def legacy_approved_route(document: dict, missing_field: str) -> dict:
     return legacy
 
 
+def formal_chapter_contract(
+    *, chapter_number: int = 1, claim_refs: list[str] | None = None
+) -> dict:
+    refs = list(claim_refs or [])
+    return {
+        "schema": "chapter_contract_v5",
+        "contract_id": f"contract:ch{chapter_number:03d}",
+        "chapter_number": chapter_number,
+        "forecast_ref": f"forecast:ch{chapter_number:03d}",
+        "topology": "relationship",
+        "chapter_duty": "让已批准的规则迫使人物作出选择。",
+        "observable_change": "选择改变下一章可采取的行动。",
+        "reader_value": "读者看到规则、选择与代价形成因果。",
+        "failure": {
+            "applicability": "optional",
+            "description": "直接方案可能失败。",
+            "reason": "人物选择承担本章转折。",
+        },
+        "choice": {
+            "applicability": "required",
+            "description": "人物采用有代价的替代方案。",
+            "reason": "选择造成可观察变化。",
+        },
+        "cost": {
+            "applicability": "required",
+            "description": "人物失去一种安全选项。",
+            "reason": "收益必须缩窄后续选择。",
+        },
+        "aftermath": {
+            "applicability": "optional",
+            "description": "余波可延续到下一章。",
+            "reason": "本章在行动后果处结束。",
+        },
+        "plot_node_table_ref": {
+            "table_id": f"node-table:ch{chapter_number:03d}",
+            "candidate_sha256": "a" * 64,
+        },
+        "semantic_obligation_refs": ["obligation:choice"],
+        "reader_promise_actions": [],
+        "protected_invariants": ["人物保留拒绝权。"],
+        "prohibited_drift": ["不得让代价自动消失。"],
+        "fanfiction_claim_refs": {
+            "schema": "fanfiction_chapter_claim_channel_v1",
+            "active_volume_claim_refs": [],
+            "semantic_obligation_claim_refs": [],
+            "plot_node_claim_refs": [],
+            "chapter_claim_refs": refs,
+            "all_claim_refs": refs,
+        },
+    }
+
+
 def assert_writing_boundaries_reject(config, root: Path, pattern: str) -> None:
     with pytest.raises(FanfictionContextError, match=pattern):
         compile_fanfiction_context(
             config,
             chapter_number=1,
-            chapter_contract={"chapter_number": 1},
+            chapter_contract=formal_chapter_contract(),
             chapter_card={"title": "旧语义合同下游绕过"},
             character_packet={},
         )
@@ -127,7 +179,7 @@ def assert_writing_boundaries_reject(config, root: Path, pattern: str) -> None:
             config,
             root,
             chapter_number=1,
-            chapter_contract={"chapter_number": 1},
+            chapter_contract=formal_chapter_contract(),
             card={"title": "旧语义合同下游绕过"},
         )
 
@@ -777,10 +829,9 @@ def test_semantic_canon_compiles_to_readable_bounded_writing_context(tmp_path, m
         config,
         root,
         chapter_number=1,
-        chapter_contract={
-            "chapter_number": 1,
-            "canon_claim_refs": ["route:gate_divergence", "route:lin_voice"],
-        },
+        chapter_contract=formal_chapter_contract(
+            claim_refs=["route:gate_divergence", "route:lin_voice"]
+        ),
         card={"title": "门前谈判", "featured_character_ids": ["classic:lin_zhou"]},
     )
 
@@ -889,10 +940,9 @@ def test_event_causal_targets_join_required_cross_namespace_dependency_closure(
         config,
         root,
         chapter_number=1,
-        chapter_contract={
-            "chapter_number": 1,
-            "fanfiction_claim_refs": ["route:gate_event_fate"],
-        },
+        chapter_contract=formal_chapter_contract(
+            claim_refs=["route:gate_event_fate"]
+        ),
         card={"title": "因果闭包"},
     )
 
@@ -909,10 +959,9 @@ def test_event_causal_dependency_outside_chapter_scope_blocks_context(tmp_path, 
             config,
             root,
             chapter_number=1,
-            chapter_contract={
-                "chapter_number": 1,
-                "fanfiction_claim_refs": ["route:gate_event_fate"],
-            },
+            chapter_contract=formal_chapter_contract(
+                claim_refs=["route:gate_event_fate"]
+            ),
             card={"title": "越界因果依赖"},
         )
 
@@ -927,7 +976,7 @@ def test_names_do_not_select_optional_claims_and_unknown_explicit_refs_block(
         config,
         root,
         chapter_number=2,
-        chapter_contract={"chapter_number": 2},
+        chapter_contract=formal_chapter_contract(chapter_number=2),
         card={"title": "林舟与守门人再次谈判"},
     )
 
@@ -937,10 +986,10 @@ def test_names_do_not_select_optional_claims_and_unknown_explicit_refs_block(
             config,
             root,
             chapter_number=2,
-            chapter_contract={
-                "chapter_number": 2,
-                "fanfiction_claim_refs": ["route:unknown_claim"],
-            },
+            chapter_contract=formal_chapter_contract(
+                chapter_number=2,
+                claim_refs=["route:unknown_claim"],
+            ),
             card={"title": "未知依赖"},
         )
 
