@@ -741,6 +741,14 @@ def validate_intelligence_candidate(
 ) -> IntelligenceValidationResult:
     root = resolve_project_root(config)
     spec = require_spec(task_type)
+    if (
+        str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
+        and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES
+    ):
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
     candidate = resolve_candidate(root, file_path)
     errors: list[str] = []
     manifest = manifest_for_output(root, task_type, candidate)
@@ -1517,6 +1525,14 @@ def validate_design_compile_delta(
     if task_type not in DESIGN_INTELLIGENCE_TASK_TYPES:
         raise ValueError(f"{task_type} is not a design_document_v1 task.")
     root = resolve_project_root(config)
+    if (
+        str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
+        and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES
+    ):
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
     document = resolve_candidate(root, document_path)
     delta = resolve_candidate(root, delta_path)
     errors: list[str] = []

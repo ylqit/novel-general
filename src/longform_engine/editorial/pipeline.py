@@ -421,6 +421,11 @@ def editorial_submit_review(
     if chapter_number <= 0:
         raise ValueError("chapter_number must be positive.")
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
     role_id = role_definition(role)["id"]
     path = resolve_editorial_result_path(root, file_path)
     payload = load_json(path, default={})
@@ -495,6 +500,11 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
     if chapter_number <= 0:
         raise ValueError("chapter_number must be positive.")
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
     result_dir = review_root(root) / "results"
     result_dir.mkdir(parents=True, exist_ok=True)
     expected_roles = expected_editorial_roles(config, root=root, chapter_number=chapter_number)

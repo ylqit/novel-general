@@ -630,6 +630,11 @@ def generate_beat_sheet(
     """Generate a beat sheet from an existing chapter card."""
 
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise WorkflowError(str(exc)) from exc
     card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
     if not card_path.exists():
         if auto_plan:
@@ -1055,6 +1060,11 @@ def submit_agent_draft(
         raise WorkflowError("chapter_number must be positive.")
     agent = normalize_agent(agent)
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise WorkflowError(str(exc)) from exc
     source_path = resolve_agent_draft_source(root, config, file_path)
     if not source_path.exists() or not source_path.is_file():
         raise WorkflowError(f"Agent draft not found: {source_path}")
@@ -1387,6 +1397,11 @@ def finalize_chapter(
         raise WorkflowError("chapter finalize requires approved_by=human.")
 
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise WorkflowError(str(exc)) from exc
     draft_path = manuscript_chapter_path(root, chapter_number, lane="draft")
     if not draft_path.exists():
         raise WorkflowError(f"Draft not found for ch{chapter_number:03d}; run draft submit first.")
@@ -2503,6 +2518,11 @@ def batch_write(
     if chapters <= 0:
         raise WorkflowError("chapters must be positive.")
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise WorkflowError(str(exc)) from exc
     state = load_json(root / "30_state" / "novel_state.json", default={})
     next_chapter = int(state.get("last_finalized_chapter") or 0) + 1
     writing_mode = str(config.data.get("writing", {}).get("mode", "agent_skill"))
@@ -2578,6 +2598,11 @@ def auto_write_plan(
     """Create the persistent auto-write scheduler state."""
 
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise WorkflowError(str(exc)) from exc
     state_path = auto_write_state_path(root)
     if state_path.exists() and not overwrite:
         state = reconcile_auto_write_state(config, root, load_auto_write_state(root))
@@ -2632,6 +2657,11 @@ def auto_write_run(config: ConfigDocument, *, chapters: int | None = None) -> Au
     if chapters is not None and chapters <= 0:
         raise WorkflowError("chapters must be positive.")
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise WorkflowError(str(exc)) from exc
     state_path = auto_write_state_path(root)
     if not state_path.exists():
         auto_write_plan(config)
@@ -2768,6 +2798,11 @@ def auto_write_report(config: ConfigDocument) -> AutoWriteResult:
     """Write a readable Markdown report for the current auto-write state."""
 
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise WorkflowError(str(exc)) from exc
     state = reconcile_auto_write_state(config, root, load_auto_write_state(root))
     report_path = root / "70_runtime" / "run_reports" / "auto_write_report.md"
     atomic_write_text(report_path, render_auto_write_report(config, root, state))

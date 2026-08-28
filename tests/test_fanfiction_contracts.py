@@ -8,9 +8,27 @@ import pytest
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_tasks import load_manifest
 from longform_engine.config import ConfigDocument
-from longform_engine.editorial import editorial_review
+from longform_engine.editorial import (
+    editorial_aggregate,
+    editorial_review,
+    editorial_submit_review,
+)
 from longform_engine.gates import GateError, semantic_review_task
-from longform_engine.intelligence import apply_intelligence_candidate, create_intelligence_task
+from longform_engine.intelligence import (
+    apply_intelligence_candidate,
+    create_intelligence_task,
+    validate_design_compile_delta,
+    validate_intelligence_candidate,
+)
+from longform_engine.orchestration import (
+    auto_write_plan,
+    auto_write_report,
+    auto_write_run,
+    batch_write,
+    finalize_chapter,
+    generate_beat_sheet,
+    submit_agent_draft,
+)
 from longform_engine.planning import (
     apply_planning_bundle,
     build_human_node_decisions,
@@ -66,6 +84,14 @@ def write_document(path: Path, document: dict) -> str:
     raw = json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8")
     path.write_bytes(raw)
     return sha256(raw).hexdigest()
+
+
+def project_file_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
 
 
 def reviewed_route_projection_sha256(document: dict) -> str:
@@ -769,11 +795,20 @@ def bind_review_to_route(project: dict, route: dict, review: dict, review_sha: s
     return canonical
 
 
-def corrupt_canonical_crossover_route(project: dict) -> None:
+def corrupt_canonical_crossover_route(
+    project: dict,
+    *,
+    corruption: str = "legacy",
+) -> None:
     route, route_path = install_route(project)
-    legacy = deepcopy(route)
-    legacy["extensions"].pop("crossover")
-    write_document(route_path, reapprove(legacy))
+    corrupted = deepcopy(route)
+    if corruption == "legacy":
+        corrupted["extensions"].pop("crossover")
+    elif corruption == "transfers":
+        corrupted["extensions"]["crossover"]["transfers"][0]["payload_kinds"] = []
+    else:
+        raise AssertionError(f"unknown crossover corruption: {corruption}")
+    write_document(route_path, reapprove(corrupted))
 
 
 def test_complete_current_chain_rejects_legacy_crossover_route_and_review_target(
@@ -946,6 +981,230 @@ def test_planning_apply_rejects_legacy_crossover_without_canonical_or_transactio
         if path.is_file()
     }
     assert after == before
+
+
+def test_submit_agent_draft_rejects_route_drift_before_any_project_write(
+    current_contract_project,
+    monkeypatch,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    corrupt_canonical_crossover_route(project)
+    root = project["root"]
+    source = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("林舟验证来访能力的代价。", encoding="utf-8")
+    candidate_task = {
+        "task_id": "chapter_write:ch001:v5",
+        "task_type": "chapter_write",
+        "status": "awaiting_agent",
+    }
+    monkeypatch.setattr(
+        "longform_engine.orchestration.pipeline.prose_naturalness_candidate_submission_guard",
+        lambda *_args, **_kwargs: {"allowed": True, "required": False},
+    )
+    monkeypatch.setattr(
+        "longform_engine.orchestration.pipeline.resolve_candidate_task",
+        lambda *_args, **_kwargs: candidate_task,
+    )
+    monkeypatch.setattr(
+        "longform_engine.orchestration.pipeline.list_manifests",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "longform_engine.orchestration.pipeline.ensure_candidate_snapshot",
+        lambda *_args, **_kwargs: source,
+    )
+    monkeypatch.setattr(
+        "longform_engine.orchestration.pipeline.update_task_status",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "longform_engine.orchestration.pipeline.supersede_other_candidate_tasks",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "longform_engine.chapter_coedit.record_coedit_submission",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "longform_engine.human_review_consultation.mark_stale_human_consultations",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "longform_engine.orchestration.pipeline.gate_check",
+        lambda *_args, **_kwargs: contracts.load_current_fanfiction_documents(
+            project["config"], root
+        ),
+    )
+    before = project_file_snapshot(root)
+
+    with pytest.raises(ValueError, match="extensions.crossover"):
+        submit_agent_draft(
+            project["config"],
+            chapter_number=1,
+            file_path=source,
+            agent="codex",
+        )
+
+    assert project_file_snapshot(root) == before
+
+
+def test_finalize_chapter_rejects_invalid_transfers_without_project_write(
+    current_contract_project,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    corrupt_canonical_crossover_route(project, corruption="transfers")
+    root = project["root"]
+    draft = root / "40_manuscript" / "draft" / "ch001.md"
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    draft.write_text("林舟验证来访能力的代价。", encoding="utf-8")
+    before = project_file_snapshot(root)
+
+    with pytest.raises(ValueError, match="payload_kinds"):
+        finalize_chapter(project["config"], chapter_number=1, approved_by="human")
+
+    assert project_file_snapshot(root) == before
+
+
+@pytest.mark.parametrize(
+    ("corruption", "expected"),
+    [("legacy", "extensions.crossover"), ("transfers", "payload_kinds")],
+)
+def test_intelligence_validation_rechecks_current_route_before_report_or_status_write(
+    current_contract_project,
+    corruption,
+    expected,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    install_route(project)
+    task = create_intelligence_task(project["config"], task_type="book_design")
+    candidate = project["root"] / task.candidate_file
+    candidate.write_text("不完整设计候选。", encoding="utf-8")
+    corrupt_canonical_crossover_route(project, corruption=corruption)
+    before = project_file_snapshot(project["root"])
+
+    with pytest.raises(ValueError, match=expected):
+        validate_intelligence_candidate(
+            project["config"],
+            task_type="book_design",
+            file_path=candidate,
+        )
+
+    assert project_file_snapshot(project["root"]) == before
+
+
+def test_compile_delta_validation_rechecks_current_route_before_report_or_status_write(
+    current_contract_project,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    corrupt_canonical_crossover_route(project, corruption="transfers")
+    root = project["root"]
+    document = root / "50_workbench" / "intelligence_candidates" / "book_design.md"
+    delta = root / "50_workbench" / "intelligence_candidates" / "book_design.delta.json"
+    document.parent.mkdir(parents=True, exist_ok=True)
+    document.write_text("# 设计文档\n", encoding="utf-8")
+    delta.write_text("{}\n", encoding="utf-8")
+    before = project_file_snapshot(root)
+
+    with pytest.raises(ValueError, match="payload_kinds"):
+        validate_design_compile_delta(
+            project["config"],
+            task_type="book_design",
+            document_path=document,
+            delta_path=delta,
+        )
+
+    assert project_file_snapshot(root) == before
+
+
+def test_editorial_submit_rechecks_current_route_before_acceptance_or_status_write(
+    current_contract_project,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    corrupt_canonical_crossover_route(project)
+    root = project["root"]
+    result = (
+        root
+        / "50_workbench"
+        / "editorial_reviews"
+        / "results"
+        / "ch001.planning_chief_editor.json"
+    )
+    result.parent.mkdir(parents=True, exist_ok=True)
+    result.write_text("{}\n", encoding="utf-8")
+    before = project_file_snapshot(root)
+
+    with pytest.raises(ValueError, match="extensions.crossover"):
+        editorial_submit_review(
+            project["config"],
+            chapter_number=1,
+            role="planning_chief_editor",
+            file_path=result,
+        )
+
+    assert project_file_snapshot(root) == before
+
+
+def test_editorial_aggregate_rechecks_current_route_before_aggregate_or_applied_write(
+    current_contract_project,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    corrupt_canonical_crossover_route(project, corruption="transfers")
+    before = project_file_snapshot(project["root"])
+
+    with pytest.raises(ValueError, match="payload_kinds"):
+        editorial_aggregate(project["config"], chapter_number=1)
+
+    assert project_file_snapshot(project["root"]) == before
+
+
+@pytest.mark.parametrize(
+    "entrypoint",
+    ["generate_beat_sheet", "batch_write", "auto_write_plan", "auto_write_run", "auto_write_report"],
+)
+def test_related_production_lifecycle_entrypoints_reject_route_drift_before_write(
+    current_contract_project,
+    entrypoint,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    corrupt_canonical_crossover_route(project)
+    root = project["root"]
+    card = root / "20_outline" / "chapter_cards" / "ch001.json"
+    card.parent.mkdir(parents=True, exist_ok=True)
+    card.write_text(
+        json.dumps(
+            {
+                "chapter_number": 1,
+                "title": "第一章",
+                "chapter_duty": "验证跨界代价。",
+                "event_recommendation": {"recommended": []},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    calls = {
+        "generate_beat_sheet": lambda: generate_beat_sheet(
+            project["config"], chapter_number=1
+        ),
+        "batch_write": lambda: batch_write(project["config"], chapters=1),
+        "auto_write_plan": lambda: auto_write_plan(project["config"]),
+        "auto_write_run": lambda: auto_write_run(project["config"]),
+        "auto_write_report": lambda: auto_write_report(project["config"]),
+    }
+    before = project_file_snapshot(root)
+
+    with pytest.raises(ValueError, match="extensions.crossover"):
+        calls[entrypoint]()
+
+    assert project_file_snapshot(root) == before
 
 
 def event_fate_claim(route: dict) -> dict:
