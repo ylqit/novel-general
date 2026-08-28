@@ -15,6 +15,7 @@ from longform_engine.agent_protocols import (
 )
 from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.config import ConfigDocument
+from longform_engine import fanfiction_contracts
 from longform_engine.reader_promises_v2 import materialize_explicit_reader_promises
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 
@@ -553,20 +554,28 @@ def apply_planning_bundle(
     if not structural.ok:
         raise ValueError("planning bundle is structurally invalid: " + "; ".join(structural.errors))
     fanfiction_sources: list[Path] = []
+    fanfiction_source_sha256: dict[Path, str] = {}
     if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
         projection = bundle["active_volume_plan"].get("fanfiction_projection")
         if not isinstance(projection, dict):
             raise ValueError(
                 "fanfiction planning requires active_volume_plan.fanfiction_projection"
             )
+        try:
+            current = fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
         fanfiction_sources = [
-            root / "10_bible" / "fanfiction" / "source_canon.json",
-            root / "10_bible" / "fanfiction" / "story_engine.json",
-            root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
+            current.paths["source_canon"],
+            current.paths["story_engine"],
+            current.paths["route_design"],
         ]
-        documents = [_read_json(path) for path in fanfiction_sources]
-        if any(not path.is_file() for path in fanfiction_sources):
-            raise ValueError("fanfiction planning requires current Canon, story engine, and route files")
+        fanfiction_source_sha256 = {
+            current.paths["source_canon"]: current.sha256["source_canon"],
+            current.paths["story_engine"]: current.sha256["story_engine"],
+            current.paths["route_design"]: current.sha256["route_design"],
+        }
+        documents = [current.source_canon, current.story_engine, current.route]
         claim_ids = {
             str(claim.get("claim_id") or "")
             for document in documents
@@ -662,7 +671,7 @@ def apply_planning_bundle(
             *(
                 {
                     "path": path.relative_to(root).as_posix(),
-                    "sha256": _file_hash(path),
+                    "sha256": fanfiction_source_sha256[path],
                 }
                 for path in fanfiction_sources
             ),

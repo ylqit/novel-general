@@ -15,7 +15,12 @@ from longform_engine.fanfiction_sources import (
     source_library_status,
 )
 from longform_engine.storage import init_project
-from longform_engine.studio_server import StudioHTTPServer, StudioServerError, StudioService
+from longform_engine.studio_server import (
+    StudioHTTPServer,
+    StudioServerError,
+    StudioService,
+    studio_page_html,
+)
 
 
 def _project(tmp_path: Path):
@@ -56,6 +61,39 @@ def _request(server, method, path, *, headers=None, payload=None, body=None, con
     result = response.status, dict(response.getheaders()), response.read()
     connection.close()
     return result
+
+
+def test_studio_renders_current_crossover_topology_and_transfer_contract(tmp_path):
+    config, _root = _project(tmp_path)
+
+    state = StudioService(config).state()
+    contract = state["crossover_contract"]
+    page = studio_page_html("csrf", "nonce")
+
+    assert contract["topologies"] == [
+        "fixed_host",
+        "fusion_world",
+        "sequential_worlds",
+    ]
+    assert contract["default_host_source_id"] == {
+        "fixed_host": "configured source_id",
+        "fusion_world": None,
+        "sequential_worlds": None,
+    }
+    assert contract["transfer_fields"] == ["source_id", "payload_kinds"]
+    assert contract["adapter_coverage"] == "transfers.source_id only"
+    assert contract["topology_claims"] == {
+        "fusion_world": "世界规则优先级",
+        "sequential_worlds": "卷宿主世界(volume_ids, host_source_id)",
+    }
+    assert "fixed_host | fusion_world | sequential_worlds" in page
+    assert "default_host_source_id" in page
+    assert "transfers[].source_id" in page
+    assert "transfers[].payload_kinds" in page
+    assert "只覆盖 transfers 实际引用的 source_id" in page
+    assert "世界规则优先级" in page
+    assert "卷宿主世界" in page
+    assert 'show("crossoverContract",state.crossover_contract)' in page
 
 
 def test_browser_upload_is_streamed_to_staging_and_cancel_never_changes_formal_index(

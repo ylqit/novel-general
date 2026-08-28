@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 
+from longform_engine import fanfiction_contracts
 from longform_engine.agent_protocols import (
     EVIDENCE_REVIEW_SCHEMA,
     build_validation_report,
@@ -519,6 +520,14 @@ def gate_check(
     """Run deterministic gates and write the artifact contract."""
 
     root = resolve_project_root(config)
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
+                config, root
+            )
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise GateError(str(exc)) from exc
     draft_path = chapter_text_path(root, chapter_number, source=source)
     if draft_path is None:
         raise GateError(f"Chapter text not found for ch{chapter_number:03d} ({source}).")
@@ -543,7 +552,14 @@ def gate_check(
     style_failures, style_warnings = check_style_and_prose_naturalness(config, text)
     failures.extend(style_failures)
     warnings.extend(style_warnings)
-    fanfiction_failures, fanfiction_warnings = check_fanfiction_source_reproduction(config, root, text)
+    fanfiction_failures, fanfiction_warnings = check_fanfiction_source_reproduction(
+        config,
+        root,
+        text,
+        source_canon=(
+            current_fanfiction.source_canon if current_fanfiction is not None else None
+        ),
+    )
     failures.extend(fanfiction_failures)
     warnings.extend(fanfiction_warnings)
     deterministic_evidence_report = None
@@ -638,6 +654,14 @@ def semantic_review_task(
     if chapter_number <= 0:
         raise GateError("chapter_number must be positive.")
     root = resolve_project_root(config)
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
+                config, root
+            )
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise GateError(str(exc)) from exc
     chapter_path = chapter_text_path(root, chapter_number, source=source)
     if chapter_path is None:
         raise GateError(f"Chapter text not found for ch{chapter_number:03d} ({source}).")
@@ -653,11 +677,12 @@ def semantic_review_task(
         root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
         root / "10_bible" / "characters.json",
     ]
-    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+    if current_fanfiction is not None:
         canonical_inputs.extend(
             [
-                root / "10_bible" / "fanfiction" / "source_canon.json",
-                root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
+                current_fanfiction.paths["source_canon"],
+                current_fanfiction.paths["story_engine"],
+                current_fanfiction.paths["route_design"],
             ]
         )
     canonical_inputs = [path for path in canonical_inputs if path.exists()]
@@ -757,6 +782,11 @@ def semantic_review_validate(
     """Validate chapter spans and canonical references in an Agent semantic review."""
 
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise GateError(str(exc)) from exc
     artifact_dir = gate_artifact_dir(root, chapter_number)
     path = resolve_semantic_review_result_path(root, artifact_dir, file_path)
     payload = load_json(path, default={})
@@ -2032,12 +2062,19 @@ def check_fanfiction_source_reproduction(
     config: ConfigDocument,
     root: Path,
     text: str,
+    *,
+    source_canon: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     if str(config.data.get("creation", {}).get("mode") or "original") != "fanfiction":
         return [], []
-    canon = load_json(root / "10_bible" / "fanfiction" / "source_canon.json", default={})
-    if not isinstance(canon, dict):
-        return [], ["fanfiction source canon is missing; source-prose reproduction check could not run"]
+    if source_canon is None:
+        try:
+            source_canon = fanfiction_contracts.load_current_fanfiction_source_canon(
+                config, root
+            )
+        except fanfiction_contracts.FanfictionContractError as exc:
+            return [], [str(exc)]
+    canon = source_canon
     protected_terms = fanfiction_protected_terms(canon)
     candidate_parts = [
         part.strip()
@@ -2710,35 +2747,6 @@ def resolve_review_source(root: Path, chapter_number: int, source_path: str) -> 
 def is_canonical_reference(path: str) -> bool:
     normalized = path.replace("\\", "/")
     return normalized.startswith(("10_bible/", "20_outline/", "30_state/", "60_rag/memory/"))
-
-
-def semantic_review_known_entities(root: Path) -> set[str]:
-    ids: set[str] = set()
-    characters = load_json(root / "10_bible" / "characters.json", default={})
-    for item in normalize_records(characters):
-        if isinstance(item, dict):
-            for key in ("id", "character_id", "name"):
-                value = str(item.get(key) or "").strip()
-                if value:
-                    ids.add(value)
-    graph = load_json(root / "30_state" / "story_graph.json", default={})
-    if isinstance(graph, dict):
-        for item in normalize_records(graph.get("nodes")):
-            if isinstance(item, dict):
-                for key in ("id", "entity_id", "name"):
-                    value = str(item.get(key) or "").strip()
-                    if value:
-                        ids.add(value)
-    canon = load_json(root / "10_bible" / "fanfiction" / "source_canon.json", default={})
-    if isinstance(canon, dict):
-        for item in source_fact_records(
-            canon, "character", "ability", "terminology", "world_rule"
-        ):
-            for key in ("id", "name"):
-                value = str(item.get(key) or "").strip()
-                if value:
-                    ids.add(value)
-    return ids
 
 
 def validate_semantic_review_finding(

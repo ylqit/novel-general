@@ -5,7 +5,18 @@ from pathlib import Path
 
 import pytest
 
+from longform_engine.agent_pipeline import validate_production_agent_result
+from longform_engine.agent_tasks import load_manifest
 from longform_engine.config import ConfigDocument
+from longform_engine.editorial import editorial_review
+from longform_engine.gates import GateError, semantic_review_task
+from longform_engine.intelligence import apply_intelligence_candidate, create_intelligence_task
+from longform_engine.planning import (
+    apply_planning_bundle,
+    build_human_node_decisions,
+    build_human_planning_approval,
+    build_planning_semantic_application,
+)
 from longform_engine import fanfiction_contracts as contracts
 from longform_engine.fanfiction_context import (
     FanfictionContextError,
@@ -478,6 +489,24 @@ def current_contract_project(tmp_path, monkeypatch):
         data={
             "creation": {"mode": "fanfiction"},
             "project": {"root_dir": str(root)},
+            "length": {
+                "metric": "content_characters_v1",
+                "target_total_characters": 100_000,
+                "completion_tolerance": [0.9, 1.1],
+                "chapter": {
+                    "target_characters": 3_000,
+                    "soft_min": 2_500,
+                    "soft_max": 3_500,
+                    "hard_min": 2_000,
+                    "hard_max": 4_000,
+                },
+                "volume": {"target_characters": 50_000},
+                "planning": {
+                    "mode": "rolling",
+                    "detailed_horizon": 10,
+                    "refill_threshold": 3,
+                },
+            },
             "fanfiction": {
                 "continuity_mode": "canon_divergent",
                 "sources": [source],
@@ -513,12 +542,11 @@ def current_contract_project(tmp_path, monkeypatch):
         },
         "evidence": {evidence["evidence_id"]: evidence},
     }
+    project_contracts = {"classic": project_contract}
     monkeypatch.setattr(
         contracts,
         "project_source_contract",
-        lambda _config, source_id: project_contract
-        if source_id == "classic"
-        else pytest.fail(f"unexpected source {source_id}"),
+        lambda _config, source_id: project_contracts[source_id],
         raising=False,
     )
     source_contract_record = {
@@ -571,7 +599,41 @@ def current_contract_project(tmp_path, monkeypatch):
         "canon_path": canon_path,
         "canon_sha": canon_sha,
         "project_contract": project_contract,
+        "project_contracts": project_contracts,
     }
+
+
+def configure_crossover_project(project: dict) -> None:
+    """Promote the reusable current-contract fixture to a valid two-source crossover."""
+
+    guest_source = {
+        "source_id": "guest",
+        "title": "来访作品",
+        "creator": "来访作者",
+        "canon_cutoff": "第二卷末",
+        "allowed_elements": ["characters", "abilities"],
+    }
+    guest_contract = {
+        "setting": {"作品ID": "work:guest"},
+        "binding_sha256": "1" * 64,
+        "coverage_sha256": "2" * 64,
+        "binding": {"items": []},
+        "evidence": {},
+    }
+    configured = project["config"].data["fanfiction"]
+    configured["continuity_mode"] = "crossover"
+    configured["sources"].append(guest_source)
+    project["project_contracts"]["guest"] = guest_contract
+
+    canon = deepcopy(project["canon"])
+    canon["continuity"] = "跨界连续性"
+    canon["extensions"]["continuity_mode"] = "crossover"
+    canon["extensions"]["source_contracts"] = contracts.current_fanfiction_source_contracts(
+        project["config"]
+    )
+    canon = reapprove(canon)
+    project["canon"] = canon
+    project["canon_sha"] = write_document(project["canon_path"], canon)
 
 
 def install_story_engine(project: dict) -> tuple[dict, str]:
@@ -585,13 +647,14 @@ def install_story_engine(project: dict) -> tuple[dict, str]:
         "读者识别承诺",
         "原创主线承诺",
     )
+    continuity_mode = project["config"].data["fanfiction"]["continuity_mode"]
     engine = approve(
         build_semantic_document(
             document_id="sem:story_engine",
             document_type="同人故事发动机",
             title="当前故事发动机",
             scope={"kind": "project", "project": project["root"].name},
-            continuity="原作分歧",
+            continuity="跨界连续性" if continuity_mode == "crossover" else "原作分歧",
             body="保持原作识别度并持续生成原创主线。",
             claims=[
                 semantic_claim(f"engine:claim_{index}", semantic_type)
@@ -599,7 +662,7 @@ def install_story_engine(project: dict) -> tuple[dict, str]:
             ],
             extensions={
                 "task_type": "fanfiction_story_engine",
-                "continuity_mode": "canon_divergent",
+                "continuity_mode": continuity_mode,
                 "route_family": "hybrid",
                 "source_canon_sha256": project["canon_sha"],
             },
@@ -611,6 +674,7 @@ def install_story_engine(project: dict) -> tuple[dict, str]:
 
 def install_route(project: dict) -> tuple[dict, Path]:
     _engine, engine_sha = install_story_engine(project)
+    continuity_mode = project["config"].data["fanfiction"]["continuity_mode"]
     claims = [
         semantic_claim("route:divergence", "初始分歧"),
         semantic_claim("route:entry", "故事切入点"),
@@ -630,20 +694,30 @@ def install_route(project: dict) -> tuple[dict, Path]:
             },
         ),
     ]
+    crossover_extensions: dict = {}
+    if continuity_mode == "crossover":
+        crossover = crossover_route(
+            topology="fixed_host",
+            default_host_source_id="classic",
+            payload_kinds=["ability"],
+        )
+        crossover_extensions = crossover["extensions"]
+        claims.extend(crossover["claims"])
     route_candidate = build_semantic_document(
         document_id="sem:route",
         document_type="同人路线设计候选",
         title="当前同人路线",
         scope={"kind": "project", "project": project["root"].name},
-        continuity="原作分歧",
+        continuity="跨界连续性" if continuity_mode == "crossover" else "原作分歧",
         body="从原著基线产生可追责的分歧后果。",
         claims=claims,
         extensions={
             "task_type": "fanfiction_design",
-            "continuity_mode": "canon_divergent",
+            "continuity_mode": continuity_mode,
             "source_canon_sha256": project["canon_sha"],
             "story_engine_sha256": engine_sha,
             "future_knowledge_used": False,
+            **crossover_extensions,
         },
     )
     target_path = project["root"] / "50_workbench" / "route_candidate.json"
@@ -654,7 +728,7 @@ def install_route(project: dict) -> tuple[dict, Path]:
             document_type="同人路线独立复核",
             title="当前路线复核",
             scope={"kind": "project", "project": project["root"].name},
-            continuity="原作分歧",
+            continuity="跨界连续性" if continuity_mode == "crossover" else "原作分歧",
             body="独立复核通过。",
             extensions={
                 "task_type": "fanfiction_design_review",
@@ -693,6 +767,185 @@ def bind_review_to_route(project: dict, route: dict, review: dict, review_sha: s
     route_path = project["root"] / "10_bible" / "fanfiction" / "fanfiction_bible.json"
     write_document(route_path, canonical)
     return canonical
+
+
+def corrupt_canonical_crossover_route(project: dict) -> None:
+    route, route_path = install_route(project)
+    legacy = deepcopy(route)
+    legacy["extensions"].pop("crossover")
+    write_document(route_path, reapprove(legacy))
+
+
+def test_complete_current_chain_rejects_legacy_crossover_route_and_review_target(
+    current_contract_project,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    route, _route_path = install_route(project)
+    current = contracts.load_current_fanfiction_documents(project["config"], project["root"])
+    assert current.route["extensions"]["crossover"]["topology"] == "fixed_host"
+
+    review_path = current.independent_review.path
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    target_path = current.review_target.path
+    legacy_target = json.loads(target_path.read_text(encoding="utf-8"))
+    legacy_target["extensions"].pop("crossover")
+    target_sha = write_document(target_path, seal_semantic_document(legacy_target))
+    review["extensions"]["review_target_sha256"] = target_sha
+    review = reapprove(review)
+    review_sha = write_document(review_path, review)
+    bind_review_to_route(project, route, review, review_sha)
+
+    with pytest.raises(contracts.FanfictionContractError, match="extensions.crossover"):
+        contracts.load_current_fanfiction_documents(project["config"], project["root"])
+
+
+def test_fanfiction_design_apply_rejects_legacy_crossover_candidate(
+    current_contract_project,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    _route, _route_path = install_route(project)
+    task = create_intelligence_task(project["config"], task_type="fanfiction_design")
+    candidate_path = project["root"] / task.candidate_file
+    candidate = json.loads(
+        (project["root"] / "50_workbench" / "route_candidate.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    candidate["extensions"].pop("crossover")
+    for field in ("continuity_mode", "source_canon_sha256", "story_engine_sha256"):
+        candidate["extensions"].pop(field)
+    write_document(candidate_path, seal_semantic_document(candidate))
+    control = validate_production_agent_result(
+        project["root"],
+        load_manifest(project["root"], task.task_id),
+        result_file=candidate_path,
+    )
+    assert control.ok, control.normalization.errors
+
+    with pytest.raises(ValueError, match="extensions.crossover"):
+        apply_intelligence_candidate(
+            project["config"],
+            task_type="fanfiction_design",
+            file_path=candidate_path,
+            approved_by="human",
+        )
+
+
+def test_downstream_intelligence_gate_and_editorial_reject_legacy_crossover(
+    current_contract_project,
+):
+    project = current_contract_project
+    configure_crossover_project(project)
+    corrupt_canonical_crossover_route(project)
+    draft = project["root"] / "40_manuscript" / "draft" / "ch001.md"
+    draft.parent.mkdir(parents=True, exist_ok=True)
+    draft.write_text("林舟验证来访能力的代价。", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="extensions.crossover"):
+        create_intelligence_task(project["config"], task_type="book_design")
+    with pytest.raises(GateError, match="extensions.crossover"):
+        semantic_review_task(project["config"], chapter_number=1)
+    with pytest.raises(ValueError, match="extensions.crossover"):
+        editorial_review(project["config"], chapter_number=1)
+
+    assert not (project["root"] / "50_workbench" / "intelligence_tasks").exists()
+    assert not (project["root"] / "50_workbench" / "gate_artifacts").exists()
+    assert not (project["root"] / "50_workbench" / "editorial_reviews").exists()
+
+
+def test_planning_apply_rejects_legacy_crossover_without_canonical_or_transaction_pollution(
+    current_contract_project,
+):
+    from tests.test_v010_planning import evidence_review, planning_bundle, write_json
+
+    project = current_contract_project
+    configure_crossover_project(project)
+    route, _route_path = install_route(project)
+    root = project["root"]
+    bundle = planning_bundle()
+    bundle["active_volume_plan"]["fanfiction_projection"] = {
+        "body": "当前卷只投影已经批准的跨界路线。",
+        "claim_refs": [route["claims"][0]["claim_id"]],
+    }
+    bundle_path = write_json(root / "50_workbench" / "planning" / "bundle.json", bundle)
+    subject_relative = bundle_path.relative_to(root).as_posix()
+    review_path = write_json(
+        root / "50_workbench" / "planning" / "review.json",
+        evidence_review(subject_relative),
+    )
+    application_path = write_json(
+        root / "50_workbench" / "planning" / "application.json",
+        build_planning_semantic_application(
+            root,
+            subject_path=bundle_path,
+            profile="architecture",
+            author_task_id="task:author",
+            author_role_id="story_architect",
+            reviewer_task_id="task:reviewer",
+            reviewer_role_id="continuity_reviewer",
+            reviewer_version="v1",
+            review_result_path=review_path,
+        ),
+    )
+    approval_path = write_json(
+        root / "50_workbench" / "planning" / "approval.json",
+        build_human_planning_approval(
+            root,
+            application_path=application_path,
+            decision="approve",
+            reason="跨界规划语义与节点均已人工确认。",
+            approved_by="human",
+        ),
+    )
+    decisions_path = write_json(
+        root / "50_workbench" / "planning" / "node-decisions.json",
+        build_human_node_decisions(
+            root,
+            bundle_path=bundle_path,
+            decisions=[
+                {
+                    "node_id": node["node_id"],
+                    "decision": "approve",
+                    "adjustment": "",
+                    "reason": "保留当前跨界因果节点。",
+                }
+                for table in bundle["plot_node_tables"]
+                for node in table["nodes"]
+                if node["node_kind"] == "state_change"
+            ],
+            decided_by="human",
+        ),
+    )
+    corrupt_canonical_crossover_route(project)
+    protected_roots = [root / "20_outline", root / "30_state", root / "70_runtime" / "transactions"]
+    before = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for protected_root in protected_roots
+        if protected_root.exists()
+        for path in protected_root.rglob("*")
+        if path.is_file()
+    }
+
+    with pytest.raises(ValueError, match="extensions.crossover"):
+        apply_planning_bundle(
+            project["config"],
+            bundle_path=bundle_path,
+            application_path=application_path,
+            approval_path=approval_path,
+            node_decisions_path=decisions_path,
+            approved_by="human",
+        )
+
+    after = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for protected_root in protected_roots
+        if protected_root.exists()
+        for path in protected_root.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
 
 
 def event_fate_claim(route: dict) -> dict:

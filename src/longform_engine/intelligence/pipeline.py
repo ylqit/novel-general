@@ -427,6 +427,24 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
     },
 }
 
+FANFICTION_CURRENT_CHAIN_TASK_TYPES = frozenset(
+    {
+        "story_architecture_design",
+        "chapter_semantic_planning",
+        "draft_semantic_review",
+        "prose_revision_review",
+        "reader_feedback_analysis",
+        "book_design",
+        "character_expression_design",
+        "character_expression_review",
+        "outline_design",
+        "arc_simulation",
+        "outline_extension",
+        "chapter_direction",
+        "outline_revision",
+    }
+)
+
 BOOK_IDEATION_DIMENSIONS = (
     "target_reader_and_reading_context",
     "core_hook",
@@ -516,6 +534,17 @@ def create_intelligence_task(
         from_chapter=from_chapter,
         to_chapter=to_chapter,
     )
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None
+    if (
+        str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
+        and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES
+    ):
+        try:
+            current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
+                config, root
+            )
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
     if task_type == "chapter_direction":
         direction_status = assess_chapter_direction(config, int(scope["chapter_number"]))
         if direction_status.get("status") == "outline_revision_required":
@@ -537,7 +566,14 @@ def create_intelligence_task(
         requested_inputs = fanfiction_canon_input_files(config)
     inputs = normalize_inputs(
         root,
-        requested_inputs or intelligence_default_inputs(root, task_type, spec, scope),
+        requested_inputs
+        or intelligence_default_inputs(
+            root,
+            task_type,
+            spec,
+            scope,
+            current_fanfiction=current_fanfiction,
+        ),
     )
     if task_type == "fanfiction_canon":
         allowed_root = (root / "50_workbench" / "同人原著资料").resolve()
@@ -567,10 +603,18 @@ def create_intelligence_task(
                 "fanfiction_design_review requires a validated route candidate: "
                 + "; ".join(route_validation.errors)
             )
+        try:
+            current_engine = (
+                fanfiction_contracts.load_current_fanfiction_story_engine_documents(
+                    config, root
+                )
+            )
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
         inputs = [
             route_candidate,
-            root / "10_bible" / "fanfiction" / "story_engine.json",
-            root / "10_bible" / "fanfiction" / "source_canon.json",
+            current_engine.paths["story_engine"],
+            current_engine.paths["source_canon"],
         ]
     if task_type == "chapter_semantic_planning":
         inputs = [write_chapter_direction_context(config, root, int(scope["chapter_number"]))]
@@ -809,6 +853,17 @@ def apply_intelligence_candidate(
 ) -> IntelligenceApplyResult:
     root = resolve_project_root(config)
     spec = require_spec(task_type)
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None
+    if (
+        str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
+        and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES
+    ):
+        try:
+            current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
+                config, root
+            )
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
     if output_protocol_for_task(task_type) == DESIGN_DOCUMENT_SCHEMA:
         raise ValueError(
             "design_document_v1 cannot be applied directly; approve the Markdown, compile a "
@@ -970,7 +1025,14 @@ def apply_intelligence_candidate(
             write_json(candidate, reviewed_route_payload)
         if review_candidate is not None and approved_review_payload is not None:
             write_json(review_candidate, approved_review_payload)
-        write_targets(config, root, task_type, payload, scope=manifest_scope)
+        write_targets(
+            config,
+            root,
+            task_type,
+            payload,
+            scope=manifest_scope,
+            current_fanfiction=current_fanfiction,
+        )
         if stale_dependents:
             mark_fanfiction_semantic_dependents_stale(
                 root,
@@ -1198,6 +1260,11 @@ def record_chapter_direction_selection(
     if selected_by != "human":
         raise ValueError("Chapter direction selection requires selected_by=human.")
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
     document = resolve_candidate(root, document_path)
     try:
         parsed = parse_design_document(
@@ -1269,6 +1336,14 @@ def approve_design_document(
     if approved_by != "human":
         raise ValueError("Design document approval requires --approved-by human.")
     root = resolve_project_root(config)
+    if (
+        str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
+        and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES
+    ):
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
     document = resolve_candidate(root, document_path)
     validation = validate_intelligence_candidate(
         config,
@@ -1337,6 +1412,14 @@ def create_design_compile_task(
     if task_type not in DESIGN_INTELLIGENCE_TASK_TYPES:
         raise ValueError(f"{task_type} is not a design_document_v1 task.")
     root = resolve_project_root(config)
+    if (
+        str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
+        and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES
+    ):
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
     document = resolve_candidate(root, document_path)
     approval = load_design_approval(root, task_type, document)
     source_manifest = manifest_for_output(root, task_type, document)
@@ -1549,6 +1632,17 @@ def apply_compiled_design(
     if approved_by != "human":
         raise ValueError("Compiled design apply requires --approved-by human.")
     root = resolve_project_root(config)
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None
+    if (
+        str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
+        and task_type in FANFICTION_CURRENT_CHAIN_TASK_TYPES
+    ):
+        try:
+            current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
+                config, root
+            )
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
     document = resolve_candidate(root, document_path)
     delta = resolve_candidate(root, delta_path)
     validation = validate_design_compile_delta(
@@ -1624,7 +1718,14 @@ def apply_compiled_design(
                 "delta": raw_delta,
             },
         )
-        write_targets(config, root, task_type, domain_payload, scope=scope)
+        write_targets(
+            config,
+            root,
+            task_type,
+            domain_payload,
+            scope=scope,
+            current_fanfiction=current_fanfiction,
+        )
         if task_type == "chapter_direction" and selection:
             from longform_engine.orchestration.pipeline import upsert_chapter_plan, write_chapter_card_artifacts
 
@@ -2025,6 +2126,7 @@ def assess_project_readiness(config: ConfigDocument) -> ProjectReadinessResult:
         return ProjectReadinessResult(False, "story_profile_conflict", "", tuple(issues))
     markers = state.get("project_intelligence") if isinstance(state, dict) and isinstance(state.get("project_intelligence"), dict) else {}
     creation_mode = str(config.data.get("creation", {}).get("mode") or "original")
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None
     if creation_mode == "fanfiction":
         existing_canon = read_json(root / "10_bible" / "fanfiction" / "source_canon.json", {})
         if isinstance(existing_canon, dict) and existing_canon.get("schema") in {
@@ -2100,7 +2202,9 @@ def assess_project_readiness(config: ConfigDocument) -> ProjectReadinessResult:
                 ("fanfiction_design has not been explicitly applied.",),
             )
         try:
-            fanfiction_contracts.load_current_fanfiction_route(config, root)
+            current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
+                config, root
+            )
         except fanfiction_contracts.FanfictionContractError as exc:
             return ProjectReadinessResult(
                 False,
@@ -2120,14 +2224,15 @@ def assess_project_readiness(config: ConfigDocument) -> ProjectReadinessResult:
         dependency = read_json(
             root / "10_bible" / "fanfiction" / "book_design_dependency.json", {}
         )
-        story_engine_path = root / "10_bible" / "fanfiction" / "story_engine.json"
-        route_path = root / "10_bible" / "fanfiction" / "fanfiction_bible.json"
         if (
+            current_fanfiction is None
+            or
             not isinstance(dependency, dict)
             or dependency.get("schema") != "fanfiction_book_design_dependency_v1"
             or dependency.get("story_engine_sha256")
-            != sha256(story_engine_path.read_bytes()).hexdigest()
-            or dependency.get("route_design_sha256") != sha256(route_path.read_bytes()).hexdigest()
+            != current_fanfiction.sha256["story_engine"]
+            or dependency.get("route_design_sha256")
+            != current_fanfiction.sha256["route_design"]
         ):
             return ProjectReadinessResult(
                 False,
@@ -2239,16 +2344,34 @@ def intelligence_default_inputs(
     task_type: str,
     spec: dict[str, Any],
     scope: dict[str, Any],
+    *,
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None,
 ) -> list[Path]:
-    candidates = [root / str(item) for item in spec["defaults"]]
+    current_paths = (
+        {
+            path.relative_to(root).as_posix(): path
+            for path in (
+                current_fanfiction.paths["source_canon"],
+                current_fanfiction.paths["story_engine"],
+                current_fanfiction.paths["route_design"],
+            )
+        }
+        if current_fanfiction is not None
+        else {}
+    )
+    candidates = [
+        current_paths.get(str(item), root / str(item)) for item in spec["defaults"]
+    ]
     if task_type in {"book_design", "fanfiction_design"}:
         candidates.append(root / "10_bible" / "creative_decisions.json")
     if task_type == "book_design":
         candidates.extend(
             [
-                root / "10_bible" / "fanfiction" / "story_engine.json",
-                root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
+                current_fanfiction.paths["story_engine"],
+                current_fanfiction.paths["route_design"],
             ]
+            if current_fanfiction is not None
+            else []
         )
     if task_type in {"book_design", "outline_design", "outline_extension", "arc_simulation"}:
         candidates.extend(sorted((root / "20_outline" / "semantic" / "全书架构").glob("*.json")))
@@ -5094,6 +5217,7 @@ def write_targets(
     payload: dict[str, Any],
     *,
     scope: dict[str, Any] | None = None,
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None,
 ) -> None:
     if task_type in {
         "character_interpretation",
@@ -5130,7 +5254,11 @@ def write_targets(
         return
     if task_type == "book_design":
         basis_before = current_basis_hashes(root)
-        write_book_design_targets(root, payload)
+        write_book_design_targets(
+            root,
+            payload,
+            current_fanfiction=current_fanfiction,
+        )
         mark_project_intelligence_applied(root, "book_design", payload)
         mark_project_intelligence_applied(root, "character_expression_design", payload)
         stale_causal_simulations_if_basis_changed(root, basis_before)
@@ -5427,7 +5555,12 @@ def project_arc_progress_to_chapter(
     return max(1, min(estimated_chapters, round(global_progress * (estimated_chapters - 1)) + 1))
 
 
-def write_book_design_targets(root: Path, payload: dict[str, Any]) -> None:
+def write_book_design_targets(
+    root: Path,
+    payload: dict[str, Any],
+    *,
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None,
+) -> None:
     creative_brief = dict(payload["creative_brief"])
     creative_brief["status"] = "confirmed"
     write_json(root / "10_bible" / "creative_brief.json", creative_brief)
@@ -5446,15 +5579,13 @@ def write_book_design_targets(root: Path, payload: dict[str, Any]) -> None:
     for optional in ("factions", "locations"):
         if optional in payload:
             write_json(root / "10_bible" / f"{optional}.json", payload[optional])
-    story_engine = root / "10_bible" / "fanfiction" / "story_engine.json"
-    route = root / "10_bible" / "fanfiction" / "fanfiction_bible.json"
-    if story_engine.is_file() and route.is_file():
+    if current_fanfiction is not None:
         write_json(
             root / "10_bible" / "fanfiction" / "book_design_dependency.json",
             {
                 "schema": "fanfiction_book_design_dependency_v1",
-                "story_engine_sha256": sha256(story_engine.read_bytes()).hexdigest(),
-                "route_design_sha256": sha256(route.read_bytes()).hexdigest(),
+                "story_engine_sha256": current_fanfiction.sha256["story_engine"],
+                "route_design_sha256": current_fanfiction.sha256["route_design"],
                 "book_design_projection_sha256": semantic_json_hash(payload),
             },
         )
@@ -5887,7 +6018,7 @@ def fanfiction_status(config: ConfigDocument) -> dict[str, Any]:
             (markers.get("fanfiction_story_engine") or {}).get("status") or "not_applied"
         ),
         "design_status": str((markers.get("fanfiction_design") or {}).get("status") or "not_applied"),
-        "design_review_status": fanfiction_design_review_status(root),
+        "design_review_status": fanfiction_design_review_status(config, root),
         "rights_advisory_only": True,
         "rights_warnings": rights_warnings,
         "source_coverage_ready": source_readiness["ready"],
@@ -5900,21 +6031,20 @@ def fanfiction_status(config: ConfigDocument) -> dict[str, Any]:
     }
 
 
-def fanfiction_design_review_status(root: Path) -> str:
-    bible = read_json(root / "10_bible" / "fanfiction" / "fanfiction_bible.json", {})
-    review = bible.get("extensions", {}).get("independent_review") if isinstance(bible, dict) else None
-    if isinstance(review, dict) and review.get("verdict") == "pass":
-        path = root / str(review.get("review_path") or "")
-        if path.is_file() and sha256(path.read_bytes()).hexdigest() == review.get("review_sha256"):
-            return "applied"
-        return "stale"
+def fanfiction_design_review_status(config: ConfigDocument, root: Path) -> str:
+    try:
+        fanfiction_contracts.load_current_fanfiction_documents(config, root)
+    except fanfiction_contracts.FanfictionContractError as exc:
+        current_error = exc.code
+    else:
+        return "applied"
     active = [
         item
         for item in list_manifests(root, chapter_number=0)
         if item.get("task_type") == "fanfiction_design_review"
         and item.get("status") not in {"applied", "superseded", "rolled_back"}
     ]
-    return str(active[-1].get("status") or "awaiting_agent") if active else "not_applied"
+    return str(active[-1].get("status") or "awaiting_agent") if active else current_error
 
 
 def write_json(path: Path, payload: Any) -> None:

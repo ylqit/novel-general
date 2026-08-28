@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 
+from longform_engine import fanfiction_contracts
 from longform_engine.agent_protocols import (
     EVIDENCE_REVIEW_SCHEMA,
     build_validation_report,
@@ -167,6 +168,14 @@ def editorial_review(config: ConfigDocument, *, chapter_number: int) -> Editoria
     if chapter_number <= 0:
         raise ValueError("chapter_number must be positive.")
     root = resolve_project_root(config)
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
+                config, root
+            )
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise ValueError(str(exc)) from exc
     chapter_path = find_chapter(root, chapter_number)
     if chapter_path is None:
         raise ValueError(f"Chapter ch{chapter_number:03d} not found in final or draft lanes.")
@@ -221,7 +230,11 @@ def editorial_review(config: ConfigDocument, *, chapter_number: int) -> Editoria
     payload["conditional_pass_streak"] = streak
     payload["need_human"] = bool(reasons)
     payload["need_human_reasons"] = reasons
-    payload["agent_task_files"] = write_multi_agent_task_files(root, payload)
+    payload["agent_task_files"] = write_multi_agent_task_files(
+        root,
+        payload,
+        current_fanfiction=current_fanfiction,
+    )
 
     atomic_write_text(review_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
     atomic_write_text(task_file, format_review_task(payload))
@@ -962,7 +975,12 @@ def format_review_task(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def write_multi_agent_task_files(root: Path, payload: dict[str, Any]) -> list[str]:
+def write_multi_agent_task_files(
+    root: Path,
+    payload: dict[str, Any],
+    *,
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None,
+) -> list[str]:
     task_dir = review_root(root) / "agent_tasks" / f"ch{payload['chapter_number']:03d}"
     result_dir = review_root(root) / "results"
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -974,7 +992,12 @@ def write_multi_agent_task_files(root: Path, payload: dict[str, Any]) -> list[st
         context_file = task_dir / f"{role_id}.context.json"
         output_file = result_dir / f"ch{payload['chapter_number']:03d}.{role_id}.json"
         manifest_file = task_dir / f"{role_id}.agent_task.json"
-        source_inputs = editorial_role_source_inputs(root, payload, role_id)
+        source_inputs = editorial_role_source_inputs(
+            root,
+            payload,
+            role_id,
+            current_fanfiction=current_fanfiction,
+        )
         context_payload = build_editorial_context_payload(
             root,
             payload=payload,
@@ -1030,6 +1053,8 @@ def editorial_role_source_inputs(
     root: Path,
     payload: dict[str, Any],
     role_id: str,
+    *,
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None,
 ) -> list[Path]:
     chapter_number = int(payload["chapter_number"])
     chapter = root / str(payload.get("source_path") or "")
@@ -1071,9 +1096,15 @@ def editorial_role_source_inputs(
         "canon_fidelity_reviewer": [
             chapter,
             root / "50_workbench" / "fanfiction_context" / f"ch{chapter_number:03d}.json",
-            root / "10_bible" / "fanfiction" / "source_canon.json",
-            root / "10_bible" / "fanfiction" / "story_engine.json",
-            root / "10_bible" / "fanfiction" / "fanfiction_bible.json",
+            *(
+                [
+                    current_fanfiction.paths["source_canon"],
+                    current_fanfiction.paths["story_engine"],
+                    current_fanfiction.paths["route_design"],
+                ]
+                if current_fanfiction is not None
+                else []
+            ),
         ],
     }
     candidates = candidates_by_role.get(

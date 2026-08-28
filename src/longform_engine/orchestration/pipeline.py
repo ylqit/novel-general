@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 
+from longform_engine import fanfiction_contracts
 from longform_engine.agent_protocols import output_protocol_for_task
 from longform_engine.agent_tasks import (
     AgentTaskContractError,
@@ -352,6 +353,11 @@ def plan_chapter(config: ConfigDocument, *, chapter_number: int, overwrite: bool
     if chapter_number <= 0:
         raise WorkflowError("chapter_number must be positive.")
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise WorkflowError(str(exc)) from exc
     card_dir = root / "20_outline" / "chapter_cards"
     json_path = card_dir / f"ch{chapter_number:03d}.json"
     md_path = card_dir / f"ch{chapter_number:03d}.md"
@@ -852,6 +858,11 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
     """Prepare the next chapter according to the configured writing mode."""
 
     root = resolve_project_root(config)
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            fanfiction_contracts.load_current_fanfiction_documents(config, root)
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise WorkflowError(str(exc)) from exc
     state_path = root / "30_state" / "novel_state.json"
     state = load_json(state_path, default={})
     if chapter_number is None:
@@ -1841,6 +1852,14 @@ def write_writing_task(
     overwrite: bool,
 ) -> dict[str, str]:
     root = resolve_project_root(config)
+    current_fanfiction: fanfiction_contracts.CurrentFanfictionDocuments | None = None
+    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
+        try:
+            current_fanfiction = fanfiction_contracts.load_current_fanfiction_documents(
+                config, root
+            )
+        except fanfiction_contracts.FanfictionContractError as exc:
+            raise WorkflowError(str(exc)) from exc
     try:
         chapter_contract, chapter_contract_digest = load_verified_chapter_contract(root, chapter_number)
     except ChapterContractError as exc:
@@ -1870,13 +1889,13 @@ def write_writing_task(
         raise WorkflowError("chapter writing requires chapter_contract_v5; v0.9 chapter cards are incompatible")
     if not isinstance(beat, dict) or beat.get("schema") != "plot_node_table_v1":
         raise WorkflowError("chapter writing requires the current approved plot_node_table_v1")
-    if str(config.data.get("creation", {}).get("mode") or "") == "fanfiction":
+    if current_fanfiction is not None:
         source_ids = {
             str(item.get("source_id") or "")
             for item in config.data.get("fanfiction", {}).get("sources") or []
             if isinstance(item, dict) and item.get("source_id")
         }
-        canon = load_json(root / "10_bible" / "fanfiction" / "source_canon.json", default={})
+        canon = current_fanfiction.source_canon
         known_ids = {
             str(claim.get("claim_id") or "")
             for claim in (canon.get("claims") or [] if isinstance(canon, dict) else [])
