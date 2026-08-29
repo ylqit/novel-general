@@ -41,6 +41,8 @@ COMPACT_CONTRACT_FIELDS = (
     "ending_distribution",
     "slow_chapter_policy",
     "cn_longform_fanfiction",
+    "qidian_male_fanfiction",
+    "fanqie_free_fanfiction",
     "platform_policy",
 )
 
@@ -164,30 +166,34 @@ def compile_effective_quality_contract(
 
     conditional_overlays: list[dict[str, Any]] = []
     if (
-        market == "qidian_male"
+        market in {"qidian_male", "fanqie_free"}
         and str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
     ):
-        overlay = load_quality_profile("overlays", "cn_longform_fanfiction")
-        merge_contract_layer(
-            contract,
-            overlay[0]["contract"],
-            layer="conditional_overlay",
-            source=overlay[1],
-            digest=overlay[2],
-            merge_trace=merge_trace,
-            overridden_fields=overridden_fields,
-        )
-        record = profile_source_record(overlay[0], overlay[1], overlay[2])
-        source_records.append(record)
-        conditional_overlays.append(
-            {
-                "id": "cn_longform_fanfiction",
-                "applied": True,
-                "source": overlay[1],
-                "sha256": overlay[2],
-                "execution_level": "P2_advisory",
-            }
-        )
+        for overlay_id in (
+            "cn_longform_fanfiction",
+            f"{market}_fanfiction",
+        ):
+            overlay = load_quality_profile("overlays", overlay_id)
+            merge_contract_layer(
+                contract,
+                overlay[0]["contract"],
+                layer="conditional_overlay",
+                source=overlay[1],
+                digest=overlay[2],
+                merge_trace=merge_trace,
+                overridden_fields=overridden_fields,
+            )
+            record = profile_source_record(overlay[0], overlay[1], overlay[2])
+            source_records.append(record)
+            conditional_overlays.append(
+                {
+                    "id": overlay_id,
+                    "applied": True,
+                    "source": overlay[1],
+                    "sha256": overlay[2],
+                    "execution_level": "P2_advisory",
+                }
+            )
 
     for facet in compiled_story["selected_facets"]:
         facet_key = f"{facet['kind']}:{facet['id']}"

@@ -1,4 +1,4 @@
-"""Advisory platform policy snapshots, provenance, and publication export."""
+"""Platform policy snapshots, fanfiction rights decisions, and publication export."""
 
 from __future__ import annotations
 
@@ -9,13 +9,16 @@ import json
 from pathlib import Path
 from typing import Any
 
+from longform_engine import fanfiction_contracts
 from longform_engine.config import ConfigDocument
 from longform_engine.resources import resource_path
 from longform_engine.storage import atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import list_canonical_chapter_files, list_finalized_chapter_files
 
 
-POLICY_REGISTRY_SCHEMA = "platform_publication_policy_registry_v1"
+POLICY_REGISTRY_SCHEMA = "platform_publication_policy_registry_v2"
+PREFLIGHT_SCHEMA = "platform_publication_preflight_v2"
+RIGHTS_DECISION_SCHEMA = "fanfiction_publication_rights_decision_v1"
 SUPPORTED_TARGETS = {"qidian_male", "fanqie_free"}
 PROHIBITED_REPORT_FIELDS = {
     "ai_probability",
@@ -38,6 +41,7 @@ class PublicationRiskReportResult:
 
 @dataclass(frozen=True)
 class PublicationExportResult:
+    target: str
     bundle_file: str
     report_file: str
     chapter_count: int
@@ -55,12 +59,221 @@ class PublicationPreflightResult:
 
 
 @dataclass(frozen=True)
+class PublicationRightsDecisionResult:
+    target: str
+    decision: str
+    decision_file: str
+    decision_sha256: str
+    risk_acknowledgement_required: bool
+
+
+class PublicationExportBlockedError(ValueError):
+    """Raised only when a concrete platform export lacks a current fanfiction decision."""
+
+
+@dataclass(frozen=True)
 class CreationProvenanceResult:
     target: str
     manifest_file: str
     chapter_count: int
     blocking: bool
     manifest_sha256: str
+
+
+def record_publication_rights_decision(
+    config: ConfigDocument,
+    *,
+    target: str,
+    decision: str,
+    approved_by: str,
+    note: str,
+) -> tuple[PublicationRightsDecisionResult, dict[str, Any]]:
+    """Persist one human risk decision without storing Canon, prompts, or manuscript prose."""
+
+    target = normalize_target(target)
+    normalized_decision = str(decision or "").strip()
+    if normalized_decision not in {"proceed", "hold"}:
+        raise ValueError("decision must be proceed or hold")
+    approver = str(approved_by or "").strip()
+    if not approver:
+        raise ValueError("approved_by must identify the human decision maker")
+    normalized_note = str(note or "").strip()
+    if len(normalized_note) > 2_000:
+        raise ValueError("note must be at most 2000 characters and must not contain source text or manuscript prose")
+    if str(config.data.get("creation", {}).get("mode") or "original") != "fanfiction":
+        raise ValueError("publication rights decisions apply only to fanfiction projects")
+
+    registry, registry_file, registry_hash = load_policy_registry()
+    records = applicable_policy_records(registry, target)
+    policy_snapshot = target_policy_snapshot(registry, target, records)
+    binding, binding_errors = current_rights_binding(
+        config,
+        target=target,
+        registry_file=registry_file,
+        registry_hash=registry_hash,
+        policy_snapshot=policy_snapshot,
+    )
+    if binding_errors:
+        raise ValueError(
+            "cannot bind a publication rights decision to the current project: "
+            + "; ".join(binding_errors)
+        )
+    declarations = binding["source_rights_declarations"]
+    risk_acknowledgement_required = any(
+        item["rights_status"] == "unverified" or item["commercial_intent"] is True
+        for item in declarations
+    )
+    if normalized_decision == "proceed" and risk_acknowledgement_required and not normalized_note:
+        raise ValueError(
+            "proceed requires a non-empty risk note when rights are unverified or commercial intent is declared"
+        )
+
+    payload = {
+        "schema": RIGHTS_DECISION_SCHEMA,
+        "target": target,
+        "decision": normalized_decision,
+        "approved_by": approver,
+        "decided_at": utc_now(),
+        "note": normalized_note,
+        "risk_acknowledgement_required": risk_acknowledgement_required,
+        "bindings": binding,
+        "stores_source_text": False,
+        "stores_prompt": False,
+        "stores_manuscript_body": False,
+        "claim_boundary": (
+            "This is a human risk-awareness and workflow responsibility decision; it is not legal advice, "
+            "a licence, rights-holder authorization, or a platform acceptance guarantee."
+        ),
+    }
+    assert_no_prohibited_fields(payload)
+    root = resolve_project_root(config)
+    decision_file = publication_rights_decision_path(root, target)
+    atomic_write_text(decision_file, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    append_publication_event(root, "fanfiction_publication_rights_decision_recorded", decision_file)
+    result = PublicationRightsDecisionResult(
+        target=target,
+        decision=normalized_decision,
+        decision_file=relative(root, decision_file),
+        decision_sha256=file_hash(decision_file),
+        risk_acknowledgement_required=risk_acknowledgement_required,
+    )
+    return result, payload
+
+
+def publication_rights_decision_status(
+    config: ConfigDocument,
+    *,
+    target: str,
+) -> dict[str, Any]:
+    """Describe whether the target's stored human decision still matches every bound input."""
+
+    target = normalize_target(target)
+    registry, registry_file, registry_hash = load_policy_registry()
+    records = applicable_policy_records(registry, target)
+    policy_snapshot = target_policy_snapshot(registry, target, records)
+    return _publication_rights_decision_status(
+        config,
+        target=target,
+        registry_file=registry_file,
+        registry_hash=registry_hash,
+        policy_snapshot=policy_snapshot,
+        records=records,
+    )
+
+
+def _publication_rights_decision_status(
+    config: ConfigDocument,
+    *,
+    target: str,
+    registry_file: Path,
+    registry_hash: str,
+    policy_snapshot: dict[str, Any],
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    root = resolve_project_root(config)
+    decision_file = publication_rights_decision_path(root, target)
+    stored = read_json(decision_file)
+    creation_mode = str(config.data.get("creation", {}).get("mode") or "original")
+    stale_policy_records = [str(item["record_id"]) for item in records if policy_record_is_stale(item)]
+    base = {
+        "target": target,
+        "applicable": creation_mode == "fanfiction",
+        "decision_file": relative(root, decision_file) if decision_file.is_file() else "",
+        "decision_sha256": file_hash(decision_file),
+        "policy_snapshot_sha256": policy_snapshot["snapshot_sha256"],
+        "policy_record_ids": policy_snapshot["record_ids"],
+        "stale_policy_record_ids": stale_policy_records,
+    }
+    if creation_mode != "fanfiction":
+        return {
+            **base,
+            "rights_decision_status": "not_applicable",
+            "decision_stale": False,
+            "stale_reasons": [],
+            "binding_errors": [],
+            "export_blocking": False,
+        }
+
+    binding, binding_errors = current_rights_binding(
+        config,
+        target=target,
+        registry_file=registry_file,
+        registry_hash=registry_hash,
+        policy_snapshot=policy_snapshot,
+    )
+    if not isinstance(stored, dict):
+        return {
+            **base,
+            "rights_decision_status": "missing",
+            "decision_stale": False,
+            "stale_reasons": [],
+            "binding_errors": binding_errors,
+            "export_blocking": True,
+        }
+    validation_errors = validate_rights_decision_payload(stored, target=target)
+    if validation_errors:
+        return {
+            **base,
+            "rights_decision_status": "invalid",
+            "decision_stale": True,
+            "stale_reasons": validation_errors,
+            "binding_errors": binding_errors,
+            "export_blocking": True,
+        }
+
+    stored_bindings = stored["bindings"]
+    stale_reasons = list(binding_errors)
+    for field, reason in (
+        ("effective_project_config_sha256", "project_config_changed"),
+        ("source_canon_sha256", "source_canon_changed"),
+        ("source_rights_declarations_sha256", "source_rights_declarations_changed"),
+        ("platform_policy_snapshot_sha256", "platform_policy_snapshot_changed"),
+    ):
+        if stored_bindings.get(field) != binding.get(field):
+            stale_reasons.append(reason)
+    if stored_bindings.get("source_rights_declarations") != binding.get("source_rights_declarations"):
+        stale_reasons.append("source_rights_declarations_changed")
+    expected_risk_acknowledgement = any(
+        item["rights_status"] == "unverified" or item["commercial_intent"] is True
+        for item in binding["source_rights_declarations"]
+    )
+    if stored.get("risk_acknowledgement_required") is not expected_risk_acknowledgement:
+        stale_reasons.append("risk_acknowledgement_requirement_changed")
+    if stale_policy_records:
+        stale_reasons.append("platform_policy_verification_expired")
+    stale_reasons = sorted(set(stale_reasons))
+    decision = str(stored["decision"])
+    return {
+        **base,
+        "rights_decision_status": decision,
+        "decision_stale": bool(stale_reasons),
+        "stale_reasons": stale_reasons,
+        "binding_errors": binding_errors,
+        "approved_by": str(stored["approved_by"]),
+        "decided_at": str(stored["decided_at"]),
+        "note_present": bool(str(stored.get("note") or "").strip()),
+        "export_blocking": decision != "proceed" or bool(stale_reasons),
+    }
 
 
 def publication_preflight(
@@ -75,10 +288,19 @@ def publication_preflight(
     root = resolve_project_root(config)
     registry, registry_file, registry_hash = load_policy_registry()
     records = applicable_policy_records(registry, target)
+    policy_snapshot = target_policy_snapshot(registry, target, records)
     stale_records = [str(item["record_id"]) for item in records if policy_record_is_stale(item)]
     corpus = current_creation_fingerprint(root)
     revision = human_revision_coverage(root, corpus)
     observations = platform_observations(target, corpus, revision)
+    rights = _publication_rights_decision_status(
+        config,
+        target=target,
+        registry_file=registry_file,
+        registry_hash=registry_hash,
+        policy_snapshot=policy_snapshot,
+        records=records,
+    )
     status = (
         "policy_verification_required"
         if stale_records
@@ -87,10 +309,14 @@ def publication_preflight(
         else "clear"
     )
     payload = {
-        "schema": "platform_publication_preflight_v1",
+        "schema": PREFLIGHT_SCHEMA,
         "target": target,
         "status": status,
-        "blocking": False,
+        "blocking": rights["export_blocking"],
+        "rights_decision_status": rights["rights_decision_status"],
+        "decision_stale": rights["decision_stale"],
+        "export_blocking": rights["export_blocking"],
+        "rights_decision": rights,
         "corpus_sha256": corpus["corpus_sha256"],
         "chapter_hashes": corpus["chapters"],
         "human_revision_coverage": revision,
@@ -98,6 +324,7 @@ def publication_preflight(
         "policy_snapshot": {
             "registry_file": registry_file.as_posix(),
             "registry_sha256": registry_hash,
+            "snapshot_sha256": policy_snapshot["snapshot_sha256"],
             "snapshot_verified_at": registry["snapshot_verified_at"],
             "record_ids": [str(item["record_id"]) for item in records],
             "stale_record_ids": stale_records,
@@ -115,6 +342,9 @@ def publication_preflight(
                 "record_id": item["record_id"],
                 "publisher": item["publisher"],
                 "claim": item["claim"],
+                "policy_dimension": item["policy_dimension"],
+                "state": item["state"],
+                "scope": item["scope"],
                 "source_url": item["source_url"],
                 "verified_at": item["verified_at"],
                 "next_review_at": item["next_review_at"],
@@ -126,7 +356,9 @@ def publication_preflight(
             "引擎不会向正文自动插入声明，也不会删除或规避已有标识。"
         ),
         "claim_boundary": (
-            "This advisory does not predict acceptance, expose an internal detector, or certify literary quality."
+            "Content observations do not predict acceptance, expose an internal detector, or certify literary "
+            "quality. Only the current human fanfiction rights decision and its policy/currentness bindings can "
+            "block this target's export."
         ),
         "generated_at": utc_now(),
     }
@@ -140,14 +372,14 @@ def publication_preflight(
         status=status,
         report_file=relative(root, report_file),
         warning_count=sum(item["status"] == "attention" for item in observations) + len(stale_records),
-        blocking=False,
-        policy_snapshot_sha256=registry_hash,
+        blocking=bool(rights["export_blocking"]),
+        policy_snapshot_sha256=policy_snapshot["snapshot_sha256"],
     )
     return result, payload
 
 
 def publication_preflight_status(config: ConfigDocument, *, target: str) -> dict[str, Any]:
-    """Return current advisory state and whether a previously written report has gone stale."""
+    """Return current policy, rights-decision, and stored-report state for one target."""
 
     root = resolve_project_root(config)
     result, payload = publication_preflight(config, target=target, write=False)
@@ -157,13 +389,22 @@ def publication_preflight_status(config: ConfigDocument, *, target: str) -> dict
         isinstance(stored, dict)
         and (
             stored.get("corpus_sha256") != payload["corpus_sha256"]
-            or ((stored.get("policy_snapshot") or {}).get("registry_sha256") != result.policy_snapshot_sha256)
+            or ((stored.get("policy_snapshot") or {}).get("snapshot_sha256") != result.policy_snapshot_sha256)
+            or stored.get("rights_decision_status") != payload["rights_decision_status"]
+            or stored.get("decision_stale") != payload["decision_stale"]
+            or ((stored.get("rights_decision") or {}).get("decision_sha256")
+                != payload["rights_decision"]["decision_sha256"])
         )
     )
     return {
         "target": result.target,
         "status": result.status,
-        "blocking": False,
+        "blocking": result.blocking,
+        "rights_decision_status": payload["rights_decision_status"],
+        "decision_stale": payload["decision_stale"],
+        "export_blocking": payload["export_blocking"],
+        "rights_decision": payload["rights_decision"],
+        "policy_snapshot": payload["policy_snapshot"],
         "report_file": result.report_file if report.is_file() else "",
         "report_stale": stale,
         "human_revision_coverage": payload["human_revision_coverage"],
@@ -180,7 +421,9 @@ def creation_provenance_manifest(
 
     target = normalize_target(target)
     root = resolve_project_root(config)
-    _registry, registry_file, registry_hash = load_policy_registry()
+    registry, registry_file, registry_hash = load_policy_registry()
+    records = applicable_policy_records(registry, target)
+    policy_snapshot = target_policy_snapshot(registry, target, records)
     chapters: list[dict[str, Any]] = []
     for chapter_number, final_file in list_finalized_chapter_files(root):
         finalization_file = final_file.with_suffix(".finalization.json")
@@ -215,7 +458,12 @@ def creation_provenance_manifest(
         "target": target,
         "production_method": "agent_candidate_then_evidence_bound_complete_human_revision_and_review",
         "chapters": chapters,
-        "policy_snapshot": {"registry_file": registry_file.as_posix(), "registry_sha256": registry_hash},
+        "policy_snapshot": {
+            "registry_file": registry_file.as_posix(),
+            "registry_sha256": registry_hash,
+            "snapshot_sha256": policy_snapshot["snapshot_sha256"],
+            "record_ids": policy_snapshot["record_ids"],
+        },
         "stores_full_prompt": False,
         "stores_manuscript_body": False,
         "claim_boundary": (
@@ -252,7 +500,10 @@ def publication_risk_report(config: ConfigDocument) -> PublicationRiskReportResu
         result, payload = publication_preflight(config, target=target, write=True)
         preflights[target] = {
             "status": result.status,
-            "blocking": False,
+            "blocking": result.blocking,
+            "rights_decision_status": payload["rights_decision_status"],
+            "decision_stale": payload["decision_stale"],
+            "export_blocking": payload["export_blocking"],
             "report_file": result.report_file,
             "corpus_sha256": payload["corpus_sha256"],
         }
@@ -284,8 +535,29 @@ def publication_risk_report(config: ConfigDocument) -> PublicationRiskReportResu
     return PublicationRiskReportResult(relative(root, report_file), relative(root, markdown_file), len(warnings), False)
 
 
-def export_publication_bundle(config: ConfigDocument, *, output: str | Path | None = None) -> PublicationExportResult:
+def export_publication_bundle(
+    config: ConfigDocument,
+    *,
+    target: str,
+    output: str | Path | None = None,
+) -> PublicationExportResult:
+    target = normalize_target(target)
     root = resolve_project_root(config)
+    preflight, preflight_payload = publication_preflight(config, target=target, write=True)
+    if preflight_payload["export_blocking"]:
+        rights = preflight_payload["rights_decision"]
+        reasons = list(rights.get("stale_reasons") or []) + list(rights.get("binding_errors") or [])
+        if rights.get("rights_decision_status") == "missing":
+            reasons.insert(0, "rights_decision_missing")
+        elif rights.get("rights_decision_status") == "hold":
+            reasons.insert(0, "rights_decision_hold")
+        elif rights.get("rights_decision_status") == "invalid":
+            reasons.insert(0, "rights_decision_invalid")
+        detail = ", ".join(dict.fromkeys(str(item) for item in reasons if str(item)))
+        raise PublicationExportBlockedError(
+            f"publication export for {target} is blocked by the fanfiction rights decision gate"
+            + (f": {detail}" if detail else "")
+        )
     chapters = [path for _number, path in list_finalized_chapter_files(root)]
     if not chapters:
         raise ValueError("No finalized chapters are available for publication export.")
@@ -295,7 +567,7 @@ def export_publication_bundle(config: ConfigDocument, *, output: str | Path | No
             bundle_file = root / bundle_file
     else:
         slug = str(config.data.get("project", {}).get("slug") or "novel")
-        bundle_file = root / "80_exports" / "bundles" / f"{slug}.md"
+        bundle_file = root / "80_exports" / "bundles" / f"{slug}.{target}.md"
     bundle_file = bundle_file.expanduser().resolve()
     try:
         bundle_file.relative_to((root / "80_exports").resolve())
@@ -307,7 +579,7 @@ def export_publication_bundle(config: ConfigDocument, *, output: str | Path | No
     atomic_write_text(bundle_file, "\n".join(body).rstrip() + "\n")
     report = publication_risk_report(config)
     append_publication_event(root, "publication_bundle_exported", bundle_file)
-    return PublicationExportResult(relative(root, bundle_file), report.report_file, len(chapters), False)
+    return PublicationExportResult(target, relative(root, bundle_file), report.report_file, len(chapters), False)
 
 
 def platform_observations(target: str, corpus: dict[str, Any], revision: dict[str, Any]) -> list[dict[str, Any]]:
@@ -433,6 +705,137 @@ def voice_pair_ids(root: Path, chapter_number: int, final_hash: str) -> list[str
     ]
 
 
+def publication_rights_decision_path(root: Path, target: str) -> Path:
+    return root / "50_workbench" / "publication" / "rights_decisions" / f"{target}.decision.json"
+
+
+def canonical_json_hash(value: Any) -> str:
+    rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return sha256(rendered.encode("utf-8")).hexdigest()
+
+
+def source_rights_declarations(config: ConfigDocument) -> list[dict[str, Any]]:
+    fanfiction = config.data.get("fanfiction")
+    fanfiction = fanfiction if isinstance(fanfiction, dict) else {}
+    declarations: list[dict[str, Any]] = []
+    for raw in fanfiction.get("sources") or []:
+        if not isinstance(raw, dict):
+            continue
+        basis = {
+            "source_id": str(raw.get("source_id") or ""),
+            "rights_status": str(raw.get("rights_status") or "unverified"),
+            "commercial_intent": bool(raw.get("commercial_intent")),
+            "platform_policy_url": str(raw.get("platform_policy_url") or ""),
+        }
+        declarations.append({**basis, "declaration_sha256": canonical_json_hash(basis)})
+    return sorted(declarations, key=lambda item: item["source_id"])
+
+
+def target_policy_snapshot(
+    registry: dict[str, Any],
+    target: str,
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    basis = {
+        "schema": registry["schema"],
+        "target": target,
+        "snapshot_verified_at": registry["snapshot_verified_at"],
+        "records": records,
+    }
+    return {
+        "snapshot_sha256": canonical_json_hash(basis),
+        "record_ids": [str(item["record_id"]) for item in records],
+    }
+
+
+def current_rights_binding(
+    config: ConfigDocument,
+    *,
+    target: str,
+    registry_file: Path,
+    registry_hash: str,
+    policy_snapshot: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    root = resolve_project_root(config)
+    errors: list[str] = []
+    canon_path = root / "10_bible" / "fanfiction" / "source_canon.json"
+    canon_hash = ""
+    try:
+        canon = fanfiction_contracts.load_current_fanfiction_source_canon(config, root)
+        canon_hash = canon.sha256
+    except (fanfiction_contracts.FanfictionContractError, OSError, KeyError, ValueError) as exc:
+        errors.append(f"source_canon_not_current: {exc}")
+    declarations = source_rights_declarations(config)
+    binding = {
+        "effective_project_config_sha256": canonical_json_hash(config.data),
+        "source_canon_file": relative(root, canon_path),
+        "source_canon_sha256": canon_hash,
+        "source_rights_declarations": declarations,
+        "source_rights_declarations_sha256": canonical_json_hash(declarations),
+        "platform_policy_registry_file": registry_file.as_posix(),
+        "platform_policy_registry_sha256": registry_hash,
+        "platform_policy_snapshot_sha256": policy_snapshot["snapshot_sha256"],
+        "platform_policy_record_ids": policy_snapshot["record_ids"],
+        "target": target,
+    }
+    return binding, errors
+
+
+def validate_rights_decision_payload(payload: dict[str, Any], *, target: str) -> list[str]:
+    errors: list[str] = []
+    expected = {
+        "schema",
+        "target",
+        "decision",
+        "approved_by",
+        "decided_at",
+        "note",
+        "risk_acknowledgement_required",
+        "bindings",
+        "stores_source_text",
+        "stores_prompt",
+        "stores_manuscript_body",
+        "claim_boundary",
+    }
+    if set(payload) != expected or payload.get("schema") != RIGHTS_DECISION_SCHEMA:
+        return ["rights_decision_schema_invalid"]
+    if payload.get("target") != target:
+        errors.append("rights_decision_target_mismatch")
+    if payload.get("decision") not in {"proceed", "hold"}:
+        errors.append("rights_decision_value_invalid")
+    if not str(payload.get("approved_by") or "").strip() or not str(payload.get("decided_at") or "").strip():
+        errors.append("rights_decision_human_identity_invalid")
+    bindings = payload.get("bindings")
+    required_bindings = {
+        "effective_project_config_sha256",
+        "source_canon_file",
+        "source_canon_sha256",
+        "source_rights_declarations",
+        "source_rights_declarations_sha256",
+        "platform_policy_registry_file",
+        "platform_policy_registry_sha256",
+        "platform_policy_snapshot_sha256",
+        "platform_policy_record_ids",
+        "target",
+    }
+    if not isinstance(bindings, dict) or set(bindings) != required_bindings:
+        errors.append("rights_decision_bindings_invalid")
+    if not isinstance(payload.get("risk_acknowledgement_required"), bool):
+        errors.append("rights_decision_risk_acknowledgement_invalid")
+    if (
+        payload.get("decision") == "proceed"
+        and payload.get("risk_acknowledgement_required") is True
+        and not str(payload.get("note") or "").strip()
+    ):
+        errors.append("rights_decision_risk_note_missing")
+    if not isinstance(payload.get("note"), str) or len(str(payload.get("note") or "")) > 2_000:
+        errors.append("rights_decision_note_invalid")
+    for flag in ("stores_source_text", "stores_prompt", "stores_manuscript_body"):
+        if payload.get(flag) is not False:
+            errors.append(f"rights_decision_{flag}_must_be_false")
+    return errors
+
+
 def load_policy_registry() -> tuple[dict[str, Any], Path, str]:
     path = resource_path("config", "platform_publication_policy_registry.json")
     payload = read_json(path)
@@ -446,10 +849,27 @@ def load_policy_registry() -> tuple[dict[str, Any], Path, str]:
     required = {
         "record_id", "platform", "claim", "unknown_items", "source_type", "publisher",
         "source_url", "effective_at", "verified_at", "next_review_at", "scope",
+        "policy_dimension", "state",
     }
     for index, item in enumerate(payload["records"]):
         if not isinstance(item, dict) or set(item) != required:
             raise ValueError(f"platform policy registry record {index} has invalid fields")
+        if item.get("platform") not in {*SUPPORTED_TARGETS, "all"}:
+            raise ValueError(f"platform policy registry record {index} has invalid platform")
+        if item.get("policy_dimension") not in {
+            "category_availability",
+            "submission_eligibility",
+            "signing_eligibility",
+            "incentive_eligibility",
+            "content_governance",
+            "rights_risk",
+            "disclosure_requirement",
+            "quality_guidance",
+            "public_tooling",
+        }:
+            raise ValueError(f"platform policy registry record {index} has invalid policy_dimension")
+        if item.get("state") not in {"confirmed", "excluded", "unknown", "advisory"}:
+            raise ValueError(f"platform policy registry record {index} has invalid state")
     return payload, Path("config/platform_publication_policy_registry.json"), file_hash(path)
 
 
@@ -503,7 +923,10 @@ def render_publication_report(payload: dict[str, Any]) -> str:
         "", "## Platform preflights", "",
     ]
     for target, item in payload["preflights"].items():
-        lines.append(f"- {target}: {item['status']} (blocking=false)")
+        lines.append(
+            f"- {target}: {item['status']} "
+            f"(rights={item['rights_decision_status']}, export_blocking={item['export_blocking']})"
+        )
     lines.extend(["", "## Warnings", ""])
     lines.extend(f"- [{item['code']}] {item['message']}" for item in payload["warnings"])
     if not payload["warnings"]:
@@ -561,11 +984,15 @@ def utc_now() -> str:
 __all__ = [
     "CreationProvenanceResult",
     "PublicationExportResult",
+    "PublicationExportBlockedError",
     "PublicationPreflightResult",
     "PublicationRiskReportResult",
+    "PublicationRightsDecisionResult",
     "creation_provenance_manifest",
     "export_publication_bundle",
     "publication_preflight",
     "publication_preflight_status",
+    "publication_rights_decision_status",
     "publication_risk_report",
+    "record_publication_rights_decision",
 ]

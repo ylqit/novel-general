@@ -1973,7 +1973,7 @@ def write_writing_task(
     } if isinstance(obligation_ledger, dict) else {}
     chapter_obligations = [
         obligations_by_id[ref]
-        for ref in card.get("semantic_obligation_refs") or []
+        for ref in chapter_contract.get("semantic_obligation_refs") or []
         if ref in obligations_by_id
     ]
     rolling_window_file = root / "20_outline" / "rolling_window.json"
@@ -2083,6 +2083,7 @@ def write_writing_task(
         resolved_contract_refs=resolved_contract_refs,
         style_context=style_context,
         human_intent=human_intent,
+        chapter_contract=chapter_contract,
         semantic_obligations=chapter_obligations,
         fanfiction_contract=fanfiction_contract,
     )
@@ -4061,6 +4062,7 @@ def build_chapter_story_brief(
     resolved_contract_refs: list[dict[str, Any]],
     style_context: dict[str, Any],
     human_intent: dict[str, Any],
+    chapter_contract: dict[str, Any],
     semantic_obligations: list[dict[str, Any]],
     fanfiction_contract: dict[str, Any],
 ) -> dict[str, Any]:
@@ -4109,7 +4111,7 @@ def build_chapter_story_brief(
     repetition_count = carriers[-4:].count(primary_carrier) + (1 if primary_carrier else 0)
     promise_gains = [
         str(item.get("intended_reader_gain") or "")
-        for item in card.get("reader_promise_actions") or []
+        for item in chapter_contract.get("reader_promise_actions") or []
         if isinstance(item, dict) and str(item.get("intended_reader_gain") or "").strip()
     ]
     character_guidance = author_character_guidance(character_expression_packet)
@@ -4134,14 +4136,14 @@ def build_chapter_story_brief(
             "pov_voice_intent": str(human_intent.get("pov_voice_intent") or ""),
             "protected_items": dedupe_strings(as_list(human_intent.get("protected_items"))),
         },
-        "topology": str(card.get("topology") or ""),
-        "happening_now": str(card.get("chapter_duty") or ""),
-        "observable_change": str(card.get("observable_change") or ""),
-        "reader_value": str(card.get("reader_value") or ""),
-        "failure": author_applicability_text(card.get("failure")),
-        "choice": author_applicability_text(card.get("choice")),
-        "cost": author_applicability_text(card.get("cost")),
-        "aftermath": author_applicability_text(card.get("aftermath")),
+        "topology": str(chapter_contract.get("topology") or ""),
+        "happening_now": str(chapter_contract.get("chapter_duty") or ""),
+        "observable_change": str(chapter_contract.get("observable_change") or ""),
+        "reader_value": str(chapter_contract.get("reader_value") or ""),
+        "failure": author_applicability_text(chapter_contract.get("failure")),
+        "choice": author_applicability_text(chapter_contract.get("choice")),
+        "cost": author_applicability_text(chapter_contract.get("cost")),
+        "aftermath": author_applicability_text(chapter_contract.get("aftermath")),
         "scenes": scenes,
         "semantic_obligations": [
             {
@@ -4153,8 +4155,12 @@ def build_chapter_story_brief(
             for item in semantic_obligations
         ],
         "promised_reader_gains": promise_gains,
-        "protected_outcomes": dedupe_strings(as_list(card.get("protected_invariants"))),
-        "prohibited_drift": dedupe_strings(as_list(card.get("prohibited_drift"))),
+        "protected_outcomes": dedupe_strings(
+            as_list(chapter_contract.get("protected_invariants"))
+        ),
+        "prohibited_drift": dedupe_strings(
+            as_list(chapter_contract.get("prohibited_drift"))
+        ),
         "local_freedom": str(
             writing_brief.get("local_freedom")
             or "在受保护结果和禁止偏移内，可自由设计具体动作、摩擦、细节与潜台词。"
@@ -4170,7 +4176,7 @@ def build_chapter_story_brief(
             "count_in_window": repetition_count,
             "warning": repetition_count >= 3,
         },
-        "ending_state": str(card.get("observable_change") or ""),
+        "ending_state": str(chapter_contract.get("observable_change") or ""),
     }
 
 

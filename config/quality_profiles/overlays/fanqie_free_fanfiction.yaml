@@ -1,0 +1,22 @@
+schema: quality_profile_v1
+kind: overlay
+id: fanqie_free_fanfiction
+updated_at: "2026-08-29"
+evidence_level: "official_platform_guidance_plus_editorial_heuristic"
+source_refs:
+  - "https://fanqienovel.com/writer/zone/article/7672294500500258840"
+  - "https://fanqienovel.com/writer/zone/article/7642544663915675672"
+heuristic_notes: "番茄同人移动阅读兼容层；与通用原创市场档分开，不模拟内部识别、推荐或签约算法。"
+contract:
+  fanqie_free_fanfiction:
+    execution_level: P2_advisory
+    mobile_clarity: "人物、目标、冲突、时间地点和能力条件在移动阅读中保持可辨识。"
+    early_payoff: "较早兑现原著识别价值或原创推进价值，但不强制短句、对白率或章尾悬崖。"
+    anti_padding: "回顾、设定说明和过场必须承担新的因果任务，不以重复信息填充篇幅。"
+    anti_mass_generation: "相邻章节避免只替换名词的模板式结构复制，事件结果必须累积到状态、关系或局势。"
+    chapter_readability: "每章形成可理解的行动—选择—后果链，并至少产生一种可观察改变。"
+    review_questions:
+      - "本章是否无需百科式说明也能识别原著位置和当前问题？"
+      - "本章兑现是否具体改变后续选择，而非只添加刺激或面板信息？"
+      - "是否出现连续模板循环、同义复述、空洞过场或批量拼接痕迹？"
+      - "慢章是否仍改变人物状态、关系、目标、信息或局势？"

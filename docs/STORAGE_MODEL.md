@@ -36,6 +36,8 @@
 | `10_bible/fanfiction/fanfiction_bible.json` | 绑定独立复核 hash 的正式同人连续性与路线语义文档 |
 | `50_workbench/fanfiction_context/chNNN.json` | 可重建且仅接受当前版本的内部 `fanfiction_context_bundle_v2`；包含显式必需 claim、带理由依赖闭包、结构化分区、作者/审阅双投影、命名冲突和预算，不是作者稿 |
 | `50_workbench/fanfiction_knowledge_impacts/chNNN.<trigger-digest>.workflow.json` | 每项经人工确认的重大分歧各自对应的未来知识可靠性待审工作流；按触发身份幂等，不自动改变 Canon 或路线 |
+| `50_workbench/publication/rights_decisions/<target>.decision.json` | `fanfiction_publication_rights_decision_v1`；仅保存人工 `proceed/hold`、风险说明及配置/Canon/逐来源权利声明/目标政策快照 hash，不保存原著、Prompt 或正文 |
+| `70_runtime/literary_evidence/fanfiction_trials/<trial-id>/` | 两条各 20 章同人路线的匿名公开包、私有路线映射、三份独立人类评审、不可改写中位数聚合和实质分歧人工处理；正文只存在项目运行时公开盲审包，不进入仓库 |
 | `50_workbench/创作沙盒/` | 可自由试验的非 Canon `semantic_document_v1` |
 | `50_workbench/语义候选/` | 沙盒提升或 Host Agent 生成、仍待复核/审批的候选 |
 
@@ -66,6 +68,8 @@ basis 绑定 v5 合同、人工意图、滚动窗口、Plot Node 表、语义义
 `chapter_closure_v2` 固定四项 SHA：final、semantic ledger、event ledger、reader-promise ledger。已有 closure 的任一证据漂移都会阻断幂等 close。
 
 未来知识重估的“章节适用范围”与“证据保留期限”是两个合同。只有 `from_chapter <= 目标章节 <= to_chapter`（无 `to_chapter` 表示无限期）的结果进入目标章上下文；live 证据从人工批准时起保留到下一待写章节超过 `to_chapter`，因此延迟生效不会提前丢证。人工 apply 在同一 canonical transaction 内登记 provenance pin，并写入独立的不可变 provenance archive，保存批准文档、全部证据字节和 applied task audit。压缩保留仍在期限内的 live 证据和任务索引，同时正常归档其他同章工件；结果到期后可删除 live 证据而不改写既有章节归档或 provenance archive。canonical 批准文档存在但 pin 注册表缺失、覆盖不完整、哈希漂移或归档审计无效时，压缩在任何写入/删除前阻断。
+
+发布决定是可陈旧的 workbench 状态，不是 Canon。目标平台、有效配置、当前 `source_canon.json`、任一来源的 `rights_status/commercial_intent/platform_policy_url` 或政策快照变化后，旧决定仍保留供审计但不再允许该目标导出。原创项目和全部非导出写作动作不读取该门禁。
 
 ## 4. 设定变更与反馈
 

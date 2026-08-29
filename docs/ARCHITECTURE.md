@@ -53,11 +53,15 @@ Host Agent
 
 项目内容统一使用 `semantic_document_v1`：中文正文是主要语义载体，只有会被 Canon、图谱或依赖传播使用的断言才拆成带证据 claim。事实、解释、假设和创作建议必须分层；开放中文 `document_type` 与 `extensions` 不要求修改 Schema。
 
-同人正式设计在项目原著基线 Canon 之后增加两个门禁：人工批准的 `同人故事发动机`，以及与路线生成会话隔离的 `同人路线独立复核`。故事发动机必须提供唯一初始变量、独立长期目标、可持续阻力、原著人物自主性和原作事件结束后的故事来源；路线必须区分项目截止点、故事切入点和人物知识，说明原著事件命运与人物职责。人工决定同时绑定路线、复核、故事发动机和原著 Canon hash。
+同人正式设计在项目原著基线 Canon 之后增加两个门禁：人工批准的 `同人故事发动机`，以及与路线生成会话隔离的 `同人路线独立复核`。故事发动机以 `oc_si_progression | canon_character_centered | hybrid` 区分设计问题与复核重点，必须说明主角与原著关系、首卷读者识别承诺、移除原著既有事件后仍能运转的原创主线，并继续提供唯一初始变量、独立长期目标、可持续阻力、原著人物自主性和原作事件结束后的故事来源。路线必须区分项目截止点、故事切入点和人物知识，为每项重大原著事件保存“基线 → 初始变量 → 处置 → 职责承担者 → 一阶影响 → 二阶影响 → 新问题”的稳定引用。人工决定同时绑定路线、复核、故事发动机和原著 Canon hash。
+
+章节后处理只能提出 `已实现重大分歧` 声明。人工批准后，每个稳定触发身份独立、幂等地创建一次未来知识重估；三个不同重大分歧会形成三个任务，重复运行不会复制任务。批准结果以“仍可靠、部分可靠、已失效、反向误导”描述适用章节范围，并通过 live provenance pin 与不可变 archive 进入后续章节的精确依赖闭包。
 
 章节侧使用可重建、只接受当前版本的内部 `fanfiction_context_bundle_v2`。选择优先级固定为“全局故事承诺/显式不变量 → 章节显式引用 → 递归依赖闭包 → 当前来源/人物/事件/卷/篇章结构化范围 → 可选 RAG”；仅因章节号或卷范围适用不会把整份路线塞入上下文。v2 分离作者自然中文投影与带来源、稳定 claim/evidence ID 的精确审阅投影，并记录来源分区、命名冲突和逐分区预算。必需证据超预算时在任何产物写入前阻断，列出最大占用项与缩小范围建议；不得截断。该 bundle 与全部来源 hash 纳入 `chapter_story_brief_basis_v3` 和审阅 provenance。
 
 活动运行时检索域只包括 `source_evidence`、`project_canon` 和 `project_story`。同人案例与技法属于仓库角色配置、质量规则和抽象验收夹具，不是第四个运行时检索域，也不进入项目 Canon、RAG 或图谱。
+
+跨界路线显式声明 `fixed_host | fusion_world | sequential_worlds`。需求编译器只依据实际 `transfers[].payload_kinds` 生成相互作用主题，经“来源适配器 → 项目跨界宪法 → 当前卷例外”验证能量补充、作用对象、激活条件、成本、反制、身份、组织响应、死亡/返回与不可逆后果。固定宿主必须有默认宿主；融合世界必须提供世界规则优先级；顺序诸天必须逐卷唯一宿主并保留至少一项跨卷关系、身体状态、资源债务、敌对关系、知识失效或总目标进度。系统不生成来源间 N×N 兼容矩阵。
 
 全局资料修正不会改变已固定项目。系统只报告升级候选并生成 `fanfiction_source_upgrade_proposal_v1`；独立语义审查不得降级由稳定事实 ID/显式引用得到的 `must_stale`。未来升级使项目 Canon 和明确依赖产物 stale；影响定稿章节时只创建 `revision_branch_v2`，不改当前绑定或正文。
 
@@ -149,6 +153,8 @@ preparing -> prepared -> applied
 
 ## 9. 平台与质量边界
 
-起点男频是主要编辑画像；番茄免费只提供 P2 非阻断观察。平台快照和启发式不能升级为作者配额或合规门禁。项目不实现 AI 概率、规避检测、平台必过或人工写作比例声明。
+共享 `cn_longform_fanfiction` 合同之上，起点男频同人层检查长主线、卷级增长、持续阻力、原著人物价值与后续故事来源；番茄免费同人层独立检查移动阅读清晰度、较快兑现、反填充、反粗制批量结构与章节可读性。二者均为 P2 文学/兼容观察，不能升级为句长、对白率、章尾、字数、更新、签约、推荐或付费配额。
 
-`protocol_ready`、`author_acceptance_ready`、`literary_evidence_ready` 独立报告。当前仍无合格真实盲评 manifest，因此 `literary_evidence_ready=false`。
+平台政策注册表按目标和 `category_availability | submission_eligibility | signing_eligibility | incentive_eligibility | content_governance | rights_risk | disclosure_requirement` 分开保存官方来源、验证日期、下次复核日期、状态和未知项。`platform_publication_preflight_v2` 的内容观察不预测平台接受；同人项目只有具体 `publication export --target` 会读取 `fanfiction_publication_rights_decision_v1`。决定必须为当前 `proceed` 并精确绑定有效配置、来源 Canon、逐来源权利声明和目标政策快照；缺失、`hold`、hash 漂移或政策复核过期只阻断该目标导出。该决定不是法律意见、授权或接受保证，原创项目不触发。
+
+`protocol_ready`、`author_acceptance_ready`、`literary_evidence_ready` 独立报告。同人文学证据要求 OC/SI 与原著角色中心两条各 20 章路线、hash-only 自动门禁报告、三名未参与生成的人类盲审、中位数阈值及全部实质分歧人工处理；系统不选择更有利的个别意见。当前仍无合格真实盲评 manifest，因此 `literary_evidence_ready=false`。

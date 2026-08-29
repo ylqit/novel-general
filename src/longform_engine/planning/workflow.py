@@ -840,16 +840,87 @@ def _validate_all_planning_fanfiction_claim_refs(
         if isinstance(subject, str) and subject
     )
 
-    origins: list[tuple[str, list[Any], set[int], set[str]]] = []
+    identity_sources: dict[str, str] = {}
+    for claim in claims_by_id.values():
+        extensions = claim.get("extensions")
+        extensions = extensions if isinstance(extensions, dict) else {}
+        identity = extensions.get("identity")
+        identity = identity if isinstance(identity, dict) else {}
+        identity_id = str(identity.get("identity_id") or "")
+        source_id = str(identity.get("source_id") or extensions.get("source_id") or "")
+        if identity_id and source_id:
+            identity_sources[identity_id] = source_id
+
+    active_arcs = [
+        item for item in active.get("character_arcs") or [] if isinstance(item, dict)
+    ]
+    active_events = [
+        item for item in active.get("event_graph") or [] if isinstance(item, dict)
+    ]
+
+    def nested_string_values(value: Any) -> set[str]:
+        if isinstance(value, str) and value:
+            return {value}
+        if isinstance(value, dict):
+            return {
+                item
+                for nested in value.values()
+                for item in nested_string_values(nested)
+            }
+        if isinstance(value, list):
+            return {
+                item for nested in value for item in nested_string_values(nested)
+            }
+        return set()
+
+    def scoped_ids(items: list[dict[str, Any]], references: set[str]) -> set[str]:
+        return {
+            str(item.get("id") or "")
+            for item in items
+            if item.get("id")
+            and (
+                str(item.get("id")) in references
+                or bool(nested_string_values(item) & references)
+            )
+        }
+
+    def source_ids_for(references: set[str]) -> set[str]:
+        return {
+            source_id
+            for reference in references
+            for source_id in (
+                identity_sources.get(reference, ""),
+                reference if reference in configured_sources else "",
+            )
+            if source_id
+        }
+
+    obligations_by_id = {
+        str(item.get("obligation_id") or ""): item
+        for item in bundle.get("semantic_obligations") or []
+        if isinstance(item, dict) and item.get("obligation_id")
+    }
+    tables_by_chapter = {
+        int(item["chapter_number"]): item
+        for item in bundle.get("plot_node_tables") or []
+        if isinstance(item, dict)
+        and isinstance(item.get("chapter_number"), int)
+        and not isinstance(item.get("chapter_number"), bool)
+    }
+
+    origins: list[dict[str, Any]] = []
     projection = active.get("fanfiction_projection")
     projection_refs = projection.get("claim_refs") if isinstance(projection, dict) else []
     origins.append(
-        (
-            "active_volume_plan.fanfiction_projection",
-            list(projection_refs or []),
-            volume_chapters,
-            active_event_ids,
-        )
+        {
+            "name": "active_volume_plan.fanfiction_projection",
+            "refs": list(projection_refs or []),
+            "chapters": volume_chapters,
+            "source_ids": configured_sources,
+            "character_ids": all_character_ids,
+            "event_ids": active_event_ids,
+            "arc_ids": active_arc_ids,
+        }
     )
     obligation_chapters: dict[str, set[int]] = {}
     for contract in bundle.get("chapter_contracts") or []:
@@ -864,13 +935,22 @@ def _validate_all_planning_fanfiction_claim_refs(
         if not isinstance(obligation, dict):
             continue
         obligation_id = str(obligation.get("obligation_id") or "")
+        obligation_references = {
+            str(item)
+            for field in ("subject_refs", "prior_state_refs", "dependency_refs")
+            for item in obligation.get(field) or []
+            if isinstance(item, str) and item
+        }
         origins.append(
-            (
-                f"semantic_obligation:{obligation_id}",
-                list(obligation.get("fanfiction_claim_refs") or []),
-                obligation_chapters.get(obligation_id, set()),
-                active_event_ids,
-            )
+            {
+                "name": f"semantic_obligation:{obligation_id}",
+                "refs": list(obligation.get("fanfiction_claim_refs") or []),
+                "chapters": obligation_chapters.get(obligation_id, set()),
+                "source_ids": source_ids_for(obligation_references),
+                "character_ids": set(obligation.get("subject_refs") or []),
+                "event_ids": scoped_ids(active_events, obligation_references),
+                "arc_ids": scoped_ids(active_arcs, obligation_references),
+            }
         )
     for table in bundle.get("plot_node_tables") or []:
         if not isinstance(table, dict):
@@ -880,13 +960,34 @@ def _validate_all_planning_fanfiction_claim_refs(
         for node in table.get("nodes") or []:
             if not isinstance(node, dict):
                 continue
+            node_references = {
+                str(item)
+                for field in ("actors", "dependency_refs", "obligation_refs")
+                for item in node.get(field) or []
+                if isinstance(item, str) and item
+            }
+            location_ref = str(node.get("location_ref") or "")
+            if location_ref:
+                node_references.add(location_ref)
+            node_id = str(node.get("node_id") or "")
+            if node_id:
+                node_references.add(node_id)
+            for precondition in node.get("preconditions") or []:
+                if isinstance(precondition, dict) and str(precondition.get("ref") or ""):
+                    node_references.add(str(precondition["ref"]))
+            character_ids = {
+                str(item) for item in node.get("actors") or [] if isinstance(item, str)
+            }
             origins.append(
-                (
-                    f"plot_node:{str(node.get('node_id') or '')}",
-                    list(node.get("fanfiction_claim_refs") or []),
-                    chapters,
-                    active_event_ids | {str(node.get("node_id") or "")},
-                )
+                {
+                    "name": f"plot_node:{node_id}",
+                    "refs": list(node.get("fanfiction_claim_refs") or []),
+                    "chapters": chapters,
+                    "source_ids": source_ids_for(node_references),
+                    "character_ids": character_ids,
+                    "event_ids": {node_id} | scoped_ids(active_events, node_references),
+                    "arc_ids": scoped_ids(active_arcs, node_references),
+                }
             )
     for contract in bundle.get("chapter_contracts") or []:
         if not isinstance(contract, dict):
@@ -896,6 +997,28 @@ def _validate_all_planning_fanfiction_claim_refs(
         channel = contract.get("fanfiction_claim_refs")
         if not isinstance(channel, dict):
             continue
+        contract_references: set[str] = set()
+        contract_characters: set[str] = set()
+        for obligation_id in contract.get("semantic_obligation_refs") or []:
+            obligation = obligations_by_id.get(str(obligation_id))
+            if not isinstance(obligation, dict):
+                continue
+            contract_references.update(nested_string_values(obligation))
+            contract_characters.update(
+                str(item)
+                for item in obligation.get("subject_refs") or []
+                if isinstance(item, str)
+            )
+        table = tables_by_chapter.get(chapter) if isinstance(chapter, int) else None
+        if isinstance(table, dict):
+            contract_references.update(nested_string_values(table))
+            contract_characters.update(
+                str(actor)
+                for node in table.get("nodes") or []
+                if isinstance(node, dict)
+                for actor in node.get("actors") or []
+                if isinstance(actor, str)
+            )
         for field in (
             "active_volume_claim_refs",
             "semantic_obligation_claim_refs",
@@ -904,30 +1027,37 @@ def _validate_all_planning_fanfiction_claim_refs(
             "all_claim_refs",
         ):
             origins.append(
-                (
-                    f"chapter_contract:{chapter}:{field}",
-                    list(channel.get(field) or []),
-                    chapters,
-                    active_event_ids,
-                )
+                {
+                    "name": f"chapter_contract:{chapter}:{field}",
+                    "refs": list(channel.get(field) or []),
+                    "chapters": chapters,
+                    "source_ids": source_ids_for(contract_references),
+                    "character_ids": contract_characters,
+                    "event_ids": scoped_ids(active_events, contract_references),
+                    "arc_ids": scoped_ids(active_arcs, contract_references),
+                }
             )
 
-    for origin, refs, chapters, event_ids in origins:
-        for claim_id in refs:
+    for origin in origins:
+        for claim_id in origin["refs"]:
             claim = claims_by_id.get(str(claim_id))
             if claim is None:
-                errors.append(f"{origin} has unresolved stable claim: {claim_id}")
+                errors.append(
+                    f"{origin['name']} has unresolved stable claim: {claim_id}"
+                )
                 continue
             if not _planning_claim_applies(
                 claim,
-                chapter_numbers=chapters,
+                chapter_numbers=origin["chapters"],
                 volume_id=volume_id,
-                source_ids=configured_sources,
-                character_ids=all_character_ids,
-                event_ids=event_ids,
-                arc_ids=active_arc_ids,
+                source_ids=origin["source_ids"],
+                character_ids=origin["character_ids"],
+                event_ids=origin["event_ids"],
+                arc_ids=origin["arc_ids"],
             ):
-                errors.append(f"{origin} claim is out of scope: {claim_id}")
+                errors.append(
+                    f"{origin['name']} claim is out of scope: {claim_id}"
+                )
     return list(dict.fromkeys(errors))
 
 

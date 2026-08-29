@@ -1850,6 +1850,16 @@ def agent_task_events_file(root: Path) -> Path:
     return root / "50_workbench" / "agent_tasks" / "events.jsonl"
 
 
+def agent_task_lifecycle_mutation_paths(root: Path) -> tuple[Path, ...]:
+    """Return the exact files a task status/event update may mutate."""
+
+    paths = [agent_task_index_file(root), agent_task_events_file(root)]
+    rotation = _project_event_rotation_plan(root)
+    if rotation is not None:
+        paths.extend((rotation[1], rotation[2]))
+    return tuple(paths)
+
+
 def normalize_current_result_binding(value: dict[str, Any]) -> dict[str, Any]:
     required = ("ok", "path", "sha256", "diagnostic_file", "source_schema", "validated_at")
     missing = [field for field in required if field not in value]
@@ -2127,27 +2137,14 @@ def rotate_project_events(root: Path) -> None:
     lines = path.read_text(encoding="utf-8").splitlines()
     if path.stat().st_size < EVENT_ROTATE_BYTES and len(lines) < EVENT_ROTATE_LINES:
         return
-    parsed: list[tuple[str, dict[str, Any]]] = []
-    for line in lines:
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            parsed.append((line, payload))
-    project_lines = [line for line, payload in parsed if int(payload.get("chapter_number") or 0) == 0]
-    active_lines = [line for line, payload in parsed if int(payload.get("chapter_number") or 0) != 0]
-    if not project_lines:
+    rotation = _project_event_rotation_plan(root)
+    if rotation is None:
         return
-    segment_dir = root / "70_runtime" / "artifacts" / "events"
-    segment_dir.mkdir(parents=True, exist_ok=True)
-    content = ("\n".join(project_lines) + "\n").encode("utf-8")
-    digest = sha256(content).hexdigest()
-    segment = segment_dir / f"project-events-{digest[:16]}.jsonl.gz"
+    content, segment, manifest_path, active_lines = rotation
+    segment.parent.mkdir(parents=True, exist_ok=True)
     if not segment.exists():
         with gzip.open(segment, "wb", compresslevel=9) as handle:
             handle.write(content)
-    manifest_path = segment_dir / "segments.json"
     manifest = read_json(manifest_path, default={})
     if not isinstance(manifest, dict):
         manifest = {}
@@ -2155,8 +2152,8 @@ def rotate_project_events(root: Path) -> None:
     record = {
         "path": relative_path(root, segment),
         "sha256": sha256(segment.read_bytes()).hexdigest(),
-        "content_sha256": digest,
-        "lines": len(project_lines),
+        "content_sha256": sha256(content).hexdigest(),
+        "lines": len(content.decode("utf-8").splitlines()),
     }
     if not any(item.get("path") == record["path"] for item in segments):
         segments.append(record)
@@ -2165,6 +2162,45 @@ def rotate_project_events(root: Path) -> None:
         json.dumps({"schema": EVENT_SEGMENT_SCHEMA, "segments": segments}, ensure_ascii=False, indent=2) + "\n",
     )
     atomic_write_text(path, "".join(line + "\n" for line in active_lines))
+
+
+def _project_event_rotation_plan(
+    root: Path,
+) -> tuple[bytes, Path, Path, list[str]] | None:
+    """Describe the deterministic project-event rotation outputs without writing."""
+
+    path = agent_task_events_file(root)
+    if not path.is_file():
+        return None
+    parsed: list[tuple[str, dict[str, Any]]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            parsed.append((line, payload))
+    project_lines = [
+        line
+        for line, payload in parsed
+        if int(payload.get("chapter_number") or 0) == 0
+    ]
+    if not project_lines:
+        return None
+    active_lines = [
+        line
+        for line, payload in parsed
+        if int(payload.get("chapter_number") or 0) != 0
+    ]
+    content = ("\n".join(project_lines) + "\n").encode("utf-8")
+    digest = sha256(content).hexdigest()
+    segment_dir = root / "70_runtime" / "artifacts" / "events"
+    return (
+        content,
+        segment_dir / f"project-events-{digest[:16]}.jsonl.gz",
+        segment_dir / "segments.json",
+        active_lines,
+    )
 
 
 def normalize_status(value: str) -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from hashlib import sha256
 import json
 import os
@@ -46,6 +47,14 @@ PIN_FIELDS = {*PIN_BASE_FIELDS, "provenance_archive"}
 
 class FutureKnowledgeProvenanceError(ValueError):
     """Raised when a future-knowledge result loses its exact proof chain."""
+
+
+@dataclass(frozen=True)
+class FutureKnowledgeProvenanceSnapshot:
+    """One fully verified registry view reused during one top-level read."""
+
+    pins_by_trigger: Mapping[str, Mapping[str, Any]]
+    pins_by_approved_path: Mapping[str, Mapping[str, Any]]
 
 
 def provenance_pin_registry_path(root: Path) -> Path:
@@ -202,19 +211,32 @@ def upsert_future_knowledge_pin(root: Path, record: Mapping[str, Any]) -> Path:
 def require_exact_future_knowledge_pin(
     root: Path,
     expected_base: Mapping[str, Any],
+    *,
+    snapshot: FutureKnowledgeProvenanceSnapshot | None = None,
 ) -> dict[str, Any]:
     """Require an exact base projection, immutable archive, and current live evidence."""
 
-    registry = _read_registry(provenance_pin_registry_path(root), require_exists=True)
     trigger_id = str(expected_base.get("trigger_id") or "")
-    matches = [item for item in registry["pins"] if item.get("trigger_id") == trigger_id]
+    if snapshot is None:
+        snapshot = load_future_knowledge_provenance_snapshot(root, require_exists=True)
+        snapshot_owns_archive_validation = True
+    else:
+        snapshot_owns_archive_validation = False
+    matched = snapshot.pins_by_trigger.get(trigger_id)
+    matches = [matched] if matched is not None else []
     if len(matches) != 1 or {
         key: matches[0].get(key) for key in PIN_BASE_FIELDS
     } != dict(expected_base):
         raise FutureKnowledgeProvenanceError(
             f"future knowledge provenance pin differs from current chain: {trigger_id}"
         )
-    errors = validate_future_knowledge_pin(root, matches[0], require_live=True)
+    # A supplied snapshot has already verified every immutable archive once for
+    # this top-level read. Only live evidence bindings need rechecking here.
+    errors = (
+        validate_future_knowledge_pin(root, matches[0], require_live=True)
+        if snapshot_owns_archive_validation
+        else _validate_pin_base(root, matches[0], require_live=True)
+    )
     if errors:
         raise FutureKnowledgeProvenanceError(";".join(errors))
     return dict(matches[0])
@@ -223,24 +245,43 @@ def require_exact_future_knowledge_pin(
 def future_knowledge_pin_for_approved(
     root: Path,
     approved_path: Path,
+    *,
+    snapshot: FutureKnowledgeProvenanceSnapshot | None = None,
 ) -> dict[str, Any]:
     """Resolve one structurally valid archive-backed pin for a canonical document."""
 
-    registry = _read_registry(provenance_pin_registry_path(root), require_exists=True)
+    if snapshot is None:
+        snapshot = load_future_knowledge_provenance_snapshot(root, require_exists=True)
     relative = approved_path.relative_to(root).as_posix()
-    matches = [
-        item
-        for item in registry["pins"]
-        if item.get("approved_document", {}).get("path") == relative
-    ]
+    matched = snapshot.pins_by_approved_path.get(relative)
+    matches = [matched] if matched is not None else []
     if len(matches) != 1:
         raise FutureKnowledgeProvenanceError(
             f"canonical future knowledge document requires one exact pin: {relative}"
         )
-    errors = validate_future_knowledge_pin(root, matches[0], require_live=False)
-    if errors:
-        raise FutureKnowledgeProvenanceError(";".join(errors))
     return dict(matches[0])
+
+
+def load_future_knowledge_provenance_snapshot(
+    root: Path,
+    *,
+    require_exists: bool = False,
+) -> FutureKnowledgeProvenanceSnapshot:
+    """Read and verify the registry and every immutable archive exactly once."""
+
+    registry = _read_registry(
+        provenance_pin_registry_path(root), require_exists=require_exists
+    )
+    by_trigger: dict[str, Mapping[str, Any]] = {}
+    by_approved: dict[str, Mapping[str, Any]] = {}
+    for raw in registry["pins"]:
+        record = dict(raw)
+        by_trigger[str(record["trigger_id"])] = record
+        by_approved[str(record["approved_document"]["path"])] = record
+    return FutureKnowledgeProvenanceSnapshot(
+        pins_by_trigger=by_trigger,
+        pins_by_approved_path=by_approved,
+    )
 
 
 def future_knowledge_pin_applies(record: Mapping[str, Any], target_chapter: int) -> bool:
@@ -629,12 +670,14 @@ __all__ = [
     "FUTURE_KNOWLEDGE_PROVENANCE_ARCHIVE_SCHEMA",
     "FUTURE_KNOWLEDGE_PROVENANCE_PINS_SCHEMA",
     "FutureKnowledgeProvenanceError",
+    "FutureKnowledgeProvenanceSnapshot",
     "build_future_knowledge_pin",
     "expired_archived_future_knowledge_paths",
     "future_knowledge_pin_applies",
     "future_knowledge_pin_for_approved",
     "future_knowledge_pin_retains",
     "future_knowledge_provenance_archive_path",
+    "load_future_knowledge_provenance_snapshot",
     "pin_applicability_from_claims",
     "provenance_pin_registry_path",
     "require_exact_future_knowledge_pin",

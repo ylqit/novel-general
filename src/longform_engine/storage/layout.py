@@ -140,6 +140,7 @@ SUBDIRECTORIES = [
     "50_workbench/writing_tasks",
     "50_workbench/agent_drafts",
     "50_workbench/agent_tasks",
+    "50_workbench/publication/rights_decisions",
     "10_bible/style_profiles",
     "30_state/tcs",
     "60_rag/chunks",

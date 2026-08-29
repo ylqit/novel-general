@@ -38,6 +38,7 @@ from longform_engine.fanfiction_sources import (
 from longform_engine.local_web import LocalWebError, LoopbackHTTPServer, LoopbackRequestHandler
 from longform_engine.fanfiction_context import event_disposition_status, fanfiction_context_status
 from longform_engine.intelligence import fanfiction_status
+from longform_engine.publication import publication_preflight_status
 from longform_engine.semantic_protocols import build_semantic_document
 from longform_engine.storage import atomic_write_text, resolve_project_root
 
@@ -90,6 +91,17 @@ class StudioService:
                     self.config, chapter_number=current_chapter
                 ),
             }
+        publication = {
+            "targets": {
+                target: publication_preflight_status(self.config, target=target)
+                for target in ("qidian_male", "fanqie_free")
+            },
+            "boundary": (
+                "权利决定只确认人工风险知情和流程责任，不是法律意见、授权或平台接收保证；"
+                "普通创作不受门禁，只有具体平台发布包导出受当前决定约束。"
+            ),
+            "automatic_upload": False,
+        }
         return {
             "schema": "novel_creation_studio_state_v1",
             "project": {
@@ -105,6 +117,7 @@ class StudioService:
             "coverage": coverage,
             "semantic_documents": self._semantic_document_index(),
             "fanfiction_workflow": fanfiction_workflow,
+            "publication": publication,
             "crossover_contract": {
                 "topologies": [
                     topology
@@ -156,7 +169,7 @@ class StudioService:
                 "原著时间与知识范围", "原著事件命运", "原著人物职责", "同人路线复核",
                 "跨界宪法", "主世界适配器", "当前卷同人设计", "当前章同人上下文诊断",
                 "全书与分卷", "情节节点", "滚动章节", "章节审阅", "原著一致性与同人创造性双轴审查",
-                "读者反馈", "影响与回溯",
+                "读者反馈", "影响与回溯", "平台发布前确认",
             ],
             "boundaries": {
                 "browser_absolute_path_reading": False,
@@ -176,6 +189,10 @@ class StudioService:
                 "coverage": "longform-engine fanfiction coverage-gaps project.yaml --json",
                 "sandbox": "longform-engine sandbox create project.yaml --type 场景试写 --title 标题 --body-file 内容.md",
                 "migration": "longform-engine migrate audit-v011 --source OLD_PATH --json",
+                "publication_rights_decision": (
+                    "longform-engine publication rights-decision project.yaml --target "
+                    "qidian_male|fanqie_free --decision proceed|hold --approved-by HUMAN --note NOTE"
+                ),
             },
         }
 
@@ -625,7 +642,16 @@ def studio_page_html(csrf_token: str, csp_nonce: str) -> str:
     )
     if page.count(legacy_transport) != 1:
         raise StudioServerError("创作控制台上传模板与 multipart 安全边界不一致")
-    return page.replace(legacy_transport, multipart_transport, 1)
+    page = page.replace(legacy_transport, multipart_transport, 1)
+    publication_projection = 'show("crossoverContract",state.crossover_contract);'
+    publication_projection += (
+        'show("publicationStatus",state.publication);'
+        'show("rightsDecisionCommand",state.safe_commands.publication_rights_decision);'
+    )
+    projection_anchor = 'show("crossoverContract",state.crossover_contract);'
+    if page.count(projection_anchor) != 1:
+        raise StudioServerError("创作控制台发布状态投影边界不一致")
+    return page.replace(projection_anchor, publication_projection, 1)
 
 
 def _safe_browser_relative_path(value: str) -> str:
@@ -762,6 +788,7 @@ longform-engine intelligence task project.yaml --task-type outline_design</pre><
 <section data-panel="原著一致性与同人创造性双轴审查"><h2>原著一致性与同人创造性双轴审查</h2><p>原著一致性核对知识、价值排序、关系阶段与规则；同人创造性核对新选择、分歧后果、原创主线与原著人物主体性。一般“新意不够”只作 P2 建议。</p><pre>longform-engine editorial review project.yaml --chapter N</pre></section>
 <section data-panel="读者反馈"><h2>读者反馈</h2><p>反馈先形成假设与人工决定，只能转成规划或 Canon 变更提案，不能直接改正文。</p><pre>longform-engine intelligence task project.yaml --task-type reader_feedback_analysis --input FEEDBACK.md</pre></section>
 <section data-panel="影响与回溯"><h2>影响与回溯</h2><div class="card">资料升级只生成影响提案；触及定稿章节时进入 revision_branch_v2，不自动替换全文。</div></section>
+<section data-panel="平台发布前确认"><h2>平台发布前确认</h2><p>分别显示起点男频与番茄免费档的政策快照、人工权利决定、陈旧原因和导出门禁。这里不自动登录、投稿或回传平台状态。</p><pre id="publicationStatus"></pre><pre id="rightsDecisionCommand"></pre></section>
 </div></main><script nonce="studiononce">const csrf="__CSRF_TOKEN__";let state=null,lastJob=null,lastBatch=null;const $=id=>document.getElementById(id);async function api(path,body){const r=await fetch(path,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-Studio-CSRF":csrf},body:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw new Error(d.error||"请求失败");return d.result}function show(id,v){$(id).textContent=typeof v==="string"?v:JSON.stringify(v,null,2)}function panels(){const names=state.panels;$("nav").replaceChildren(...names.map((n,i)=>{const b=document.createElement("button");b.textContent=n;b.className=i===0?"active":"";b.onclick=()=>{document.querySelectorAll("section").forEach(s=>s.classList.toggle("show",s.dataset.panel===n));document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x===b))};return b}));document.querySelector("section").classList.add("show")}async function load(){const r=await fetch("/api/state",{credentials:"same-origin"});state=await r.json();if(!r.ok)throw new Error(state.error);$("project").textContent=`${state.project.title} · ${state.project.creation_mode} · ${state.project.target_platform}`;$("platform").value=state.project.target_platform||"";show("catalog",state.catalog);show("capabilities",state.capabilities);show("coverage",state.coverage);show("semanticDocuments",state.semantic_documents);show("crossoverContract",state.crossover_contract);show("sandboxCommand",state.safe_commands.sandbox);show("canonCommand",state.safe_commands.canon_task);show("reviewCommand",state.safe_commands.chapter_review);if(!$("nav").children.length)panels()}$("refresh").onclick=load;$("saveGoal").onclick=async()=>{try{show("goalResult",await api("/api/creation-goal/save",{purpose:$("purpose").value,work_type:$("workType").value,format:$("format").value,target_platform:$("platform").value,update_capacity:$("capacity").value,validation_period:$("period").value,commercial_intent:$("commercial").checked,fanfiction_rights_risk_confirmed:$("rights").checked}))}catch(e){show("goalResult",e.message)}};$("saveSemantic").onclick=async()=>{try{show("semanticResult",await api("/api/semantic/save",{document_type:$("semanticType").value,title:$("semanticTitle").value,continuity:$("semanticContinuity").value,body:$("semanticBody").value,scope_kind:$("semanticScope").value}));await load()}catch(e){show("semanticResult",e.message)}};$("upload").onclick=async()=>{try{const chosen=[...$("files").files];if(!chosen.length)throw new Error("请选择文件");const session=await api("/api/upload/start",{work_id:$("uploadWork").value,source_type:$("sourceType").value,version:$("sourceVersion").value,unit_range:$("unitRange").value,source_method:"浏览器人工导入",rights_status:"user_claimed_authorized",retention_mode:"full_text",storage_mode:"managed_copy"});for(const f of chosen){const path=f.webkitRelativePath||f.name;const r=await fetch(`/api/upload/file?session=${encodeURIComponent(session.session_id)}&path=${encodeURIComponent(path)}`,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/octet-stream","X-Studio-CSRF":csrf},body:f});const d=await r.json();if(!r.ok)throw new Error(d.error||"上传失败")}const plan=await api("/api/upload/finalize",{session_id:session.session_id});lastBatch=plan.batch_id;$("groupPlan").value=JSON.stringify(plan.groups,null,2);show("uploadResult",plan)}catch(e){show("uploadResult",e.message)}};$("confirmGroups").onclick=async()=>{try{if(!lastBatch)throw new Error("请先生成分组预览");show("groupResult",await api("/api/ingest/groups-confirm",{batch_id:lastBatch,groups:JSON.parse($("groupPlan").value),approved_by:"human"}))}catch(e){show("groupResult",e.message)}};$("applyIngest").onclick=async()=>{try{if(!lastBatch)throw new Error("请先确认资料分组");show("groupResult",await api("/api/ingest/apply",{batch_id:lastBatch,approved_by:"human"}));await load()}catch(e){show("groupResult",e.message)}};$("processPlan").onclick=async()=>{try{lastJob=await api("/api/process/plan",{item_id:$("processItem").value,asset_ids:[],execution:"local",processor_id:"auto",parameters:{}});show("processResult",lastJob)}catch(e){show("processResult",e.message)}};$("processRun").onclick=async()=>{try{if(!lastJob)throw new Error("请先生成处理任务");show("processResult",await api("/api/process/run",{item_id:$("processItem").value,job_id:lastJob.job_id}))}catch(e){show("processResult",e.message)}};load().catch(e=>show("catalog",e.message));</script></body></html>'''
 
 

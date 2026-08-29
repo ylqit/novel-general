@@ -14,7 +14,7 @@ config/default.engine.yaml
 
 `creation.mode=fanfiction` 强制进入同人资料流程；`fanfiction.continuity_mode=crossover` 时每个 `fanfiction.sources[]` 都有独立资料包和覆盖状态。作品身份、权威版本和截止点必须由人工确定。默认覆盖模式为 `分层按需`：`design_core` 阻断正式路线，当前 `chapter_dependency` 只阻断依赖它的章节；`whole_to_cutoff` 必须由人工显式选择才成为门禁。
 
-配置不为 Fix-it、穿越、能力体系、人物忠实度或跨界规则增加专用字段。批准的项目原著基线之后，`production next` 依次要求 `同人故事发动机`、路线候选、隔离独立复核和人工 apply；四种时间/知识范围、原著事件命运、人物职责与动态跨界宪法都保存在开放语义文档中。多来源项目按实际 `allowed_elements` 生成跨界需求，不能用配置关闭宿主世界适配与当前规则门禁。
+配置不为 Fix-it、穿越、能力体系、人物忠实度或跨界规则增加专用字段。批准的项目原著基线之后，`production next` 依次要求 `同人故事发动机`、路线候选、隔离独立复核和人工 apply；`route_family`、主角与原著关系、读者识别承诺、原创主线承诺、四种时间/知识范围、原著事件命运、职责承担者、一阶/二阶影响与动态跨界宪法都保存在开放语义文档中。多来源路线使用 `fixed_host | fusion_world | sequential_worlds` 拓扑，并按实际 `payload_kinds` 生成来源适配器要求；不能用配置关闭宿主世界适配、当前卷例外或不可逆后果门禁。
 
 `original`、`inspired_original` 和 `adaptation_study` 中的作品名识别只能创建 `external_work_research_request_v1`。人工批准前不得联网；`use_original_elements` 不进入普通研究，必须改为同人模式。模型记忆不能填补 Canon 缺口。
 
@@ -76,7 +76,9 @@ Agent 只能读取 manifest 的 `io.inputs` 并写唯一 `io.output.path`。Bibl
 
 ## 平台和质量
 
-平台预检固定 `blocking=false`。项目不配置 AI 概率、检测规避、平台必过或人工写作比例。`literary_evidence_ready` 只能由合格真实盲评 manifest 改变；当前保持 `false`。
+起点、番茄的内容质量与平台接受观察仍为 P2 advisory；项目不配置 AI 概率、检测规避、平台必过或人工写作比例。平台政策注册表分别记录分类、投稿、签约、特定激励、内容治理、权利风险和未知项。`creation.mode=fanfiction` 时，只有 `publication export --target ...` 要求当前 `fanfiction_publication_rights_decision_v1=proceed`；该决定绑定有效配置、来源 Canon、逐来源 `rights_status/commercial_intent/platform_policy_url` 声明和目标政策快照。缺失、`hold`、绑定变化或政策复核过期只阻断对应目标导出，不阻断创作、审阅、Canon 或定稿。原创项目不触发该门禁。
+
+`literary_evidence_ready` 只能由可回验真实正文 hash、无 P1 的 gate report、两条各 20 章同人路线、三名独立人类盲审及全部实质分歧人工处理形成的 manifest（或既有正式多范围盲审 manifest）改变；当前仓库没有真实文学材料，保持 `false`。
 
 当前公开稳定配置是 v0.12.0；语义、资料和小说生产边界见 [`V0_12_SEMANTIC_ARCHITECTURE.md`](V0_12_SEMANTIC_ARCHITECTURE.md)，发布事实以 v0.12 checklist、远程 CI 和不可变 Release 为准。
 

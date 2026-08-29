@@ -26,6 +26,14 @@ from longform_engine.blind_review import (
     create_blind_review_template,
     submit_blind_review,
 )
+from longform_engine.fanfiction_literary_trial import (
+    aggregate_fanfiction_literary_trial,
+    create_fanfiction_literary_review_template,
+    create_fanfiction_literary_trial,
+    fanfiction_literary_trial_status,
+    resolve_fanfiction_literary_disagreements,
+    submit_fanfiction_literary_review,
+)
 from longform_engine.character_expression import approve_voice_samples
 from longform_engine.author_voice import approve_author_voice_edit_pair
 from longform_engine.chapter_coedit import (
@@ -255,6 +263,7 @@ from longform_engine.publication import (
     export_publication_bundle,
     publication_preflight,
     publication_risk_report,
+    record_publication_rights_decision,
 )
 from longform_engine.production import agent_task_brief, production_board, production_loop, production_next, production_status
 from longform_engine.prompting import validate_project_prompt_overlay
@@ -617,6 +626,72 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_blind_aggregate.add_argument("--comparison-id", required=True)
     benchmark_blind_aggregate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     benchmark_blind_aggregate.set_defaults(func=cmd_benchmark_blind_aggregate)
+
+    benchmark_fanfiction_trial_init = benchmark_subparsers.add_parser(
+        "fanfiction-trial-init",
+        help="Create the anonymous two-route, twenty-chapter fanfiction literary trial pack.",
+    )
+    benchmark_fanfiction_trial_init.add_argument("config", nargs="?", default="project.yaml")
+    benchmark_fanfiction_trial_init.add_argument("--trial-id", required=True)
+    benchmark_fanfiction_trial_init.add_argument("--oc-si-source-dir", required=True)
+    benchmark_fanfiction_trial_init.add_argument("--oc-si-gate-report", required=True)
+    benchmark_fanfiction_trial_init.add_argument("--canon-character-source-dir", required=True)
+    benchmark_fanfiction_trial_init.add_argument("--canon-character-gate-report", required=True)
+    benchmark_fanfiction_trial_init.add_argument("--seed", required=True)
+    benchmark_fanfiction_trial_init.add_argument("--json", action="store_true")
+    benchmark_fanfiction_trial_init.set_defaults(func=cmd_benchmark_fanfiction_trial_init)
+
+    benchmark_fanfiction_trial_template = benchmark_subparsers.add_parser(
+        "fanfiction-trial-template",
+        help="Create one independent human review template for a fanfiction literary trial.",
+    )
+    benchmark_fanfiction_trial_template.add_argument("config", nargs="?", default="project.yaml")
+    benchmark_fanfiction_trial_template.add_argument("--trial-id", required=True)
+    benchmark_fanfiction_trial_template.add_argument("--reviewer-id", required=True)
+    benchmark_fanfiction_trial_template.add_argument("--json", action="store_true")
+    benchmark_fanfiction_trial_template.set_defaults(func=cmd_benchmark_fanfiction_trial_template)
+
+    benchmark_fanfiction_trial_submit = benchmark_subparsers.add_parser(
+        "fanfiction-trial-submit",
+        help="Validate and store one independent human fanfiction trial review.",
+    )
+    benchmark_fanfiction_trial_submit.add_argument("config", nargs="?", default="project.yaml")
+    benchmark_fanfiction_trial_submit.add_argument("--trial-id", required=True)
+    benchmark_fanfiction_trial_submit.add_argument("--reviewer-id", required=True)
+    benchmark_fanfiction_trial_submit.add_argument("--file", required=True)
+    benchmark_fanfiction_trial_submit.add_argument("--json", action="store_true")
+    benchmark_fanfiction_trial_submit.set_defaults(func=cmd_benchmark_fanfiction_trial_submit)
+
+    benchmark_fanfiction_trial_aggregate = benchmark_subparsers.add_parser(
+        "fanfiction-trial-aggregate",
+        help="Aggregate exactly three independent reviews without selecting favorable opinions.",
+    )
+    benchmark_fanfiction_trial_aggregate.add_argument("config", nargs="?", default="project.yaml")
+    benchmark_fanfiction_trial_aggregate.add_argument("--trial-id", required=True)
+    benchmark_fanfiction_trial_aggregate.add_argument("--json", action="store_true")
+    benchmark_fanfiction_trial_aggregate.set_defaults(func=cmd_benchmark_fanfiction_trial_aggregate)
+
+    benchmark_fanfiction_trial_resolve = benchmark_subparsers.add_parser(
+        "fanfiction-trial-resolve",
+        help="Human-resolve every material panel disagreement without overriding scores.",
+    )
+    benchmark_fanfiction_trial_resolve.add_argument("config", nargs="?", default="project.yaml")
+    benchmark_fanfiction_trial_resolve.add_argument("--trial-id", required=True)
+    benchmark_fanfiction_trial_resolve.add_argument("--decided-by", required=True)
+    benchmark_fanfiction_trial_resolve.add_argument(
+        "--file", required=True, help="JSON array covering every material disagreement."
+    )
+    benchmark_fanfiction_trial_resolve.add_argument("--json", action="store_true")
+    benchmark_fanfiction_trial_resolve.set_defaults(func=cmd_benchmark_fanfiction_trial_resolve)
+
+    benchmark_fanfiction_trial_status = benchmark_subparsers.add_parser(
+        "fanfiction-trial-status",
+        help="Show the two-route literary trial, disagreements, and evidence readiness.",
+    )
+    benchmark_fanfiction_trial_status.add_argument("config", nargs="?", default="project.yaml")
+    benchmark_fanfiction_trial_status.add_argument("--trial-id", required=True)
+    benchmark_fanfiction_trial_status.add_argument("--json", action="store_true")
+    benchmark_fanfiction_trial_status.set_defaults(func=cmd_benchmark_fanfiction_trial_status)
 
     benchmark_validate = benchmark_subparsers.add_parser("validate", help="Validate benchmark structure and completion state.")
     benchmark_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
@@ -1426,7 +1501,10 @@ def build_parser() -> argparse.ArgumentParser:
     fanfiction_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     fanfiction_status_cmd.set_defaults(func=cmd_fanfiction_status)
 
-    publication = subparsers.add_parser("publication", help="Generate advisory publication reports and export finalized prose.")
+    publication = subparsers.add_parser(
+        "publication",
+        help="Inspect platform policy, record fanfiction rights decisions, and export finalized prose.",
+    )
     publication_subparsers = publication.add_subparsers(dest="publication_command", required=True)
 
     publication_report = publication_subparsers.add_parser(
@@ -1446,6 +1524,26 @@ def build_parser() -> argparse.ArgumentParser:
     publication_preflight_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     publication_preflight_cmd.set_defaults(func=cmd_publication_preflight)
 
+    publication_rights_decision_cmd = publication_subparsers.add_parser(
+        "rights-decision",
+        help="Record a human fanfiction publication risk decision bound to current Canon and platform policy.",
+    )
+    publication_rights_decision_cmd.add_argument(
+        "config", nargs="?", default="project.yaml", help="Path to project.yaml."
+    )
+    publication_rights_decision_cmd.add_argument(
+        "--target", choices=["qidian_male", "fanqie_free"], required=True
+    )
+    publication_rights_decision_cmd.add_argument(
+        "--decision", choices=["proceed", "hold"], required=True
+    )
+    publication_rights_decision_cmd.add_argument("--approved-by", required=True)
+    publication_rights_decision_cmd.add_argument("--note", required=True)
+    publication_rights_decision_cmd.add_argument(
+        "--json", action="store_true", help="Print machine-readable JSON."
+    )
+    publication_rights_decision_cmd.set_defaults(func=cmd_publication_rights_decision)
+
     publication_provenance_cmd = publication_subparsers.add_parser(
         "provenance",
         help="Write a hash-only creation_provenance_manifest_v1 without prose or prompts.",
@@ -1457,9 +1555,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     publication_export = publication_subparsers.add_parser(
         "export",
-        help="Export finalized chapters and generate a non-blocking risk report.",
+        help="Export finalized chapters after the target-specific fanfiction rights gate.",
     )
     publication_export.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
+    publication_export.add_argument("--target", choices=["qidian_male", "fanqie_free"], required=True)
     publication_export.add_argument("--output", help="Bundle path under 80_exports/.")
     publication_export.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     publication_export.set_defaults(func=cmd_publication_export)
@@ -2907,6 +3006,7 @@ def build_parser() -> argparse.ArgumentParser:
         fanfiction_gap_resolve,
         publication_report,
         publication_preflight_cmd,
+        publication_rights_decision_cmd,
         publication_provenance_cmd,
         publication_export,
         benchmark_init,
@@ -2921,6 +3021,11 @@ def build_parser() -> argparse.ArgumentParser:
         benchmark_blind_template,
         benchmark_blind_submit,
         benchmark_blind_aggregate,
+        benchmark_fanfiction_trial_init,
+        benchmark_fanfiction_trial_template,
+        benchmark_fanfiction_trial_submit,
+        benchmark_fanfiction_trial_aggregate,
+        benchmark_fanfiction_trial_resolve,
         benchmark_report,
         benchmark_compare,
     ):
@@ -3624,6 +3729,111 @@ def cmd_benchmark_blind_aggregate(args: argparse.Namespace) -> int:
         print(f"Aggregate: {result.aggregate_file}")
         print(f"Next command: {result.next_command}")
     return 0
+
+
+def cmd_benchmark_fanfiction_trial_init(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = create_fanfiction_literary_trial(
+        config,
+        trial_id=args.trial_id,
+        oc_si_source_dir=args.oc_si_source_dir,
+        oc_si_gate_report=args.oc_si_gate_report,
+        canon_character_source_dir=args.canon_character_source_dir,
+        canon_character_gate_report=args.canon_character_gate_report,
+        seed=args.seed,
+    )
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: fanfiction dual-route literary trial created")
+        print(f"Trial: {result.trial_id}")
+        print(f"Public manifest: {result.public_manifest}")
+        print(f"Pack hash: {result.pack_hash}")
+        print("Literary evidence ready: false (three independent reviews are still required)")
+    return 0
+
+
+def cmd_benchmark_fanfiction_trial_template(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    path = create_fanfiction_literary_review_template(
+        config, trial_id=args.trial_id, reviewer_id=args.reviewer_id
+    )
+    payload = {"trial_id": args.trial_id, "reviewer_id": args.reviewer_id, "template_file": path}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: independent fanfiction literary review template created")
+        print(f"Template: {path}")
+    return 0
+
+
+def cmd_benchmark_fanfiction_trial_submit(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    path = submit_fanfiction_literary_review(
+        config,
+        trial_id=args.trial_id,
+        reviewer_id=args.reviewer_id,
+        file_path=args.file,
+    )
+    payload = {"trial_id": args.trial_id, "reviewer_id": args.reviewer_id, "submission_file": path}
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: independent fanfiction literary review accepted")
+        print(f"Submission: {path}")
+    return 0
+
+
+def cmd_benchmark_fanfiction_trial_aggregate(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = aggregate_fanfiction_literary_trial(config, trial_id=args.trial_id)
+    if args.json:
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+    else:
+        print("OK: three fanfiction literary reviews aggregated without score selection")
+        print(f"Threshold conclusion: {result.threshold_conclusion}")
+        print(f"Material disagreements: {result.material_disagreement_count}")
+        print(f"Literary evidence ready: {str(result.literary_evidence_ready).lower()}")
+        print(f"Aggregate: {result.aggregate_file}")
+    return 0
+
+
+def cmd_benchmark_fanfiction_trial_resolve(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    path = Path(args.file).expanduser().resolve()
+    try:
+        resolutions = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("fanfiction trial resolution file must be valid UTF-8 JSON") from exc
+    if not isinstance(resolutions, list):
+        raise ValueError("fanfiction trial resolution file must contain a JSON array")
+    payload = resolve_fanfiction_literary_disagreements(
+        config,
+        trial_id=args.trial_id,
+        decided_by=args.decided_by,
+        resolutions=resolutions,
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: material reviewer disagreements resolved without score override")
+        print(f"Resolution SHA-256: {payload['resolution_sha256']}")
+    return 0
+
+
+def cmd_benchmark_fanfiction_trial_status(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    payload = fanfiction_literary_trial_status(config, trial_id=args.trial_id)
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"Trial: {payload['trial_id']}")
+        print(f"Reviews: {payload['review_count']}/3")
+        print(f"Aggregate: {payload['aggregate_conclusion']}")
+        print(f"Literary evidence ready: {str(payload['literary_evidence_ready']).lower()}")
+        for blocker in payload["literary_evidence_blockers"]:
+            print(f"- {blocker}")
+    return 0 if payload["literary_evidence_ready"] else 1
 
 
 def cmd_benchmark_validate(args: argparse.Namespace) -> int:
@@ -4771,6 +4981,26 @@ def cmd_publication_preflight(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_publication_rights_decision(args: argparse.Namespace) -> int:
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result, payload = record_publication_rights_decision(
+        config,
+        target=args.target,
+        decision=args.decision,
+        approved_by=args.approved_by,
+        note=args.note,
+    )
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print("OK: fanfiction publication rights decision recorded")
+        print(f"Target: {result.target}")
+        print(f"Decision: {result.decision}")
+        print(f"Decision file: {result.decision_file}")
+        print("Boundary: risk acknowledgement only; not legal advice, authorization, or acceptance guarantee")
+    return 0
+
+
 def cmd_publication_provenance(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
     result, payload = creation_provenance_manifest(config, target=args.target)
@@ -4787,15 +5017,16 @@ def cmd_publication_provenance(args: argparse.Namespace) -> int:
 
 def cmd_publication_export(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = export_publication_bundle(config, output=args.output)
+    result = export_publication_bundle(config, target=args.target, output=args.output)
     if args.json:
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
     else:
         print("OK: publication bundle exported")
+        print(f"Target: {result.target}")
         print(f"Bundle: {result.bundle_file}")
         print(f"Chapters: {result.chapter_count}")
         print(f"Risk report: {result.report_file}")
-        print("Blocking: false")
+        print("Blocking: false (current target-specific decision satisfied)")
     return 0
 
 

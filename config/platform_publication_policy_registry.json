@@ -1,5 +1,5 @@
 {
-  "schema": "platform_publication_policy_registry_v1",
+  "schema": "platform_publication_policy_registry_v2",
   "snapshot_verified_at": "2026-08-21",
   "records": [
     {
@@ -16,6 +16,8 @@
       "effective_at": "2026-07",
       "verified_at": "2026-08-21",
       "next_review_at": "2026-11-21",
+      "policy_dimension": "content_governance",
+      "state": "confirmed",
       "scope": ["publication_preflight", "low_quality_governance"]
     },
     {
@@ -29,6 +31,8 @@
       "effective_at": "2026-05",
       "verified_at": "2026-08-21",
       "next_review_at": "2026-11-21",
+      "policy_dimension": "content_governance",
+      "state": "confirmed",
       "scope": ["publication_preflight", "low_quality_governance"]
     },
     {
@@ -42,6 +46,8 @@
       "effective_at": "2023-05",
       "verified_at": "2026-08-21",
       "next_review_at": "2026-11-21",
+      "policy_dimension": "submission_eligibility",
+      "state": "confirmed",
       "scope": ["publication_preflight", "content_standard"]
     },
     {
@@ -55,6 +61,8 @@
       "effective_at": "2024-01",
       "verified_at": "2026-08-21",
       "next_review_at": "2026-11-21",
+      "policy_dimension": "public_tooling",
+      "state": "confirmed",
       "scope": ["publication_preflight", "public_tooling"]
     },
     {
@@ -68,6 +76,8 @@
       "effective_at": "2023-02",
       "verified_at": "2026-08-21",
       "next_review_at": "2026-11-21",
+      "policy_dimension": "signing_eligibility",
+      "state": "confirmed",
       "scope": ["publication_preflight", "signing_assessment"]
     },
     {
@@ -81,6 +91,8 @@
       "effective_at": "unknown",
       "verified_at": "2026-08-21",
       "next_review_at": "2026-11-21",
+      "policy_dimension": "public_tooling",
+      "state": "confirmed",
       "scope": ["publication_preflight", "public_tooling"]
     },
     {
@@ -94,7 +106,84 @@
       "effective_at": "unknown",
       "verified_at": "2026-08-21",
       "next_review_at": "2026-11-21",
+      "policy_dimension": "quality_guidance",
+      "state": "advisory",
       "scope": ["publication_preflight", "originality"]
+    },
+    {
+      "record_id": "fanqie_anime_derivative_category_2026_08",
+      "platform": "fanqie_free",
+      "claim": "番茄站点存在动漫衍生内容入口；分类存在只说明可观察到该内容形态，不等于签约、激励或权利授权。",
+      "unknown_items": ["具体投稿入口与实时审核口径需投稿前人工复核", "分类存在不证明取得原著权利人授权"],
+      "source_type": "official_platform_catalog",
+      "publisher": "番茄小说",
+      "source_url": "https://fanqienovel.com/",
+      "effective_at": "2026-08",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "policy_dimension": "category_availability",
+      "state": "confirmed",
+      "scope": ["publication_preflight", "fanfiction_category"]
+    },
+    {
+      "record_id": "fanqie_2026_completion_reward_fanfiction_exclusion",
+      "platform": "fanqie_free",
+      "claim": "番茄 2026 年完本奖励规则面向符合条件的原创、非同人长篇，并排除存在版权瑕疵的作品；该特定激励不能由动漫衍生分类存在推导获得。",
+      "unknown_items": ["其他签约或激励项目的实时资格需要分别核验"],
+      "source_type": "official_writer_incentive_rule",
+      "publisher": "番茄小说作家专区",
+      "source_url": "https://fanqienovel.com/writer/zone/article/7586894620252979225",
+      "effective_at": "2026",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "policy_dimension": "incentive_eligibility",
+      "state": "excluded",
+      "scope": ["publication_preflight", "specific_completion_reward"]
+    },
+    {
+      "record_id": "qidian_derivative_category_observation_2026_08",
+      "platform": "qidian_male",
+      "claim": "起点站点可观察到衍生同人内容和长篇实例；内容可见性不等于签约、激励资格、商业授权或稳定推荐规律。",
+      "unknown_items": ["同人投稿、签约和激励资格的实时口径需分别人工核验", "个别作品状态不能推导平台推荐算法"],
+      "source_type": "official_platform_catalog",
+      "publisher": "起点中文网",
+      "source_url": "https://www.qidian.com/",
+      "effective_at": "2026-08",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "policy_dimension": "category_availability",
+      "state": "confirmed",
+      "scope": ["publication_preflight", "fanfiction_category"]
+    },
+    {
+      "record_id": "qidian_fanfiction_signing_eligibility_unknown_2026_08",
+      "platform": "qidian_male",
+      "claim": "本快照未把同人分类或个别签约作品解释为普遍签约资格；具体作品能否签约仍为未知并需人工核验。",
+      "unknown_items": ["同人作品当前签约资格与合同权利要求", "平台内部评估权重和审核口径"],
+      "source_type": "official_platform_catalog",
+      "publisher": "起点中文网",
+      "source_url": "https://www.qidian.com/",
+      "effective_at": "unknown",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "policy_dimension": "signing_eligibility",
+      "state": "unknown",
+      "scope": ["publication_preflight", "fanfiction_signing"]
+    },
+    {
+      "record_id": "china_fanfiction_adaptation_rights_boundary_2026_08",
+      "platform": "all",
+      "claim": "改编作品可以包含新的创作表达，但行使改编作品著作权不得侵犯原作品著作权；人工 proceed 决定不代表获得授权。",
+      "unknown_items": ["具体作品、元素、商业方式和授权链需要专业人工核验", "平台分类存在不能替代权利人授权"],
+      "source_type": "government_law_text",
+      "publisher": "全国人民代表大会",
+      "source_url": "https://www.npc.gov.cn/c2/c30834/202011/t20201119_308796.html",
+      "effective_at": "2021-06-01",
+      "verified_at": "2026-08-21",
+      "next_review_at": "2026-11-21",
+      "policy_dimension": "rights_risk",
+      "state": "confirmed",
+      "scope": ["publication_preflight", "fanfiction_rights_decision"]
     },
     {
       "record_id": "china_generated_content_labeling_2025",
@@ -107,6 +196,8 @@
       "effective_at": "2025-09-01",
       "verified_at": "2026-08-21",
       "next_review_at": "2026-11-21",
+      "policy_dimension": "disclosure_requirement",
+      "state": "confirmed",
       "scope": ["publication_preflight", "disclosure_reminder"]
     }
   ]

@@ -1,0 +1,22 @@
+schema: quality_profile_v1
+kind: overlay
+id: qidian_male_fanfiction
+updated_at: "2026-08-29"
+evidence_level: "editorial_heuristic"
+heuristic_notes: "起点男频同人长篇质量层；不编造字数、更新量、签约资格、推荐算法或付费转化阈值。"
+contract:
+  qidian_male_fanfiction:
+    execution_level: P2_advisory
+    long_mainline: "原创长期目标在移除原著既有事件后仍可持续运转，不能只靠跟随剧情。"
+    volume_growth: "每卷由上一卷选择、代价和关系后果生长，并推进全书总目标。"
+    sustainable_resistance: "阻力随主角成长改变形态，保留世界规则、组织、情报和关系反制。"
+    canon_character_value: "原著人物保留独立目标、职责、拒绝权、关系价值和关键选择。"
+    future_story_source: "路线说明原作事件耗尽后仍能产生的新问题、长期债务与卷级承诺。"
+    prohibited_inferences:
+      - "不把个别签约、VIP 或百万字作品当成普遍签约规律。"
+      - "不设置未经官方当前规则核验的固定字数、更新量或付费门槛。"
+    review_questions:
+      - "本卷增量是否来自已建立的因果，而非机械重播下一段原著？"
+      - "成长是否改变阻力与责任，而非只扩大数值和抢夺机缘？"
+      - "被改变、取消或换人承担的原著职责是否有长期归属和后果？"
+      - "原作既有事件结束后，本作还能由什么矛盾继续推进？"

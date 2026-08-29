@@ -38,6 +38,13 @@ from longform_engine.planning import (
     build_human_planning_approval,
     build_planning_semantic_application,
 )
+from longform_engine.publication import (
+    PublicationExportBlockedError,
+    export_publication_bundle,
+    publication_preflight,
+    publication_rights_decision_status,
+    record_publication_rights_decision,
+)
 from longform_engine import fanfiction_contracts as contracts
 from longform_engine.fanfiction_context import (
     FanfictionContextError,
@@ -1013,6 +1020,127 @@ def current_contract_project(tmp_path, monkeypatch):
         "project_contract": project_contract,
         "project_contracts": project_contracts,
     }
+
+
+def test_fanfiction_platform_export_requires_current_target_rights_decision(
+    current_contract_project,
+):
+    project = current_contract_project
+    config = project["config"]
+    root = project["root"]
+    final = root / "40_manuscript" / "final" / "ch001.md"
+    final.parent.mkdir(parents=True, exist_ok=True)
+    final.write_text("# 第一章\n\n抽象测试章节。\n", encoding="utf-8")
+
+    missing, payload = publication_preflight(config, target="qidian_male")
+    assert payload["schema"] == "platform_publication_preflight_v2"
+    assert missing.blocking is True
+    assert payload["rights_decision_status"] == "missing"
+    assert payload["decision_stale"] is False
+    assert payload["export_blocking"] is True
+    with pytest.raises(PublicationExportBlockedError, match="rights_decision_missing"):
+        export_publication_bundle(config, target="qidian_male")
+
+    record_publication_rights_decision(
+        config,
+        target="qidian_male",
+        decision="hold",
+        approved_by="human-reviewer",
+        note="等待进一步人工核验。",
+    )
+    hold = publication_rights_decision_status(config, target="qidian_male")
+    assert hold["rights_decision_status"] == "hold"
+    assert hold["export_blocking"] is True
+    with pytest.raises(PublicationExportBlockedError, match="rights_decision_hold"):
+        export_publication_bundle(config, target="qidian_male")
+
+    decision, stored = record_publication_rights_decision(
+        config,
+        target="qidian_male",
+        decision="proceed",
+        approved_by="human-reviewer",
+        note="已理解未核验权利与商业发布风险，仍决定生成手工投稿包。",
+    )
+    assert decision.risk_acknowledgement_required is True
+    assert stored["stores_source_text"] is False
+    assert stored["stores_prompt"] is False
+    assert stored["stores_manuscript_body"] is False
+    current = publication_rights_decision_status(config, target="qidian_male")
+    assert current["rights_decision_status"] == "proceed"
+    assert current["decision_stale"] is False
+    assert current["export_blocking"] is False
+
+    exported = export_publication_bundle(config, target="qidian_male")
+    assert exported.target == "qidian_male"
+    assert exported.bundle_file.endswith(".qidian_male.md")
+
+
+def test_fanfiction_rights_decision_stales_on_config_canon_and_policy_changes(
+    current_contract_project,
+    monkeypatch,
+):
+    import longform_engine.publication as publication
+
+    project = current_contract_project
+    config = project["config"]
+    record_publication_rights_decision(
+        config,
+        target="fanqie_free",
+        decision="proceed",
+        approved_by="human-reviewer",
+        note="已理解未核验权利风险。",
+    )
+
+    config.data["fanfiction"]["sources"][0]["rights_status"] = "user_claimed_authorized"
+    changed = publication_rights_decision_status(config, target="fanqie_free")
+    assert changed["decision_stale"] is True
+    assert "project_config_changed" in changed["stale_reasons"]
+    assert "source_rights_declarations_changed" in changed["stale_reasons"]
+
+    record_publication_rights_decision(
+        config,
+        target="fanqie_free",
+        decision="proceed",
+        approved_by="human-reviewer",
+        note="人工声明当前来源权利状态。",
+    )
+    canon_path = project["canon_path"]
+    canon_path.write_text(canon_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    canon_changed = publication_rights_decision_status(config, target="fanqie_free")
+    assert canon_changed["decision_stale"] is True
+    assert "source_canon_changed" in canon_changed["stale_reasons"]
+
+    write_document(canon_path, project["canon"])
+    record_publication_rights_decision(
+        config,
+        target="fanqie_free",
+        decision="proceed",
+        approved_by="human-reviewer",
+        note="人工声明当前来源权利状态。",
+    )
+    monkeypatch.setattr(publication, "policy_record_is_stale", lambda _record: True)
+    policy_expired = publication_rights_decision_status(config, target="fanqie_free")
+    assert policy_expired["decision_stale"] is True
+    assert "platform_policy_verification_expired" in policy_expired["stale_reasons"]
+    assert policy_expired["export_blocking"] is True
+
+
+def test_original_project_export_does_not_trigger_fanfiction_rights_gate(
+    current_contract_project,
+):
+    project = current_contract_project
+    config = project["config"]
+    root = project["root"]
+    config.data["creation"]["mode"] = "original"
+    final = root / "40_manuscript" / "final" / "ch001.md"
+    final.parent.mkdir(parents=True, exist_ok=True)
+    final.write_text("# 第一章\n\n原创抽象测试章节。\n", encoding="utf-8")
+
+    status = publication_rights_decision_status(config, target="qidian_male")
+    assert status["rights_decision_status"] == "not_applicable"
+    assert status["export_blocking"] is False
+    exported = export_publication_bundle(config, target="qidian_male")
+    assert exported.target == "qidian_male"
 
 
 def configure_crossover_project(project: dict) -> None:

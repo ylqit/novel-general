@@ -27,7 +27,7 @@
 | 独立审稿 | `scene_prose_editor`、`anti_template_editor` 每章必审，风险角色按需增加 |
 | 人工终稿 | `human_author_revision_v4` 绑定最终锁、真实改动及双稿语义保真 |
 | 人工深审 | `human_story_review_v7` 绑定当前协议证据后才允许 finalize |
-| 发布预检 | 起点、番茄政策快照只提示风险，不输出“检测通过” |
+| 发布预检 | 起点、番茄内容观察只提示风险；同人导出另受当前人工权利决定约束，不输出“检测通过” |
 | 同人资料 | 用户级中文原著证据库、项目固定哈希绑定、需求驱动分层覆盖与项目独立语义 Canon |
 | 恢复 | canonical 写入使用事务、锁、证据和显式恢复命令 |
 
@@ -122,7 +122,9 @@ longform-engine fanfiction design-apply project.yaml --file ROUTE.json --review 
 longform-engine fanfiction context-status project.yaml --chapter N --json
 ```
 
-故事发动机先确认唯一初始变量、独立长期目标、持续阻力、原著人物自主性和原作事件结束后的原创主线；路线再明确故事切入点、人物知识边界、未来知识退化、原著事件命运和人物职责，并由隔离会话独立复核。跨作品只为实际 `allowed_elements` 建立宿主世界适配器与动态跨界宪法。章节上下文按稳定 claim 依赖和 Token 预算编译，不使用姓名匹配或“无命中取前几条”；必需事实超出预算时明确阻断。用户提供的同人案例与技法只进入仓库 Prompt、质量规则、抽象夹具和文档，不进入项目数据、Canon、RAG 或图谱。
+故事发动机先选择 `oc_si_progression | canon_character_centered | hybrid`，确认主角与原著关系、首卷读者识别承诺、移除原著既有事件后仍能运转的原创主线，并继续固定唯一初始变量、独立长期目标、持续阻力、原著人物自主性和原作事件结束后的故事来源。路线再明确故事切入点、人物知识边界、未来知识退化、原著事件命运、职责承担者及一阶/二阶影响，并由隔离会话独立复核。每项获批重大分歧按稳定触发身份独立、幂等地产生未来知识重估，输出“仍可靠、部分可靠、已失效、反向误导”的适用范围。
+
+跨作品路线显式选择 `fixed_host | fusion_world | sequential_worlds`。适配需求由实际 `transfers[].payload_kinds` 产生，通过“来源适配器 → 项目跨界宪法 → 当前卷例外”解释能量、身体/灵魂、能力作用对象、成本、反制、身份、组织、死亡与不可逆后果；顺序诸天按卷编译并保留跨卷关系、债务、身体状态或总目标进度，不预建 N×N 世界矩阵。章节上下文按稳定 claim 依赖和 Token 预算编译，不使用姓名匹配或“无命中取前几条”；必需事实超出预算时明确阻断。用户提供的同人案例与技法只进入仓库 Prompt、质量规则、抽象夹具和文档，不进入项目数据、Canon、RAG 或图谱。
 
 原创、灵感原创或改编研究仅提及作品名时，只能先创建 `research external-request`；人工批准前不会联网，也不会写入全局资料库。实际使用原著人物、世界或事件会要求把项目改为同人模式。普通网页不得被搜索结果拼接为小说、字幕或剧本全文。
 写作时若 `chapter_contract_v5` 引用了尚未进入项目 Canon 的原著 ID，`continue-write` 会先创建 `fanfiction_incremental_source_request_v1`（`network_performed=false`）并阻断。本次缺口必须依次人工批准、逐项搜索/导入、项目绑定和人工核销；模型记忆不能替代证据。
@@ -277,20 +279,23 @@ longform-engine production next project.yaml
 
 ## 起点与番茄边界
 
-默认画像是起点男频主合同，番茄免费仅提供 P2 非阻断兼容观察。
+共享的 `cn_longform_fanfiction` 合同之上有两个独立 P2 质量层：起点男频同人层检查长主线、卷级增长、持续阻力、原著人物价值和原作事件耗尽后的故事来源；番茄免费同人层检查移动阅读清晰度、较快兑现、反填充、反粗制批量结构和章节可读性。两者都不编造字数、更新量、签约、推荐或付费阈值。
 
 跨平台共同核心由章节合同表达：卖点进入事件、人物推动因果、行动产生选择与代价、阶段性收益、关系变化、信息释放和长线兑现。
 
 平台启发式不等于平台规则。前三章、收益频率、句长、对白率和尾钩强度都不得提升为违规门禁。
 
-平台预检：
+平台预检把每条官方事实拆为“分类存在、投稿资格、签约资格、特定激励、内容治理、权利风险或披露要求”，保存适用范围、状态、来源、验证日期、下次复核日期和未知项。分类或个别作品存在不能推导签约、激励或推荐规律。
 
-- 报告真实生产方式、人工修订覆盖和政策快照；
-- 番茄映射公开的低质治理类别；
-- 起点明确显示未发现可核验的公开全面 AI 禁令，内部判定未知；
-- 只提示，不承诺通过，也不自动插入或删除披露标识。
+```bash
+longform-engine publication preflight project.yaml --target qidian_male --json
+longform-engine publication rights-decision project.yaml --target qidian_male --decision proceed --approved-by HUMAN --note "已理解具体风险"
+longform-engine publication export project.yaml --target qidian_male
+```
 
-政策快照超过 `next_review_at` 后显示 `policy_verification_required`。
+内容质量观察仍然只提示真实生产方式、人工修订覆盖、政策快照与公开低质治理类别；起点的公开全面 AI 禁令状态保持“未发现可核验来源/内部未知”。系统不承诺审核通过，也不自动插入或删除披露标识。
+
+同人项目的普通写作、审阅、Canon、人工修订和定稿不受权利门禁。只有具体平台发布包导出要求当前 `fanfiction_publication_rights_decision_v1=proceed`，且决定仍绑定当前有效配置、来源 Canon、逐来源权利声明和目标平台政策快照；决定缺失、`hold`、任一 hash 变化或政策超过 `next_review_at` 都只阻断该目标导出。该决定是风险知情与流程责任确认，不是法律意见、授权或平台接受保证；原创模式不触发同人权利门禁。
 
 ## 质量状态
 
@@ -305,6 +310,8 @@ longform-engine quality status project.yaml --json
 - `literary_evidence_ready`：独立盲评证据满足文学证据 manifest。
 
 当前仓库没有满足要求的真实盲评 manifest，因此 `literary_evidence_ready=false`。自动测试、作者接受和工程协议就绪都不能改写这一结论。
+
+同人文学验收另提供两条各 20 章的盲审协议：一条 OC/SI 成长线，一条原著角色改命/续写线；每条先绑定无 P1、无不可追溯 Canon 断言、无连续原文复现、无伪造授权的 hash-only gate report，再由三名未参与生成的独立人类评审匿名评分。保真、自主性、原创主线和持续阅读欲望的三人中位数须不低于 4/5，其余维度不得低于 3.5/5；实质分歧必须逐项人工记录，系统只保留中位数，不选择有利意见。没有真实 40 章材料与三人审阅时仍保持 `false`；命令顺序见 [Quality Benchmark Runbook](docs/QUALITY_BENCHMARK_RUNBOOK.md)。
 
 ## 开发与发布
 

@@ -26,6 +26,7 @@ from longform_engine.agent_protocols import (
     validate_review_evidence_for_source,
 )
 from longform_engine.agent_tasks import (
+    agent_task_lifecycle_mutation_paths,
     build_manifest,
     is_canonical_output,
     list_manifests,
@@ -1184,7 +1185,7 @@ def apply_intelligence_candidate(
                         .get("trigger_id", "")
                     ),
                 ),
-                root / "50_workbench" / "agent_tasks",
+                *agent_task_lifecycle_mutation_paths(root),
             ]
         )
         touched = list(dict.fromkeys(touched))

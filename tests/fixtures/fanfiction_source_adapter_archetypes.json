@@ -1,0 +1,37 @@
+{
+  "schema": "fanfiction_source_adapter_archetype_fixture_v1",
+  "fixtures": [
+    {
+      "fixture_id": "conditional_domain_rules",
+      "dimensions": ["activation_condition", "rule_collision", "exposure", "cost", "organization_response"]
+    },
+    {
+      "fixture_id": "mortal_weapon_irreversible_injury",
+      "dimensions": ["body_limit", "weapon_condition", "timeline", "injury", "irreversible_death", "organization_duty"]
+    },
+    {
+      "fixture_id": "reality_game_system_layers",
+      "dimensions": ["physical_body", "game_identity", "death_or_exit", "data_item", "system_boundary", "transfer_rule"]
+    },
+    {
+      "fixture_id": "energy_lineage_organization_future_knowledge",
+      "dimensions": ["energy", "lineage", "ability_condition", "information_spread", "organization", "political_duty", "knowledge_decay"]
+    },
+    {
+      "fixture_id": "ocean_geography_world_factions",
+      "dimensions": ["ability_boundary", "ocean_limit", "geography", "travel_time", "faction", "global_information_spread"]
+    },
+    {
+      "fixture_id": "body_soul_perception_world_layers",
+      "dimensions": ["body", "soul", "perception_condition", "interaction_condition", "world_layer", "death_conversion", "organization_duty"]
+    },
+    {
+      "fixture_id": "realm_resource_inheritance_lifespan",
+      "dimensions": ["realm_meaning", "world_level", "resource_scarcity", "inheritance", "lifespan", "long_timescale"]
+    },
+    {
+      "fixture_id": "acquisition_resource_profession_organization",
+      "dimensions": ["ability_source", "growth_path", "acquisition_condition", "cultivation_resource", "profession", "organization", "exclusive_resource", "backlash"]
+    }
+  ]
+}

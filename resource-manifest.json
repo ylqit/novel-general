@@ -252,8 +252,8 @@
     },
     {
       "path": "config/platform_publication_policy_registry.json",
-      "sha256": "b8387acba95da966361993d817713e7047f13181bc02c47f0c852e3adbb32c32",
-      "size": 5671
+      "sha256": "bf324832d1b6fa4d0e309005c9d1e06d2ffdc374be8b5a1b1a6d7814bf5b05a7",
+      "size": 10372
     },
     {
       "path": "config/quality_profiles/market_evidence_registry.yaml",
@@ -284,6 +284,16 @@
       "path": "config/quality_profiles/overlays/cn_longform_fanfiction.yaml",
       "sha256": "a781ce5d1dcdaa5c8f79d973579905beb01ab093a006dde3c5336689724edb61",
       "size": 1405
+    },
+    {
+      "path": "config/quality_profiles/overlays/fanqie_free_fanfiction.yaml",
+      "sha256": "204aaf6b7c6feea704b429446ff679d7e1994dffc5423d81b443b81a19638778",
+      "size": 1520
+    },
+    {
+      "path": "config/quality_profiles/overlays/qidian_male_fanfiction.yaml",
+      "sha256": "b0485477cdba5d0b58ddb46f78954aab6194bbc4caa0287799f2ba99a68b3e06",
+      "size": 1492
     },
     {
       "path": "config/quality_profiles/phases/aftermath.yaml",
@@ -362,8 +372,8 @@
     },
     {
       "path": "longform-novel-claude/references/command_protocol.md",
-      "sha256": "f6b4cbd35b9f3e8242ddaf3e068508eb29a5fc84857ee3cea7dd68e7a2e05c9a",
-      "size": 48402
+      "sha256": "3b8d91f421f0f0b47a5398821c72a66c710dddf6c76d6a9f0e8098f313a71682",
+      "size": 49401
     },
     {
       "path": "longform-novel-claude/references/creative_operator_protocol.md",
@@ -372,8 +382,8 @@
     },
     {
       "path": "longform-novel-claude/references/iron_laws.md",
-      "sha256": "ac625e5acd328e556157be84149d25b493959fd3ffe1297722c9079bc8d1b994",
-      "size": 15301
+      "sha256": "6dd1ddde6243e5298a58a758f439666e0c03b5c6eabf02b135bee62d235095fb",
+      "size": 16295
     },
     {
       "path": "longform-novel-claude/references/workflow_mapping.md",
@@ -382,8 +392,8 @@
     },
     {
       "path": "longform-novel-claude/SKILL.md",
-      "sha256": "204efe3d1f1746d54f64191b3adc9b8c09a08aa06d42a5e1d19fd85e6e9611bd",
-      "size": 10298
+      "sha256": "79ed95f8a6328c8182dc256c6f870a55c10bf952a5bbeab0283ed8ecf9318ecf",
+      "size": 10799
     },
     {
       "path": "longform-novel-codex/agents/openai.yaml",
@@ -397,8 +407,8 @@
     },
     {
       "path": "longform-novel-codex/references/command_protocol.md",
-      "sha256": "f6b4cbd35b9f3e8242ddaf3e068508eb29a5fc84857ee3cea7dd68e7a2e05c9a",
-      "size": 48402
+      "sha256": "3b8d91f421f0f0b47a5398821c72a66c710dddf6c76d6a9f0e8098f313a71682",
+      "size": 49401
     },
     {
       "path": "longform-novel-codex/references/creative_operator_protocol.md",
@@ -407,8 +417,8 @@
     },
     {
       "path": "longform-novel-codex/references/iron_laws.md",
-      "sha256": "ac625e5acd328e556157be84149d25b493959fd3ffe1297722c9079bc8d1b994",
-      "size": 15301
+      "sha256": "6dd1ddde6243e5298a58a758f439666e0c03b5c6eabf02b135bee62d235095fb",
+      "size": 16295
     },
     {
       "path": "longform-novel-codex/references/workflow_mapping.md",
@@ -417,8 +427,8 @@
     },
     {
       "path": "longform-novel-codex/SKILL.md",
-      "sha256": "ece28172c49983ef546a588ddd7bba57df7e97f9b2ea2b2b102226b2cc65c352",
-      "size": 10263
+      "sha256": "49f949c926dc954a7abc4e2d34141da7a8314b7f1b094e8105f6385509d99248",
+      "size": 10764
     },
     {
       "path": "pyproject.toml",
@@ -432,8 +442,8 @@
     },
     {
       "path": "shared/command_protocol.md",
-      "sha256": "f6b4cbd35b9f3e8242ddaf3e068508eb29a5fc84857ee3cea7dd68e7a2e05c9a",
-      "size": 48402
+      "sha256": "3b8d91f421f0f0b47a5398821c72a66c710dddf6c76d6a9f0e8098f313a71682",
+      "size": 49401
     },
     {
       "path": "shared/creative_operator_protocol.md",
@@ -442,8 +452,8 @@
     },
     {
       "path": "shared/iron_laws.md",
-      "sha256": "ac625e5acd328e556157be84149d25b493959fd3ffe1297722c9079bc8d1b994",
-      "size": 15301
+      "sha256": "6dd1ddde6243e5298a58a758f439666e0c03b5c6eabf02b135bee62d235095fb",
+      "size": 16295
     },
     {
       "path": "shared/workflow_mapping.md",

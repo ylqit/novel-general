@@ -27,6 +27,7 @@ from longform_engine.future_knowledge_provenance import (
 )
 from longform_engine.future_knowledge_current import (
     FutureKnowledgeCurrentError,
+    load_future_knowledge_current_snapshot,
     require_current_approved_future_knowledge,
 )
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
@@ -505,9 +506,29 @@ def fanfiction_context_status(
                 "contract_errors": [str(exc)],
             },
         }
-    _documents, knowledge_paths, knowledge_sha256 = _current_future_knowledge_documents(
-        config, root, target_chapter=chapter_number
-    )
+    try:
+        _documents, knowledge_paths, knowledge_sha256 = (
+            _current_future_knowledge_documents(
+                config, root, target_chapter=chapter_number
+            )
+        )
+    except FanfictionContextError as exc:
+        message = str(exc)
+        return {
+            "schema": "fanfiction_context_status_v1",
+            "chapter_number": chapter_number,
+            "status": "invalid" if "_invalid:" in message else "stale",
+            "bundle_path": path.relative_to(root).as_posix(),
+            "bundle_sha256": str(payload.get("bundle_sha256") or ""),
+            "required_claim_count": len(payload.get("required_claim_ids") or []),
+            "included_claim_count": len(payload.get("included_claim_ids") or []),
+            "omitted_claims": payload.get("omitted_claims") or [],
+            "stale_sources": [],
+            "diagnostics": {
+                **bundle_diagnostics,
+                "contract_errors": [message],
+            },
+        }
     stale_reasons = _bundle_stale_sources(
         root,
         payload,
@@ -1922,7 +1943,16 @@ def _current_future_knowledge_documents(
     paths: dict[str, Path] = {}
     digests: dict[str, str] = {}
     directory = root / "10_bible" / "fanfiction" / "future_knowledge"
-    for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
+    approved_paths = sorted(directory.glob("*.json")) if directory.is_dir() else []
+    current_snapshot = None
+    if approved_paths:
+        try:
+            current_snapshot = load_future_knowledge_current_snapshot(root)
+        except (FutureKnowledgeCurrentError, FutureKnowledgeProvenanceError) as exc:
+            raise FanfictionContextError(
+                f"future_knowledge_document_stale:provenance_pin_snapshot:{exc}"
+            ) from exc
+    for path in approved_paths:
         payload = _read_json(path)
         if not isinstance(payload, dict):
             raise FanfictionContextError(
@@ -1949,7 +1979,15 @@ def _current_future_knowledge_documents(
                 + ";".join(semantic_errors)
             )
         try:
-            pin = future_knowledge_pin_for_approved(root, path)
+            pin = future_knowledge_pin_for_approved(
+                root,
+                path,
+                snapshot=(
+                    current_snapshot.provenance
+                    if current_snapshot is not None
+                    else None
+                ),
+            )
         except FutureKnowledgeProvenanceError as exc:
             raise FanfictionContextError(
                 f"future_knowledge_document_stale:{path.relative_to(root).as_posix()}:"
@@ -1960,7 +1998,11 @@ def _current_future_knowledge_documents(
         )
         if future_knowledge_pin_retains(pin, retention_chapter):
             try:
-                require_current_approved_future_knowledge(config, path)
+                require_current_approved_future_knowledge(
+                    config,
+                    path,
+                    snapshot=current_snapshot,
+                )
             except FutureKnowledgeCurrentError as exc:
                 raise FanfictionContextError(str(exc)) from exc
         if not future_knowledge_pin_applies(pin, target_chapter):

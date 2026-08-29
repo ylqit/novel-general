@@ -349,7 +349,8 @@ def test_qidian_fanfiction_uses_advisory_chinese_longform_overlay(tmp_path):
     contract = compile_effective_quality_contract(config, chapter_number=1)
 
     assert [item["id"] for item in contract["conditional_overlays"]] == [
-        "cn_longform_fanfiction"
+        "cn_longform_fanfiction",
+        "qidian_male_fanfiction",
     ]
     overlay = contract["contract"]["cn_longform_fanfiction"]
     assert overlay["execution_level"] == "P2_advisory"
@@ -358,6 +359,28 @@ def test_qidian_fanfiction_uses_advisory_chinese_longform_overlay(tmp_path):
     assert overlay["mandatory_combat_frequency"] is False
     assert overlay["mandatory_cliffhanger"] is False
     assert any("原著人物" in item for item in overlay["review_questions"])
+    qidian = contract["contract"]["qidian_male_fanfiction"]
+    assert "原著人物" in qidian["canon_character_value"]
+    assert any("固定字数" in item for item in qidian["prohibited_inferences"])
+
+
+def test_fanqie_fanfiction_uses_separate_mobile_reading_quality_layer(tmp_path):
+    config, _root = seed_project(tmp_path)
+    config.data["creation"]["mode"] = "fanfiction"
+    config.data["story_profile"]["market"]["primary"] = "fanqie_free"
+    config.data["story_profile"]["market"]["compatibility"] = []
+
+    contract = compile_effective_quality_contract(config, chapter_number=1)
+
+    assert [item["id"] for item in contract["conditional_overlays"]] == [
+        "cn_longform_fanfiction",
+        "fanqie_free_fanfiction",
+    ]
+    fanqie = contract["contract"]["fanqie_free_fanfiction"]
+    assert fanqie["execution_level"] == "P2_advisory"
+    assert "移动阅读" in fanqie["mobile_clarity"]
+    assert "重复信息" in fanqie["anti_padding"]
+    assert "模板" in fanqie["anti_mass_generation"]
 
 
 def test_effective_contract_applies_current_arc_focus_after_story_facets(tmp_path):

@@ -112,12 +112,14 @@
 | `/提升沙盒候选` | `longform-engine sandbox promote project.yaml --sandbox S --candidate C --approved-by human --reason REASON` | 人工选择的语义差异 | `50_workbench/语义候选/` | 提升后仍只是待独立复核的候选，不能直接进入 Canon。 |
 | `/审计v0.11项目` | `longform-engine migrate audit-v011 --source OLD --json` | 旧项目路径 | 只读报告 | 不修改旧项目，列出旧协议、证据缺口和 final 哈希。 |
 | `/导入v0.11项目` | `longform-engine migrate v011-to-v012 --source OLD --destination NEW --approved-by human` | 独立新目录 | 隔离迁移工作区 | 不原地迁移；旧事实降为待审语义重建候选，final 不自动改写。 |
-| `/工程平台预检` | `longform-engine publication preflight project.yaml --target qidian_male --json` | `--target` | `80_exports/platform/` | 使用随版本发布的官方政策快照；固定非阻断，不输出检测通过。 |
+| `/工程平台预检` | `longform-engine publication preflight project.yaml --target qidian_male --json` | `--target` | `80_exports/platform/` | 区分分类、投稿、签约、激励、治理、权利风险和未知项；内容观察不预测接受，同人权利决定状态单独显示。 |
+| `/工程同人发布决定` | `longform-engine publication rights-decision project.yaml --target qidian_male --decision proceed|hold --approved-by HUMAN --note NOTE` | 当前配置、Canon、逐来源权利声明、目标政策快照 | `50_workbench/publication/rights_decisions/` | 仅确认人工风险知情和流程责任，不是法律意见、授权或平台保证；不阻断普通创作。 |
 | `/工程创作来源` | `longform-engine publication provenance project.yaml --target qidian_male --json` | `--target` | `80_exports/platform/` | 汇总方向、人工修订、声音、final 与审稿 hash，不保存完整 Prompt 或人类占比。 |
 | `/工程发布风险` | `longform-engine publication report project.yaml` | `project.yaml` | `80_exports/publication_reports/`、provenance | 生成 `publication_risk_report_v2`；所有提醒均为 advisory。 |
-| `/工程发布导出` | `longform-engine publication export project.yaml` | `project.yaml` | `80_exports/` | 导出 final 正文并生成风险报告；不向正文插入声明。 |
+| `/工程发布导出` | `longform-engine publication export project.yaml --target qidian_male|fanqie_free` | 目标平台；同人需当前 `proceed` 决定 | `80_exports/` | 缺失、`hold`、配置/Canon/声明/政策变化或政策过期只阻断该目标导出；原创不触发同人门禁，不向正文插入声明。 |
+| `/工程同人文学盲审` | `benchmark fanfiction-trial-init/template/submit/aggregate/resolve/status` | OC/SI 20 章、原著角色中心 20 章、hash-only gate report、三名独立人类评审 | `70_runtime/literary_evidence/fanfiction_trials/` | 四项核心中位数≥4/5、其余≥3.5/5；实质分歧逐项人工处理，系统不选择有利意见。 |
 
-同人模式允许使用项目人工批准语义 Canon 中的角色名、关系、世界观、力量体系、时间线、续写、前传、AU、分歧和 crossover。全局资料只是非 Canon 证据库；项目必须固定 item/bundle/normalization/semantic hash，并以 `identity/design_core/volume_scope/chapter_dependency` 的动态需求决定何时补证。`whole_to_cutoff` 只在人工选择时成为硬门禁。`rights_status` 与 `commercial_intent` 只记录和提示，不阻断创作，但未验证权利不能保留全文。整段来源正文、完整字幕/剧本、跨字段重构和章节拼接仍必须失败。原创项目提及作品名只能生成待审研究申请，不能自动联网或入库。
+同人模式允许使用项目人工批准语义 Canon 中的角色名、关系、世界观、力量体系、时间线、续写、前传、AU、分歧和 crossover。全局资料只是非 Canon 证据库；项目必须固定 item/bundle/normalization/semantic hash，并以 `identity/design_core/volume_scope/chapter_dependency` 的动态需求决定何时补证。`whole_to_cutoff` 只在人工选择时成为硬门禁。`rights_status` 与 `commercial_intent` 不阻断创作，但未验证权利不能保留全文，具体平台导出还需当前人工决定。整段来源正文、完整字幕/剧本、跨字段重构和章节拼接仍必须失败。原创项目提及作品名只能生成待审研究申请，不能自动联网或入库。
 
 ## 章节生产
 

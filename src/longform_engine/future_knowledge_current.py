@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -21,10 +22,12 @@ from longform_engine import fanfiction_contracts
 from longform_engine.fanfiction_divergence import realized_major_divergence_errors
 from longform_engine.future_knowledge_provenance import (
     FutureKnowledgeProvenanceError,
+    FutureKnowledgeProvenanceSnapshot,
     build_future_knowledge_pin,
     future_knowledge_pin_applies,
     future_knowledge_pin_retains,
     pin_applicability_from_claims,
+    load_future_knowledge_provenance_snapshot,
     require_exact_future_knowledge_pin,
 )
 from longform_engine.semantic_protocols import (
@@ -45,6 +48,43 @@ FANFICTION_CONTEXT_BUNDLE_SCHEMA = "fanfiction_context_bundle_v2"
 
 class FutureKnowledgeCurrentError(ValueError):
     """Raised when an apparently applied result is no longer exactly current."""
+
+
+@dataclass(frozen=True)
+class FutureKnowledgeCurrentSnapshot:
+    """Immutable indexes reused while checking all approved results once."""
+
+    provenance: FutureKnowledgeProvenanceSnapshot
+    workflows_by_trigger: Mapping[str, tuple[tuple[Path, Mapping[str, Any]], ...]]
+    manifests_by_task_id: Mapping[str, tuple[Mapping[str, Any], ...]]
+
+
+def load_future_knowledge_current_snapshot(root: Path) -> FutureKnowledgeCurrentSnapshot:
+    """Index workflows, task projections, pins, and archives once per operation."""
+
+    provenance = load_future_knowledge_provenance_snapshot(root, require_exists=True)
+    workflows: dict[str, list[tuple[Path, Mapping[str, Any]]]] = {}
+    directory = root / "50_workbench" / "fanfiction_knowledge_impacts"
+    for path in sorted(directory.glob("*.workflow.json")) if directory.is_dir() else []:
+        payload = _read_json(path)
+        trigger = (
+            payload.get("extensions", {}).get("trigger")
+            if isinstance(payload, dict)
+            else None
+        )
+        trigger_id = str(trigger.get("trigger_id") or "") if isinstance(trigger, dict) else ""
+        if trigger_id:
+            workflows.setdefault(trigger_id, []).append((path, payload))
+    manifests: dict[str, list[Mapping[str, Any]]] = {}
+    for manifest in list_manifests(root):
+        task_id = str(manifest.get("task_id") or "")
+        if task_id:
+            manifests.setdefault(task_id, []).append(manifest)
+    return FutureKnowledgeCurrentSnapshot(
+        provenance=provenance,
+        workflows_by_trigger={key: tuple(value) for key, value in workflows.items()},
+        manifests_by_task_id={key: tuple(value) for key, value in manifests.items()},
+    )
 
 
 def future_knowledge_reassessment_task_artifacts(
@@ -83,24 +123,31 @@ def future_knowledge_reassessment_task_artifacts(
 def future_knowledge_workflow_for_trigger(
     root: Path,
     trigger_id: str,
+    *,
+    snapshot: FutureKnowledgeCurrentSnapshot | None = None,
 ) -> tuple[Path, dict[str, Any]]:
-    matches: list[tuple[Path, dict[str, Any]]] = []
-    directory = root / "50_workbench" / "fanfiction_knowledge_impacts"
-    for path in sorted(directory.glob("*.workflow.json")) if directory.is_dir() else []:
-        payload = _read_json(path)
-        trigger = (
-            payload.get("extensions", {}).get("trigger")
-            if isinstance(payload, dict)
-            else None
-        )
-        if isinstance(trigger, dict) and trigger.get("trigger_id") == trigger_id:
-            matches.append((path, payload))
+    matches: list[tuple[Path, Mapping[str, Any]]]
+    if snapshot is not None:
+        matches = list(snapshot.workflows_by_trigger.get(trigger_id, ()))
+    else:
+        matches = []
+        directory = root / "50_workbench" / "fanfiction_knowledge_impacts"
+        for path in sorted(directory.glob("*.workflow.json")) if directory.is_dir() else []:
+            payload = _read_json(path)
+            trigger = (
+                payload.get("extensions", {}).get("trigger")
+                if isinstance(payload, dict)
+                else None
+            )
+            if isinstance(trigger, dict) and trigger.get("trigger_id") == trigger_id:
+                matches.append((path, payload))
     if len(matches) != 1:
         raise FutureKnowledgeCurrentError(
             "future_knowledge_document_stale:workflow_identity:"
             f"expected one workflow for {trigger_id}, found {len(matches)}"
         )
-    return matches[0]
+    path, payload = matches[0]
+    return path, dict(payload)
 
 
 def future_knowledge_approved_target(
@@ -350,6 +397,8 @@ def current_applied_future_knowledge_target(
 def require_current_approved_future_knowledge(
     config: ConfigDocument,
     approved_path: Path,
+    *,
+    snapshot: FutureKnowledgeCurrentSnapshot | None = None,
 ) -> None:
     """Deeply revalidate the complete applied chain without writing any state."""
 
@@ -370,7 +419,9 @@ def require_current_approved_future_knowledge(
         approved_extensions if isinstance(approved_extensions, dict) else {}
     )
     trigger_id = str(extensions.get("trigger_id") or "")
-    workflow_path, workflow = future_knowledge_workflow_for_trigger(root, trigger_id)
+    workflow_path, workflow = future_knowledge_workflow_for_trigger(
+        root, trigger_id, snapshot=snapshot
+    )
     workflow_errors = validate_workflow_record(workflow)
     workflow_extensions = (
         workflow["extensions"] if isinstance(workflow.get("extensions"), dict) else {}
@@ -541,18 +592,23 @@ def require_current_approved_future_knowledge(
     )
     manifest_path = Path(owned["manifest"])
     candidate_path = Path(owned["candidate"])
-    indexed = [
-        item for item in list_manifests(root) if item.get("task_id") == owned["task_id"]
-    ]
+    indexed: list[dict[str, Any]] = (
+        [dict(item) for item in snapshot.manifests_by_task_id.get(str(owned["task_id"]), ())]
+        if snapshot is not None
+        else [
+            dict(item)
+            for item in list_manifests(root)
+            if item.get("task_id") == owned["task_id"]
+        ]
+    )
     if len(indexed) != 1:
         raise FutureKnowledgeCurrentError(
             "future_knowledge_document_stale:task_manifest"
-        )
+    )
     projection = indexed[0]
-    current_result = (
-        projection.get("current_result")
-        if isinstance(projection.get("current_result"), dict)
-        else {}
+    current_result_value = projection.get("current_result")
+    current_result: dict[str, Any] = (
+        current_result_value if isinstance(current_result_value, dict) else {}
     )
     manifest_relative = manifest_path.relative_to(root).as_posix()
     if (
@@ -677,7 +733,11 @@ def require_current_approved_future_knowledge(
                 "candidate": candidate_path,
             },
         )
-        pin = require_exact_future_knowledge_pin(root, expected_pin)
+        pin = require_exact_future_knowledge_pin(
+            root,
+            expected_pin,
+            snapshot=snapshot.provenance if snapshot is not None else None,
+        )
     except FutureKnowledgeProvenanceError as exc:
         raise FutureKnowledgeCurrentError(
             f"future_knowledge_document_stale:provenance_pin:{exc}"
@@ -810,11 +870,13 @@ def _read_json(path: Path) -> Any:
 
 
 __all__ = [
+    "FutureKnowledgeCurrentSnapshot",
     "FutureKnowledgeCurrentError",
     "current_applied_future_knowledge_target",
     "future_knowledge_approved_target",
     "future_knowledge_reassessment_task_artifacts",
     "future_knowledge_workflow_for_trigger",
+    "load_future_knowledge_current_snapshot",
     "require_current_approved_future_knowledge",
     "validate_future_knowledge_reassessment",
 ]
