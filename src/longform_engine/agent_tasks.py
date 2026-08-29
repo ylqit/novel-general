@@ -2078,9 +2078,13 @@ def compact_task_projection(
         by_type[task_type] = int(by_type.get(task_type) or 0) + 1
     archived_chapters = dict(payload.get("archived_chapters") or {})
     for chapter_number, archive in archive_refs.items():
-        chapter_tasks = [item for item in archived if int(item.get("chapter_number") or 0) == chapter_number]
-        if not chapter_tasks and str(chapter_number) in archived_chapters:
+        # Chapter archives are immutable.  A previously retained long-lived task
+        # may expire after that chapter's archive was sealed; its full audit bytes
+        # live in the immutable future-knowledge provenance archive instead, so the
+        # existing chapter projection must not be rewritten with a different count.
+        if str(chapter_number) in archived_chapters:
             continue
+        chapter_tasks = [item for item in archived if int(item.get("chapter_number") or 0) == chapter_number]
         archived_chapters[str(chapter_number)] = {
             "archive": archive,
             "task_count": len(chapter_tasks),

@@ -372,8 +372,8 @@
     },
     {
       "path": "longform-novel-claude/references/iron_laws.md",
-      "sha256": "693e00a98e7fd0ffd7e2dd6b25a2d0bf3696387da4acbddda1c1ce80adf2b9bd",
-      "size": 15130
+      "sha256": "ac625e5acd328e556157be84149d25b493959fd3ffe1297722c9079bc8d1b994",
+      "size": 15301
     },
     {
       "path": "longform-novel-claude/references/workflow_mapping.md",
@@ -407,8 +407,8 @@
     },
     {
       "path": "longform-novel-codex/references/iron_laws.md",
-      "sha256": "693e00a98e7fd0ffd7e2dd6b25a2d0bf3696387da4acbddda1c1ce80adf2b9bd",
-      "size": 15130
+      "sha256": "ac625e5acd328e556157be84149d25b493959fd3ffe1297722c9079bc8d1b994",
+      "size": 15301
     },
     {
       "path": "longform-novel-codex/references/workflow_mapping.md",
@@ -442,8 +442,8 @@
     },
     {
       "path": "shared/iron_laws.md",
-      "sha256": "693e00a98e7fd0ffd7e2dd6b25a2d0bf3696387da4acbddda1c1ce80adf2b9bd",
-      "size": 15130
+      "sha256": "ac625e5acd328e556157be84149d25b493959fd3ffe1297722c9079bc8d1b994",
+      "size": 15301
     },
     {
       "path": "shared/workflow_mapping.md",

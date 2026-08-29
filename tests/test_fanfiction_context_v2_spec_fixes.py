@@ -4,12 +4,14 @@ from copy import deepcopy
 from hashlib import sha256
 from pathlib import Path
 import json
+import zipfile
 
 import pytest
 
 from longform_engine import fanfiction_context as context_module
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_tasks import load_manifest, manifest_output
+from longform_engine.artifacts import compact_artifacts
 from longform_engine.chapter_contract import validate_chapter_contract
 from longform_engine.config import load_project_config
 from longform_engine.fanfiction_context import (
@@ -916,6 +918,8 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
             )
     assert not expected_target.exists()
     assert not (root / "30_state/future_knowledge_provenance_pins.json").exists()
+    provenance_archive_root = root / "70_runtime/artifacts/future_knowledge"
+    assert not list(provenance_archive_root.glob("*.zip"))
     assert load_manifest(root, task.task_id)["status"] == "validated"
 
     applied = apply_intelligence_candidate(
@@ -1394,6 +1398,11 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
 
     target_paths: list[Path] = []
     reliability_states = ["仍可靠", "部分可靠", "反向误导"]
+    knowledge_ranges = [
+        {"from_chapter": 5, "to_chapter": None, "scope_refs": ["route:knowledge"]},
+        {"from_chapter": 2, "to_chapter": 3, "scope_refs": ["route:knowledge"]},
+        {"from_chapter": 2, "to_chapter": None, "scope_refs": ["route:knowledge"]},
+    ]
     for index, (workflow_binding, reliability) in enumerate(
         zip(workflows, reliability_states, strict=True),
         start=1,
@@ -1428,11 +1437,7 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
                             ).hexdigest(),
                             "input_hashes": input_hashes,
                             "knowledge_claim_id": "route:knowledge",
-                            "knowledge_range": {
-                                "from_chapter": 2,
-                                "to_chapter": None,
-                                "scope_refs": ["route:knowledge"],
-                            },
+                            "knowledge_range": knowledge_ranges[index - 1],
                             "reliability": reliability,
                             "depends_on_claims": [
                                 "route:knowledge",
@@ -1497,10 +1502,60 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
         ),
         character_packet={},
     )
-    approved_updates = {
-        f"future:real_chain:{index}:knowledge" for index in range(1, 4)
+    delayed_update = "future:real_chain:1:knowledge"
+    finite_update = "future:real_chain:2:knowledge"
+    indefinite_update = "future:real_chain:3:knowledge"
+    assert delayed_update not in next_context["dependency_claim_ids"]
+    assert {finite_update, indefinite_update} <= set(
+        next_context["dependency_claim_ids"]
+    )
+
+    pin_path = root / "30_state/future_knowledge_provenance_pins.json"
+    original_pin_registry = pin_path.read_bytes()
+    pin_path.unlink()
+    missing_pin_snapshot = _project_bytes(root)
+    with pytest.raises(ValueError, match="provenance pin registry is missing"):
+        compact_artifacts(config, through=1, dry_run=False)
+    assert _project_bytes(root) == missing_pin_snapshot
+    pin_path.write_bytes(original_pin_registry)
+    invalid_pin_registry = json.loads(original_pin_registry.decode("utf-8"))
+    invalid_pin_registry["schema"] = "future_knowledge_provenance_pins_invalid"
+    write_json(pin_path, invalid_pin_registry)
+    invalid_pin_snapshot = _project_bytes(root)
+    with pytest.raises(ValueError, match="pin registry schema is invalid"):
+        compact_artifacts(config, through=1, dry_run=False)
+    assert _project_bytes(root) == invalid_pin_snapshot
+    pin_path.write_bytes(original_pin_registry)
+
+    initial_pin_registry = json.loads(original_pin_registry.decode("utf-8"))
+    initial_archives = {
+        pin["trigger_id"]: (
+            root / pin["provenance_archive"]["path"]
+        ).read_bytes()
+        for pin in initial_pin_registry["pins"]
     }
-    assert approved_updates <= set(next_context["dependency_claim_ids"])
+    for pin in initial_pin_registry["pins"]:
+        archive_path = root / pin["provenance_archive"]["path"]
+        with zipfile.ZipFile(archive_path, "r") as handle:
+            audit = json.loads(handle.read("_audit/manifest.json"))
+            assert audit["pin"] == {
+                key: pin[key]
+                for key in (
+                    "trigger_id",
+                    "task_id",
+                    "chapter_number",
+                    "from_chapter",
+                    "to_chapter",
+                    "approved_document",
+                    "evidence",
+                )
+            }
+            assert audit["task_projection"]["task_id"] == pin["task_id"]
+            assert audit["task_projection"]["status"] == "applied"
+            assert {
+                f"_audit/blobs/{pin['approved_document']['sha256']}",
+                *(f"_audit/blobs/{item['sha256']}" for item in pin["evidence"]),
+            } <= set(handle.namelist())
 
     unrelated = root / "50_workbench/unrelated/ch001.unrelated.json"
     write_json(unrelated, {"schema": "unrelated_test_artifact_v1", "chapter_number": 1})
@@ -1536,6 +1591,18 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
             approved_by="human",
         )
         continue_write(config, chapter_number=chapter_number)
+        generated_context = json.loads(
+            (
+                root
+                / "50_workbench"
+                / "fanfiction_context"
+                / f"ch{chapter_number:03d}.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert delayed_update not in generated_context["dependency_claim_ids"]
+        assert {finite_update, indefinite_update} <= set(
+            generated_context["dependency_claim_ids"]
+        )
         followup_draft = (
             root
             / "50_workbench"
@@ -1629,15 +1696,24 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
 
     assert not unrelated.exists()
     assert (root / "70_runtime/artifacts/chapters/ch001.zip").is_file()
-    pin_registry = json.loads(
-        (root / "30_state/future_knowledge_provenance_pins.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    pin_registry = json.loads(pin_path.read_text(encoding="utf-8"))
     assert len(pin_registry["pins"]) == 3
-    for pin in pin_registry["pins"]:
+    retained_pins = [pin for pin in pin_registry["pins"] if pin["to_chapter"] is None]
+    expired_pin = next(pin for pin in pin_registry["pins"] if pin["to_chapter"] == 3)
+    for pin in retained_pins:
         assert all((root / item["path"]).is_file() for item in pin["evidence"])
         assert (root / pin["approved_document"]["path"]).is_file()
+    for item in expired_pin["evidence"]:
+        if item["kind"] in {
+            "workflow",
+            "task_manifest",
+            "task_instruction",
+            "candidate",
+        }:
+            assert not (root / item["path"]).exists()
+    for pin in pin_registry["pins"]:
+        archive_path = root / pin["provenance_archive"]["path"]
+        assert archive_path.read_bytes() == initial_archives[pin["trigger_id"]]
     active_task_ids = {
         item["task_id"]
         for item in json.loads(
@@ -1646,7 +1722,8 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
             )
         )["tasks"]
     }
-    assert {item["task_id"] for item in workflows} <= active_task_ids
+    assert {pin["task_id"] for pin in retained_pins} <= active_task_ids
+    assert expired_pin["task_id"] not in active_task_ids
 
     chapter_four = deepcopy(chapter_two)
     chapter_four["contract_id"] = "contract:ch004"
@@ -1660,9 +1737,40 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
         chapter_card=chapter_four_card,
         character_packet={},
     )
-    assert approved_updates <= set(chapter_four_context["dependency_claim_ids"])
+    assert delayed_update not in chapter_four_context["dependency_claim_ids"]
+    assert finite_update not in chapter_four_context["dependency_claim_ids"]
+    assert indefinite_update in chapter_four_context["dependency_claim_ids"]
 
-    pin_path = root / "30_state/future_knowledge_provenance_pins.json"
+    chapter_five = deepcopy(chapter_two)
+    chapter_five["contract_id"] = "contract:ch005"
+    chapter_five["chapter_number"] = 5
+    chapter_five_card = {"chapter_number": 5, "volume_id": "volume:001"}
+    _persist_compile_inputs(root, chapter_five, chapter_five_card)
+    chapter_five_context = compile_fanfiction_context(
+        config,
+        chapter_number=5,
+        chapter_contract=chapter_five,
+        chapter_card=chapter_five_card,
+        character_packet={},
+    )
+    assert {delayed_update, indefinite_update} <= set(
+        chapter_five_context["dependency_claim_ids"]
+    )
+    assert finite_update not in chapter_five_context["dependency_claim_ids"]
+
+    expired_archive = root / expired_pin["provenance_archive"]["path"]
+    expired_archive_bytes = expired_archive.read_bytes()
+    expired_archive.write_bytes(expired_archive_bytes + b"tamper")
+    with pytest.raises(FanfictionContextError, match="provenance_pin"):
+        compile_fanfiction_context(
+            config,
+            chapter_number=4,
+            chapter_contract=chapter_four,
+            chapter_card=chapter_four_card,
+            character_packet={},
+        )
+    expired_archive.write_bytes(expired_archive_bytes)
+
     original_pins = pin_path.read_bytes()
     tampered_pins = json.loads(original_pins.decode("utf-8"))
     tampered_pins["pins"][0]["evidence"][0]["sha256"] = "f" * 64

@@ -71,8 +71,10 @@ from longform_engine.fanfiction_sources import (
 )
 from longform_engine.future_knowledge_provenance import (
     build_future_knowledge_pin,
+    future_knowledge_provenance_archive_path,
     pin_applicability_from_claims,
     provenance_pin_registry_path,
+    seal_future_knowledge_provenance_archive,
     upsert_future_knowledge_pin,
 )
 from longform_engine.lengths import compile_length_forecast
@@ -1199,6 +1201,14 @@ def apply_intelligence_candidate(
         touched.extend(
             [
                 provenance_pin_registry_path(root),
+                future_knowledge_provenance_archive_path(
+                    root,
+                    str(
+                        workflow.get("extensions", {})
+                        .get("trigger", {})
+                        .get("trigger_id", "")
+                    ),
+                ),
                 root / "50_workbench" / "agent_tasks",
             ]
         )
@@ -1263,7 +1273,7 @@ def apply_intelligence_candidate(
                 item for item in payload.get("claims") or [] if isinstance(item, dict)
             )
             approved_target = semantic_task_target(root, task_type, payload)
-            pin = build_future_knowledge_pin(
+            base_pin = build_future_knowledge_pin(
                 root,
                 trigger_id=str(trigger.get("trigger_id") or ""),
                 task_id=str(scope.get("task_id") or ""),
@@ -1272,6 +1282,20 @@ def apply_intelligence_candidate(
                 to_chapter=to_chapter,
                 approved_path=approved_target,
                 evidence_paths=future_pin_inputs,
+            )
+            applied_task_projections = [
+                item
+                for item in list_manifests(root)
+                if item.get("task_id") == scope.get("task_id")
+            ]
+            if len(applied_task_projections) != 1:
+                raise ValueError(
+                    "future knowledge applied task projection is not unique"
+                )
+            pin = seal_future_knowledge_provenance_archive(
+                root,
+                base_pin,
+                task_projection=applied_task_projections[0],
             )
             upsert_future_knowledge_pin(root, pin)
         if stale_dependents:

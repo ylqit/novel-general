@@ -17,8 +17,10 @@ import zipfile
 
 from longform_engine.config import ConfigDocument
 from longform_engine.future_knowledge_provenance import (
-    active_future_knowledge_pin_paths,
-    active_future_knowledge_task_ids,
+    expired_archived_future_knowledge_paths,
+    require_future_knowledge_pin_coverage,
+    retained_future_knowledge_pin_paths,
+    retained_future_knowledge_task_ids,
 )
 from longform_engine.agent_tasks import (
     compact_project_task_projection,
@@ -275,23 +277,38 @@ def compact_artifacts(
         raise ValueError("through must be zero or positive.")
     root = resolve_project_root(config)
     blockers = compaction_blockers(root, through)
-    candidates = chapter_candidates(root, through)
     next_chapter = max((*closed_chapter_numbers(root), through), default=through) + 1
-    pinned_paths = active_future_knowledge_pin_paths(root, for_chapter=next_chapter)
-    pinned_task_ids = active_future_knowledge_task_ids(root, for_chapter=next_chapter)
+    # This preflight deliberately runs before candidate discovery, archive creation,
+    # deletion, or task projection mutation.  Canonical approved updates may never
+    # lose their exact proof chain merely because a registry was missing or stale.
+    require_future_knowledge_pin_coverage(root, next_chapter=next_chapter)
+    pinned_paths = retained_future_knowledge_pin_paths(
+        root, next_chapter=next_chapter
+    )
+    pinned_task_ids = retained_future_knowledge_task_ids(
+        root, next_chapter=next_chapter
+    )
+    expired_archived_paths = expired_archived_future_knowledge_paths(
+        root, next_chapter=next_chapter
+    )
     candidates = [
         (chapter_number, path)
-        for chapter_number, path in candidates
+        for chapter_number, path in chapter_candidates(root, through)
         if path.resolve() not in pinned_paths
+    ]
+    archive_candidates = [
+        (chapter_number, path)
+        for chapter_number, path in candidates
+        if path.resolve() not in expired_archived_paths
     ]
     candidate_bytes = sum(path.stat().st_size for _chapter, path in candidates if path.is_file())
     snapshots = committed_snapshot_paths(root)
     snapshot_bytes = sum(directory_size(path) for path in snapshots)
     unique_content: dict[tuple[int, str], int] = {}
-    for chapter_number, path in candidates:
+    for chapter_number, path in archive_candidates:
         unique_content.setdefault((chapter_number, file_hash(path)), path.stat().st_size)
     retained_hashes: dict[int, set[str]] = {}
-    for chapter_number in {chapter for chapter, _path in candidates}:
+    for chapter_number in {chapter for chapter, _path in archive_candidates}:
         for _role, retained in retained_evidence_paths(root, chapter_number):
             if retained.is_file():
                 retained_hashes.setdefault(chapter_number, set()).add(file_hash(retained))
@@ -309,7 +326,7 @@ def compact_artifacts(
         if blockers:
             raise ValueError("Cannot compact artifacts: " + "; ".join(blockers))
         by_chapter: dict[int, list[Path]] = {chapter: [] for chapter in range(1, through + 1)}
-        for chapter_number, path in candidates:
+        for chapter_number, path in archive_candidates:
             by_chapter.setdefault(chapter_number, []).append(path)
         for chapter_number, paths in sorted(by_chapter.items()):
             paths = sorted(set(paths), key=lambda item: relative_path(root, item))
@@ -673,7 +690,9 @@ def verify_task_projection_state(root: Path, archives: list[Path]) -> list[str]:
         errors.append("Agent task index schema is invalid")
     archived_chapters = {chapter_from_archive(path): path for path in archives}
     next_chapter = max((*closed_chapter_numbers(root), 0)) + 1
-    pinned_task_ids = active_future_knowledge_task_ids(root, for_chapter=next_chapter)
+    pinned_task_ids = retained_future_knowledge_task_ids(
+        root, next_chapter=next_chapter
+    )
     for task in index.get("tasks", []):
         if not isinstance(task, dict):
             errors.append("Agent task index contains a non-object task")

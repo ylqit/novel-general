@@ -29,6 +29,9 @@ from longform_engine.fanfiction_divergence import realized_major_divergence_erro
 from longform_engine.future_knowledge_provenance import (
     FutureKnowledgeProvenanceError,
     build_future_knowledge_pin,
+    future_knowledge_pin_applies,
+    future_knowledge_pin_for_approved,
+    future_knowledge_pin_retains,
     pin_applicability_from_claims,
     require_exact_future_knowledge_pin,
 )
@@ -43,6 +46,7 @@ from longform_engine.semantic_protocols import (
     validate_workflow_record,
 )
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.layout import manuscript_chapter_path
 
 
 FANFICTION_CONTEXT_BUNDLE_SCHEMA = "fanfiction_context_bundle_v2"
@@ -127,7 +131,7 @@ def compile_fanfiction_context(
     except FanfictionContractError as exc:
         raise FanfictionContextError(str(exc)) from exc
     knowledge_documents, knowledge_paths, knowledge_sha256 = _current_future_knowledge_documents(
-        config, root
+        config, root, target_chapter=chapter_number
     )
     paths = {**current.paths, **knowledge_paths}
     source_sha256 = {**current.sha256, **knowledge_sha256}
@@ -510,7 +514,7 @@ def fanfiction_context_status(
             },
         }
     _documents, knowledge_paths, knowledge_sha256 = _current_future_knowledge_documents(
-        config, root
+        config, root, target_chapter=chapter_number
     )
     stale_reasons = _bundle_stale_sources(
         root,
@@ -1069,7 +1073,7 @@ def require_current_fanfiction_context_bundle(
     if bundle_errors:
         raise FanfictionContextError("fanfiction_context_invalid: " + "; ".join(bundle_errors))
     knowledge_documents, knowledge_paths, knowledge_sha256 = _current_future_knowledge_documents(
-        config, root
+        config, root, target_chapter=chapter_number
     )
     stale_sources = _bundle_stale_sources(
         root,
@@ -1137,7 +1141,7 @@ def future_knowledge_impact_workflows(
         for item in bundle.get("review_projection", {}).get("claims") or []
         if isinstance(item, dict) and item.get("claim_id")
     }
-    final_path = root / "40_manuscript" / "final" / f"ch{chapter_number:03d}.md"
+    final_path = manuscript_chapter_path(root, chapter_number, lane="final")
     semantic_path = root / "30_state" / "semantic_ledger" / f"ch{chapter_number:03d}.json"
     trigger_errors = realized_major_divergence_errors(
         root=root,
@@ -1916,6 +1920,8 @@ def _bundle_hash(bundle: dict[str, Any]) -> str:
 def _current_future_knowledge_documents(
     config: ConfigDocument,
     root: Path,
+    *,
+    target_chapter: int,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Path], dict[str, str]]:
     documents: dict[str, dict[str, Any]] = {}
     paths: dict[str, Path] = {}
@@ -1947,12 +1953,37 @@ def _current_future_knowledge_documents(
                 f"future_knowledge_document_invalid:{path.relative_to(root).as_posix()}:"
                 + ";".join(semantic_errors)
             )
-        _validate_current_future_knowledge_provenance(config, root, path, payload)
+        try:
+            pin = future_knowledge_pin_for_approved(root, path)
+        except FutureKnowledgeProvenanceError as exc:
+            raise FanfictionContextError(
+                f"future_knowledge_document_stale:{path.relative_to(root).as_posix()}:"
+                f"provenance_pin:{exc}"
+            ) from exc
+        retention_chapter = _future_knowledge_retention_chapter(
+            root, fallback=target_chapter
+        )
+        if future_knowledge_pin_retains(pin, retention_chapter):
+            _validate_current_future_knowledge_provenance(config, root, path, payload)
+        if not future_knowledge_pin_applies(pin, target_chapter):
+            continue
         key = f"future_knowledge:{path.stem}"
         documents[key] = payload
         paths[key] = path
         digests[key] = sha256(path.read_bytes()).hexdigest()
     return documents, paths, digests
+
+
+def _future_knowledge_retention_chapter(root: Path, *, fallback: int) -> int:
+    """Return the next production chapter, independent of a queried target chapter."""
+
+    closure_dir = root / "30_state" / "chapter_closures"
+    closed: list[int] = []
+    for path in sorted(closure_dir.glob("ch*.json")) if closure_dir.is_dir() else []:
+        match = re.fullmatch(r"ch0*(\d+)\.json", path.name)
+        if match:
+            closed.append(int(match.group(1)))
+    return max(closed) + 1 if closed else fallback
 
 
 def _validate_current_future_knowledge_provenance(
@@ -2139,7 +2170,7 @@ def _validate_current_future_knowledge_provenance(
         divergences=event.get("realized_major_divergences") if isinstance(event, dict) else None,
         event_payload=event if isinstance(event, dict) else {},
         review_claims=review_claims,
-        final_path=root / "40_manuscript" / "final" / f"ch{chapter:03d}.md",
+        final_path=manuscript_chapter_path(root, chapter, lane="final"),
         semantic_path=root / "30_state" / "semantic_ledger" / f"ch{chapter:03d}.json",
         context_path=context_path,
         require_stored_bindings=True,
@@ -2274,7 +2305,7 @@ def _validate_current_future_knowledge_provenance(
         raise FanfictionContextError("future_knowledge_document_stale:human_projection")
     if approved_semantic_document(candidate_document, decision=human_decision) != approved:
         raise FanfictionContextError("future_knowledge_document_stale:approved_projection")
-    final_path = root / "40_manuscript" / "final" / f"ch{chapter:03d}.md"
+    final_path = manuscript_chapter_path(root, chapter, lane="final")
     semantic_path = root / "30_state" / "semantic_ledger" / f"ch{chapter:03d}.json"
     try:
         from_chapter, to_chapter = pin_applicability_from_claims(
