@@ -77,6 +77,12 @@ from longform_engine.future_knowledge_provenance import (
     seal_future_knowledge_provenance_archive,
     upsert_future_knowledge_pin,
 )
+from longform_engine.future_knowledge_current import (
+    current_applied_future_knowledge_target,
+    future_knowledge_approved_target,
+    future_knowledge_reassessment_task_artifacts,
+    validate_future_knowledge_reassessment,
+)
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.quality import truncate_editorial_pattern_registry
@@ -538,37 +544,6 @@ class ProjectReadinessResult:
     errors: tuple[str, ...]
 
 
-def future_knowledge_reassessment_task_artifacts(
-    root: Path,
-    *,
-    chapter_number: int,
-    workflow_sha256: str,
-) -> dict[str, Any]:
-    """Own the stable one-trigger task identity used by close and task creation."""
-
-    if chapter_number <= 0 or not re.fullmatch(r"[0-9a-f]{64}", workflow_sha256):
-        raise ValueError("future-knowledge task identity requires chapter and workflow SHA-256")
-    base = (
-        "fanfiction_future_knowledge_reassessment."
-        f"ch{chapter_number:03d}.{workflow_sha256[:12]}"
-    )
-    return {
-        "base": base,
-        "task_id": (
-            "fanfiction_future_knowledge_reassessment:"
-            f"ch{chapter_number:03d}:{workflow_sha256[:12]}:v5"
-        ),
-        "instruction": root / "50_workbench" / "intelligence_tasks" / f"{base}.md",
-        "candidate": (
-            root
-            / "50_workbench"
-            / "intelligence_candidates"
-            / f"{base}.candidate.json"
-        ),
-        "manifest": root / "50_workbench" / "agent_tasks" / f"{base}.manifest.json",
-    }
-
-
 def create_intelligence_task(
     config: ConfigDocument,
     *,
@@ -979,7 +954,7 @@ def apply_intelligence_candidate(
         )
     candidate = resolve_candidate(root, file_path)
     if task_type == "fanfiction_future_knowledge_reassessment":
-        applied_target = _current_applied_future_knowledge_target(root, candidate)
+        applied_target = current_applied_future_knowledge_target(config, candidate)
         if applied_target is not None:
             if approved_by != "human":
                 raise ValueError(
@@ -1335,49 +1310,6 @@ def apply_intelligence_candidate(
         transaction_report=relative(root, transaction.report_file),
         next_command="longform-engine production next project.yaml",
     )
-
-
-def _current_applied_future_knowledge_target(
-    root: Path,
-    candidate: Path,
-) -> Path | None:
-    """Recognize a repeated human apply without weakening candidate/task provenance."""
-
-    output = relative(root, candidate)
-    applied = [
-        entry
-        for entry in list_manifests(root)
-        if entry.get("task_type") == "fanfiction_future_knowledge_reassessment"
-        and entry.get("status") == "applied"
-        and manifest_output(entry).get("path") == output
-    ]
-    if len(applied) != 1 or not candidate.is_file():
-        return None
-    payload = read_json(candidate, {})
-    if not isinstance(payload, dict):
-        return None
-    candidate_document = seal_semantic_document(payload)
-    artifact = candidate_document.get("artifact")
-    if not isinstance(artifact, dict):
-        return None
-    target = semantic_task_target(
-        root,
-        "fanfiction_future_knowledge_reassessment",
-        candidate_document,
-    )
-    approved = read_json(target, {})
-    if not isinstance(approved, dict) or approved.get("artifact", {}).get("state") != "approved":
-        return None
-    extensions = approved.get("extensions")
-    if not isinstance(extensions, dict):
-        return None
-    if extensions.get("approved_candidate_sha256") != artifact.get("content_sha256"):
-        return None
-    if extensions.get("trigger_id") != candidate_document.get("extensions", {}).get(
-        "trigger_id"
-    ):
-        return None
-    return target
 
 
 def route_semantic_change_to_revision_branch(
@@ -5037,154 +4969,6 @@ def validate_fanfiction_design_review(
     )
 
 
-def validate_future_knowledge_reassessment(
-    root: Path,
-    payload: dict[str, Any],
-    manifest: dict[str, Any] | None,
-    errors: list[str],
-) -> None:
-    role: dict[str, Any] = (
-        manifest["role"]
-        if isinstance(manifest, dict) and isinstance(manifest.get("role"), dict)
-        else {}
-    )
-    if role.get("independence_mode") != "isolated_review":
-        errors.append("future knowledge reassessment must use an isolated review role")
-    if payload.get("document_type") != "同人未来知识重估":
-        errors.append("document_type must be 同人未来知识重估")
-    artifact: dict[str, Any] = (
-        payload["artifact"] if isinstance(payload.get("artifact"), dict) else {}
-    )
-    scope: dict[str, Any] = (
-        artifact["scope"] if isinstance(artifact.get("scope"), dict) else {}
-    )
-    if scope.get("kind") != "chapter" or int(scope.get("chapter_number") or 0) <= 0:
-        errors.append("future knowledge reassessment must use a chapter scope")
-    extensions: dict[str, Any] = (
-        payload["extensions"] if isinstance(payload.get("extensions"), dict) else {}
-    )
-    if extensions.get("task_type") != "fanfiction_future_knowledge_reassessment":
-        errors.append("extensions.task_type must be fanfiction_future_knowledge_reassessment")
-    input_paths = [root / item for item in manifest_input_paths(manifest or {})]
-    workflow: dict[str, Any] | None = None
-    for path in input_paths:
-        if not path.is_file():
-            continue
-        candidate = read_json(path, {})
-        if (
-            isinstance(candidate, dict)
-            and candidate.get("workflow_kind") == "fanfiction_future_knowledge_impact"
-        ):
-            if workflow is not None:
-                errors.append(
-                    "future knowledge reassessment manifest must bind exactly one workflow input"
-                )
-                return
-            workflow = candidate
-    if not isinstance(workflow, dict):
-        errors.append("future knowledge reassessment manifest is missing its workflow input")
-        return
-    trigger = workflow.get("extensions", {}).get("trigger")
-    if not isinstance(trigger, dict):
-        errors.append("future knowledge workflow trigger is invalid")
-        return
-    trigger_id = str(trigger.get("trigger_id") or "")
-    if extensions.get("trigger_id") != trigger_id:
-        errors.append("extensions.trigger_id must match the workflow trigger")
-    realized_chapter = int(trigger.get("realized_chapter") or 0)
-    expected_scope = {"kind": "chapter", "chapter_number": realized_chapter}
-    if scope != expected_scope:
-        errors.append("artifact.scope must equal the engine-owned workflow trigger scope")
-    if manifest_chapter_number(manifest or {}) != realized_chapter:
-        errors.append("task manifest chapter must equal the workflow trigger chapter")
-    try:
-        owned_target = semantic_task_target(
-            root,
-            "fanfiction_future_knowledge_reassessment",
-            payload,
-        )
-    except ValueError as exc:
-        errors.append(str(exc))
-    else:
-        if owned_target.is_file():
-            approved = read_json(owned_target, {})
-            approved_extensions = (
-                approved.get("extensions")
-                if isinstance(approved, dict)
-                and isinstance(approved.get("extensions"), dict)
-                else {}
-            )
-            if approved_extensions.get("trigger_id") != trigger_id:
-                errors.append(
-                    "future knowledge target is already owned by a different trigger"
-                )
-    expected_trigger_sha = semantic_json_hash(trigger)
-    expected_inputs = {
-        str(item.get("kind") or ""): str(item.get("sha256") or "")
-        for item in workflow.get("inputs") or []
-        if isinstance(item, dict)
-    }
-    knowledge_scope = list(trigger.get("knowledge_scope_refs") or [])
-    claims = payload.get("claims")
-    if not isinstance(claims, list) or len(claims) != len(knowledge_scope):
-        errors.append("claims must cover every workflow knowledge scope exactly once")
-        return
-    covered: list[str] = []
-    allowed = {"仍可靠", "部分可靠", "已失效", "反向误导"}
-    for index, claim in enumerate(claims):
-        claim_extensions: dict[str, Any] = (
-            claim.get("extensions")
-            if isinstance(claim, dict) and isinstance(claim.get("extensions"), dict)
-            else {}
-        )
-        prefix = f"claims[{index}].extensions"
-        if claim_extensions.get("semantic_type") != "未来知识可靠性":
-            errors.append(f"{prefix}.semantic_type must be 未来知识可靠性")
-        if claim_extensions.get("trigger_id") != trigger_id:
-            errors.append(f"{prefix}.trigger_id must match the workflow trigger")
-        if claim_extensions.get("trigger_sha256") != expected_trigger_sha:
-            errors.append(f"{prefix}.trigger_sha256 is stale")
-        if claim_extensions.get("input_hashes") != expected_inputs:
-            errors.append(f"{prefix}.input_hashes must match workflow inputs")
-        knowledge_claim_id = claim_extensions.get("knowledge_claim_id")
-        if knowledge_claim_id not in knowledge_scope or knowledge_claim_id in covered:
-            errors.append(f"{prefix}.knowledge_claim_id is outside or duplicates workflow scope")
-        covered.append(str(knowledge_claim_id))
-        reliability = claim_extensions.get("reliability")
-        if reliability not in allowed:
-            errors.append(f"{prefix}.reliability must be 仍可靠|部分可靠|已失效|反向误导")
-        knowledge_range = claim_extensions.get("knowledge_range")
-        if not isinstance(knowledge_range, dict) or set(knowledge_range) != {
-            "from_chapter",
-            "to_chapter",
-            "scope_refs",
-        }:
-            errors.append(f"{prefix}.knowledge_range fields are invalid")
-        else:
-            start = knowledge_range.get("from_chapter")
-            end = knowledge_range.get("to_chapter")
-            if (
-                not isinstance(start, int)
-                or isinstance(start, bool)
-                or start <= int(trigger.get("realized_chapter") or 0)
-            ):
-                errors.append(f"{prefix}.knowledge_range.from_chapter must follow realization")
-            if end is not None and (
-                not isinstance(end, int)
-                or isinstance(end, bool)
-                or not isinstance(start, int)
-                or end < start
-            ):
-                errors.append(f"{prefix}.knowledge_range.to_chapter is invalid")
-            if knowledge_range.get("scope_refs") != [knowledge_claim_id]:
-                errors.append(f"{prefix}.knowledge_range.scope_refs must bind its knowledge claim")
-        dependencies = claim_extensions.get("depends_on_claims")
-        if dependencies != [knowledge_claim_id, trigger.get("source_claim_id")]:
-            errors.append(f"{prefix}.depends_on_claims must bind knowledge and divergence")
-    if covered != knowledge_scope:
-        errors.append("claims must preserve workflow knowledge scope order")
-
-
 def validate_sources(
     root: Path,
     payload: dict[str, Any],
@@ -5712,24 +5496,10 @@ def semantic_task_target(root: Path, task_type: str, payload: dict[str, Any]) ->
             payload.get("extensions") if isinstance(payload.get("extensions"), dict) else {}
         )
         trigger_id = str(extensions.get("trigger_id") or "")
-        if not trigger_id:
-            raise ValueError("future knowledge target requires a stable trigger_id")
-        _workflow_path, workflow = _future_knowledge_workflow_for_trigger(root, trigger_id)
-        trigger = workflow.get("extensions", {}).get("trigger")
-        if not isinstance(trigger, dict):
-            raise ValueError("future knowledge workflow trigger is invalid")
-        chapter = int(trigger.get("realized_chapter") or 0)
-        if chapter <= 0:
-            raise ValueError("future knowledge workflow trigger chapter is invalid")
-        if scope != {"kind": "chapter", "chapter_number": chapter}:
-            raise ValueError("future knowledge candidate scope differs from engine-owned trigger")
-        trigger_digest = sha256(trigger_id.encode("utf-8")).hexdigest()[:24]
-        return (
-            root
-            / "10_bible"
-            / "fanfiction"
-            / "future_knowledge"
-            / f"ch{chapter:03d}.{trigger_digest}.json"
+        return future_knowledge_approved_target(
+            root,
+            trigger_id=trigger_id,
+            candidate_scope=scope,
         )
     chapter = int(scope.get("chapter_number") or 0)
     token = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(artifact.get("artifact_id") or "semantic"))
@@ -5756,28 +5526,6 @@ def semantic_task_target(root: Path, task_type: str, payload: dict[str, Any]) ->
         "source_candidate_triage": root / "50_workbench" / "同人原著资料" / "来源筛选",
     }
     return directories[task_type] / f"{token[:120]}.json"
-
-
-def _future_knowledge_workflow_for_trigger(
-    root: Path,
-    trigger_id: str,
-) -> tuple[Path, dict[str, Any]]:
-    matches: list[tuple[Path, dict[str, Any]]] = []
-    directory = root / "50_workbench" / "fanfiction_knowledge_impacts"
-    for path in sorted(directory.glob("*.workflow.json")) if directory.is_dir() else []:
-        payload = read_json(path, {})
-        trigger = (
-            payload.get("extensions", {}).get("trigger")
-            if isinstance(payload, dict)
-            else None
-        )
-        if isinstance(trigger, dict) and trigger.get("trigger_id") == trigger_id:
-            matches.append((path, payload))
-    if len(matches) != 1:
-        raise ValueError(
-            "future knowledge target requires exactly one engine-owned workflow for trigger"
-        )
-    return matches[0]
 
 
 def outline_revision_side_effect_targets(

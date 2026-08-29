@@ -60,6 +60,37 @@ def test_rag_query_cache_is_reused_as_file_fact(tmp_path):
     assert payload["hits"]
 
 
+def test_rag_read_only_query_matches_writable_result_without_project_mutation(tmp_path):
+    project_config = seed_rag_project(tmp_path)
+    root = tmp_path / "novel"
+    build_chunks(project_config, max_chars=120, overlap_chars=0)
+
+    writable = query(project_config, "青铜铃", top_k=2)
+    cache_path = Path(writable.cache_file)
+    before = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    read_only = query(
+        project_config,
+        "青铜铃",
+        top_k=2,
+        write_cache=False,
+    )
+
+    assert read_only.hits == writable.hits
+    assert read_only.omitted_hit_ids == writable.omitted_hit_ids
+    assert read_only.used_units == writable.used_units
+    assert read_only.cache_file == ""
+    assert cache_path.read_bytes() == before[cache_path.relative_to(root).as_posix()]
+    assert {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    } == before
+
+
 def test_embedding_delta_replaces_only_changed_source_and_preserves_full_snapshot(tmp_path):
     project_config = seed_rag_project(tmp_path)
     root = tmp_path / "novel"

@@ -410,7 +410,12 @@ def sync_source_records(
     )
 
 
-def query(config: ConfigDocument, request: VectorQuery) -> list[VectorHit]:
+def query(
+    config: ConfigDocument,
+    request: VectorQuery,
+    *,
+    read_only: bool = False,
+) -> list[VectorHit]:
     cfg = vector_config(config)
     if cfg["backend"] == "local_hnsw":
         return query_hnsw(config, request)
@@ -419,7 +424,7 @@ def query(config: ConfigDocument, request: VectorQuery) -> list[VectorHit]:
     path = local_store_path(config)
     if not path.exists():
         return []
-    with connect(path) as conn:
+    with _query_connection(path, read_only=read_only) as conn:
         rows = conn.execute(
             """
             SELECT id, owner_type, owner_id, vector_json, source_path, chapter_number, metadata_json
@@ -452,6 +457,23 @@ def query(config: ConfigDocument, request: VectorQuery) -> list[VectorHit]:
         )
     hits.sort(key=lambda item: (-item.score, -(item.chapter_number or 0), item.id))
     return hits[: request.top_k]
+
+
+@contextmanager
+def _query_connection(path: Path, *, read_only: bool):
+    """Open vector SQLite without sidecar or commit writes for validators."""
+
+    if not read_only:
+        with connect(path) as connection:
+            yield connection
+        return
+    uri = path.resolve().as_uri() + "?mode=ro&immutable=1"
+    connection = sqlite3.connect(uri, uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        yield connection
+    finally:
+        connection.close()
 
 
 def delete_by_filter(config: ConfigDocument, *, from_chapter: int | None = None, owner_type: str | None = None) -> int:

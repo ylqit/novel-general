@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 import hashlib
 import json
 import re
+import sqlite3
 
 from longform_engine.config import ConfigDocument
 from longform_engine.db import sync_database
@@ -218,13 +220,19 @@ def query(
     semantic: bool = False,
     chapter_number: int | None = None,
     token_budget: int | None = None,
+    write_cache: bool = True,
 ) -> RagQueryResult:
-    """Run hybrid retrieval, then select useful evidence within a context budget."""
+    """Run retrieval; validators may disable every query-side write."""
 
     if not query_text.strip():
         raise ValueError("RAG query cannot be empty.")
 
     if not database_path(config).exists():
+        if not write_cache:
+            raise ValueError(
+                "Read-only RAG query requires the current derived database; "
+                "run the normal RAG/database build before validation."
+            )
         sync_database(config)
     rag_config = config.data.get("rag", {})
     top_k = top_k or int(rag_config.get("max_hits", 64))
@@ -239,13 +247,14 @@ def query(
         candidate_pool=max(candidate_pool, top_k),
         semantic=semantic,
         chapter_number=chapter_number,
+        read_only=not write_cache,
     )
     hits, used_units, omitted = select_hits_by_token_budget(ranked, token_budget=token_budget)
-    cache_file = write_query_cache(config, query_text, hits)
+    cache_file = write_query_cache(config, query_text, hits) if write_cache else None
     return RagQueryResult(
         query=query_text,
         hits=tuple(hits),
-        cache_file=str(cache_file),
+        cache_file=str(cache_file) if cache_file is not None else "",
         token_budget=token_budget,
         used_units=used_units,
         omitted_hit_ids=tuple(omitted),
@@ -404,11 +413,14 @@ def retrieve_hits(
     candidate_pool: int,
     semantic: bool = False,
     chapter_number: int | None = None,
+    read_only: bool = False,
 ) -> list[RagHit]:
     """Score candidate chunks from SQLite using coarse metadata and fine text rerank."""
 
     db_path = database_path(config)
     if not db_path.exists():
+        if read_only:
+            raise ValueError("Read-only RAG retrieval requires an existing database")
         sync_database(config)
     terms = extract_query_terms(query_text)
     lower_query = query_text.lower()
@@ -417,7 +429,15 @@ def retrieve_hits(
     metadata_weight = float(rag_config.get("metadata_weight", 0.20))
     semantic_weight = float(rag_config.get("semantic_weight", 0.55))
 
-    semantic_status = ensure_models_ready(config, allow_download=True, require_reranker=False) if semantic else None
+    semantic_status = (
+        ensure_models_ready(
+            config,
+            allow_download=not read_only,
+            require_reranker=False,
+        )
+        if semantic
+        else None
+    )
     embedding_only_rerank = bool(
         semantic_status
         and semantic_status.embedding_loadable
@@ -436,6 +456,7 @@ def retrieve_hits(
                 owner_types=("chapter_chunk", "scene_memory", "chapter_memory", "arc_memory", "character_memory"),
                 max_chapter=(chapter_number - 1) if chapter_number and chapter_number > 1 else None,
             ),
+            read_only=read_only,
         )
         if semantic
         else []
@@ -450,6 +471,7 @@ def retrieve_hits(
         candidate_pool=candidate_pool,
         semantic=semantic,
         chapter_number=chapter_number,
+        read_only=read_only,
     )
     chapter_vector_scores = {
         hit.owner_id: float(hit.score)
@@ -602,6 +624,7 @@ def load_chunk_candidates(
     candidate_pool: int,
     semantic: bool,
     chapter_number: int | None,
+    read_only: bool = False,
 ) -> list[Any]:
     """Load bounded ANN, lexical, and recent candidates for semantic retrieval."""
 
@@ -612,7 +635,7 @@ def load_chunk_candidates(
     rows_by_id: dict[str, Any] = {}
     vector_ids = sorted(vector_owner_ids)
     max_chapter = chapter_number - 1 if chapter_number and chapter_number > 1 else None
-    with connect(db_path) as conn:
+    with _rag_query_connection(db_path, read_only=read_only) as conn:
         if vector_ids:
             placeholders = ",".join("?" for _ in vector_ids)
             for row in conn.execute(
@@ -693,6 +716,27 @@ def load_chunk_candidates(
         rows_by_id.values(),
         key=lambda row: (-(int(row["chapter_number"] or 0)), int(row["chunk_index"])),
     )
+
+
+@contextmanager
+def _rag_query_connection(
+    db_path: Path,
+    *,
+    read_only: bool,
+) -> Iterator[sqlite3.Connection]:
+    """Own the no-sidecar SQLite boundary used by validation retrieval."""
+
+    if not read_only:
+        with connect(db_path) as connection:
+            yield connection
+        return
+    uri = db_path.resolve().as_uri() + "?mode=ro&immutable=1"
+    connection = sqlite3.connect(uri, uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        yield connection
+    finally:
+        connection.close()
 
 
 def rebuild_embedding_index(config: ConfigDocument) -> EmbeddingBuildStats:

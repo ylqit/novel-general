@@ -984,6 +984,15 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
         changed = json.loads(original.decode("utf-8"))
         replacement = mutate(changed)
         write_json(path, replacement if isinstance(replacement, dict) else changed)
+        tampered_snapshot = _project_bytes(root)
+        with pytest.raises(ValueError, match="future.knowledge|provenance|stale"):
+            apply_intelligence_candidate(
+                project["config"],
+                task_type="fanfiction_future_knowledge_reassessment",
+                file_path=candidate_path,
+                approved_by="human",
+            )
+        assert _project_bytes(root) == tampered_snapshot
         with pytest.raises(FanfictionContextError, match="future_knowledge_document_stale"):
             compile_fanfiction_context(
                 project["config"],
@@ -1044,6 +1053,48 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
             {"sha256": "0" * 64}
         ),
     )
+    pin_bytes = pin_path.read_bytes()
+    pin_path.unlink()
+    missing_pin_snapshot = _project_bytes(root)
+    with pytest.raises(ValueError, match="provenance|stale"):
+        apply_intelligence_candidate(
+            project["config"],
+            task_type="fanfiction_future_knowledge_reassessment",
+            file_path=candidate_path,
+            approved_by="human",
+        )
+    assert _project_bytes(root) == missing_pin_snapshot
+    pin_path.write_bytes(pin_bytes)
+
+    archive_path = root / pin_registry["pins"][0]["provenance_archive"]["path"]
+    archive_bytes = archive_path.read_bytes()
+    archive_path.write_bytes(archive_bytes + b"tamper")
+    tampered_archive_snapshot = _project_bytes(root)
+    with pytest.raises(ValueError, match="provenance|stale"):
+        apply_intelligence_candidate(
+            project["config"],
+            task_type="fanfiction_future_knowledge_reassessment",
+            file_path=candidate_path,
+            approved_by="human",
+        )
+    assert _project_bytes(root) == tampered_archive_snapshot
+    archive_path.write_bytes(archive_bytes)
+
+    route_path = root / "10_bible/fanfiction/fanfiction_bible.json"
+    route_bytes = route_path.read_bytes()
+    changed_route = json.loads(route_bytes.decode("utf-8"))
+    changed_route["body"] = str(changed_route.get("body") or "") + "\n当前路线已漂移。"
+    write_document(route_path, reapprove(changed_route))
+    stale_source_snapshot = _project_bytes(root)
+    with pytest.raises(ValueError, match="future.knowledge|stale|fanfiction"):
+        apply_intelligence_candidate(
+            project["config"],
+            task_type="fanfiction_future_knowledge_reassessment",
+            file_path=candidate_path,
+            approved_by="human",
+        )
+    assert _project_bytes(root) == stale_source_snapshot
+    route_path.write_bytes(route_bytes)
 
 
 def test_future_knowledge_target_identity_is_owned_by_stable_trigger(tmp_path):
