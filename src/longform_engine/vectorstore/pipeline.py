@@ -418,7 +418,7 @@ def query(
 ) -> list[VectorHit]:
     cfg = vector_config(config)
     if cfg["backend"] == "local_hnsw":
-        return query_hnsw(config, request)
+        return query_hnsw(config, request, read_only=read_only)
     if cfg["backend"] != "local_sqlite":
         return []
     path = local_store_path(config)
@@ -701,22 +701,34 @@ def upsert_record(conn: sqlite3.Connection, record: VectorRecord) -> int:
     return label
 
 
-def query_hnsw(config: ConfigDocument, request: VectorQuery) -> list[VectorHit]:
+def query_hnsw(
+    config: ConfigDocument,
+    request: VectorQuery,
+    *,
+    read_only: bool = False,
+) -> list[VectorHit]:
     if not request.vector or not hnsw_dependency_available():
         return []
     path = local_store_path(config)
     index_path = local_index_path(config)
     if not path.is_file() or not index_path.is_file():
         return []
-    with connect(path) as conn:
-        create_schema(conn)
-        if state_value(conn, "hnsw_dirty") == "1":
+    try:
+        with _query_connection(path, read_only=read_only) as conn:
+            if not read_only:
+                create_schema(conn)
+            if state_value(conn, "hnsw_dirty") == "1":
+                return []
+            active_count = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS count FROM vectors "
+                    "WHERE stale = 0 AND status != 'stale'"
+                ).fetchone()["count"]
+            )
+    except sqlite3.DatabaseError:
+        if read_only:
             return []
-        active_count = int(
-            conn.execute(
-                "SELECT COUNT(*) AS count FROM vectors WHERE stale = 0 AND status != 'stale'"
-            ).fetchone()["count"]
-        )
+        raise
     if active_count == 0:
         return []
 
@@ -749,19 +761,24 @@ def query_hnsw(config: ConfigDocument, request: VectorQuery) -> list[VectorHit]:
     if not ranked:
         return []
     placeholders = ",".join("?" for _ in ranked)
-    with connect(path) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT l.label, v.id, v.owner_type, v.owner_id, v.source_path,
-                   v.chapter_number, v.metadata_json
-            FROM vector_labels l
-            JOIN vectors v ON v.id = l.id
-            WHERE l.label IN ({placeholders})
-              AND v.stale = 0
-              AND v.status != 'stale'
-            """,
-            [label for label, _distance in ranked],
-        ).fetchall()
+    try:
+        with _query_connection(path, read_only=read_only) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT l.label, v.id, v.owner_type, v.owner_id, v.source_path,
+                       v.chapter_number, v.metadata_json
+                FROM vector_labels l
+                JOIN vectors v ON v.id = l.id
+                WHERE l.label IN ({placeholders})
+                  AND v.stale = 0
+                  AND v.status != 'stale'
+                """,
+                [label for label, _distance in ranked],
+            ).fetchall()
+    except sqlite3.DatabaseError:
+        if read_only:
+            return []
+        raise
     rows_by_label = {int(row["label"]): row for row in rows}
     hits: list[VectorHit] = []
     for label, distance in ranked:

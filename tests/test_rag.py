@@ -1,6 +1,7 @@
 import json
 from hashlib import sha256
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -17,6 +18,8 @@ from longform_engine.rag import (
 )
 from longform_engine.storage import init_project
 from longform_engine.vectorstore import active_source_hash_count, active_source_record_count
+from longform_engine.vectorstore import local_index_path, local_store_path
+from longform_engine.vectorstore import pipeline as vectorstore_pipeline
 from tests.project_fixtures import approve_story_candidate, mark_project_ready
 
 
@@ -89,6 +92,74 @@ def test_rag_read_only_query_matches_writable_result_without_project_mutation(tm
         for path in root.rglob("*")
         if path.is_file()
     } == before
+
+
+def test_semantic_rag_read_only_local_hnsw_never_initializes_missing_schema(
+    tmp_path,
+    monkeypatch,
+):
+    project_config = seed_rag_project(tmp_path)
+    root = tmp_path / "novel"
+    project_config.data["semantic"].update(
+        {
+            "profile": "local-hash",
+            "allow_fallback": True,
+            "require_real_model": False,
+        }
+    )
+    project_config.data["semantic"]["vector_store"]["backend"] = "local_hnsw"
+    build_chunks(project_config, max_chars=120, overlap_chars=0)
+    store_path = local_store_path(project_config)
+    index_path = local_index_path(project_config)
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    sqlite3.connect(store_path).close()
+    index_path.write_bytes(b"incomplete-index")
+    monkeypatch.setattr(
+        vectorstore_pipeline,
+        "hnsw_dependency_available",
+        lambda: True,
+    )
+    before = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+    read_only = query(
+        project_config,
+        "青铜铃",
+        top_k=2,
+        semantic=True,
+        write_cache=False,
+    )
+
+    assert read_only.hits
+    assert read_only.cache_file == ""
+    assert {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    } == before
+    assert not store_path.with_name(store_path.name + "-wal").exists()
+    assert not store_path.with_name(store_path.name + "-shm").exists()
+
+    writable = query(
+        project_config,
+        "青铜铃",
+        top_k=2,
+        semantic=True,
+        write_cache=True,
+    )
+    with sqlite3.connect(store_path) as connection:
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert writable.hits
+    assert Path(writable.cache_file).is_file()
+    assert "vectors" in tables
 
 
 def test_embedding_delta_replaces_only_changed_source_and_preserves_full_snapshot(tmp_path):
