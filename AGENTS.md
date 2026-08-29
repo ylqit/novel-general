@@ -9,7 +9,7 @@
 ```powershell
 git status --short
 git log -1 --oneline
-git tag --list "v0.1[1-2].*"
+git tag --list "v0.1[1-3].*"
 longform-engine --version
 longform-engine skills status --tool codex --json
 python scripts/check_agent_data_pipeline_readiness.py
@@ -25,7 +25,7 @@ python scripts/check_agent_data_pipeline_readiness.py
 
 ## 2. 当前发布状态
 
-- 当前公开稳定版为破坏性的 `v0.12.0` 语义优先版本。原 v0.12–v0.14 多媒体实验已收口到单一 v0.12 发布；发布事实以当前 checklist、远程 CI、不可变 tag 和 GitHub Release 制品为准。
+- 当前公开稳定版为 `v0.13.0` 国内平台同人长篇版本，以 v0.12 语义优先架构为底座，加入路线家族、章节上下文 v2、跨界拓扑、平台质量档和目标级发布权利决定。旧的 v0.13/v0.14 多媒体阶段名从未发布，与本版本无继承关系；发布事实以当前 checklist、远程 CI、不可变 tag 和 GitHub Release 制品为准。
 - 协议与生产合同 readiness 以 `scripts/check_agent_data_pipeline_readiness.py` 的输出为准。
 - `literary_evidence_ready` 保持 `false`，直到真实章节与独立盲评证据完整。
 - 不要把任一本地小说运行、全局 Skill 状态或历史阶段文档当作源码事实源。
@@ -326,8 +326,8 @@ task event/index 记录：
 2. `docs/OPERATOR_GUIDE.md`
 3. `docs/ARCHITECTURE.md`
 4. `docs/STORAGE_MODEL.md`
-5. `docs/V0_12_SEMANTIC_ARCHITECTURE.md`
-6. 当前目标版本 checklist：`docs/V0_12_0_RELEASE_CHECKLIST.md`
+5. `docs/V0_13_FANFICTION_ARCHITECTURE.md`
+6. 当前目标版本 checklist：`docs/V0_13_0_RELEASE_CHECKLIST.md`
 7. `docs/RELEASE_HISTORY.md`
 8. `docs/GATE_MODEL.md`
 9. `docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`

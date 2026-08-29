@@ -7,7 +7,7 @@
 - 本地文件是事实源；SQLite、RAG 和图谱是受控或可重建派生状态。
 - Agent 只能写 manifest 声明的 workbench 候选，不能直接写 canonical。
 
-> 当前公开稳定版为 `v0.12.0`，这是一个破坏性的语义优先版本。未发布的 v0.12–v0.14 多媒体实验已收口为一个 v0.12 发布：保留格式与证据处理能力，内容语义改用“最小硬协议 + 开放中文语义文档 + 人工决定”。发布不等于文学质量、平台接受、原著行为百分之百还原或 AI 检测规避证明。
+> 当前公开稳定版为 `v0.13.0`。它在 v0.12 语义优先底座上完成国内平台同人长篇生产架构：三类路线、章节上下文 v2、跨界拓扑、起点主档/番茄兼容档，以及仅约束具体平台导出的人工权利决定。发布不等于文学质量、平台接受、取得原著授权、原著行为百分之百还原或 AI 检测规避证明。
 
 当前公共语义边界是 `artifact_envelope_v1`、`source_asset_v1`、`evidence_reference_v1`、`workflow_record_v1`、`semantic_document_v1`、`human_decision_v1` 与 `agent_task_manifest_v5`。资料索引和格式处理记录仍可使用确定性内部结构，但不再为人物、事件、关系、能力、外观或跨界规则建立封闭内容 Schema。`fanfiction_source_canon_v1/v2/v3` 不双读；旧项目只能显式审计并非原地导入，旧事实必须重新形成证据可回溯的语义候选并获人工批准。
 
@@ -27,7 +27,7 @@
 | 独立审稿 | `scene_prose_editor`、`anti_template_editor` 每章必审，风险角色按需增加 |
 | 人工终稿 | `human_author_revision_v4` 绑定最终锁、真实改动及双稿语义保真 |
 | 人工深审 | `human_story_review_v7` 绑定当前协议证据后才允许 finalize |
-| 发布预检 | 起点、番茄内容观察只提示风险；同人导出另受当前人工权利决定约束，不输出“检测通过” |
+| 发布预检 | 内容观察只提示风险；同人平台导出要求目标级人工权利决定 |
 | 同人资料 | 用户级中文原著证据库、项目固定哈希绑定、需求驱动分层覆盖与项目独立语义 Canon |
 | 恢复 | canonical 写入使用事务、锁、证据和显式恢复命令 |
 
@@ -50,7 +50,7 @@ Windows：
 py -3 -m pip install --user pipx
 py -3 -m pipx ensurepath
 py -3 -m pipx install --force `
-  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.12.0'
+  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.13.0'
 longform-engine skills install --tool codex --force
 longform-engine doctor --tool codex
 ```
@@ -61,7 +61,7 @@ macOS / Linux：
 python3 -m pip install --user pipx
 python3 -m pipx ensurepath
 python3 -m pipx install --force \
-  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.12.0'
+  'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.13.0'
 longform-engine skills install --tool codex --force
 longform-engine doctor --tool codex
 ```
@@ -325,7 +325,7 @@ v0.11.0 发布包含动态原著资料库、全作覆盖门禁、项目独立 Ca
 
 - [Operator Guide](docs/OPERATOR_GUIDE.md)
 - [v0.11 动态同人原著资料库](docs/V0_11_0_IMPLEMENTATION.md)
-- [v0.12 语义优先架构](docs/V0_12_SEMANTIC_ARCHITECTURE.md)
+- [v0.13 国内平台同人架构](docs/V0_13_FANFICTION_ARCHITECTURE.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Storage Model](docs/STORAGE_MODEL.md)
 - [Configuration](docs/CONFIGURATION.md)
@@ -333,7 +333,7 @@ v0.11.0 发布包含动态原著资料库、全作覆盖门禁、项目独立 Ca
 - [Release Runbook](docs/RELEASE_RUNBOOK.md)
 - [Release History](docs/RELEASE_HISTORY.md)
 - [v0.11.0 发布 Checklist](docs/V0_11_0_RELEASE_CHECKLIST.md)
-- [v0.12.0 发布 Checklist](docs/V0_12_0_RELEASE_CHECKLIST.md)
+- [v0.13.0 发布 Checklist](docs/V0_13_0_RELEASE_CHECKLIST.md)
 
 ## License
 

@@ -1,6 +1,6 @@
 # longform-novel-engine 配置说明
 
-0.12.0 语义优先开发态继续使用项目 schema v2。配置合并顺序为：
+0.13.0 国内平台同人长篇稳定版继续使用项目 schema v2。配置合并顺序为：
 
 ```text
 config/default.engine.yaml
@@ -80,6 +80,6 @@ Agent 只能读取 manifest 的 `io.inputs` 并写唯一 `io.output.path`。Bibl
 
 `literary_evidence_ready` 只能由可回验真实正文 hash、无 P1 的 gate report、两条各 20 章同人路线、三名独立人类盲审及全部实质分歧人工处理形成的 manifest（或既有正式多范围盲审 manifest）改变；当前仓库没有真实文学材料，保持 `false`。
 
-当前公开稳定配置是 v0.12.0；语义、资料和小说生产边界见 [`V0_12_SEMANTIC_ARCHITECTURE.md`](V0_12_SEMANTIC_ARCHITECTURE.md)，发布事实以 v0.12 checklist、远程 CI 和不可变 Release 为准。
+当前公开稳定配置是 v0.13.0；同人路线、上下文、跨界和平台导出边界见 [`V0_13_FANFICTION_ARCHITECTURE.md`](V0_13_FANFICTION_ARCHITECTURE.md)，底层开放语义原则仍见历史 [`V0_12_SEMANTIC_ARCHITECTURE.md`](V0_12_SEMANTIC_ARCHITECTURE.md)。发布事实以 v0.13 checklist、远程 CI 和不可变 Release 为准。
 
 `source_processing.default_execution` 默认为 `local`。`source_processing.cloud.enabled` 默认为 `false`；启用 OpenAI 时必须显式填写版本化的视觉或转写模型，并保持 `require_per_job_human_approval=true`、`allow_automatic_fallback=false`、`retain_remote_files=false`。密钥只能由环境变量或操作系统凭据边界提供。

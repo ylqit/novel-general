@@ -225,7 +225,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "docs/V0_12_0_RELEASE_CHECKLIST.md",
+        "docs/V0_13_0_RELEASE_CHECKLIST.md",
         (
             "协议收口",
             "semantic_document_v1",
@@ -233,7 +233,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
             "本地发布验证",
             "提交与远程发布",
             "本机同步",
-            "未发布",
+            "literary_evidence_ready=false",
         ),
     ),
     (
@@ -557,7 +557,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
         ),
     ),
     (
-        "docs/V0_12_0_RELEASE_CHECKLIST.md",
+        "docs/V0_13_0_RELEASE_CHECKLIST.md",
         (
             "资料、语义引擎与小说生产",
             "semantic_document_v1",
@@ -569,7 +569,7 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (
     (
         "tests/test_agent_skill_integrity.py",
         (
-            "test_release_guard_tracks_current_v012_contracts",
+            "test_release_guard_tracks_current_v013_contracts",
             "check_experience_layer_guards",
             "DIRECT_WRITER_PATTERNS",
         ),
@@ -871,7 +871,7 @@ def check_v010_active_schema_surface() -> list[str]:
         for term in RETIRED_ACTIVE_SCHEMA_TERMS:
             if term in text:
                 failures.append(
-                    f"retired schema `{term}` remains on active v0.10 surface: {relative}"
+                    f"retired schema `{term}` remains on the active release surface: {relative}"
                 )
     return failures
 

@@ -322,7 +322,7 @@
     },
     {
       "path": "config/release-channel.json",
-      "sha256": "39f5322ddf78d6b7ec66d2769f21908f9e66aacdd3cbd04e977b2385d8754339",
+      "sha256": "8bdc6b36bba47d011449ce8b5552ff04b5f486dcb469a3309ee2190c948679ef",
       "size": 302
     },
     {
@@ -432,7 +432,7 @@
     },
     {
       "path": "pyproject.toml",
-      "sha256": "f83168a643ca10c3951a99ecd3a3fb17512f821a6f7becab0fdde38c34048772",
+      "sha256": "3ff125fb0202a9800b5a2efbe07589df2d86e69423e913ae05877aced5a8d37e",
       "size": 3037
     },
     {
@@ -466,7 +466,7 @@
       "size": 1037
     }
   ],
-  "engine_version": "0.12.0",
+  "engine_version": "0.13.0",
   "hash_policy": "text-lf-v1",
   "schema": "longform_resource_manifest_v1"
 }

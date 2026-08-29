@@ -399,9 +399,9 @@ def test_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
     assert {item["aggregation"] for item in batches} == {"deterministic_source_hash_and_evidence_id"}
 
 
-def test_release_guard_tracks_current_v012_contracts():
+def test_release_guard_tracks_current_v013_contracts():
     guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_12_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    checklist = (ROOT / "docs" / "V0_13_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
     operator_guide = (ROOT / "docs" / "OPERATOR_GUIDE.md").read_text(encoding="utf-8")
     production = (ROOT / "src" / "longform_engine" / "production.py").read_text(encoding="utf-8")
 
