@@ -98,6 +98,79 @@ def project_file_snapshot(root: Path) -> dict[str, bytes]:
     }
 
 
+def persist_current_context_inputs(
+    project: dict,
+    *,
+    title: str,
+    claim_refs: list[str] | None = None,
+) -> tuple[dict, dict]:
+    """Persist the formal v5 contract/card boundary consumed by context v2."""
+
+    refs = list(claim_refs or [])
+    contract = {
+        "schema": "chapter_contract_v5",
+        "contract_id": "contract:ch001",
+        "chapter_number": 1,
+        "forecast_ref": "forecast:ch001",
+        "topology": "relationship",
+        "chapter_duty": "让已批准规则迫使人物作出选择。",
+        "observable_change": "选择改变下一章可采取的行动。",
+        "reader_value": "规则、选择与代价形成因果。",
+        "failure": {
+            "applicability": "optional",
+            "description": "直接方案可能失败。",
+            "reason": "人物选择承担本章转折。",
+        },
+        "choice": {
+            "applicability": "required",
+            "description": "人物采用有代价的替代方案。",
+            "reason": "选择造成可观察变化。",
+        },
+        "cost": {
+            "applicability": "required",
+            "description": "人物失去一种安全选项。",
+            "reason": "收益缩窄后续选择。",
+        },
+        "aftermath": {
+            "applicability": "optional",
+            "description": "余波可延续到下一章。",
+            "reason": "本章在行动后果处结束。",
+        },
+        "plot_node_table_ref": {
+            "table_id": "node-table:ch001",
+            "candidate_sha256": "a" * 64,
+        },
+        "semantic_obligation_refs": ["obligation:choice"],
+        "reader_promise_actions": [],
+        "protected_invariants": ["人物保留拒绝权。"],
+        "prohibited_drift": ["不得让代价自动消失。"],
+        "fanfiction_claim_refs": {
+            "schema": "fanfiction_chapter_claim_channel_v1",
+            "active_volume_claim_refs": [],
+            "semantic_obligation_claim_refs": [],
+            "plot_node_claim_refs": [],
+            "chapter_claim_refs": refs,
+            "all_claim_refs": refs,
+        },
+    }
+    card = {"title": title, "volume_id": "vol001", "arc_id": "arc001"}
+    root = project["root"]
+    write_document(root / "20_outline/chapter_contracts/ch001.json", contract)
+    write_document(root / "20_outline/chapter_cards/ch001.json", card)
+    return contract, card
+
+
+def compile_current_context(project: dict, *, title: str) -> dict:
+    contract, card = persist_current_context_inputs(project, title=title)
+    return compile_fanfiction_context(
+        project["config"],
+        chapter_number=1,
+        chapter_contract=contract,
+        chapter_card=card,
+        character_packet={},
+    )
+
+
 def reviewed_route_projection_sha256(document: dict) -> str:
     extensions = deepcopy(document["extensions"])
     for field in (
@@ -1589,6 +1662,19 @@ def test_planning_apply_rejects_legacy_crossover_without_canonical_or_transactio
         "body": "当前卷只投影已经批准的跨界路线。",
         "claim_refs": [route["claims"][0]["claim_id"]],
     }
+    for contract in bundle["chapter_contracts"]:
+        channel = contract["fanfiction_claim_refs"]
+        channel["active_volume_claim_refs"] = [route["claims"][0]["claim_id"]]
+        channel["all_claim_refs"] = list(
+            dict.fromkeys(
+                [
+                    *channel["active_volume_claim_refs"],
+                    *channel["semantic_obligation_claim_refs"],
+                    *channel["plot_node_claim_refs"],
+                    *channel["chapter_claim_refs"],
+                ]
+            )
+        )
     bundle_path = write_json(root / "50_workbench" / "planning" / "bundle.json", bundle)
     subject_relative = bundle_path.relative_to(root).as_posix()
     review_path = write_json(
@@ -2039,13 +2125,7 @@ def test_context_compiler_reads_each_current_chain_artifact_once(
 
     monkeypatch.setattr(Path, "read_bytes", counted)
 
-    compile_fanfiction_context(
-        project["config"],
-        chapter_number=1,
-        chapter_contract={"chapter_number": 1},
-        chapter_card={"title": "单次读取边界"},
-        character_packet={},
-    )
+    compile_current_context(project, title="单次读取边界")
 
     assert reads == {path: 1 for path in targets}
 
@@ -2164,13 +2244,7 @@ def test_current_review_contract_rejects_malformed_or_stale_documents(
 ):
     project = current_contract_project
     route, _route_path = install_route(project)
-    bundle = compile_fanfiction_context(
-        project["config"],
-        chapter_number=1,
-        chapter_contract={"chapter_number": 1},
-        chapter_card={"title": "复核合同"},
-        character_packet={},
-    )
+    bundle = compile_current_context(project, title="复核合同")
     write_fanfiction_context_bundle(project["root"], bundle)
     review_path = project["root"] / route["extensions"]["independent_review"]["review_path"]
     review = json.loads(review_path.read_text(encoding="utf-8"))
@@ -2201,13 +2275,7 @@ def test_current_review_contract_rejects_malformed_or_stale_documents(
     with pytest.raises(contracts.FanfictionContractError) as exc_info:
         contracts.load_current_fanfiction_route(project["config"], project["root"])
     with pytest.raises(FanfictionContextError, match="fanfiction_contract"):
-        compile_fanfiction_context(
-            project["config"],
-            chapter_number=1,
-            chapter_contract={"chapter_number": 1},
-            chapter_card={"title": "畸形复核"},
-            character_packet={},
-        )
+        compile_current_context(project, title="畸形复核")
 
     assert exc_info.value.code == expected_status
     context_status = fanfiction_context_status(project["config"], chapter_number=1)
@@ -2222,13 +2290,7 @@ def test_context_bundle_records_independent_review_provenance(current_contract_p
     project = current_contract_project
     route, _route_path = install_route(project)
 
-    bundle = compile_fanfiction_context(
-        project["config"],
-        chapter_number=1,
-        chapter_contract={"chapter_number": 1},
-        chapter_card={"title": "复核来源"},
-        character_packet={},
-    )
+    bundle = compile_current_context(project, title="复核来源")
 
     review_path = route["extensions"]["independent_review"]["review_path"]
     review = json.loads((project["root"] / review_path).read_text(encoding="utf-8"))
@@ -2246,13 +2308,7 @@ def test_current_review_target_must_match_current_canonical_route_semantics(
 ):
     project = current_contract_project
     route, route_path = install_route(project)
-    bundle = compile_fanfiction_context(
-        project["config"],
-        chapter_number=1,
-        chapter_contract={"chapter_number": 1},
-        chapter_card={"title": "路线 A"},
-        character_packet={},
-    )
+    bundle = compile_current_context(project, title="路线 A")
     write_fanfiction_context_bundle(project["root"], bundle)
     different_route = deepcopy(route)
     different_route["title"] = "语义不同的路线 B"
@@ -2263,13 +2319,7 @@ def test_current_review_target_must_match_current_canonical_route_semantics(
     with pytest.raises(contracts.FanfictionContractError) as exc_info:
         contracts.load_current_fanfiction_route(project["config"], project["root"])
     with pytest.raises(FanfictionContextError, match="fanfiction_contract"):
-        compile_fanfiction_context(
-            project["config"],
-            chapter_number=1,
-            chapter_contract={"chapter_number": 1},
-            chapter_card={"title": "路线 B"},
-            character_packet={},
-        )
+        compile_current_context(project, title="路线 B")
 
     assert exc_info.value.code == "stale"
     status = fanfiction_context_status(project["config"], chapter_number=1)
@@ -2280,13 +2330,7 @@ def test_current_review_target_must_match_current_canonical_route_semantics(
 def test_current_review_target_must_be_a_valid_fanfiction_route(current_contract_project):
     project = current_contract_project
     route, _route_path = install_route(project)
-    bundle = compile_fanfiction_context(
-        project["config"],
-        chapter_number=1,
-        chapter_contract={"chapter_number": 1},
-        chapter_card={"title": "合法路线"},
-        character_packet={},
-    )
+    bundle = compile_current_context(project, title="合法路线")
     write_fanfiction_context_bundle(project["root"], bundle)
     review_path = project["root"] / route["extensions"]["independent_review"]["review_path"]
     review = json.loads(review_path.read_text(encoding="utf-8"))
@@ -2310,13 +2354,7 @@ def test_current_review_target_must_be_a_valid_fanfiction_route(current_contract
     with pytest.raises(contracts.FanfictionContractError) as exc_info:
         contracts.load_current_fanfiction_route(project["config"], project["root"])
     with pytest.raises(FanfictionContextError, match="fanfiction_contract"):
-        compile_fanfiction_context(
-            project["config"],
-            chapter_number=1,
-            chapter_contract={"chapter_number": 1},
-            chapter_card={"title": "非法 target"},
-            character_packet={},
-        )
+        compile_current_context(project, title="非法 target")
 
     assert exc_info.value.code == "invalid"
     status = fanfiction_context_status(project["config"], chapter_number=1)
@@ -2339,13 +2377,7 @@ def test_context_status_revalidates_complete_current_chain(
 ):
     project = current_contract_project
     route, _route_path = install_route(project)
-    bundle = compile_fanfiction_context(
-        project["config"],
-        chapter_number=1,
-        chapter_contract={"chapter_number": 1},
-        chapter_card={"title": "状态重验"},
-        character_packet={},
-    )
+    bundle = compile_current_context(project, title="状态重验")
     write_fanfiction_context_bundle(project["root"], bundle)
     review_path = project["root"] / route["extensions"]["independent_review"]["review_path"]
     if drift == "configured_source":
@@ -2419,13 +2451,7 @@ def test_context_and_event_status_block_each_current_chain_drift(
             write_document(route_path, seal_semantic_document(changed))
 
     with pytest.raises(FanfictionContextError, match="fanfiction_contract"):
-        compile_fanfiction_context(
-            project["config"],
-            chapter_number=1,
-            chapter_contract={"chapter_number": 1},
-            chapter_card={"title": "当前合同漂移"},
-            character_packet={},
-        )
+        compile_current_context(project, title="当前合同漂移")
 
     event_status = event_disposition_status(project["config"])
     assert event_status["route_status"] == status
