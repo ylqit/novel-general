@@ -1954,8 +1954,17 @@ def read_task_events(root: Path) -> list[dict[str, Any]]:
     return events
 
 
-def task_archive_projection(root: Path, chapter_number: int) -> dict[str, Any]:
-    tasks = list_manifests(root, chapter_number=chapter_number)
+def task_archive_projection(
+    root: Path,
+    chapter_number: int,
+    *,
+    excluded_task_ids: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    tasks = [
+        item
+        for item in list_manifests(root, chapter_number=chapter_number)
+        if str(item.get("task_id") or "") not in excluded_task_ids
+    ]
     task_ids = {str(item.get("task_id") or "") for item in tasks}
     events = [
         item
@@ -2040,13 +2049,24 @@ def compact_project_task_projection(root: Path, *, archive_ref: str) -> dict[str
     }
 
 
-def compact_task_projection(root: Path, *, through: int, archive_refs: dict[int, str]) -> dict[str, Any]:
+def compact_task_projection(
+    root: Path,
+    *,
+    through: int,
+    archive_refs: dict[int, str],
+    retained_task_ids: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     index_path = agent_task_index_file(root)
     payload = read_json(index_path, default={})
     if not isinstance(payload, dict):
         payload = new_task_index()
     tasks = [dict(item) for item in payload.get("tasks", []) if isinstance(item, dict)]
-    archived = [item for item in tasks if 0 < int(item.get("chapter_number") or 0) <= through]
+    archived = [
+        item
+        for item in tasks
+        if 0 < int(item.get("chapter_number") or 0) <= through
+        and str(item.get("task_id") or "") not in retained_task_ids
+    ]
     retained = [item for item in tasks if item not in archived]
     counts = payload.get("terminal_counts") if isinstance(payload.get("terminal_counts"), dict) else {}
     by_status = dict(counts.get("by_status") or {})

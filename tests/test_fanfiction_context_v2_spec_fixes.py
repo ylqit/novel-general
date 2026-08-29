@@ -716,6 +716,7 @@ def test_event_realization_rejects_semantically_invalid_and_duplicate_divergence
 
 def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply_enters_closure(
     current_contract_project,
+    monkeypatch,
 ):
     project = current_contract_project
     install_route(project)
@@ -890,6 +891,33 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
             task_type="fanfiction_future_knowledge_reassessment",
             file_path=candidate_path,
         )
+    from longform_engine import future_knowledge_provenance as provenance_module
+
+    expected_target = semantic_task_target(
+        root,
+        "fanfiction_future_knowledge_reassessment",
+        json.loads(candidate_path.read_text(encoding="utf-8")),
+    )
+    real_pin_write = provenance_module.atomic_write_text
+
+    def fail_pin_write(path: Path, text: str) -> None:
+        if path.name == "future_knowledge_provenance_pins.json":
+            raise RuntimeError("injected pin registry failure")
+        real_pin_write(path, text)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(provenance_module, "atomic_write_text", fail_pin_write)
+        with pytest.raises(RuntimeError, match="injected pin registry failure"):
+            apply_intelligence_candidate(
+                project["config"],
+                task_type="fanfiction_future_knowledge_reassessment",
+                file_path=candidate_path,
+                approved_by="human",
+            )
+    assert not expected_target.exists()
+    assert not (root / "30_state/future_knowledge_provenance_pins.json").exists()
+    assert load_manifest(root, task.task_id)["status"] == "validated"
+
     applied = apply_intelligence_candidate(
         project["config"],
         task_type="fanfiction_future_knowledge_reassessment",
@@ -923,6 +951,94 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
         edge["to_claim_id"] == "future:ch001:gate:knowledge"
         and edge["field"] == "approved_future_knowledge_update"
         for edge in next_bundle["dependency_closure"]
+    )
+    pin_path = root / "30_state/future_knowledge_provenance_pins.json"
+    pin_registry = json.loads(pin_path.read_text(encoding="utf-8"))
+    assert pin_registry["schema"] == "future_knowledge_provenance_pins_v1"
+    assert len(pin_registry["pins"]) == 1
+    pinned_kinds = {item["kind"] for item in pin_registry["pins"][0]["evidence"]}
+    assert pinned_kinds == {
+        "workflow",
+        "fanfiction_context_bundle",
+        "narrative_event_ledger",
+        "final_chapter",
+        "semantic_ledger",
+        "task_manifest",
+        "task_instruction",
+        "candidate",
+    }
+
+    manifest_path = root / load_manifest(root, task.task_id)["manifest_file"]
+    approved_path = semantic_task_target(
+        root,
+        "fanfiction_future_knowledge_reassessment",
+        json.loads(candidate_path.read_text(encoding="utf-8")),
+    )
+
+    def assert_stale_after_json_tamper(path: Path, mutate) -> None:
+        original = path.read_bytes()
+        changed = json.loads(original.decode("utf-8"))
+        replacement = mutate(changed)
+        write_json(path, replacement if isinstance(replacement, dict) else changed)
+        with pytest.raises(FanfictionContextError, match="future_knowledge_document_stale"):
+            compile_fanfiction_context(
+                project["config"],
+                chapter_number=2,
+                chapter_contract=chapter_two,
+                chapter_card=chapter_two_card,
+                character_packet={},
+            )
+        path.write_bytes(original)
+
+    assert_stale_after_json_tamper(
+        event_path,
+        lambda value: value["realized_major_divergences"][0]["evidence"].update(
+            {"excerpt": "据显"}
+        ),
+    )
+    assert_stale_after_json_tamper(
+        event_path,
+        lambda value: value["realized_major_divergences"][0][
+            "human_confirmation"
+        ].update({"reason": "同一稳定 ID 下被替换的确认理由。"}),
+    )
+    assert_stale_after_json_tamper(
+        event_path,
+        lambda value: value["realized_major_divergences"][0].update(
+            {"knowledge_scope_refs": []}
+        ),
+    )
+    assert_stale_after_json_tamper(
+        workflow_path,
+        lambda value: value["inputs"][0].update({"sha256": "f" * 64}),
+    )
+    assert_stale_after_json_tamper(
+        manifest_path,
+        lambda value: value["scope"].update({"chapter_number": 2}),
+    )
+
+    def reseal_changed_candidate(value: dict) -> dict:
+        value["body"] = "候选正文被替换，即使 trigger_id 不变。"
+        return seal_semantic_document(value)
+
+    assert_stale_after_json_tamper(
+        candidate_path,
+        reseal_changed_candidate,
+    )
+
+    def reapprove_changed_document(value: dict) -> dict:
+        value["body"] = "批准投影不再等于被验证候选。"
+        return reapprove(value)
+
+    assert_stale_after_json_tamper(
+        approved_path,
+        reapprove_changed_document,
+    )
+    assert_stale_after_json_tamper(
+        pin_path,
+        lambda value: value["pins"][0]["evidence"][0].update(
+            {"sha256": "0" * 64}
+        ),
     )
 
 
@@ -1385,3 +1501,178 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
         f"future:real_chain:{index}:knowledge" for index in range(1, 4)
     }
     assert approved_updates <= set(next_context["dependency_claim_ids"])
+
+    unrelated = root / "50_workbench/unrelated/ch001.unrelated.json"
+    write_json(unrelated, {"schema": "unrelated_test_artifact_v1", "chapter_number": 1})
+
+    def close_followup_chapter(chapter_number: int) -> None:
+        intent_task = create_human_chapter_intent_task(
+            config,
+            chapter_number=chapter_number,
+        )
+        intent_path = root / intent_task.candidate_file
+        intent_payload = json.loads(intent_path.read_text(encoding="utf-8"))
+        intent_payload.update(
+            {
+                "story_intent": "让既有后果推动新的不可回退选择。",
+                "key_character_choice": "人物主动承担信息失效后的行动代价。",
+                "emotional_truth": "选择的价值来自持续承担，而非即时奖励。",
+                "pov_voice_intent": "视角以判断和动作呈现压力。",
+                "protected_items": ["不得重置前章代价"],
+                "completed_by": "human",
+            }
+        )
+        write_json(intent_path, intent_payload)
+        intent_result = validate_human_chapter_intent(
+            config,
+            chapter_number=chapter_number,
+            file_path=intent_path,
+        )
+        assert intent_result.ok, intent_result.errors
+        apply_human_chapter_intent(
+            config,
+            chapter_number=chapter_number,
+            file_path=intent_path,
+            approved_by="human",
+        )
+        continue_write(config, chapter_number=chapter_number)
+        followup_draft = (
+            root
+            / "50_workbench"
+            / "agent_drafts"
+            / f"ch{chapter_number:03d}.codex.md"
+        )
+        followup_sentence = (
+            f"FOLLOWUP_{chapter_number} the character tests a changed premise, accepts "
+            "a visible consequence, and preserves one unresolved choice? "
+        )
+        followup_draft.write_text(
+            "# Chapter\n\n" + followup_sentence * 36 + "\n",
+            encoding="utf-8",
+        )
+        assert submit_agent_draft(
+            config,
+            chapter_number=chapter_number,
+            file_path=followup_draft,
+            agent="codex",
+        ).passed
+        approve_story_candidate(root, config, chapter_number=chapter_number)
+        finalized = finalize_chapter(
+            config,
+            chapter_number=chapter_number,
+            approved_by="human",
+        )
+        followup_final = Path(finalized.final_file)
+        semantic = prepare_unified_semantic_bundle(root, config, chapter_number)
+        semantic_apply(config, chapter_number=chapter_number, file_path=semantic)
+        followup_event_path = (
+            root / "30_state/narrative_events" / f"ch{chapter_number:03d}.json"
+        )
+        followup_events = json.loads(
+            followup_event_path.read_text(encoding="utf-8")
+        )
+        pending = [
+            item
+            for item in followup_events["events"]
+            if item.get("state") not in {"realized", "deferred", "cancelled"}
+        ]
+        final_text = followup_final.read_text(encoding="utf-8")
+        start = next(
+            index for index, character in enumerate(final_text) if not character.isspace()
+        )
+        end = min(len(final_text), start + 24)
+        followup_evidence = {
+            "start": start,
+            "end": end,
+            "excerpt": final_text[start:end],
+        }
+        followup_realization = build_event_realization_application(
+            config,
+            chapter_number=chapter_number,
+            observations=[
+                {
+                    "event_id": item["event_id"],
+                    "state": "realized",
+                    "evidence": followup_evidence,
+                    "semantic_reason": "终稿已实现正式规划节点。",
+                }
+                for item in pending
+            ],
+            discovered_causal_nodes=[],
+            confirmed_by="human",
+            realized_major_divergences=[],
+        )
+        assert validate_event_realization_application(
+            config, followup_realization
+        ).ok
+        followup_realization_path = write_json(
+            root
+            / "50_workbench/event_realizations"
+            / f"ch{chapter_number:03d}.real.json",
+            followup_realization,
+        )
+        apply_event_realization(
+            config,
+            application_path=followup_realization_path,
+        )
+        complete_unified_semantic_lifecycle(
+            root,
+            config,
+            chapter_number,
+            approved_by="human",
+            close=False,
+        )
+        chapter_close(config, chapter_number=chapter_number, approved_by="human")
+
+    close_followup_chapter(2)
+    close_followup_chapter(3)
+
+    assert not unrelated.exists()
+    assert (root / "70_runtime/artifacts/chapters/ch001.zip").is_file()
+    pin_registry = json.loads(
+        (root / "30_state/future_knowledge_provenance_pins.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(pin_registry["pins"]) == 3
+    for pin in pin_registry["pins"]:
+        assert all((root / item["path"]).is_file() for item in pin["evidence"])
+        assert (root / pin["approved_document"]["path"]).is_file()
+    active_task_ids = {
+        item["task_id"]
+        for item in json.loads(
+            (root / "50_workbench/agent_tasks/agent_task_index.json").read_text(
+                encoding="utf-8"
+            )
+        )["tasks"]
+    }
+    assert {item["task_id"] for item in workflows} <= active_task_ids
+
+    chapter_four = deepcopy(chapter_two)
+    chapter_four["contract_id"] = "contract:ch004"
+    chapter_four["chapter_number"] = 4
+    chapter_four_card = {"chapter_number": 4, "volume_id": "volume:001"}
+    _persist_compile_inputs(root, chapter_four, chapter_four_card)
+    chapter_four_context = compile_fanfiction_context(
+        config,
+        chapter_number=4,
+        chapter_contract=chapter_four,
+        chapter_card=chapter_four_card,
+        character_packet={},
+    )
+    assert approved_updates <= set(chapter_four_context["dependency_claim_ids"])
+
+    pin_path = root / "30_state/future_knowledge_provenance_pins.json"
+    original_pins = pin_path.read_bytes()
+    tampered_pins = json.loads(original_pins.decode("utf-8"))
+    tampered_pins["pins"][0]["evidence"][0]["sha256"] = "f" * 64
+    write_json(pin_path, tampered_pins)
+    with pytest.raises(FanfictionContextError, match="provenance_pin"):
+        compile_fanfiction_context(
+            config,
+            chapter_number=4,
+            chapter_contract=chapter_four,
+            chapter_card=chapter_four_card,
+            character_packet={},
+        )
+    pin_path.write_bytes(original_pins)

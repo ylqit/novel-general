@@ -27,6 +27,7 @@
 | `30_state/stale_artifacts.json` | 设定传播 stale 注册表 |
 | `30_state/semantic_ledger/chNNN.json` | final 精确证据的章节语义 |
 | `30_state/chapter_closures/chNNN.json` | `chapter_closure_v2` |
+| `30_state/future_knowledge_provenance_pins.json` | `future_knowledge_provenance_pins_v1`；绑定已批准未来知识结果及其 workflow、上下文、事件、终稿、语义账本、任务 manifest/指令和候选的精确路径与哈希 |
 | `40_manuscript/final/chNNN.md` | 唯一正文事实源 |
 | `50_workbench/` | 候选、任务、审稿、反馈与审批证据，非 canonical |
 | `50_workbench/同人原著资料/<作品名>/` | 项目级中文资料包、覆盖计划、固定绑定、批准提取和短证据；不含完整原件 |
@@ -62,6 +63,8 @@ basis 绑定 v5 合同、人工意图、滚动窗口、Plot Node 表、语义义
 事件实现和 promise evidence 只能在 semantic apply 后写入，并必须绑定当前 final 和 semantic ledger hash。实现/兑现 span 使用 Python Unicode codepoint offset，`excerpt == final[start:end]`。
 
 `chapter_closure_v2` 固定四项 SHA：final、semantic ledger、event ledger、reader-promise ledger。已有 closure 的任一证据漂移都会阻断幂等 close。
+
+长期有效的未来知识重估不会因两章活动缓冲区压缩而失去证明链。人工 apply 在同一 canonical transaction 内登记 provenance pin；压缩只保留仍覆盖待写章节的精确证据和对应 applied task manifest，其他同章 workbench 工件仍正常归档。`to_chapter` 到期后 pin 不再阻止归档。缺失、篡改或与当前 workflow/task/candidate/批准投影不一致的 pin 会使结果 stale，不能进入后续同人上下文。
 
 ## 4. 设定变更与反馈
 

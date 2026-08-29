@@ -16,6 +16,10 @@ import tempfile
 import zipfile
 
 from longform_engine.config import ConfigDocument
+from longform_engine.future_knowledge_provenance import (
+    active_future_knowledge_pin_paths,
+    active_future_knowledge_task_ids,
+)
 from longform_engine.agent_tasks import (
     compact_project_task_projection,
     compact_task_projection,
@@ -272,6 +276,14 @@ def compact_artifacts(
     root = resolve_project_root(config)
     blockers = compaction_blockers(root, through)
     candidates = chapter_candidates(root, through)
+    next_chapter = max((*closed_chapter_numbers(root), through), default=through) + 1
+    pinned_paths = active_future_knowledge_pin_paths(root, for_chapter=next_chapter)
+    pinned_task_ids = active_future_knowledge_task_ids(root, for_chapter=next_chapter)
+    candidates = [
+        (chapter_number, path)
+        for chapter_number, path in candidates
+        if path.resolve() not in pinned_paths
+    ]
     candidate_bytes = sum(path.stat().st_size for _chapter, path in candidates if path.is_file())
     snapshots = committed_snapshot_paths(root)
     snapshot_bytes = sum(directory_size(path) for path in snapshots)
@@ -301,7 +313,12 @@ def compact_artifacts(
             by_chapter.setdefault(chapter_number, []).append(path)
         for chapter_number, paths in sorted(by_chapter.items()):
             paths = sorted(set(paths), key=lambda item: relative_path(root, item))
-            archive_file, manifest_file = write_chapter_archive(root, chapter_number, paths)
+            archive_file, manifest_file = write_chapter_archive(
+                root,
+                chapter_number,
+                paths,
+                retained_task_ids=pinned_task_ids,
+            )
             archive_files.append(str(archive_file))
             manifest_files.append(str(manifest_file))
         compact_task_projection(
@@ -311,6 +328,7 @@ def compact_artifacts(
                 chapter_from_archive(Path(path)): relative_path(root, Path(path))
                 for path in archive_files
             },
+            retained_task_ids=pinned_task_ids,
         )
         protected_shared_blobs = live_candidate_blob_paths(root, through=through)
         for path in sorted({path for _chapter, path in candidates} - protected_shared_blobs):
@@ -654,12 +672,14 @@ def verify_task_projection_state(root: Path, archives: list[Path]) -> list[str]:
     if index.get("schema") != "agent_task_index_v5":
         errors.append("Agent task index schema is invalid")
     archived_chapters = {chapter_from_archive(path): path for path in archives}
+    next_chapter = max((*closed_chapter_numbers(root), 0)) + 1
+    pinned_task_ids = active_future_knowledge_task_ids(root, for_chapter=next_chapter)
     for task in index.get("tasks", []):
         if not isinstance(task, dict):
             errors.append("Agent task index contains a non-object task")
             continue
         chapter = int(task.get("chapter_number") or 0)
-        if chapter in archived_chapters:
+        if chapter in archived_chapters and str(task.get("task_id") or "") not in pinned_task_ids:
             errors.append(f"Archived chapter task remains in active index: ch{chapter:03d}")
     refs = index.get("archived_chapters") if isinstance(index.get("archived_chapters"), dict) else {}
     for chapter_text, record in refs.items():
@@ -817,7 +837,13 @@ def live_candidate_blob_paths(root: Path, *, through: int) -> set[Path]:
     return result
 
 
-def write_chapter_archive(root: Path, chapter_number: int, paths: list[Path]) -> tuple[Path, Path]:
+def write_chapter_archive(
+    root: Path,
+    chapter_number: int,
+    paths: list[Path],
+    *,
+    retained_task_ids: set[str] | frozenset[str] = frozenset(),
+) -> tuple[Path, Path]:
     archive_dir = root / ARCHIVE_ROOT
     archive_dir.mkdir(parents=True, exist_ok=True)
     archive = archive_dir / f"ch{chapter_number:03d}.zip"
@@ -850,7 +876,11 @@ def write_chapter_archive(root: Path, chapter_number: int, paths: list[Path]) ->
         return archive, manifest_file
 
     retained_evidence = retained_evidence_entries(root, chapter_number)
-    task_projection = task_archive_projection(root, chapter_number)
+    task_projection = task_archive_projection(
+        root,
+        chapter_number,
+        excluded_task_ids=retained_task_ids,
+    )
     task_bytes = (json.dumps(task_projection.get("tasks", []), ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     event_bytes = "".join(
         json.dumps(item, ensure_ascii=False) + "\n"

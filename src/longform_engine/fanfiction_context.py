@@ -26,9 +26,22 @@ from longform_engine.fanfiction_contracts import (
     load_current_fanfiction_route,
 )
 from longform_engine.fanfiction_divergence import realized_major_divergence_errors
+from longform_engine.future_knowledge_provenance import (
+    FutureKnowledgeProvenanceError,
+    build_future_knowledge_pin,
+    pin_applicability_from_claims,
+    require_exact_future_knowledge_pin,
+)
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.rag import query as rag_query
-from longform_engine.semantic_protocols import build_workflow_record, validate_semantic_document
+from longform_engine.semantic_protocols import (
+    approved_semantic_document,
+    build_workflow_record,
+    seal_semantic_document,
+    validate_human_decision,
+    validate_semantic_document,
+    validate_workflow_record,
+)
 from longform_engine.storage import atomic_write_text, resolve_project_root
 
 
@@ -1948,6 +1961,11 @@ def _validate_current_future_knowledge_provenance(
     approved_path: Path,
     approved: Mapping[str, Any],
 ) -> None:
+    from longform_engine.intelligence.pipeline import (
+        future_knowledge_reassessment_task_artifacts,
+        validate_future_knowledge_reassessment,
+    )
+
     extensions = approved.get("extensions")
     extensions = extensions if isinstance(extensions, dict) else {}
     trigger_id = str(extensions.get("trigger_id") or "")
@@ -1957,20 +1975,102 @@ def _validate_current_future_knowledge_provenance(
         sorted(workflow_dir.glob("*.workflow.json")) if workflow_dir.is_dir() else []
     ):
         workflow = _read_json(workflow_path)
-        trigger = (
+        scanned_trigger = (
             workflow.get("extensions", {}).get("trigger")
             if isinstance(workflow, dict)
             else None
         )
-        if isinstance(trigger, dict) and trigger.get("trigger_id") == trigger_id:
+        if (
+            isinstance(scanned_trigger, dict)
+            and scanned_trigger.get("trigger_id") == trigger_id
+        ):
             matches.append((workflow_path, workflow))
     if len(matches) != 1:
         raise FanfictionContextError(
             f"future_knowledge_document_stale:{approved_path.relative_to(root).as_posix()}:workflow"
         )
     workflow_path, workflow = matches[0]
-    trigger = workflow["extensions"]["trigger"]
+    workflow_errors = validate_workflow_record(workflow)
+    workflow_extensions: dict[str, Any] = (
+        workflow["extensions"] if isinstance(workflow.get("extensions"), dict) else {}
+    )
+    trigger_value = workflow_extensions.get("trigger")
+    trigger: dict[str, Any]
+    if not isinstance(trigger_value, dict):
+        workflow_errors.append("workflow extensions.trigger is invalid")
+        trigger = {}
+    else:
+        trigger = dict(trigger_value)
     chapter = int(trigger.get("realized_chapter") or 0)
+    expected_authorization = {
+        "canonical_mutation": False,
+        "requires_human_decision": True,
+    }
+    if workflow.get("workflow_kind") != "fanfiction_future_knowledge_impact":
+        workflow_errors.append("workflow_kind is invalid")
+    trigger_identity = sha256(trigger_id.encode("utf-8")).hexdigest()
+    expected_workflow_id = (
+        f"future_knowledge_impact_ch{chapter:03d}_{trigger_identity[:16]}"
+    )
+    expected_workflow_path = (
+        workflow_dir
+        / f"ch{chapter:03d}.{trigger_identity[:16]}.workflow.json"
+    )
+    if (
+        workflow.get("workflow_id") != expected_workflow_id
+        or workflow_path.resolve() != expected_workflow_path.resolve()
+    ):
+        workflow_errors.append("workflow identity/path is not engine-owned")
+    if workflow.get("scope") != {"kind": "chapter", "chapter_number": chapter}:
+        workflow_errors.append("workflow scope differs from trigger chapter")
+    if workflow.get("state") != "awaiting_human":
+        workflow_errors.append("workflow state must remain awaiting_human")
+    if workflow.get("outputs") != []:
+        workflow_errors.append("workflow outputs must be empty")
+    if workflow.get("authorization") != expected_authorization:
+        workflow_errors.append("workflow authorization is invalid")
+    expected_extension_keys = {
+        "trigger",
+        "knowledge_scope_refs",
+        "allowed_reliability_states",
+        "instruction",
+        "next_command",
+    }
+    if set(workflow_extensions) != expected_extension_keys:
+        workflow_errors.append("workflow extension fields are invalid")
+    if workflow_extensions.get("knowledge_scope_refs") != trigger.get(
+        "knowledge_scope_refs"
+    ):
+        workflow_errors.append("workflow knowledge scope differs from trigger")
+    if workflow_extensions.get("allowed_reliability_states") != [
+        "仍可靠",
+        "部分可靠",
+        "已失效",
+        "反向误导",
+    ]:
+        workflow_errors.append("workflow reliability states are invalid")
+    if workflow_extensions.get("instruction") != (
+        "由独立语义任务评估每条未来知识在本次分歧后的可靠性；只生成候选。"
+        "结果必须经过人工批准并通过既有同人路线/知识语义 apply，才可进入后续章节依赖。"
+    ) or workflow_extensions.get("next_command") != (
+        "longform-engine fanfiction design-task project.yaml"
+    ):
+        workflow_errors.append("workflow instruction contract is invalid")
+    expected_diagnostics = [
+        {
+            "code": "major_divergence_realized",
+            "trigger_claim_ids": [trigger.get("source_claim_id")],
+            "source_event_id": trigger.get("source_event_id"),
+            "knowledge_claim_ids": trigger.get("knowledge_scope_refs"),
+        }
+    ]
+    if workflow.get("diagnostics") != expected_diagnostics:
+        workflow_errors.append("workflow diagnostics differ from trigger")
+    if workflow_errors:
+        raise FanfictionContextError(
+            "future_knowledge_document_stale:workflow_record:"
+            + ";".join(workflow_errors)
+        )
     digest = sha256(trigger_id.encode("utf-8")).hexdigest()[:24]
     expected_target = (
         root
@@ -1983,14 +2083,21 @@ def _validate_current_future_knowledge_provenance(
         raise FanfictionContextError(
             f"future_knowledge_document_stale:{approved_path.relative_to(root).as_posix()}:target"
         )
+    input_records = workflow.get("inputs") or []
     inputs = {
         str(item.get("kind") or ""): item
-        for item in workflow.get("inputs") or []
+        for item in input_records
         if isinstance(item, dict)
     }
     context_input = inputs.get("fanfiction_context_bundle")
     event_input = inputs.get("narrative_event_ledger")
-    if not isinstance(context_input, dict) or not isinstance(event_input, dict):
+    if (
+        len(input_records) != 2
+        or set(inputs) != {"fanfiction_context_bundle", "narrative_event_ledger"}
+        or not isinstance(context_input, dict)
+        or not isinstance(event_input, dict)
+        or any(set(item) != {"path", "sha256", "kind"} for item in input_records)
+    ):
         raise FanfictionContextError("future_knowledge_document_stale:workflow_inputs")
     context_path = root / str(context_input.get("path") or "")
     event_path = root / str(event_input.get("path") or "")
@@ -2037,35 +2144,92 @@ def _validate_current_future_knowledge_provenance(
         context_path=context_path,
         require_stored_bindings=True,
     )
-    if divergence_errors or not any(
-        isinstance(item, dict) and item.get("trigger_id") == trigger_id
+    event_triggers = [
+        item
         for item in event.get("realized_major_divergences") or []
-    ):
+        if isinstance(item, dict) and item.get("trigger_id") == trigger_id
+    ]
+    if divergence_errors or event_triggers != [trigger]:
         raise FanfictionContextError("future_knowledge_document_stale:trigger_evidence")
     workflow_relative = workflow_path.relative_to(root).as_posix()
-    manifests = [
+    workflow_sha256 = sha256(workflow_path.read_bytes()).hexdigest()
+    owned = future_knowledge_reassessment_task_artifacts(
+        root,
+        chapter_number=chapter,
+        workflow_sha256=workflow_sha256,
+    )
+    expected_manifest_path = Path(owned["manifest"])
+    expected_candidate_path = Path(owned["candidate"])
+    indexed = [
         item
         for item in list_manifests(root)
-        if item.get("task_type") == "fanfiction_future_knowledge_reassessment"
-        and workflow_relative
-        in {str(record.get("path") or "") for record in manifest_input_records(item)}
+        if item.get("task_id") == owned["task_id"]
     ]
-    if len(manifests) != 1:
+    if len(indexed) != 1:
         raise FanfictionContextError("future_knowledge_document_stale:task_manifest")
-    manifest = manifests[0]
-    if manifest.get("status") != "applied" or manifest_chapter_number(manifest) != chapter:
+    indexed_manifest = indexed[0]
+    expected_manifest_relative = expected_manifest_path.relative_to(root).as_posix()
+    current_result_value = indexed_manifest.get("current_result")
+    current_result: dict[str, Any] = (
+        current_result_value if isinstance(current_result_value, dict) else {}
+    )
+    if (
+        indexed_manifest.get("manifest_file") != expected_manifest_relative
+        or indexed_manifest.get("status") != "applied"
+        or manifest_chapter_number(indexed_manifest) != chapter
+        or current_result.get("path")
+        != expected_candidate_path.relative_to(root).as_posix()
+        or not expected_candidate_path.is_file()
+        or current_result.get("sha256")
+        != sha256(expected_candidate_path.read_bytes()).hexdigest()
+        or current_result.get("ok") is not True
+    ):
         raise FanfictionContextError("future_knowledge_document_stale:task_state")
+    manifest = _read_json(expected_manifest_path)
+    expected_manifest_inputs = {
+        workflow_relative,
+        context_path.relative_to(root).as_posix(),
+        event_path.relative_to(root).as_posix(),
+        Path(owned["instruction"]).relative_to(root).as_posix(),
+        *base_sources,
+    }
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("task_id") != owned["task_id"]
+        or manifest.get("task_type")
+        != "fanfiction_future_knowledge_reassessment"
+        or manifest.get("scope")
+        != {"kind": "chapter", "chapter_number": chapter}
+        or {
+            str(item.get("path") or "")
+            for item in manifest_input_records(manifest)
+        }
+        != expected_manifest_inputs
+        or str(manifest_output(manifest).get("path") or "")
+        != expected_candidate_path.relative_to(root).as_posix()
+    ):
+        raise FanfictionContextError("future_knowledge_document_stale:task_manifest")
     manifest_validation = validate_manifest_strict(root, manifest, strict=True)
     if not manifest_validation.ok:
         raise FanfictionContextError(
             "future_knowledge_document_stale:task_manifest:"
             + ";".join(manifest_validation.errors)
         )
-    for item in manifest_input_records(manifest):
+    manifest_inputs = manifest_input_records(manifest)
+    workflow_manifest_inputs = [
+        item for item in manifest_inputs if item.get("path") == workflow_relative
+    ]
+    if len(workflow_manifest_inputs) != 1 or workflow_manifest_inputs[0].get(
+        "sha256"
+    ) != workflow_sha256:
+        raise FanfictionContextError("future_knowledge_document_stale:task_workflow")
+    for item in manifest_inputs:
         bound_path = root / str(item.get("path") or "")
         if not bound_path.is_file() or item.get("sha256") != sha256(bound_path.read_bytes()).hexdigest():
             raise FanfictionContextError("future_knowledge_document_stale:task_inputs")
     candidate = root / str(manifest_output(manifest).get("path") or "")
+    if candidate.resolve() != expected_candidate_path.resolve():
+        raise FanfictionContextError("future_knowledge_document_stale:candidate_target")
     candidate_payload = _read_json(candidate)
     candidate_artifact = (
         candidate_payload.get("artifact") if isinstance(candidate_payload, dict) else None
@@ -2076,6 +2240,70 @@ def _validate_current_future_knowledge_provenance(
         != candidate_artifact.get("content_sha256")
     ):
         raise FanfictionContextError("future_knowledge_document_stale:candidate")
+    candidate_errors: list[str] = []
+    validate_future_knowledge_reassessment(
+        root,
+        candidate_payload if isinstance(candidate_payload, dict) else {},
+        manifest,
+        candidate_errors,
+    )
+    semantic_candidate_errors = validate_semantic_document(candidate_payload)
+    if candidate_errors or semantic_candidate_errors:
+        raise FanfictionContextError(
+            "future_knowledge_document_stale:candidate_contract:"
+            + ";".join([*semantic_candidate_errors, *candidate_errors])
+        )
+    human_decision_value = extensions.get("human_decision")
+    human_decision: dict[str, Any] = (
+        human_decision_value if isinstance(human_decision_value, dict) else {}
+    )
+    human_errors = validate_human_decision(human_decision)
+    if human_errors:
+        raise FanfictionContextError(
+            "future_knowledge_document_stale:human_decision:" + ";".join(human_errors)
+        )
+    candidate_document = seal_semantic_document(candidate_payload)
+    if (
+        human_decision.get("target_id")
+        != candidate_document.get("artifact", {}).get("artifact_id")
+        or human_decision.get("target_sha256")
+        != candidate_document.get("artifact", {}).get("content_sha256")
+        or human_decision.get("scope")
+        != {"kind": "chapter", "chapter_number": chapter}
+    ):
+        raise FanfictionContextError("future_knowledge_document_stale:human_projection")
+    if approved_semantic_document(candidate_document, decision=human_decision) != approved:
+        raise FanfictionContextError("future_knowledge_document_stale:approved_projection")
+    final_path = root / "40_manuscript" / "final" / f"ch{chapter:03d}.md"
+    semantic_path = root / "30_state" / "semantic_ledger" / f"ch{chapter:03d}.json"
+    try:
+        from_chapter, to_chapter = pin_applicability_from_claims(
+            item for item in candidate_payload.get("claims") or [] if isinstance(item, dict)
+        )
+        expected_pin = build_future_knowledge_pin(
+            root,
+            trigger_id=trigger_id,
+            task_id=str(owned["task_id"]),
+            chapter_number=chapter,
+            from_chapter=from_chapter,
+            to_chapter=to_chapter,
+            approved_path=approved_path,
+            evidence_paths={
+                "workflow": workflow_path,
+                "fanfiction_context_bundle": context_path,
+                "narrative_event_ledger": event_path,
+                "final_chapter": final_path,
+                "semantic_ledger": semantic_path,
+                "task_manifest": expected_manifest_path,
+                "task_instruction": Path(owned["instruction"]),
+                "candidate": candidate,
+            },
+        )
+        require_exact_future_knowledge_pin(root, expected_pin)
+    except FutureKnowledgeProvenanceError as exc:
+        raise FanfictionContextError(
+            f"future_knowledge_document_stale:provenance_pin:{exc}"
+        ) from exc
     stale_registry = _read_json(root / "30_state" / "stale_artifacts.json")
     stale_paths = {
         str(item.get("artifact_path") or "")
@@ -2087,6 +2315,10 @@ def _validate_current_future_knowledge_provenance(
         workflow_relative,
         context_path.relative_to(root).as_posix(),
         event_path.relative_to(root).as_posix(),
+        final_path.relative_to(root).as_posix(),
+        semantic_path.relative_to(root).as_posix(),
+        expected_manifest_relative,
+        candidate.relative_to(root).as_posix(),
         *base_sources,
     }
     if stale_paths & protected_paths:

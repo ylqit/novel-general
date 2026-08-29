@@ -31,6 +31,7 @@ from longform_engine.agent_tasks import (
     list_manifests,
     manifest_chapter_number,
     manifest_commands,
+    manifest_input_records,
     manifest_input_paths,
     manifest_output,
     mark_tasks_for_output,
@@ -67,6 +68,12 @@ from longform_engine.fanfiction_sources import (
     fanfiction_canon_input_files,
     fanfiction_source_readiness,
     source_upgrade_status,
+)
+from longform_engine.future_knowledge_provenance import (
+    build_future_knowledge_pin,
+    pin_applicability_from_claims,
+    provenance_pin_registry_path,
+    upsert_future_knowledge_pin,
 )
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
@@ -1130,6 +1137,72 @@ def apply_intelligence_candidate(
         touched.append(candidate)
         touched = list(dict.fromkeys(touched))
     task_chapter = manifest_chapter_number(scope)
+    future_pin_inputs: dict[str, Path] | None = None
+    future_manifest_path: Path | None = None
+    future_workflow_path: Path | None = None
+    if task_type == "fanfiction_future_knowledge_reassessment":
+        workflow_matches: list[Path] = []
+        for input_record in manifest_input_records(scope):
+            input_path = root / str(input_record.get("path") or "")
+            input_payload = read_json(input_path, {}) if input_path.is_file() else {}
+            if (
+                isinstance(input_payload, dict)
+                and input_payload.get("workflow_kind")
+                == "fanfiction_future_knowledge_impact"
+            ):
+                workflow_matches.append(input_path)
+        if len(workflow_matches) != 1:
+            raise ValueError(
+                "future knowledge apply requires exactly one engine-owned workflow input"
+            )
+        future_workflow_path = workflow_matches[0]
+        owned = future_knowledge_reassessment_task_artifacts(
+            root,
+            chapter_number=task_chapter,
+            workflow_sha256=sha256(future_workflow_path.read_bytes()).hexdigest(),
+        )
+        future_manifest_path = Path(owned["manifest"])
+        if (
+            scope.get("task_id") != owned["task_id"]
+            or Path(owned["candidate"]).resolve() != candidate.resolve()
+            or read_json(future_manifest_path, {}) != scope
+        ):
+            raise ValueError("future knowledge task identity is not engine-owned")
+        workflow = read_json(future_workflow_path, {})
+        workflow_inputs = {
+            str(item.get("kind") or ""): root / str(item.get("path") or "")
+            for item in workflow.get("inputs") or []
+            if isinstance(item, dict)
+        }
+        if set(workflow_inputs) != {
+            "fanfiction_context_bundle",
+            "narrative_event_ledger",
+        }:
+            raise ValueError("future knowledge workflow input set is invalid")
+        future_pin_inputs = {
+            "workflow": future_workflow_path,
+            "fanfiction_context_bundle": workflow_inputs["fanfiction_context_bundle"],
+            "narrative_event_ledger": workflow_inputs["narrative_event_ledger"],
+            "final_chapter": root
+            / "40_manuscript"
+            / "final"
+            / f"ch{task_chapter:03d}.md",
+            "semantic_ledger": root
+            / "30_state"
+            / "semantic_ledger"
+            / f"ch{task_chapter:03d}.json",
+            "task_manifest": future_manifest_path,
+            "task_instruction": Path(owned["instruction"]),
+            "candidate": candidate,
+        }
+        source_paths.extend(future_pin_inputs.values())
+        touched.extend(
+            [
+                provenance_pin_registry_path(root),
+                root / "50_workbench" / "agent_tasks",
+            ]
+        )
+        touched = list(dict.fromkeys(touched))
     with apply_transaction(
         root,
         command=f"intelligence apply {task_type}",
@@ -1166,6 +1239,41 @@ def apply_intelligence_candidate(
             scope=manifest_scope,
             current_fanfiction=current_fanfiction,
         )
+        if (
+            task_type == "fanfiction_future_knowledge_reassessment"
+            and future_pin_inputs is not None
+            and future_manifest_path is not None
+            and future_workflow_path is not None
+        ):
+            mark_tasks_for_chapter_type(
+                root,
+                chapter_number=task_chapter,
+                task_types=(task_type,),
+                to_status="applied",
+                command="intelligence apply",
+                artifact=candidate,
+                result=transaction.report_file,
+                from_statuses=("validated",),
+            )
+            workflow = read_json(future_workflow_path, {})
+            trigger = workflow.get("extensions", {}).get("trigger")
+            if not isinstance(trigger, dict):
+                raise ValueError("future knowledge workflow trigger is invalid")
+            from_chapter, to_chapter = pin_applicability_from_claims(
+                item for item in payload.get("claims") or [] if isinstance(item, dict)
+            )
+            approved_target = semantic_task_target(root, task_type, payload)
+            pin = build_future_knowledge_pin(
+                root,
+                trigger_id=str(trigger.get("trigger_id") or ""),
+                task_id=str(scope.get("task_id") or ""),
+                chapter_number=task_chapter,
+                from_chapter=from_chapter,
+                to_chapter=to_chapter,
+                approved_path=approved_target,
+                evidence_paths=future_pin_inputs,
+            )
+            upsert_future_knowledge_pin(root, pin)
         if stale_dependents:
             mark_fanfiction_semantic_dependents_stale(
                 root,
@@ -1173,16 +1281,17 @@ def apply_intelligence_candidate(
                 changed_claim_ids=changed_claim_ids,
                 artifact_paths=stale_dependents,
             )
-    mark_tasks_for_chapter_type(
-        root,
-        chapter_number=task_chapter,
-        task_types=(task_type,),
-        to_status="applied",
-        command="intelligence apply",
-        artifact=candidate,
-        result=transaction.report_file,
-        from_statuses=("validated",),
-    )
+    if task_type != "fanfiction_future_knowledge_reassessment":
+        mark_tasks_for_chapter_type(
+            root,
+            chapter_number=task_chapter,
+            task_types=(task_type,),
+            to_status="applied",
+            command="intelligence apply",
+            artifact=candidate,
+            result=transaction.report_file,
+            from_statuses=("validated",),
+        )
     if review_candidate is not None and review_manifest is not None:
         mark_tasks_for_chapter_type(
             root,
