@@ -217,19 +217,6 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("character", "audit-validate", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_review.ch001-ch015.candidate.json"),
         ("character", "audit-apply", "project.yaml", "--file", "50_workbench/intelligence_candidates/character_expression_review.ch001-ch015.candidate.json"),
         ("character", "samples-approve", "project.yaml", "--file", "50_workbench/character_reviews/voice_samples.json", "--approved-by", "human"),
-        ("benchmark", "init", "project.yaml", "--run-id", "smoke-5", "--host-product", "codex", "--chapters", "5"),
-        ("benchmark", "record", "project.yaml", "--run-id", "smoke-5", "--chapter", "1", "--continuity", "4", "--character-consistency", "4", "--foreshadowing-control", "4", "--pacing", "4", "--reader-payoff", "4", "--prose-naturalness", "8", "--gate-passed", "--context-file-count", "6", "--context-character-count", "18000"),
-        ("benchmark", "technical-record", "project.yaml", "--run-id", "formal-10", "--chapter", "1", "--gate-passed", "--context-file-count", "6", "--context-character-count", "18000"),
-        ("benchmark", "rag-scale-run", "project.yaml", "--scale-chapters", "50", "--backend", "local_sqlite"),
-        ("benchmark", "rag-production-template", "project.yaml"),
-        ("benchmark", "rag-production-run", "project.yaml", "--run-id", "codex-10", "--dataset", "rag-dataset.json"),
-        ("benchmark", "source-attach", "project.yaml", "--run-id", "codex-10", "--source-dir", "40_manuscript/final"),
-        ("benchmark", "blind-pack", "project.yaml", "--comparison-id", "codex-vs-baseline", "--run-id", "codex-10", "--run-id", "baseline-10", "--review-scope", "qidian_opening_3", "--seed", "private-seed"),
-        ("benchmark", "blind-template", "project.yaml", "--comparison-id", "codex-vs-baseline", "--judge-id", "judge-a"),
-        ("benchmark", "blind-submit", "project.yaml", "--comparison-id", "codex-vs-baseline", "--judge-id", "judge-a", "--file", "judge-a.json"),
-        ("benchmark", "blind-aggregate", "project.yaml", "--comparison-id", "codex-vs-baseline"),
-        ("benchmark", "report", "project.yaml", "--run-id", "smoke-5"),
-        ("benchmark", "compare", "project.yaml", "--comparison-id", "quality-compare", "--run-id", "codex-10", "--run-id", "claude-10"),
     ]
     read_only_cases = [
         ("validate-config", "--template", "qidian-longform"),
@@ -252,7 +239,6 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("db", "query", "project.yaml", "schema_meta"),
         ("graph", "validate", "project.yaml"),
         ("auto-write", "progress", "project.yaml"),
-        ("benchmark", "validate", "project.yaml", "--run-id", "smoke-5"),
         ("release", "check", "--repository", ".", "--skip-contracts"),
         ("skills", "status", "--tool", "all"),
         ("doctor", "--tool", "all"),
@@ -887,7 +873,7 @@ def test_cli_revision_branch_rollback_and_impact(tmp_path):
     assert any(item["chapter_number"] == 2 and item["status"] == "detached" for item in payload["chapter_states"])
 
 
-def test_quality_contract_cli_explains_primary_and_compatibility_markets():
+def test_quality_contract_cli_explains_current_project_without_public_comparison():
     config = ROOT / "templates" / "qidian-longform" / "project.yaml"
 
     result = run_cli(
@@ -896,8 +882,6 @@ def test_quality_contract_cli_explains_primary_and_compatibility_markets():
         str(config),
         "--chapter",
         "1",
-        "--compare-market",
-        "fanqie_free",
         "--explain",
     )
 
@@ -906,8 +890,43 @@ def test_quality_contract_cli_explains_primary_and_compatibility_markets():
     assert "+ opening" in result.stdout
     assert "Merge trace:" in result.stdout
     assert "market_phase" in result.stdout
-    assert "fanqie_free" in result.stdout
-    assert "non-blocking" in result.stdout
+    assert "Compatibility observations:" not in result.stdout
+    assert "fanqie_free" not in result.stdout
+
+    machine = run_cli(
+        "quality",
+        "contract",
+        str(config),
+        "--chapter",
+        "1",
+        "--json",
+    )
+    assert machine.returncode == 0, machine.stderr
+    assert "compatibility_observations" not in json.loads(machine.stdout)
+
+
+def test_internal_evaluation_commands_are_not_public_cli():
+    config = ROOT / "templates" / "qidian-longform" / "project.yaml"
+
+    benchmark = run_cli("benchmark", "init", str(config), "--run-id", "private")
+    comparison = run_cli(
+        "quality",
+        "contract",
+        str(config),
+        "--chapter",
+        "1",
+        "--compare-market",
+        "fanqie_free",
+    )
+
+    assert benchmark.returncode == 2
+    assert "invalid choice" in benchmark.stderr
+    assert comparison.returncode == 2
+    assert "unrecognized arguments: --compare-market fanqie_free" in comparison.stderr
+
+    help_result = run_cli("quality", "contract", "--help")
+    assert help_result.returncode == 0
+    assert "compatibility observations" not in help_result.stdout.lower()
 
 
 def passing_draft_text() -> str:

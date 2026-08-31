@@ -21,7 +21,6 @@ from longform_engine.storage.layout import manuscript_chapter_relative_path
 
 
 BENCHMARK_SCHEMA = "quality_benchmark_run_v4"
-BENCHMARK_VALIDATION_SCHEMA = "quality_benchmark_validation_v4"
 BENCHMARK_REPORT_SCHEMA = "quality_benchmark_report_v4"
 BENCHMARK_RECORD_SCHEMA = "quality_benchmark_record_result_v4"
 BENCHMARK_COMPARISON_SCHEMA = "quality_benchmark_comparison_v4"

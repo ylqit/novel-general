@@ -195,40 +195,6 @@ def serialize_jsonl(records: list[dict[str, Any]]) -> str:
     return "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in records)
 
 
-def trailing_streak(records: list[dict[str, Any]], field: str, value: str) -> int:
-    count = 0
-    for item in reversed(records):
-        if str(item.get(field) or "") != value:
-            break
-        count += 1
-    return count
-
-
-def language_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
-    left_metrics = left.get("language_metrics") if isinstance(left.get("language_metrics"), dict) else {}
-    right_metrics = right.get("language_metrics") if isinstance(right.get("language_metrics"), dict) else {}
-    left_ngrams = set(clean_strings(left_metrics.get("ngram_signature")))
-    right_ngrams = set(clean_strings(right_metrics.get("ngram_signature")))
-    if left_ngrams or right_ngrams:
-        ngram_score = len(left_ngrams & right_ngrams) / max(1, len(left_ngrams | right_ngrams))
-    else:
-        ngram_score = 0.0
-    left_shape = left_metrics.get("paragraph_shape")
-    right_shape = right_metrics.get("paragraph_shape")
-    shape_score = 1.0 if isinstance(left_shape, list) and left_shape == right_shape and left_shape else 0.0
-    sentence_score = ratio_closeness(
-        float(left_metrics.get("average_sentence_chars") or 0),
-        float(right_metrics.get("average_sentence_chars") or 0),
-    )
-    dialogue_score = ratio_closeness(
-        float(left_metrics.get("dialogue_density") or 0),
-        float(right_metrics.get("dialogue_density") or 0),
-        floor=0.05,
-    )
-    rhythm_score = 0.45 * shape_score + 0.35 * sentence_score + 0.20 * dialogue_score
-    return max(ngram_score, rhythm_score)
-
-
 def ngram_signature(text: str, *, size: int = 4, limit: int = 128) -> list[str]:
     normalized = re.sub(r"\s+", "", text)
     if len(normalized) < size:
@@ -244,11 +210,6 @@ def paragraph_shape(lengths: list[int]) -> list[int]:
     if not lengths:
         return []
     return [min(9, value // 40) for value in lengths[:24]]
-
-
-def ratio_closeness(left: float, right: float, *, floor: float = 1.0) -> float:
-    scale = max(abs(left), abs(right), floor)
-    return max(0.0, 1.0 - abs(left - right) / scale)
 
 
 def count_patterns(text: str, patterns: tuple[str, ...]) -> int:
@@ -328,25 +289,6 @@ def sanitize_evidence_spans(value: Any) -> list[dict[str, Any]]:
                 "start": int(item.get("start") or 0),
                 "end": int(item.get("end") or 0),
                 "supports": clean_strings(item.get("supports")),
-            }
-        )
-    return result
-
-
-def sanitize_promise_progress(value: Any) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    for item in value if isinstance(value, list) else []:
-        if not isinstance(item, dict):
-            continue
-        result.append(
-            {
-                "promise_ref": str(item.get("promise_ref") or ""),
-                "status": str(item.get("status") or ""),
-                "evidence_span_indices": [
-                    int(index)
-                    for index in item.get("evidence_span_indices", [])
-                    if isinstance(index, int) and not isinstance(index, bool)
-                ],
             }
         )
     return result

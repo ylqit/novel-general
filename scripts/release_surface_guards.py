@@ -148,6 +148,58 @@ REPOSITORY_SCAN_DIRECTORIES = (
     "tests",
 )
 REPOSITORY_SCAN_FILES = ("AGENTS.md", "README.md", "pyproject.toml", "resource-manifest.json")
+
+PUBLIC_CONTENT_FILES = (
+    "README.md",
+    "docs/ARCHITECTURE.md",
+    "docs/CONFIGURATION.md",
+    "docs/GATE_MODEL.md",
+    "docs/GRAPH_MODEL.md",
+    "docs/OPERATOR_GUIDE.md",
+    "docs/PIPELINE_MODEL.md",
+    "docs/RAG_MODEL.md",
+    "docs/RELEASE_HISTORY.md",
+    "docs/RESEARCH_MODEL.md",
+    "docs/REVISION_MODEL.md",
+    "docs/SKILL_INSTALLATION.md",
+    "docs/SQLITE_MODEL.md",
+    "docs/STORAGE_MODEL.md",
+    "docs/WEB_STUDIO.md",
+    "longform-novel-codex/SKILL.md",
+    "longform-novel-claude/SKILL.md",
+    "src/longform_engine/review_server.py",
+    "src/longform_engine/studio_server.py",
+    "src/longform_engine/workspace_studio.py",
+)
+
+DELETED_PUBLIC_DOCUMENT_MARKERS = (
+    "RELEASE_CHECKLIST.md",
+    "V0_10_0_IMPLEMENTATION.md",
+    "V0_11_0_IMPLEMENTATION.md",
+    "V0_12_SEMANTIC_ARCHITECTURE.md",
+    "V0_13_FANFICTION_ARCHITECTURE.md",
+    "SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md",
+    "QUALITY_BENCHMARK_RUNBOOK.md",
+)
+
+FORBIDDEN_PUBLIC_CONTENT_PATTERNS = (
+    (re.compile(r"(?i)\bbenchmark\b"), "public Benchmark reference"),
+    (re.compile(r"--compare-market"), "public market-comparison option"),
+    (re.compile(r"(?i)literary_evidence_ready|blind[- ]review|盲审|文学盲"), "literary evaluation claim"),
+    (re.compile(r"(?i)\b\d+\s+passed\b"), "hard-coded test result"),
+    (re.compile(r"(?i)(?:pytest|ruff|mypy).{0,48}(?:passed|通过|\d+\s*项)"), "tool result claim"),
+    (re.compile(r"(?i)coverage\s*[:=]?\s*\d+(?:\.\d+)?%|覆盖率\s*\d+(?:\.\d+)?%"), "coverage result"),
+    (
+        re.compile(r"(?i)compatibility observations?|platform differences|主验收档|兼容性?观察"),
+        "public market-comparison narrative",
+    ),
+    (
+        re.compile(
+            r"效果提升|验证证明(?:了)?质量|\bbetter than\b|" + "".join(("优", "于"))
+        ),
+        "comparative outcome claim",
+    ),
+)
 SINGLE_PROJECT_FORBIDDEN_TERMS = tuple(
     "".join(parts)
     for parts in (
@@ -209,513 +261,253 @@ RETIRED_SCHEMA_SOURCE_ALLOWLIST = {
     "src/longform_engine/blind_review.py",
 }
 
-REQUIRED_RELEASE_CONTRACT_MARKERS = (
-    (
-        "docs/OPERATOR_GUIDE.md",
-        (
-            "production next",
-            "human_chapter_intent_v2",
-            "chapter_coedit_session_v2",
-            "human_author_revision_v4",
-            "human_story_review_v7",
-            "semantic-apply",
-            "chapter close",
-            "recovery status",
-            "literary_evidence_ready=false",
-        ),
-    ),
-    (
-        "docs/V0_13_0_RELEASE_CHECKLIST.md",
-        (
-            "协议收口",
-            "semantic_document_v1",
-            "agent_task_manifest_v5",
-            "本地发布验证",
-            "提交与远程发布",
-            "本机同步",
-            "literary_evidence_ready=false",
-        ),
-    ),
-    (
-        "docs/ARCHITECTURE.md",
-        (
-            "唯一章节合同",
-            "transaction v3",
-            "chapter_contract_v5",
-            "revision_branch_v2",
-        ),
-    ),
-    (
-        "src/longform_engine/chapter_contract.py",
-        (
-            'CONTRACT_SCHEMA = "chapter_contract_v5"',
-            '"topology"',
-            '"observable_change"',
-            '"reader_value"',
-            '"semantic_obligation_refs"',
-            '"plot_node_table_ref"',
-            '"reader_promise_actions"',
-        ),
-    ),
-    (
-        "src/longform_engine/orchestration/pipeline.py",
-        (
-            "WRITING_TASK_SCHEMA",
-            "STORY_BRIEF_SCHEMA",
-            "build_story_brief_basis",
-            '"story_brief_basis"',
-            '"schema": "chapter_fact_inventory_v1"',
-            "render_chapter_story_brief_markdown",
-            "require_human_story_accept",
-        ),
-    ),
-    (
-        "src/longform_engine/story_brief.py",
-        (
-            'BASIS_SCHEMA = "chapter_story_brief_basis_v3"',
-            'STORY_BRIEF_SCHEMA = "chapter_story_brief_v5"',
-            'WRITING_TASK_SCHEMA = "chapter_writing_task_v7"',
-            'RENDERER_VERSION = "chapter_story_brief_renderer_v5"',
-            "load_current_story_brief_binding",
-            "story_brief_status",
-        ),
-    ),
-    (
-        "src/longform_engine/planning/contracts.py",
-        (
-            'PLANNING_BUNDLE_SCHEMA = "planning_bundle_v1"',
-            'ROLLING_WINDOW_SCHEMA = "rolling_window_plan_v2"',
-            'SEMANTIC_OBLIGATION_SCHEMA = "semantic_obligation_v1"',
-            'PLOT_NODE_TABLE_SCHEMA = "plot_node_table_v1"',
-            "validate_planning_bundle",
-            "validate_rolling_window",
-            "validate_plot_node_table",
-        ),
-    ),
-    (
-        "src/longform_engine/planning/workflow.py",
-        (
-            'PLANNING_SEMANTIC_APPLICATION_SCHEMA = "planning_semantic_review_application_v1"',
-            'HUMAN_NODE_DECISIONS_SCHEMA = "human_plot_node_decisions_v1"',
-            'NARRATIVE_EVENT_LEDGER_SCHEMA = "narrative_event_ledger_v1"',
-            "build_planning_semantic_application",
-            "validate_human_node_decisions",
-            "apply_planning_bundle",
-        ),
-    ),
-    (
-        "src/longform_engine/editorial/pipeline.py",
-        (
-            'selected: set[str] = {"scene_prose_editor", "anti_template_editor", *configured}',
-            'reasons: list[str] = ["mandatory_scene_prose_review", "mandatory_anti_template_review"]',
-            '"SERIAL_CARRIER_REPETITION"',
-            '"THEME_DISPLACES_EVENT"',
-            '"REPORT_SUBSTITUTES_EVENT"',
-            '"PASSIVE_PROTAGONIST"',
-        ),
-    ),
-    (
-        "src/longform_engine/human_story_review.py",
-        (
-            'SCHEMA = "human_story_review_v7"',
-            'DECISIONS = {"accept", "repair", "redirect"}',
-            "CHECK_FIELDS",
-            "EVIDENCE_KINDS",
-            "candidate_sha256",
-            "chapter_contract_sha256",
-            "story_brief_basis_sha256",
-            "human_chapter_intent_sha256",
-            "reader_promise_ledger_sha256",
-            "plot_node_table_sha256",
-            "semantic_obligation_ledger_sha256",
-            "review_bundle_sha256",
-            "human_author_revision_sha256",
-            "apply_transaction",
-            "approved_by=human",
-        ),
-    ),
-    (
-        "src/longform_engine/reader_promises_v2.py",
-        (
-            'LEDGER_SCHEMA = "reader_promise_ledger_v2"',
-            'PROMISE_ACTIONS = frozenset({"setup", "escalate", "partial_payoff", "payoff", "defer"})',
-            "apply_promise_evidence",
-        ),
-    ),
-    (
-        "src/longform_engine/narrative_events.py",
-        (
-            'EVENT_REALIZATION_APPLICATION_SCHEMA = "event_realization_application_v1"',
-            "validate_event_realization_application",
-            "apply_event_realization",
-            "event realization must be human-confirmed",
-        ),
-    ),
-    (
-        "src/longform_engine/canon_changes.py",
-        (
-            'CANONICAL_FACT_SCHEMA = "canonical_fact_v2"',
-            'PROPOSAL_SCHEMA = "canon_change_proposal_v1"',
-            'IMPACT_SCHEMA = "dependency_impact_v1"',
-            'SEMANTIC_REVIEW_SCHEMA = "canon_change_semantic_review_v1"',
-            'HUMAN_DECISION_SCHEMA = "human_canon_change_decision_v1"',
-            "deterministic must_stale cannot be downgraded",
-            "create_versioned_revision_branch",
-        ),
-    ),
-    (
-        "src/longform_engine/reader_feedback.py",
-        (
-            'BATCH_SCHEMA = "reader_feedback_batch_v1"',
-            'DECISION_SCHEMA = "human_reader_feedback_decision_v1"',
-            'PLANNING_PROPOSAL_SCHEMA = "planning_change_proposal_v1"',
-            "canon_change_proposal_v1",
-        ),
-    ),
-    (
-        "src/longform_engine/revision/branches.py",
-        (
-            'REVISION_BRANCH_SCHEMA = "revision_branch_v2"',
-            "create_versioned_revision_branch",
-            "promote_revision_branch",
-            "historical revision must cover through the current head",
-        ),
-    ),
-    (
-        "config/quality_profiles/market_evidence_registry.yaml",
-        (
-            "schema: market_evidence_registry_v2",
-            "source_type:",
-            "publisher:",
-            "verified_at:",
-            "claims:",
-            "applicability:",
-            "evidence_grade:",
-            "execution_level: P2_advisory",
-            "algorithm_inference_allowed: false",
-        ),
-    ),
-    (
-        "src/longform_engine/quality/contracts.py",
-        (
-            'MARKET_EVIDENCE_SCHEMA = "market_evidence_registry_v2"',
-            "load_market_evidence_registry",
-            "validate_market_evidence_refs",
-            'item.get("execution_level") != "P2_advisory"',
-        ),
-    ),
-    (
-        "src/longform_engine/human_review_consultation.py",
-        (
-            'SESSION_SCHEMA = "human_review_consult_session_v3"',
-            "create_human_review_consult_task",
-            "validate_human_review_consultation",
-            "record_human_review_consultation",
-            "mark_stale_human_consultations",
-        ),
-    ),
-    (
-        "src/longform_engine/local_web.py",
-        (
-            'super().__init__(("127.0.0.1", port)',
-            "Content-Security-Policy",
-            'self.headers.get("Host"',
-            'self.headers.get("Origin"',
-            "_require_csrf",
-        ),
-    ),
-    (
-        "src/longform_engine/review_server.py",
-        (
-            "X-Review-CSRF",
-            "acquire_project_lock",
-            'agent="human"',
-        ),
-    ),
-    (
-        "src/longform_engine/source_processing.py",
-        (
-            "approve_remote_decision",
-            "approved_by=human",
-            "remote processing approval is stale",
-            "store=False",
-            "retain_remote_files",
-        ),
-    ),
-    (
-        "src/longform_engine/quality/status.py",
-        (
-            '"protocol_ready"',
-            '"author_acceptance_ready"',
-            '"literary_evidence_ready"',
-        ),
-    ),
-    (
-        "src/longform_engine/quality/editorial_patterns.py",
-        (
-            'PATTERN_SCHEMA = "editorial_pattern_item_v1"',
-            "role_id",
-            "finding_code",
-            "rebuild_editorial_pattern_registry",
-        ),
-    ),
-    (
-        "src/longform_engine/blind_review.py",
-        (
-            'BLIND_PACK_SCHEMA = "blind_review_pack_v4"',
-            'LITERARY_MANIFEST_SCHEMA = "literary_evidence_manifest_v2"',
-            'LITERARY_BASELINE_VERSION = "0.8.0"',
-            '"qidian_opening_3"',
-            '"fanqie_opening_3"',
-            '"serial_arc_15"',
-        ),
-    ),
-    (
-        "tests/test_story_architecture_v050.py",
-        (
-            "test_author_markdown_is_story_brief_and_fact_inventory_stays_internal",
-            "test_five_chapter_carrier_diagnostics_warn_and_require_human_reason",
-            "test_human_accept_is_hash_bound_and_unlocks_review_barrier",
-            "test_human_redirect_failure_restores_stale_registry_decision_and_patterns",
-        ),
-    ),
-    (
-        "src/longform_engine/agent_tasks.py",
-        (
-            "AGENT_TASK_STATUSES",
-            '"awaiting_agent"',
-            '"submitted"',
-            '"validated"',
-            '"invalid"',
-            '"applied"',
-            '"superseded"',
-            '"rolled_back"',
-            '"content_expand"',
-            "validate_manifest_strict",
-        ),
-    ),
-    (
-        "src/longform_engine/creative/pipeline.py",
-        (
-            'task_type="content_expand"',
-            'output_schema=output_protocol_for_task("content_expand")',
-            'command="creative expand-check"',
-        ),
-    ),
-    (
-        "src/longform_engine/storage/project.py",
-        (
-            "apply_transaction",
-            "rollback_restores_touched_paths",
-            "canonical_write_transaction_rollback",
-        ),
-    ),
-    (
-        "tests/test_agent_task_protocol.py",
-        (
-            "test_strict_manifest_validation_rejects_unknown_type_and_canonical_output",
-            "validate_manifest_strict",
-            "content_expand",
-            "AGENT_TASK_STATUSES",
-            '"superseded"',
-            '"rolled_back"',
-        ),
-    ),
-    (
-        "tests/test_creative_operator.py",
-        (
-            "test_expand_task_and_check_repair_short_chapter_without_pollution",
-            'manifest["task_type"] == "content_expand"',
-            "validate_manifest_strict",
-        ),
-    ),
-    (
-        "tests/test_storage.py",
-        (
-            "test_apply_transaction_writes_report_and_rolls_back_touched_paths",
-            "rollback_restores_touched_paths",
-            "chapter_finalize_ch001.rollback.json",
-        ),
-    ),
-    (
-        "docs/PIPELINE_MODEL.md",
-        (
-            "planning_bundle_v1",
-            "chapter_contract_v5",
-            "chapter_story_brief_v5",
-            "chapter_closure_v2",
-        ),
-    ),
-    (
-        "docs/V0_10_0_RELEASE_CHECKLIST.md",
-        (
-            "明确的验证例外",
-            "415 passed",
-            "不运行 pytest",
-            "wheel",
-            "sdist",
-        ),
-    ),
-    (
-        "docs/V0_13_0_RELEASE_CHECKLIST.md",
-        (
-            "资料、语义引擎与小说生产",
-            "semantic_document_v1",
-            "本地发布验证",
-            "wheel",
-            "sdist",
-        ),
-    ),
-    (
-        "tests/test_agent_skill_integrity.py",
-        (
-            "test_release_guard_tracks_current_v013_contracts",
-            "check_experience_layer_guards",
-            "DIRECT_WRITER_PATTERNS",
-        ),
-    ),
-    (
-        "tests/test_agent_skill_integrity.py",
-        (
-            "test_progressive_prompts_cover_current_protocols_without_pollution",
-            "agent_data_pipeline_readiness_v5",
-            "single_process_sequential",
-        ),
-    ),
-    (
-        "src/longform_engine/semantic/pipeline.py",
-        (
-            'SCHEMA = "chapter_semantic_bundle_v1"',
-            "apply_transaction",
-            "candidate_sha256",
-            "Cannot replace canonical semantic ledger",
-            "def semantic_rebuild",
-            "source_of_truth\": \"semantic_ledger",
-            "chapter close",
-        ),
-    ),
-    (
-        "tests/test_semantic_knowledge.py",
-        (
-            "test_unified_semantic_bundle_materializes_evidence_bound_views",
-            "test_semantic_validation_rejects_hash_and_evidence_mismatch",
-            "semantic ledger routed chapter",
-            "event:stale-derived-fact",
-        ),
-    ),
-    (
-        "src/longform_engine/artifacts.py",
-        (
-            "failed verification before compaction",
-            "contains an older version of loose artifact",
-        ),
-    ),
-    (
-        "docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md",
-        (
-            "chapter_semantic_bundle_v1",
-            "SQLite",
-            "SQLite、RAG 和向量索引",
-        ),
-    ),
-    (
-        "docs/ARCHITECTURE.md",
-        (
-            "唯一章节合同",
-            "transaction v3",
-            "chapter_contract_v5",
-            "reader_feedback_batch_v1",
-        ),
-    ),
-    (
-        "docs/STORAGE_MODEL.md",
-        (
-            "Transaction v3",
-            "discard-preparing",
-            "rollback-transaction",
-            "chapter_closure_v2",
-        ),
-    ),
-    (
-        "src/longform_engine/storage/recovery.py",
-        (
-            'TRANSACTION_SCHEMA = "canonical_write_transaction_report_v3"',
-            '"recoverable_discard"',
-            '"recoverable_rollback"',
-            '"recoverable_cleanup"',
-            "expected_sha256",
-            "transaction_inventory_targets_do_not_cover_touched_paths",
-        ),
-    ),
-    (
-        "src/longform_engine/storage/project.py",
-        (
-            '"schema": "project_lock_v2"',
-            "PRAGMA integrity_check",
-            'for suffix in ("-wal", "-shm", "-journal")',
-        ),
-    ),
-    (
-        "src/longform_engine/storage/layout.py",
-        (
-            "def list_finalized_chapter_files",
-            "Non-canonical manuscript filename",
-            "CANONICAL_CHAPTER_PATTERN.fullmatch",
-        ),
-    ),
-    (
-        "src/longform_engine/rag/pipeline.py",
-        (
-            "def apply_embedding_delta",
-            "def rebuild_embedding_index",
-            "sync_source_records",
-            '"source_sha256"',
-        ),
-    ),
-    (
-        "src/longform_engine/memory/pipeline.py",
-        (
-            "def apply_style_memory_delta",
-            '"aggregation_mode": "per_source_incremental_v1"',
-            "run chapter semantic-rebuild before continuing",
-        ),
-    ),
-    (
-        "src/longform_engine/db/sqlite_index.py",
-        (
-            "def sync_semantic_delta",
-            "require_continuous_prior_chapters",
-            "def sync_chunk_number",
-            "Semantic database delta contains a chunk outside chapter",
-        ),
-    ),
-    (
-        "tests/test_storage.py",
-        (
-            "test_recovery_discards_preparing_snapshot_without_touching_canonical_state",
-            "test_recovery_rolls_back_prepared_transaction_with_exact_report_hash",
-            "test_recovery_only_cleans_snapshots_after_durable_applied_marker",
-            "test_recovery_reclaims_only_confirmed_dead_lock_with_exact_hash",
-            "test_recovery_rejects_inventory_that_does_not_cover_every_touched_path",
-        ),
-    ),
-    (
-        "tests/test_cli.py",
-        (
-            "test_cli_blocks_ordinary_mutation_until_prepared_transaction_is_recovered",
-            "test_cli_routes_confirmed_dead_lock_to_explicit_recovery",
-            "storage_recovery_required",
-        ),
-    ),
-    (
-        "scripts/check_markdown_links.py",
-        (
-            "Markdown local links passed",
-            "has_exact_case",
-            "local link escapes repository",
-        ),
-    ),
-)
+REQUIRED_RELEASE_CONTRACT_MARKERS = (('docs/OPERATOR_GUIDE.md',
+  ('production next',
+   'human_chapter_intent_v2',
+   'chapter_coedit_session_v2',
+   'human_author_revision_v4',
+   'human_story_review_v7',
+   'semantic-apply',
+   'chapter close',
+   'recovery status')),
+ ('docs/ARCHITECTURE.md',
+  ('唯一章节合同', 'transaction v3', 'chapter_contract_v5', 'revision_branch_v2')),
+ ('src/longform_engine/chapter_contract.py',
+  ('CONTRACT_SCHEMA = "chapter_contract_v5"',
+   '"topology"',
+   '"observable_change"',
+   '"reader_value"',
+   '"semantic_obligation_refs"',
+   '"plot_node_table_ref"',
+   '"reader_promise_actions"')),
+ ('src/longform_engine/orchestration/pipeline.py',
+  ('WRITING_TASK_SCHEMA',
+   'STORY_BRIEF_SCHEMA',
+   'build_story_brief_basis',
+   '"story_brief_basis"',
+   '"schema": "chapter_fact_inventory_v1"',
+   'render_chapter_story_brief_markdown',
+   'require_human_story_accept')),
+ ('src/longform_engine/story_brief.py',
+  ('BASIS_SCHEMA = "chapter_story_brief_basis_v3"',
+   'STORY_BRIEF_SCHEMA = "chapter_story_brief_v5"',
+   'WRITING_TASK_SCHEMA = "chapter_writing_task_v7"',
+   'RENDERER_VERSION = "chapter_story_brief_renderer_v5"',
+   'load_current_story_brief_binding',
+   'story_brief_status')),
+ ('src/longform_engine/planning/contracts.py',
+  ('PLANNING_BUNDLE_SCHEMA = "planning_bundle_v1"',
+   'ROLLING_WINDOW_SCHEMA = "rolling_window_plan_v2"',
+   'SEMANTIC_OBLIGATION_SCHEMA = "semantic_obligation_v1"',
+   'PLOT_NODE_TABLE_SCHEMA = "plot_node_table_v1"',
+   'validate_planning_bundle',
+   'validate_rolling_window',
+   'validate_plot_node_table')),
+ ('src/longform_engine/planning/workflow.py',
+  ('PLANNING_SEMANTIC_APPLICATION_SCHEMA = "planning_semantic_review_application_v1"',
+   'HUMAN_NODE_DECISIONS_SCHEMA = "human_plot_node_decisions_v1"',
+   'NARRATIVE_EVENT_LEDGER_SCHEMA = "narrative_event_ledger_v1"',
+   'build_planning_semantic_application',
+   'validate_human_node_decisions',
+   'apply_planning_bundle')),
+ ('src/longform_engine/editorial/pipeline.py',
+  ('selected: set[str] = {"scene_prose_editor", "anti_template_editor", *configured}',
+   'reasons: list[str] = ["mandatory_scene_prose_review", "mandatory_anti_template_review"]',
+   '"SERIAL_CARRIER_REPETITION"',
+   '"THEME_DISPLACES_EVENT"',
+   '"REPORT_SUBSTITUTES_EVENT"',
+   '"PASSIVE_PROTAGONIST"')),
+ ('src/longform_engine/human_story_review.py',
+  ('SCHEMA = "human_story_review_v7"',
+   'DECISIONS = {"accept", "repair", "redirect"}',
+   'CHECK_FIELDS',
+   'EVIDENCE_KINDS',
+   'candidate_sha256',
+   'chapter_contract_sha256',
+   'story_brief_basis_sha256',
+   'human_chapter_intent_sha256',
+   'reader_promise_ledger_sha256',
+   'plot_node_table_sha256',
+   'semantic_obligation_ledger_sha256',
+   'review_bundle_sha256',
+   'human_author_revision_sha256',
+   'apply_transaction',
+   'approved_by=human')),
+ ('src/longform_engine/reader_promises_v2.py',
+  ('LEDGER_SCHEMA = "reader_promise_ledger_v2"',
+   'PROMISE_ACTIONS = frozenset({"setup", "escalate", "partial_payoff", "payoff", "defer"})',
+   'apply_promise_evidence')),
+ ('src/longform_engine/narrative_events.py',
+  ('EVENT_REALIZATION_APPLICATION_SCHEMA = "event_realization_application_v1"',
+   'validate_event_realization_application',
+   'apply_event_realization',
+   'event realization must be human-confirmed')),
+ ('src/longform_engine/canon_changes.py',
+  ('CANONICAL_FACT_SCHEMA = "canonical_fact_v2"',
+   'PROPOSAL_SCHEMA = "canon_change_proposal_v1"',
+   'IMPACT_SCHEMA = "dependency_impact_v1"',
+   'SEMANTIC_REVIEW_SCHEMA = "canon_change_semantic_review_v1"',
+   'HUMAN_DECISION_SCHEMA = "human_canon_change_decision_v1"',
+   'deterministic must_stale cannot be downgraded',
+   'create_versioned_revision_branch')),
+ ('src/longform_engine/reader_feedback.py',
+  ('BATCH_SCHEMA = "reader_feedback_batch_v1"',
+   'DECISION_SCHEMA = "human_reader_feedback_decision_v1"',
+   'PLANNING_PROPOSAL_SCHEMA = "planning_change_proposal_v1"',
+   'canon_change_proposal_v1')),
+ ('src/longform_engine/revision/branches.py',
+  ('REVISION_BRANCH_SCHEMA = "revision_branch_v2"',
+   'create_versioned_revision_branch',
+   'promote_revision_branch',
+   'historical revision must cover through the current head')),
+ ('config/quality_profiles/market_evidence_registry.yaml',
+  ('schema: market_evidence_registry_v2',
+   'source_type:',
+   'publisher:',
+   'verified_at:',
+   'claims:',
+   'applicability:',
+   'evidence_grade:',
+   'execution_level: P2_advisory',
+   'algorithm_inference_allowed: false')),
+ ('src/longform_engine/quality/contracts.py',
+  ('MARKET_EVIDENCE_SCHEMA = "market_evidence_registry_v2"',
+   'load_market_evidence_registry',
+   'validate_market_evidence_refs',
+   'item.get("execution_level") != "P2_advisory"')),
+ ('src/longform_engine/human_review_consultation.py',
+  ('SESSION_SCHEMA = "human_review_consult_session_v3"',
+   'create_human_review_consult_task',
+   'validate_human_review_consultation',
+   'record_human_review_consultation',
+   'mark_stale_human_consultations')),
+ ('src/longform_engine/local_web.py',
+  ('super().__init__(("127.0.0.1", port)',
+   'Content-Security-Policy',
+   'self.headers.get("Host"',
+   'self.headers.get("Origin"',
+   '_require_csrf')),
+ ('src/longform_engine/review_server.py',
+  ('X-Review-CSRF', 'acquire_project_lock', 'agent="human"')),
+ ('src/longform_engine/source_processing.py',
+  ('approve_remote_decision',
+   'approved_by=human',
+   'remote processing approval is stale',
+   'store=False',
+   'retain_remote_files')),
+ ('src/longform_engine/quality/status.py', ('"protocol_ready"', '"author_acceptance_ready"')),
+ ('src/longform_engine/quality/editorial_patterns.py',
+  ('PATTERN_SCHEMA = "editorial_pattern_item_v1"',
+   'role_id',
+   'finding_code',
+   'rebuild_editorial_pattern_registry')),
+ ('tests/test_story_architecture_v050.py',
+  ('test_author_markdown_is_story_brief_and_fact_inventory_stays_internal',
+   'test_five_chapter_carrier_diagnostics_warn_and_require_human_reason',
+   'test_human_accept_is_hash_bound_and_unlocks_review_barrier',
+   'test_human_redirect_failure_restores_stale_registry_decision_and_patterns')),
+ ('src/longform_engine/agent_tasks.py',
+  ('AGENT_TASK_STATUSES',
+   '"awaiting_agent"',
+   '"submitted"',
+   '"validated"',
+   '"invalid"',
+   '"applied"',
+   '"superseded"',
+   '"rolled_back"',
+   '"content_expand"',
+   'validate_manifest_strict')),
+ ('src/longform_engine/creative/pipeline.py',
+  ('task_type="content_expand"',
+   'output_schema=output_protocol_for_task("content_expand")',
+   'command="creative expand-check"')),
+ ('src/longform_engine/storage/project.py',
+  ('apply_transaction', 'rollback_restores_touched_paths', 'canonical_write_transaction_rollback')),
+ ('tests/test_agent_task_protocol.py',
+  ('test_strict_manifest_validation_rejects_unknown_type_and_canonical_output',
+   'validate_manifest_strict',
+   'content_expand',
+   'AGENT_TASK_STATUSES',
+   '"superseded"',
+   '"rolled_back"')),
+ ('tests/test_creative_operator.py',
+  ('test_expand_task_and_check_repair_short_chapter_without_pollution',
+   'manifest["task_type"] == "content_expand"',
+   'validate_manifest_strict')),
+ ('tests/test_storage.py',
+  ('test_apply_transaction_writes_report_and_rolls_back_touched_paths',
+   'rollback_restores_touched_paths',
+   'chapter_finalize_ch001.rollback.json')),
+ ('docs/PIPELINE_MODEL.md',
+  ('planning_bundle_v1', 'chapter_contract_v5', 'chapter_story_brief_v5', 'chapter_closure_v2')),
+ ('tests/test_agent_skill_integrity.py',
+  ('test_release_guard_tracks_current_timeless_contracts',
+   'check_experience_layer_guards',
+   'DIRECT_WRITER_PATTERNS')),
+ ('tests/test_agent_skill_integrity.py',
+  ('test_progressive_prompts_cover_current_protocols_without_pollution',
+   'agent_data_pipeline_readiness_v5',
+   'single_process_sequential')),
+ ('src/longform_engine/semantic/pipeline.py',
+  ('SCHEMA = "chapter_semantic_bundle_v1"',
+   'apply_transaction',
+   'candidate_sha256',
+   'Cannot replace canonical semantic ledger',
+   'def semantic_rebuild',
+   'source_of_truth": "semantic_ledger',
+   'chapter close')),
+ ('tests/test_semantic_knowledge.py',
+  ('test_unified_semantic_bundle_materializes_evidence_bound_views',
+   'test_semantic_validation_rejects_hash_and_evidence_mismatch',
+   'semantic ledger routed chapter',
+   'event:stale-derived-fact')),
+ ('src/longform_engine/artifacts.py',
+  ('failed verification before compaction', 'contains an older version of loose artifact')),
+ ('docs/ARCHITECTURE.md',
+  ('唯一章节合同', 'transaction v3', 'chapter_contract_v5', 'reader_feedback_batch_v1')),
+ ('docs/STORAGE_MODEL.md',
+  ('Transaction v3', 'discard-preparing', 'rollback-transaction', 'chapter_closure_v2')),
+ ('src/longform_engine/storage/recovery.py',
+  ('TRANSACTION_SCHEMA = "canonical_write_transaction_report_v3"',
+   '"recoverable_discard"',
+   '"recoverable_rollback"',
+   '"recoverable_cleanup"',
+   'expected_sha256',
+   'transaction_inventory_targets_do_not_cover_touched_paths')),
+ ('src/longform_engine/storage/project.py',
+  ('"schema": "project_lock_v2"',
+   'PRAGMA integrity_check',
+   'for suffix in ("-wal", "-shm", "-journal")')),
+ ('src/longform_engine/storage/layout.py',
+  ('def list_finalized_chapter_files',
+   'Non-canonical manuscript filename',
+   'CANONICAL_CHAPTER_PATTERN.fullmatch')),
+ ('src/longform_engine/rag/pipeline.py',
+  ('def apply_embedding_delta',
+   'def rebuild_embedding_index',
+   'sync_source_records',
+   '"source_sha256"')),
+ ('src/longform_engine/memory/pipeline.py',
+  ('def apply_style_memory_delta',
+   '"aggregation_mode": "per_source_incremental_v1"',
+   'run chapter semantic-rebuild before continuing')),
+ ('src/longform_engine/db/sqlite_index.py',
+  ('def sync_semantic_delta',
+   'require_continuous_prior_chapters',
+   'def sync_chunk_number',
+   'Semantic database delta contains a chunk outside chapter')),
+ ('tests/test_storage.py',
+  ('test_recovery_discards_preparing_snapshot_without_touching_canonical_state',
+   'test_recovery_rolls_back_prepared_transaction_with_exact_report_hash',
+   'test_recovery_only_cleans_snapshots_after_durable_applied_marker',
+   'test_recovery_reclaims_only_confirmed_dead_lock_with_exact_hash',
+   'test_recovery_rejects_inventory_that_does_not_cover_every_touched_path')),
+ ('tests/test_cli.py',
+  ('test_cli_blocks_ordinary_mutation_until_prepared_transaction_is_recovered',
+   'test_cli_routes_confirmed_dead_lock_to_explicit_recovery',
+   'storage_recovery_required')),
+ ('scripts/check_markdown_links.py',
+  ('Markdown local links passed', 'has_exact_case', 'local link escapes repository')))
 
 
 def main() -> int:
@@ -789,6 +581,7 @@ def main() -> int:
     failures.extend(check_agent_first_production_pipeline_guards())
     failures.extend(check_artifact_compaction_guards())
     failures.extend(check_public_distribution_guards())
+    failures.extend(check_public_content_guards())
     failures.extend(check_single_project_scope_guards())
     failures.extend(check_v010_active_schema_surface())
     failures.extend(check_required_release_contract_markers())
@@ -832,6 +625,29 @@ def check_single_project_scope_guards() -> list[str]:
             if term.casefold() in text:
                 failures.append(f"single-project scope contains a retired name or comparison term: {relpath(path)}")
                 break
+    return failures
+
+
+def check_public_content_guards() -> list[str]:
+    """Keep product-facing text descriptive rather than evidentiary or comparative."""
+
+    paths = [ROOT / relative for relative in PUBLIC_CONTENT_FILES]
+    paths.extend(sorted((ROOT / "docs" / "releases").glob("*.md")))
+    paths.extend(sorted((ROOT / "shared").glob("*.md")))
+    paths.extend(sorted((ROOT / "longform-novel-codex" / "references").glob("*.md")))
+    paths.extend(sorted((ROOT / "longform-novel-claude" / "references").glob("*.md")))
+    failures: list[str] = []
+    for path in paths:
+        if not path.is_file():
+            failures.append(f"public content file is missing: {relpath(path)}")
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for marker in DELETED_PUBLIC_DOCUMENT_MARKERS:
+            if marker in text:
+                failures.append(f"deleted phase document `{marker}` is referenced by {relpath(path)}")
+        for pattern, label in FORBIDDEN_PUBLIC_CONTENT_PATTERNS:
+            if pattern.search(text):
+                failures.append(f"{label} appears in {relpath(path)}")
     return failures
 
 
@@ -1159,9 +975,20 @@ def check_public_distribution_guards() -> list[str]:
     if forbidden_git_mutation.search(readiness_text):
         failures.append("release readiness must remain diagnostic and must not execute mutating Git commands")
 
-    for marker in ("cmd_release_check", "cmd_benchmark_record", "cmd_benchmark_compare"):
-        if marker not in cli_text:
-            failures.append(f"public distribution CLI marker `{marker}` is missing")
+    if "cmd_release_check" not in cli_text:
+        failures.append("public release diagnostic command is missing")
+    for marker in (
+        'subparsers.add_parser("benchmark"',
+        "def cmd_benchmark_",
+        '"--compare-market"',
+        "compatibility observations",
+        "literary_evidence_ready",
+    ):
+        if marker in cli_text:
+            failures.append(f"internal evaluation surface is publicly registered in cli.py: {marker}")
+    status_text = (SRC / "quality" / "status.py").read_text(encoding="utf-8", errors="ignore")
+    if "literary_evidence" in status_text:
+        failures.append("quality status must not project internal literary-evaluation state")
     return failures
 
 

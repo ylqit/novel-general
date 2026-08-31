@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import secrets
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -11,29 +12,6 @@ from typing import Any
 
 from longform_engine import __version__
 from longform_engine.artifacts import artifact_status, compact_artifacts, restore_artifacts, verify_artifacts
-from longform_engine.benchmark import (
-    compare_benchmarks,
-    init_benchmark,
-    record_benchmark_chapter,
-    record_rag_benchmark,
-    report_benchmark,
-    validate_benchmark,
-)
-from longform_engine.blind_review import (
-    aggregate_blind_reviews,
-    attach_benchmark_source,
-    create_blind_review_pack,
-    create_blind_review_template,
-    submit_blind_review,
-)
-from longform_engine.fanfiction_literary_trial import (
-    aggregate_fanfiction_literary_trial,
-    create_fanfiction_literary_review_template,
-    create_fanfiction_literary_trial,
-    fanfiction_literary_trial_status,
-    resolve_fanfiction_literary_disagreements,
-    submit_fanfiction_literary_review,
-)
 from longform_engine.character_expression import approve_voice_samples
 from longform_engine.author_voice import approve_author_voice_edit_pair
 from longform_engine.chapter_coedit import (
@@ -180,7 +158,9 @@ from longform_engine.repair_coordination import (
     validate_repair_plan,
 )
 from longform_engine.review_server import ReviewDeskService, ReviewHTTPServer
-from longform_engine.studio_server import StudioHTTPServer, StudioService
+from longform_engine.studio_instance import WorkspaceStudioInstance
+from longform_engine.studio_shortcut import install_windows_studio_shortcut
+from longform_engine.workspace_studio import WorkspaceStudioHTTPServer, WorkspaceStudioService
 from longform_engine.graph import (
     check_graph,
     retrieve_graph,
@@ -290,9 +270,6 @@ from longform_engine.rag import (
     build_chunks,
     build_context,
     query as rag_query,
-    run_rag_production_benchmark,
-    run_rag_scale_benchmark,
-    write_rag_production_template,
 )
 from longform_engine.research import (
     detect_knowledge_gaps,
@@ -448,270 +425,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Validate public-release or unpublished release-candidate surfaces.",
     )
     release_check.set_defaults(func=cmd_release_check)
-
-    benchmark = subparsers.add_parser("benchmark", help="Create and summarize no-LLM quality benchmark records.")
-    benchmark_subparsers = benchmark.add_subparsers(dest="benchmark_command", required=True)
-
-    benchmark_init = benchmark_subparsers.add_parser("init", help="Create a benchmark run template without calling an LLM.")
-    benchmark_init.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_init.add_argument("--run-id", required=True)
-    benchmark_init.add_argument("--host-product", required=True, choices=["codex", "claude-code"])
-    benchmark_init.add_argument("--chapters", type=positive_int_arg, required=True)
-    benchmark_init.add_argument("--scenario-id", default="", help="Stable setting id shared by comparable runs.")
-    benchmark_init.add_argument("--scenario-file", help="Scenario JSON whose SHA-256 anchors comparable runs.")
-    benchmark_init.add_argument("--agent-model", default="", help="Model label used by the host Agent product.")
-    benchmark_init.add_argument("--host-version", default="", help="Codex or Claude Code host version label.")
-    benchmark_init.add_argument("--workflow-version", default="", help="Engine workflow version used for this run.")
-    benchmark_init.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_init.set_defaults(func=cmd_benchmark_init)
-
-    benchmark_record = benchmark_subparsers.add_parser("record", help="Record one real chapter result without storing manuscript text.")
-    benchmark_record.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_record.add_argument("--run-id", required=True)
-    benchmark_record.add_argument("--chapter", type=positive_int_arg, required=True)
-    for metric in (
-        "continuity",
-        "character-consistency",
-        "foreshadowing-control",
-        "pacing",
-        "reader-payoff",
-        "prose-naturalness",
-    ):
-        benchmark_record.add_argument(f"--{metric}", type=score_arg, required=True)
-    for metric in (
-        "canon-fidelity",
-        "ooc-control",
-        "original-contribution",
-        "divergence-causality",
-        "source-prose-originality",
-        "crossover-consistency",
-    ):
-        benchmark_record.add_argument(
-            f"--{metric}",
-            type=score_arg,
-            help="Fanfiction benchmark score; all six are required when creation.mode=fanfiction.",
-        )
-    gate_group = benchmark_record.add_mutually_exclusive_group(required=True)
-    gate_group.add_argument("--gate-passed", dest="gate_passed", action="store_true")
-    gate_group.add_argument("--gate-failed", dest="gate_passed", action="store_false")
-    benchmark_record.add_argument("--repair-count", type=non_negative_int_arg, default=0)
-    benchmark_record.add_argument("--need-human-count", type=non_negative_int_arg, default=0)
-    benchmark_record.add_argument("--context-file-count", type=non_negative_int_arg, required=True)
-    benchmark_record.add_argument("--context-character-count", type=non_negative_int_arg, required=True)
-    benchmark_record.add_argument("--p0-contradiction-count", type=non_negative_int_arg, default=0)
-    benchmark_record.add_argument("--canonical-pollution-count", type=non_negative_int_arg, default=0)
-    benchmark_record.add_argument("--judge", action="append", default=[], help="Repeat for each blinded evaluator id.")
-    benchmark_record.add_argument("--character-drift", action="append", default=[])
-    benchmark_record.add_argument("--foreshadowing-leak", action="append", default=[])
-    benchmark_record.add_argument("--prose-naturalness-issue", action="append", default=[])
-    benchmark_record.add_argument("--notes", default="")
-    benchmark_record.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_record.set_defaults(func=cmd_benchmark_record)
-
-    benchmark_technical = benchmark_subparsers.add_parser(
-        "technical-record",
-        help="Record production metrics before formal literary blind review.",
-    )
-    benchmark_technical.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_technical.add_argument("--run-id", required=True)
-    benchmark_technical.add_argument("--chapter", type=positive_int_arg, required=True)
-    technical_gate = benchmark_technical.add_mutually_exclusive_group(required=True)
-    technical_gate.add_argument("--gate-passed", dest="gate_passed", action="store_true")
-    technical_gate.add_argument("--gate-failed", dest="gate_passed", action="store_false")
-    benchmark_technical.add_argument("--repair-count", type=non_negative_int_arg, default=0)
-    benchmark_technical.add_argument("--need-human-count", type=non_negative_int_arg, default=0)
-    benchmark_technical.add_argument("--context-file-count", type=non_negative_int_arg, required=True)
-    benchmark_technical.add_argument("--context-character-count", type=non_negative_int_arg, required=True)
-    benchmark_technical.add_argument("--p0-contradiction-count", type=non_negative_int_arg, default=0)
-    benchmark_technical.add_argument("--canonical-pollution-count", type=non_negative_int_arg, default=0)
-    benchmark_technical.add_argument("--notes", default="")
-    benchmark_technical.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_technical.set_defaults(func=cmd_benchmark_technical_record)
-
-    benchmark_rag = benchmark_subparsers.add_parser("rag-record", help="Record 500-chapter RAG scale evidence for a quality claim.")
-    benchmark_rag.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_rag.add_argument("--run-id", required=True)
-    benchmark_rag.add_argument("--scale-chapters", type=positive_int_arg, required=True)
-    benchmark_rag.add_argument("--recall-at-k", type=float, required=True)
-    benchmark_rag.add_argument("--fact-error-rate", type=float, required=True)
-    benchmark_rag.add_argument("--p95-query-ms", type=float, required=True)
-    benchmark_rag.add_argument("--incremental-index-ms", type=float, required=True)
-    benchmark_rag.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_rag.set_defaults(func=cmd_benchmark_rag_record)
-
-    benchmark_rag_run = benchmark_subparsers.add_parser(
-        "rag-scale-run",
-        help="Run the fixed 50/200/500 chapter vector-store engineering benchmark.",
-    )
-    benchmark_rag_run.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_rag_run.add_argument("--scale-chapters", type=int, choices=(50, 200, 500, 667), required=True)
-    benchmark_rag_run.add_argument("--backend", choices=("local_sqlite", "local_hnsw"))
-    benchmark_rag_run.add_argument("--query-count", type=positive_int_arg, default=60)
-    benchmark_rag_run.add_argument("--top-k", type=positive_int_arg, default=10)
-    benchmark_rag_run.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_rag_run.set_defaults(func=cmd_benchmark_rag_scale_run)
-
-    benchmark_rag_template = benchmark_subparsers.add_parser(
-        "rag-production-template",
-        help="Write a claim-grade real-manuscript RAG query dataset template.",
-    )
-    benchmark_rag_template.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_rag_template.add_argument("--output", help="Optional output JSON path.")
-    benchmark_rag_template.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_rag_template.set_defaults(func=cmd_benchmark_rag_production_template)
-
-    benchmark_rag_production = benchmark_subparsers.add_parser(
-        "rag-production-run",
-        help="Measure production embedding/reranker retrieval over at least 500 final chapters.",
-    )
-    benchmark_rag_production.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_rag_production.add_argument("--run-id", required=True)
-    benchmark_rag_production.add_argument("--dataset", required=True, help="Validated rag_production_dataset_v1 JSON.")
-    benchmark_rag_production.add_argument("--top-k", type=positive_int_arg, default=10)
-    benchmark_rag_production.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_rag_production.set_defaults(func=cmd_benchmark_rag_production_run)
-
-    benchmark_source = benchmark_subparsers.add_parser(
-        "source-attach",
-        help="Attach SHA-256 provenance for the exact reviewed manuscript chapters.",
-    )
-    benchmark_source.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_source.add_argument("--run-id", required=True)
-    benchmark_source.add_argument("--source-dir", required=True)
-    benchmark_source.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_source.set_defaults(func=cmd_benchmark_source_attach)
-
-    benchmark_blind_pack = benchmark_subparsers.add_parser(
-        "blind-pack",
-        help="Create a randomized two-run public review pack and private mapping.",
-    )
-    benchmark_blind_pack.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_blind_pack.add_argument("--comparison-id", required=True)
-    benchmark_blind_pack.add_argument("--run-id", action="append", required=True)
-    benchmark_blind_pack.add_argument(
-        "--review-scope",
-        required=True,
-        choices=["qidian_opening_3", "fanqie_opening_3", "serial_arc_15"],
-    )
-    benchmark_blind_pack.add_argument("--seed", required=True, help="Non-empty deterministic randomization seed.")
-    benchmark_blind_pack.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_blind_pack.set_defaults(func=cmd_benchmark_blind_pack)
-
-    benchmark_blind_template = benchmark_subparsers.add_parser(
-        "blind-template",
-        help="Create one identity-free scoring template for an independent judge.",
-    )
-    benchmark_blind_template.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_blind_template.add_argument("--comparison-id", required=True)
-    benchmark_blind_template.add_argument("--judge-id", required=True)
-    benchmark_blind_template.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_blind_template.set_defaults(func=cmd_benchmark_blind_template)
-
-    benchmark_blind_submit = benchmark_subparsers.add_parser(
-        "blind-submit",
-        help="Validate and store one complete independent blind-review submission.",
-    )
-    benchmark_blind_submit.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_blind_submit.add_argument("--comparison-id", required=True)
-    benchmark_blind_submit.add_argument("--judge-id", required=True)
-    benchmark_blind_submit.add_argument("--file", required=True)
-    benchmark_blind_submit.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_blind_submit.set_defaults(func=cmd_benchmark_blind_submit)
-
-    benchmark_blind_aggregate = benchmark_subparsers.add_parser(
-        "blind-aggregate",
-        help="Aggregate at least three independent blind reviews into paired run records.",
-    )
-    benchmark_blind_aggregate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_blind_aggregate.add_argument("--comparison-id", required=True)
-    benchmark_blind_aggregate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_blind_aggregate.set_defaults(func=cmd_benchmark_blind_aggregate)
-
-    benchmark_fanfiction_trial_init = benchmark_subparsers.add_parser(
-        "fanfiction-trial-init",
-        help="Create the anonymous two-route, twenty-chapter fanfiction literary trial pack.",
-    )
-    benchmark_fanfiction_trial_init.add_argument("config", nargs="?", default="project.yaml")
-    benchmark_fanfiction_trial_init.add_argument("--trial-id", required=True)
-    benchmark_fanfiction_trial_init.add_argument("--oc-si-source-dir", required=True)
-    benchmark_fanfiction_trial_init.add_argument("--oc-si-gate-report", required=True)
-    benchmark_fanfiction_trial_init.add_argument("--canon-character-source-dir", required=True)
-    benchmark_fanfiction_trial_init.add_argument("--canon-character-gate-report", required=True)
-    benchmark_fanfiction_trial_init.add_argument("--seed", required=True)
-    benchmark_fanfiction_trial_init.add_argument("--json", action="store_true")
-    benchmark_fanfiction_trial_init.set_defaults(func=cmd_benchmark_fanfiction_trial_init)
-
-    benchmark_fanfiction_trial_template = benchmark_subparsers.add_parser(
-        "fanfiction-trial-template",
-        help="Create one independent human review template for a fanfiction literary trial.",
-    )
-    benchmark_fanfiction_trial_template.add_argument("config", nargs="?", default="project.yaml")
-    benchmark_fanfiction_trial_template.add_argument("--trial-id", required=True)
-    benchmark_fanfiction_trial_template.add_argument("--reviewer-id", required=True)
-    benchmark_fanfiction_trial_template.add_argument("--json", action="store_true")
-    benchmark_fanfiction_trial_template.set_defaults(func=cmd_benchmark_fanfiction_trial_template)
-
-    benchmark_fanfiction_trial_submit = benchmark_subparsers.add_parser(
-        "fanfiction-trial-submit",
-        help="Validate and store one independent human fanfiction trial review.",
-    )
-    benchmark_fanfiction_trial_submit.add_argument("config", nargs="?", default="project.yaml")
-    benchmark_fanfiction_trial_submit.add_argument("--trial-id", required=True)
-    benchmark_fanfiction_trial_submit.add_argument("--reviewer-id", required=True)
-    benchmark_fanfiction_trial_submit.add_argument("--file", required=True)
-    benchmark_fanfiction_trial_submit.add_argument("--json", action="store_true")
-    benchmark_fanfiction_trial_submit.set_defaults(func=cmd_benchmark_fanfiction_trial_submit)
-
-    benchmark_fanfiction_trial_aggregate = benchmark_subparsers.add_parser(
-        "fanfiction-trial-aggregate",
-        help="Aggregate exactly three independent reviews without selecting favorable opinions.",
-    )
-    benchmark_fanfiction_trial_aggregate.add_argument("config", nargs="?", default="project.yaml")
-    benchmark_fanfiction_trial_aggregate.add_argument("--trial-id", required=True)
-    benchmark_fanfiction_trial_aggregate.add_argument("--json", action="store_true")
-    benchmark_fanfiction_trial_aggregate.set_defaults(func=cmd_benchmark_fanfiction_trial_aggregate)
-
-    benchmark_fanfiction_trial_resolve = benchmark_subparsers.add_parser(
-        "fanfiction-trial-resolve",
-        help="Human-resolve every material panel disagreement without overriding scores.",
-    )
-    benchmark_fanfiction_trial_resolve.add_argument("config", nargs="?", default="project.yaml")
-    benchmark_fanfiction_trial_resolve.add_argument("--trial-id", required=True)
-    benchmark_fanfiction_trial_resolve.add_argument("--decided-by", required=True)
-    benchmark_fanfiction_trial_resolve.add_argument(
-        "--file", required=True, help="JSON array covering every material disagreement."
-    )
-    benchmark_fanfiction_trial_resolve.add_argument("--json", action="store_true")
-    benchmark_fanfiction_trial_resolve.set_defaults(func=cmd_benchmark_fanfiction_trial_resolve)
-
-    benchmark_fanfiction_trial_status = benchmark_subparsers.add_parser(
-        "fanfiction-trial-status",
-        help="Show the two-route literary trial, disagreements, and evidence readiness.",
-    )
-    benchmark_fanfiction_trial_status.add_argument("config", nargs="?", default="project.yaml")
-    benchmark_fanfiction_trial_status.add_argument("--trial-id", required=True)
-    benchmark_fanfiction_trial_status.add_argument("--json", action="store_true")
-    benchmark_fanfiction_trial_status.set_defaults(func=cmd_benchmark_fanfiction_trial_status)
-
-    benchmark_validate = benchmark_subparsers.add_parser("validate", help="Validate benchmark structure and completion state.")
-    benchmark_validate.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_validate.add_argument("--run-id", required=True)
-    benchmark_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_validate.set_defaults(func=cmd_benchmark_validate)
-
-    benchmark_report = benchmark_subparsers.add_parser("report", help="Aggregate benchmark records without literary model scoring.")
-    benchmark_report.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_report.add_argument("--run-id", required=True)
-    benchmark_report.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_report.set_defaults(func=cmd_benchmark_report)
-
-    benchmark_compare = benchmark_subparsers.add_parser("compare", help="Compare two or more runs from the same setting and chapter count.")
-    benchmark_compare.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    benchmark_compare.add_argument("--comparison-id", required=True)
-    benchmark_compare.add_argument("--run-id", action="append", required=True, help="Repeat for each run to compare.")
-    benchmark_compare.add_argument("--allow-incomplete", action="store_true", help="Write a provisional comparison for incomplete runs.")
-    benchmark_compare.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    benchmark_compare.set_defaults(func=cmd_benchmark_compare)
 
     agent_task = subparsers.add_parser("agent-task", help="Inspect current AgentTaskManifest v5 task packages.")
     agent_task_subparsers = agent_task.add_subparsers(dest="agent_task_command", required=True)
@@ -1778,7 +1491,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     quality_status_cmd = quality_subparsers.add_parser(
         "status",
-        help="Report protocol, author-acceptance, and independent literary-evidence readiness separately.",
+        help="Report protocol, human acceptance, current story briefs, and publication preflights.",
     )
     quality_status_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     quality_status_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
@@ -1791,15 +1504,9 @@ def build_parser() -> argparse.ArgumentParser:
     quality_contract_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     quality_contract_cmd.add_argument("--chapter", type=positive_int_arg, required=True)
     quality_contract_cmd.add_argument(
-        "--compare-market",
-        action="append",
-        default=[],
-        help="Add a non-blocking compatibility market view. Repeat for multiple markets.",
-    )
-    quality_contract_cmd.add_argument(
         "--explain",
         action="store_true",
-        help="Print merge precedence, overridden fields, compatibility observations, and blocking policy.",
+        help="Print merge precedence, overridden fields, and blocking policy.",
     )
     quality_contract_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     quality_contract_cmd.set_defaults(func=cmd_quality_contract)
@@ -1952,10 +1659,35 @@ def build_parser() -> argparse.ArgumentParser:
     studio_serve = studio_subparsers.add_parser(
         "serve", help="Open the Chinese creation console without granting Canon or chapter-finalize authority."
     )
-    studio_serve.add_argument("config", nargs="?", default="project.yaml")
-    studio_serve.add_argument("--port", type=positive_int_arg, default=8764)
+    studio_serve.add_argument("config", nargs="?", default=None)
+    studio_serve.add_argument(
+        "--workspace", help="Explicit absolute directory containing only allowed novel projects."
+    )
+    studio_serve.add_argument(
+        "--create-workspace",
+        action="store_true",
+        help="Create the explicitly named workspace directory when it does not exist.",
+    )
+    studio_serve.add_argument(
+        "--chapter", type=positive_int_arg, help="Open a chapter deep link for the selected project."
+    )
+    studio_serve.add_argument("--port", type=non_negative_int_arg, default=0)
     studio_serve.add_argument("--no-open", action="store_true")
     studio_serve.set_defaults(func=cmd_studio_serve)
+    studio_shortcut = studio_subparsers.add_parser(
+        "shortcut-install",
+        help="Install the Windows desktop entry for one explicit novel workspace.",
+    )
+    studio_shortcut.add_argument(
+        "--workspace",
+        required=True,
+        help="Explicit absolute directory managed by the desktop Workspace Studio.",
+    )
+    studio_shortcut.add_argument(
+        "--desktop",
+        help="Optional explicit absolute desktop directory; defaults to the Windows known Desktop.",
+    )
+    studio_shortcut.set_defaults(func=cmd_studio_shortcut_install)
 
     rag = subparsers.add_parser("rag", help="Build and query local RAG context.")
     rag_subparsers = rag.add_subparsers(dest="rag_command", required=True)
@@ -3009,25 +2741,6 @@ def build_parser() -> argparse.ArgumentParser:
         publication_rights_decision_cmd,
         publication_provenance_cmd,
         publication_export,
-        benchmark_init,
-        benchmark_record,
-        benchmark_technical,
-        benchmark_rag,
-        benchmark_rag_run,
-        benchmark_rag_template,
-        benchmark_rag_production,
-        benchmark_source,
-        benchmark_blind_pack,
-        benchmark_blind_template,
-        benchmark_blind_submit,
-        benchmark_blind_aggregate,
-        benchmark_fanfiction_trial_init,
-        benchmark_fanfiction_trial_template,
-        benchmark_fanfiction_trial_submit,
-        benchmark_fanfiction_trial_aggregate,
-        benchmark_fanfiction_trial_resolve,
-        benchmark_report,
-        benchmark_compare,
     ):
         command.set_defaults(mutates_project=True)
 
@@ -3062,13 +2775,6 @@ def non_negative_int_arg(value: str) -> int:
         raise argparse.ArgumentTypeError("value must be a non-negative integer") from exc
     if parsed < 0:
         raise argparse.ArgumentTypeError("value must be a non-negative integer")
-    return parsed
-
-
-def score_arg(value: str) -> int:
-    parsed = positive_int_arg(value)
-    if parsed > 10:
-        raise argparse.ArgumentTypeError("score must be between 1 and 10")
     return parsed
 
 
@@ -3445,454 +3151,6 @@ def cmd_release_check(args: argparse.Namespace) -> int:
     else:
         print(render_release_readiness(payload))
     return 0 if payload["ok"] else 1
-
-
-def cmd_benchmark_init(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = init_benchmark(
-        config,
-        run_id=args.run_id,
-        host_product=args.host_product,
-        chapters=args.chapters,
-        scenario_id=args.scenario_id,
-        scenario_file=args.scenario_file,
-        agent_model=args.agent_model,
-        host_version=args.host_version,
-        workflow_version=args.workflow_version,
-    )
-    payload = asdict(result)
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print("OK: benchmark run initialized")
-        print(f"Run: {result.run_id}")
-        print(f"Records: {result.records_file}")
-        print(f"Next command: {result.next_command}")
-    return 0
-
-
-def cmd_benchmark_record(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = record_benchmark_chapter(
-        config,
-        run_id=args.run_id,
-        chapter_number=args.chapter,
-        token_budget=args.token_budget,
-        scores={
-            "continuity": args.continuity,
-            "character_consistency": args.character_consistency,
-            "foreshadowing_control": args.foreshadowing_control,
-            "pacing": args.pacing,
-            "reader_payoff": args.reader_payoff,
-            "prose_naturalness": args.prose_naturalness,
-        },
-        gate_passed=args.gate_passed,
-        repair_count=args.repair_count,
-        need_human_count=args.need_human_count,
-        context_file_count=args.context_file_count,
-        context_character_count=args.context_character_count,
-        p0_contradiction_count=args.p0_contradiction_count,
-        canonical_pollution_count=args.canonical_pollution_count,
-        judge_ids=args.judge,
-        character_drift=args.character_drift,
-        foreshadowing_leaks=args.foreshadowing_leak,
-        prose_naturalness_issues=args.prose_naturalness_issue,
-        notes=args.notes,
-        fanfiction_scores={
-            "canon_fidelity": args.canon_fidelity,
-            "ooc_control": args.ooc_control,
-            "original_contribution": args.original_contribution,
-            "divergence_causality": args.divergence_causality,
-            "source_prose_originality": args.source_prose_originality,
-            "crossover_consistency": args.crossover_consistency,
-        } if any(
-            value is not None
-            for value in (
-                args.canon_fidelity,
-                args.ooc_control,
-                args.original_contribution,
-                args.divergence_causality,
-                args.source_prose_originality,
-                args.crossover_consistency,
-            )
-        ) else None,
-    )
-    payload = asdict(result)
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print("OK: benchmark chapter recorded")
-        print(f"Run: {result.run_id}")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Complete: {result.complete}")
-        print(f"Next command: {result.next_command}")
-    return 0
-
-
-def cmd_benchmark_technical_record(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = record_benchmark_chapter(
-        config,
-        run_id=args.run_id,
-        chapter_number=args.chapter,
-        scores=None,
-        gate_passed=args.gate_passed,
-        repair_count=args.repair_count,
-        need_human_count=args.need_human_count,
-        context_file_count=args.context_file_count,
-        context_character_count=args.context_character_count,
-        p0_contradiction_count=args.p0_contradiction_count,
-        canonical_pollution_count=args.canonical_pollution_count,
-        notes=args.notes,
-        review_status="technical_pending",
-        require_artifact_hashes=True,
-    )
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: benchmark technical chapter record written")
-        print(f"Run: {result.run_id}")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Complete: {result.complete}")
-        print(f"Next command: {result.next_command}")
-    return 0
-
-
-def cmd_benchmark_rag_record(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = record_rag_benchmark(
-        config,
-        run_id=args.run_id,
-        scale_chapters=args.scale_chapters,
-        recall_at_k=args.recall_at_k,
-        fact_error_rate=args.fact_error_rate,
-        p95_query_ms=args.p95_query_ms,
-        incremental_index_ms=args.incremental_index_ms,
-    )
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: RAG scale evidence recorded")
-        print(f"Evidence: {result.evidence_file}")
-        print(f"Meets thresholds: {result.meets_thresholds}")
-        for error in result.errors:
-            print(f"- {error}")
-    return 0 if result.meets_thresholds else 1
-
-
-def cmd_benchmark_rag_scale_run(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = run_rag_scale_benchmark(
-        config,
-        scale_chapters=args.scale_chapters,
-        backend=args.backend,
-        query_count=args.query_count,
-        top_k=args.top_k,
-    )
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: RAG scale benchmark completed" if result.meets_thresholds else "ERROR: RAG scale benchmark failed")
-        print(f"Dataset: {result.dataset_id}")
-        print(f"Scale: {result.scale_chapters} chapters / {result.vector_count} vectors")
-        print(f"Backend: {result.backend}")
-        print(f"Recall@{result.top_k}: {result.recall_at_k:.3f}")
-        print(f"Fact error rate: {result.fact_error_rate:.3f}")
-        print(f"P95 query: {result.p95_query_ms:.3f} ms")
-        print(f"Incremental index: {result.incremental_index_ms:.3f} ms")
-        print(f"Result: {result.result_file}")
-        for error in result.threshold_errors:
-            print(f"- {error}")
-    return 0 if result.meets_thresholds else 1
-
-
-def cmd_benchmark_rag_production_template(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = write_rag_production_template(config, output=args.output)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: production RAG dataset template written")
-        print(f"Template: {result.template_file}")
-        print(f"Minimum queries: {result.minimum_query_count}")
-        print(f"Required categories: {', '.join(result.required_categories)}")
-    return 0
-
-
-def cmd_benchmark_rag_production_run(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = run_rag_production_benchmark(
-        config,
-        run_id=args.run_id,
-        dataset_file=args.dataset,
-        top_k=args.top_k,
-    )
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: production RAG benchmark completed" if result.meets_thresholds else "ERROR: production RAG benchmark failed")
-        print(f"Evidence: {result.evidence_file}")
-        print(f"Scale: {result.scale_chapters} chapters / {result.query_count} queries")
-        print(f"Recall@{args.top_k}: {result.recall_at_k:.3f}")
-        print(f"Fact error rate: {result.fact_error_rate:.3f}")
-        print(f"P95 query: {result.p95_query_ms:.3f} ms")
-        print(f"Incremental index: {result.incremental_index_ms:.3f} ms")
-        for error in result.errors:
-            print(f"- {error}")
-    return 0 if result.meets_thresholds else 1
-
-
-def cmd_benchmark_source_attach(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = attach_benchmark_source(
-        config,
-        run_id=args.run_id,
-        source_dir=args.source_dir,
-    )
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: benchmark manuscript source attached")
-        print(f"Run: {result.run_id}")
-        print(f"Chapters: {result.chapter_count}")
-        print(f"Source merkle root: {result.source_merkle_root}")
-        print(f"Manifest: {result.manifest_file}")
-    return 0
-
-
-def cmd_benchmark_blind_pack(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = create_blind_review_pack(
-        config,
-        comparison_id=args.comparison_id,
-        run_ids=args.run_id,
-        seed=args.seed,
-        review_scope=args.review_scope,
-    )
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: blind review pack created")
-        print(f"Comparison: {result.comparison_id}")
-        print(f"Public pack: {result.public_dir}")
-        print(f"Private mapping: {result.private_mapping_file}")
-        print(f"Pack hash: {result.pack_hash}")
-    return 0
-
-
-def cmd_benchmark_blind_template(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = create_blind_review_template(
-        config,
-        comparison_id=args.comparison_id,
-        judge_id=args.judge_id,
-    )
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: blind review template created")
-        print(f"Comparison: {result.comparison_id}")
-        print(f"Judge: {result.judge_id}")
-        print(f"Template: {result.template_file}")
-    return 0
-
-
-def cmd_benchmark_blind_submit(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = submit_blind_review(
-        config,
-        comparison_id=args.comparison_id,
-        judge_id=args.judge_id,
-        file_path=args.file,
-    )
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: blind review submission accepted")
-        print(f"Comparison: {result.comparison_id}")
-        print(f"Judge: {result.judge_id}")
-        print(f"Submission: {result.submission_file}")
-        print(f"SHA-256: {result.submission_sha256}")
-    return 0
-
-
-def cmd_benchmark_blind_aggregate(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = aggregate_blind_reviews(config, comparison_id=args.comparison_id)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: blind reviews aggregated")
-        print(f"Comparison: {result.comparison_id}")
-        print(f"Judges: {result.judge_count}")
-        print(f"Runs: {', '.join(result.run_ids)}")
-        print(f"Aggregate: {result.aggregate_file}")
-        print(f"Next command: {result.next_command}")
-    return 0
-
-
-def cmd_benchmark_fanfiction_trial_init(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = create_fanfiction_literary_trial(
-        config,
-        trial_id=args.trial_id,
-        oc_si_source_dir=args.oc_si_source_dir,
-        oc_si_gate_report=args.oc_si_gate_report,
-        canon_character_source_dir=args.canon_character_source_dir,
-        canon_character_gate_report=args.canon_character_gate_report,
-        seed=args.seed,
-    )
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: fanfiction dual-route literary trial created")
-        print(f"Trial: {result.trial_id}")
-        print(f"Public manifest: {result.public_manifest}")
-        print(f"Pack hash: {result.pack_hash}")
-        print("Literary evidence ready: false (three independent reviews are still required)")
-    return 0
-
-
-def cmd_benchmark_fanfiction_trial_template(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    path = create_fanfiction_literary_review_template(
-        config, trial_id=args.trial_id, reviewer_id=args.reviewer_id
-    )
-    payload = {"trial_id": args.trial_id, "reviewer_id": args.reviewer_id, "template_file": path}
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print("OK: independent fanfiction literary review template created")
-        print(f"Template: {path}")
-    return 0
-
-
-def cmd_benchmark_fanfiction_trial_submit(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    path = submit_fanfiction_literary_review(
-        config,
-        trial_id=args.trial_id,
-        reviewer_id=args.reviewer_id,
-        file_path=args.file,
-    )
-    payload = {"trial_id": args.trial_id, "reviewer_id": args.reviewer_id, "submission_file": path}
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print("OK: independent fanfiction literary review accepted")
-        print(f"Submission: {path}")
-    return 0
-
-
-def cmd_benchmark_fanfiction_trial_aggregate(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = aggregate_fanfiction_literary_trial(config, trial_id=args.trial_id)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: three fanfiction literary reviews aggregated without score selection")
-        print(f"Threshold conclusion: {result.threshold_conclusion}")
-        print(f"Material disagreements: {result.material_disagreement_count}")
-        print(f"Literary evidence ready: {str(result.literary_evidence_ready).lower()}")
-        print(f"Aggregate: {result.aggregate_file}")
-    return 0
-
-
-def cmd_benchmark_fanfiction_trial_resolve(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    path = Path(args.file).expanduser().resolve()
-    try:
-        resolutions = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError("fanfiction trial resolution file must be valid UTF-8 JSON") from exc
-    if not isinstance(resolutions, list):
-        raise ValueError("fanfiction trial resolution file must contain a JSON array")
-    payload = resolve_fanfiction_literary_disagreements(
-        config,
-        trial_id=args.trial_id,
-        decided_by=args.decided_by,
-        resolutions=resolutions,
-    )
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print("OK: material reviewer disagreements resolved without score override")
-        print(f"Resolution SHA-256: {payload['resolution_sha256']}")
-    return 0
-
-
-def cmd_benchmark_fanfiction_trial_status(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    payload = fanfiction_literary_trial_status(config, trial_id=args.trial_id)
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print(f"Trial: {payload['trial_id']}")
-        print(f"Reviews: {payload['review_count']}/3")
-        print(f"Aggregate: {payload['aggregate_conclusion']}")
-        print(f"Literary evidence ready: {str(payload['literary_evidence_ready']).lower()}")
-        for blocker in payload["literary_evidence_blockers"]:
-            print(f"- {blocker}")
-    return 0 if payload["literary_evidence_ready"] else 1
-
-
-def cmd_benchmark_validate(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = validate_benchmark(config, run_id=args.run_id)
-    payload = asdict(result)
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print("OK: benchmark structure valid" if result.ok else "ERROR: benchmark invalid")
-        print(f"Complete: {result.complete}")
-        print(f"Acceptance passed: {result.acceptance_passed}")
-        for failure in result.acceptance_failures:
-            print(f"  - ACCEPTANCE: {failure}")
-        for error in result.errors:
-            print(f"  - {error}")
-        for warning in result.warnings:
-            print(f"  - WARN: {warning}")
-        print(f"Next command: {result.next_command}")
-    return 0 if result.ok else 1
-
-
-def cmd_benchmark_report(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = report_benchmark(config, run_id=args.run_id)
-    payload = asdict(result)
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print("OK: benchmark report written")
-        print(f"JSON: {result.report_json}")
-        print(f"Markdown: {result.report_markdown}")
-        print(f"Chapters recorded: {result.chapters_recorded}")
-        print(f"Complete: {result.complete}")
-        print(f"Acceptance passed: {result.acceptance_passed}")
-        for failure in result.acceptance_failures:
-            print(f"  - ACCEPTANCE: {failure}")
-        print(f"Next command: {result.next_command}")
-    return 0
-
-
-def cmd_benchmark_compare(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = compare_benchmarks(
-        config,
-        comparison_id=args.comparison_id,
-        run_ids=args.run_id,
-        allow_incomplete=args.allow_incomplete,
-    )
-    payload = asdict(result)
-    if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-    else:
-        print("OK: benchmark comparison written")
-        print(f"JSON: {result.comparison_json}")
-        print(f"Markdown: {result.comparison_markdown}")
-        print(f"Runs: {', '.join(result.run_ids)}")
-        print(f"Next command: {result.next_command}")
-    return 0
 
 
 def cmd_agent_task_list(args: argparse.Namespace) -> int:
@@ -5345,11 +4603,8 @@ def cmd_quality_status(args: argparse.Namespace) -> int:
     else:
         print(f"Protocol ready: {str(payload['protocol_ready']).lower()}")
         print(f"Author acceptance ready: {str(payload['author_acceptance_ready']).lower()}")
-        print(f"Literary evidence ready: {str(payload['literary_evidence_ready']).lower()}")
         for blocker in payload["author_acceptance"]["blockers"]:
             print(f"- author acceptance: {blocker}")
-        for blocker in payload["literary_evidence_blockers"]:
-            print(f"- literary evidence: {blocker}")
     return 0
 
 
@@ -5358,10 +4613,12 @@ def cmd_quality_contract(args: argparse.Namespace) -> int:
     payload = compile_effective_quality_contract(
         config,
         chapter_number=args.chapter,
-        compare_markets=getattr(args, "compare_market", []),
     )
+    public_payload = {
+        key: value for key, value in payload.items() if key != "compatibility_observations"
+    }
     if args.json:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        print(json.dumps(public_payload, ensure_ascii=False, indent=2))
     else:
         print("OK: effective quality contract compiled")
         print(f"Chapter: {args.chapter}")
@@ -5377,7 +4634,6 @@ def cmd_quality_contract(args: argparse.Namespace) -> int:
             f"{payload['blocking_policy']['primary_deviation']} "
             f"(can block: {str(payload['blocking_policy']['primary_can_block']).lower()})"
         )
-        print(f"Compatibility observations: {len(payload['compatibility_observations'])} (always advisory)")
         print(
             "Approved baseline chapters: "
             + ", ".join(str(item) for item in payload["approved_style_baseline"]["approved_chapters"])
@@ -5389,11 +4645,6 @@ def cmd_quality_contract(args: argparse.Namespace) -> int:
                 overridden = ", ".join(item.get("overridden_fields", [])) or "none"
                 print(f"- {item['layer']}: changed={changed}; overridden={overridden}; source={item['source']}")
             print("Overridden fields: " + (", ".join(payload["overridden_fields"]) or "none"))
-            for observation in payload["compatibility_observations"]:
-                print(
-                    f"- [{observation['severity']}] {observation['market']} "
-                    f"{observation['code']}: {observation['message']} (non-blocking)"
-                )
     return 0
 
 
@@ -5634,20 +4885,71 @@ def cmd_migrate_v011_to_v012(args: argparse.Namespace) -> int:
 
 
 def cmd_studio_serve(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    server = StudioHTTPServer(StudioService(config), port=args.port)
-    print(f"Creation studio: {server.bootstrap_url}")
-    print("Binding: 127.0.0.1 only; the URL token can be used once.")
-    if not args.no_open:
-        import webbrowser
+    if args.workspace and args.config:
+        raise ValueError("studio serve accepts either project.yaml or --workspace, not both")
+    if args.workspace:
+        service = WorkspaceStudioService(args.workspace, create=args.create_workspace)
+        initial_project_id = ""
+    else:
+        config_path = Path(args.config or "project.yaml").expanduser().resolve()
+        load_project_config(config_path)
+        project_root = config_path.parent
+        service = WorkspaceStudioService(project_root.parent)
+        initial_project_id = service.import_project(config_path)["project"]["id"]
+    if args.chapter and not initial_project_id:
+        raise ValueError("--chapter requires a project.yaml deep link")
+    bootstrap_path = "/"
+    if initial_project_id and args.chapter:
+        bootstrap_path = f"/projects/{initial_project_id}/chapters/{args.chapter}"
+    elif initial_project_id:
+        bootstrap_path = f"/projects/{initial_project_id}"
+    instance = WorkspaceStudioInstance(service.root)
+    existing_url = instance.request_bootstrap(bootstrap_path)
+    if existing_url:
+        print(f"Novel workspace studio already running: {existing_url}")
+        print(f"Workspace: {service.root}")
+        if not args.no_open:
+            import webbrowser
 
-        webbrowser.open(server.bootstrap_url)
+            webbrowser.open(existing_url)
+        return 0
+    instance.acquire()
+    server: WorkspaceStudioHTTPServer | None = None
     try:
+        launcher_secret = secrets.token_urlsafe(32)
+        server = WorkspaceStudioHTTPServer(
+            service,
+            port=args.port,
+            initial_project_id=initial_project_id,
+            initial_chapter=args.chapter,
+            launcher_secret=launcher_secret,
+        )
+        instance.publish(port=server.port, launcher_secret=launcher_secret)
+        print(f"Novel workspace studio: {server.bootstrap_url}")
+        print(f"Workspace: {service.root}")
+        print("Binding: 127.0.0.1 only; the URL token can be used once.")
+        if not args.no_open:
+            import webbrowser
+
+            webbrowser.open(server.bootstrap_url)
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
-        print("Creation studio stopped.")
+        print("Novel workspace studio stopped.")
     finally:
-        server.server_close()
+        if server is not None:
+            server.server_close()
+        instance.release()
+    return 0
+
+
+def cmd_studio_shortcut_install(args: argparse.Namespace) -> int:
+    service = WorkspaceStudioService(args.workspace, create=True)
+    desktop = Path(args.desktop).expanduser() if args.desktop else None
+    installed = install_windows_studio_shortcut(service.root, desktop=desktop)
+    print("OK: 小说创作工作台桌面快捷方式已安装")
+    print(f"Shortcut: {installed.path}")
+    print(f"Workspace: {service.root}")
+    print("双击后会启动或复用同一工作区的 loopback Web Studio。")
     return 0
 
 
@@ -7518,21 +6820,6 @@ def cmd_editorial_need_human(args: argparse.Namespace) -> int:
     return 0
 
 
-def cli_relative_path(root: Path, path: Path) -> str:
-    try:
-        return path.resolve().relative_to(root.resolve()).as_posix()
-    except ValueError:
-        return path.as_posix()
-
-
-def cmd_reserved(args: argparse.Namespace) -> int:
-    print(
-        f"Command '{args.command}' is reserved by the workflow contract and is not available in this build.",
-        file=sys.stderr,
-    )
-    return 2
-
-
 def main(argv: list[str] | None = None) -> int:
     _configure_stdio()
     parser = build_parser()
@@ -7596,7 +6883,6 @@ def _command_label(args: argparse.Namespace) -> str:
     parts = [args.command]
     for attr in (
         "skills_command",
-        "benchmark_command",
         "intelligence_command",
         "source_library_command",
         "fanfiction_command",

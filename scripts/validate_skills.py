@@ -163,49 +163,49 @@ def validate_skill(name: str, platform: str, forbidden_platform: str) -> list[st
 def validate_readme() -> list[str]:
     errors: list[str] = []
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    version = project_version()
-    stable_version = public_install_version()
     required = (
-        "longform-novel-engine = Python engine + Codex skill + Claude Code skill",
-        PUBLIC_URL,
-        f"git+https://github.com/ylqit/novel-general.git@v{stable_version}",
-        version,
-        "longform-novel-engine[semantic]",
+        "本地生产控制面",
+        '".[semantic]"',
         "longform-engine skills install --tool codex",
         "longform-engine doctor --tool codex",
+        "studio serve --workspace",
+        "studio shortcut-install",
+        "原创小说",
+        "同人小说",
         "production next",
-        "agent-task brief",
-        "40_manuscript/final/",
-        "10_bible/",
-        "20_outline/",
-        "literary_evidence_ready=false",
         "chapter_contract_v5",
         "human_chapter_intent_v2",
         "chapter_story_brief_v5",
         "chapter_story_brief_basis_v3",
         "chapter_writing_task_v7",
-        "human_review_bundle_v2",
         "chapter_coedit_session_v2",
         "human_author_revision_v4",
         "human_story_review_v7",
-        "prose_revision_semantic_review",
         "canonical_delta_v1",
+        "Reader Promise",
+        "publication",
+        "recovery status",
         "OPERATOR_GUIDE.md",
+        "ARCHITECTURE.md",
+        "STORAGE_MODEL.md",
         "RELEASE_HISTORY.md",
-        "V0_13_FANFICTION_ARCHITECTURE.md",
-        "V0_13_0_RELEASE_CHECKLIST.md",
     )
     for term in required:
         if term.lower() not in readme.lower():
             errors.append(f"README.md: missing {term!r}")
-    for forbidden in ("<owner>", "README.zh-CN.md", "curl | bash", "clone 到临时目录"):
+    for forbidden in (
+        "<owner>",
+        "README.zh-CN.md",
+        "curl | bash",
+        "clone 到临时目录",
+        "--compare-market",
+        "longform-engine benchmark",
+        "literary_evidence_ready",
+        "RELEASE_CHECKLIST",
+        "QUALITY_BENCHMARK_RUNBOOK",
+    ):
         if forbidden.lower() in readme.lower():
             errors.append(f"README.md: forbidden public-install text {forbidden!r}")
-    if len(re.findall(r"(?m)^## 安装稳定版\s*$", readme)) != 1:
-        errors.append("README.md: public install must use exactly one '## 安装稳定版' section")
-    readme_lines = len(readme.splitlines())
-    if not 280 <= readme_lines <= 340:
-        errors.append(f"README.md: expected about 280-340 lines, found {readme_lines}")
     if (ROOT / "README.zh-CN.md").exists():
         errors.append("README.zh-CN.md must not be added; Chinese public content belongs in README.md")
     return errors

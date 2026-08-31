@@ -30,11 +30,6 @@ from longform_engine.agent_tasks import (
     task_reconciliation_status,
     validate_manifest_strict,
 )
-from longform_engine.arc_simulation import (
-    ArcSimulationError,
-    load_active_arc_simulation,
-    load_covering_arc_simulation,
-)
 from longform_engine.config import ConfigDocument
 from longform_engine.fanfiction_sources import fanfiction_source_readiness
 from longform_engine.completion import fast_completion_marker
@@ -59,12 +54,13 @@ from longform_engine.gates import (
 from longform_engine.human_author_revision import validate_human_author_revision_semantic_result
 from longform_engine.human_chapter_intent import human_chapter_intent_status
 from longform_engine.intelligence import (
-    assess_chapter_direction,
+    DESIGN_INTELLIGENCE_TASK_TYPES,
     assess_project_readiness,
+    create_design_compile_task,
     create_intelligence_task,
+    validate_design_compile_delta,
     validate_intelligence_candidate,
 )
-from longform_engine.lengths import compile_length_forecast
 from longform_engine.orchestration import continue_write, open_book, submit_agent_draft
 from longform_engine.quality import (
     reader_payoff_review_status,
@@ -751,6 +747,12 @@ def loop_decision(root: Path, action: dict[str, Any], *, no_apply: bool) -> dict
             "kind": "pause",
             "reason": "apply_or_finalize_required" if no_apply else "canonical_apply_requires_explicit_command",
         }
+    if status == "agent_task_approved" and task_type in DESIGN_INTELLIGENCE_TASK_TYPES:
+        return {
+            "kind": "execute",
+            "action": "design_compile_task",
+            "command": action.get("next_command"),
+        }
     if status == "agent_task_invalid":
         return {"kind": "pause", "reason": "agent_task_invalid"}
     if status == "gate_failed":
@@ -786,6 +788,7 @@ LOOP_OUTPUT_VALIDATORS = {
     "adaptation_analysis": "intelligence_validate",
     "fanfiction_canon": "intelligence_validate",
     "fanfiction_design": "intelligence_validate",
+    "design_semantic_compile": "design_compile_validate",
 }
 
 
@@ -817,6 +820,16 @@ def execute_loop_decision(
                 config,
                 task_type=str(action.get("task_type") or ""),
                 chapter_number=chapter_number or None,
+            ),
+        )
+    if command == "design_compile_task":
+        manifest = load_manifest(root, str(action.get("task_id") or ""))
+        return serialize_loop_result(
+            root,
+            create_design_compile_task(
+                config,
+                task_type=str(action.get("task_type") or ""),
+                document_path=str(manifest_output(manifest).get("path") or ""),
             ),
         )
     if command == "continue_write":
@@ -907,6 +920,27 @@ def execute_loop_decision(
                 config,
                 task_type=str(action.get("task_type") or ""),
                 file_path=require_loop_output_path(output_path),
+            ),
+        )
+    if command == "design_compile_validate":
+        manifest = load_manifest(root, str(action.get("task_id") or ""))
+        task_id_parts = str(manifest.get("task_id") or "").split(":")
+        source_task_type = task_id_parts[1] if len(task_id_parts) >= 4 else ""
+        document_inputs = [
+            path
+            for path in manifest_input_paths(manifest)
+            if path.startswith("50_workbench/intelligence_candidates/")
+            and path.endswith(".candidate.md")
+        ]
+        if source_task_type not in DESIGN_INTELLIGENCE_TASK_TYPES or len(document_inputs) != 1:
+            raise ValueError("Design compile task does not declare one approved design document.")
+        return serialize_loop_result(
+            root,
+            validate_design_compile_delta(
+                config,
+                task_type=source_task_type,
+                document_path=document_inputs[0],
+                delta_path=require_loop_output_path(output_path),
             ),
         )
     if command == "editorial_aggregate":
@@ -1397,11 +1431,6 @@ def first_editorial_context_file(manifest: dict[str, Any]) -> str:
     return ""
 
 
-def first_string(value: Any) -> str:
-    items = as_string_list(value)
-    return items[0] if items else ""
-
-
 def readable_need_human_reasons(reasons: list[str]) -> list[dict[str, str]]:
     return [
         {
@@ -1498,6 +1527,14 @@ def project_readiness_action(config: ConfigDocument, root: Path) -> dict[str, An
     readiness = assess_project_readiness(config)
     if readiness.ready:
         return None
+    compile_tasks = [
+        task
+        for task in list_manifests(root, chapter_number=0)
+        if task.get("task_type") == "design_semantic_compile"
+        and task.get("status") in {"awaiting_agent", "submitted", "validated", "invalid"}
+    ]
+    if compile_tasks:
+        return agent_task_action(root, sorted(compile_tasks, key=task_sort_key)[0])
     if readiness.stage == "open_book":
         return base_action(
             status="ready_for_open_book",
@@ -1543,7 +1580,7 @@ def project_readiness_action(config: ConfigDocument, root: Path) -> dict[str, An
             human_summary="; ".join(readiness.errors),
         )
     task_type = readiness.required_task_type
-    active_statuses = {"awaiting_agent", "submitted", "validated", "invalid"}
+    active_statuses = {"awaiting_agent", "submitted", "validated", "approved", "invalid"}
     active_tasks = [
         task
         for task in list_manifests(root, chapter_number=0)
@@ -1622,169 +1659,6 @@ def project_intelligence_task_command(task_type: str) -> str:
     if task_type == "character_expression_design":
         return "longform-engine character design-task project.yaml"
     return f"longform-engine intelligence task project.yaml --task-type {task_type}"
-
-
-def rolling_outline_action(config: ConfigDocument, root: Path) -> dict[str, Any] | None:
-    """Request the next detailed planning window before the active plan runs dry."""
-
-    next_chapter = highest_finalized_chapter(root) + 1
-    plan = read_json(root / "20_outline" / "chapter_plan.json")
-    rows = [item for item in plan if isinstance(item, dict)] if isinstance(plan, list) else []
-    planned_numbers = sorted(
-        {int(item.get("chapter_number") or 0) for item in rows if int(item.get("chapter_number") or 0) > 0}
-    )
-    if not planned_numbers:
-        return None
-    last_planned = planned_numbers[-1]
-    planning = config.data["length"]["planning"]
-    remaining = max(0, last_planned - next_chapter + 1)
-    if next_chapter <= last_planned and remaining > int(planning["refill_threshold"]):
-        return None
-    active_statuses = {"awaiting_agent", "submitted", "validated", "invalid"}
-    if any(
-        task.get("task_type") == "outline_extension" and task.get("status") in active_statuses
-        for task in list_manifests(root, chapter_number=0)
-    ):
-        return None
-    start = last_planned + 1
-    end = start + int(planning["detailed_horizon"]) - 1
-    simulation_action = missing_arc_simulation_action(root, start=start, end=end, chapter_number=next_chapter)
-    if simulation_action is not None:
-        return simulation_action
-    forecast = compile_length_forecast(config.data["length"])
-    return base_action(
-        status="ready_for_intelligence_task",
-        chapter_number=next_chapter,
-        task_type="outline_extension",
-        blocked_by="rolling_outline_refill",
-        waiting_for="cli",
-        next_command=(
-            "longform-engine intelligence task project.yaml --task-type outline_extension "
-            f"--from-chapter {start} --to-chapter {end}"
-        ),
-        human_summary=(
-            f"Only {remaining} detailed chapter plans remain. Prepare ch{start:03d}-ch{end:03d} "
-            f"against the {forecast.target_total_characters}-character book budget for explicit human apply."
-        ),
-        planning_window={"from_chapter": start, "to_chapter": end, "remaining": remaining},
-    )
-
-
-def arc_simulation_action(config: ConfigDocument, root: Path) -> dict[str, Any] | None:
-    """Require a current human-approved causal window before chapter direction."""
-
-    chapter_number = highest_finalized_chapter(root) + 1
-    try:
-        load_active_arc_simulation(root, chapter_number=chapter_number)
-        return None
-    except ArcSimulationError:
-        pass
-    window = read_json(root / "20_outline" / "planning_window.json")
-    if not isinstance(window, dict):
-        return None
-    start = int(window.get("start_chapter") or chapter_number)
-    end = int(window.get("end_chapter") or max(start, chapter_number))
-    if not start <= chapter_number <= end:
-        start = chapter_number
-        end = chapter_number + int(config.data["length"]["planning"]["detailed_horizon"]) - 1
-    return missing_arc_simulation_action(root, start=start, end=end, chapter_number=chapter_number)
-
-
-def missing_arc_simulation_action(
-    root: Path,
-    *,
-    start: int,
-    end: int,
-    chapter_number: int,
-) -> dict[str, Any] | None:
-    try:
-        load_covering_arc_simulation(
-            root,
-            from_chapter=start,
-            to_chapter=end,
-        )
-        return None
-    except ArcSimulationError as exc:
-        reason = str(exc)
-    active_statuses = {"awaiting_agent", "submitted", "validated", "invalid", "approved"}
-    if any(
-        task.get("task_type") == "arc_simulation"
-        and task.get("status") in active_statuses
-        for task in list_manifests(root, chapter_number=0)
-    ):
-        return None
-    return base_action(
-        status="ready_for_intelligence_task",
-        chapter_number=chapter_number,
-        task_type="arc_simulation",
-        blocked_by="arc_causal_simulation_required",
-        waiting_for="cli",
-        next_command=(
-            "longform-engine intelligence task project.yaml --task-type arc_simulation "
-            f"--from-chapter {start} --to-chapter {end}"
-        ),
-        human_summary=(
-            f"Prepare and approve the causal simulation for ch{start:03d}-ch{end:03d} "
-            f"before direction selection ({reason})."
-        ),
-        planning_window={"from_chapter": start, "to_chapter": end},
-    )
-
-
-def chapter_direction_action(config: ConfigDocument, root: Path) -> dict[str, Any] | None:
-    chapter_number = highest_finalized_chapter(root) + 1
-    status = assess_chapter_direction(config, chapter_number)
-    if not status["required"]:
-        return None
-    if status.get("status") == "outline_revision_required":
-        return base_action(
-            status="ready_for_intelligence_task",
-            chapter_number=chapter_number,
-            task_type="outline_revision",
-            blocked_by="outline_revision_required",
-            waiting_for="cli",
-            next_command=(
-                "longform-engine intelligence task project.yaml --task-type outline_revision "
-                f"--from-chapter {chapter_number} --to-chapter {chapter_number}"
-            ),
-            human_summary=(
-                f"ch{chapter_number:03d} changed a protected outcome or downstream dependency; "
-                "revise the outline before selecting another chapter direction."
-            ),
-            trigger_reasons=["outline_revision_required"],
-        )
-    if status.get("status") == "arc_simulation_required":
-        return arc_simulation_action(config, root)
-    active = {
-        "awaiting_agent",
-        "submitted",
-        "validated",
-        "invalid",
-    }
-    if any(
-        task.get("task_type") == "chapter_direction"
-        and manifest_chapter_number(task) == chapter_number
-        and task.get("status") in active
-        for task in list_manifests(root, chapter_number=chapter_number)
-    ):
-        return None
-    reasons = [str(item) for item in status["reasons"]]
-    return base_action(
-        status="ready_for_intelligence_task",
-        chapter_number=chapter_number,
-        task_type="chapter_direction",
-        blocked_by="chapter_direction",
-        waiting_for="cli",
-        next_command=(
-            "longform-engine intelligence task project.yaml "
-            f"--task-type chapter_direction --chapter {chapter_number}"
-        ),
-        human_summary=(
-            f"ch{chapter_number:03d} needs a human-selected direction before its writing task "
-            f"({', '.join(reasons)})."
-        ),
-        trigger_reasons=reasons,
-    )
 
 
 def human_chapter_intent_action(root: Path) -> dict[str, Any] | None:
@@ -1875,7 +1749,8 @@ def first_active_agent_task(root: Path) -> dict[str, Any] | None:
     tasks = [
         task
         for task in list_manifests(root)
-        if str(task.get("status") or "") in {"awaiting_agent", "submitted", "validated", "invalid"}
+        if str(task.get("status") or "")
+        in {"awaiting_agent", "submitted", "validated", "approved", "invalid"}
         and str((task.get("scope") or {}).get("kind") or "") != "chapter"
     ]
     if not tasks:

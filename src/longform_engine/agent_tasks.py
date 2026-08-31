@@ -67,25 +67,10 @@ TASK_RELATION_FIELDS = (
     "satisfied_by_result_sha256",
     "supersedes_task_ids",
 )
+
+
 class AgentTaskContractError(ValueError):
     """Raised before an invalid Agent task can enter the project task index."""
-
-
-@dataclass(frozen=True)
-class AgentTaskManifest:
-    """Stable task contract consumed by Codex, Claude, GUI, and API surfaces."""
-
-    schema_version: int
-    task_id: str
-    task_type: str
-    scope: dict[str, Any]
-    role: dict[str, Any]
-    io: dict[str, Any]
-    policy: dict[str, Any]
-    commands: dict[str, str]
-    created_at: str
-
-
 def manifest_chapter_number(manifest: dict[str, Any]) -> int:
     scope = manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {}
     return int(scope.get("chapter_number") or 0)

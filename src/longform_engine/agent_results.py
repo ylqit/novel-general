@@ -18,13 +18,10 @@ from longform_engine.agent_protocols import (
     AgentProtocolError,
     output_protocol_for_task,
     parse_design_document,
-    validate_canonical_delta,
-    validate_evidence_review,
 )
 from longform_engine.semantic_protocols import (
     SEMANTIC_DOCUMENT_SCHEMA,
     build_semantic_document,
-    validate_semantic_document,
 )
 from longform_engine.agent_tasks import (
     is_canonical_output,
@@ -297,37 +294,6 @@ def render_agent_output_instructions(contract: AgentOutputContract) -> str:
     return shape
 
 
-def validate_agent_result_envelope(
-    manifest: dict[str, Any],
-    payload: Any,
-    *,
-    registry: RoleRegistry | None = None,
-) -> AgentResultValidation:
-    try:
-        contract = compile_agent_output_contract(manifest, registry=registry)
-    except AgentResultProtocolError as exc:
-        return AgentResultValidation(False, "unknown", (str(exc),))
-    if contract.protocol == EVIDENCE_REVIEW_SCHEMA:
-        role = (registry or load_role_registry()).resolve(
-            contract.task_type,
-            declared_role_id=contract.role_id,
-        )
-        errors = validate_evidence_review(
-            payload,
-            required_dimensions=role.review_dimensions,
-            allowed_finding_codes=role.finding_codes,
-            optional_dimensions=role.optional_review_dimensions,
-            canonical_ref_dimensions=role.canonical_ref_dimensions,
-        )
-    elif contract.protocol == CANONICAL_DELTA_SCHEMA:
-        errors = validate_canonical_delta(payload, task_type=contract.task_type)
-    elif contract.protocol == SEMANTIC_DOCUMENT_SCHEMA:
-        errors = validate_semantic_document(payload)
-    else:
-        errors = [f"{contract.protocol} is not a JSON result protocol"]
-    return AgentResultValidation(not errors, contract.protocol, tuple(errors))
-
-
 def validate_markdown_prose_output(
     manifest: dict[str, Any],
     text: Any,
@@ -381,13 +347,6 @@ def validate_design_document_output(
     return AgentResultValidation(not errors, contract.protocol, tuple(errors))
 
 
-def authoritative_delta_records(payload: Any) -> tuple[dict[str, Any], ...]:
-    if not isinstance(payload, dict) or payload.get("schema") != CANONICAL_DELTA_SCHEMA:
-        return ()
-    changes = payload.get("changes")
-    return (changes,) if isinstance(changes, dict) else ()
-
-
 def normalize_path(value: Any) -> str:
     return str(value or "").strip().replace("\\", "/")
 
@@ -405,12 +364,10 @@ __all__ = [
     "AgentResultProtocolError",
     "AgentResultValidation",
     "ParsedAgentOutput",
-    "authoritative_delta_records",
     "build_agent_result_template",
     "compile_agent_output_contract",
     "parse_agent_output_files",
     "render_agent_output_instructions",
-    "validate_agent_result_envelope",
     "validate_design_document_output",
     "validate_markdown_prose_output",
 ]

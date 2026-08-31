@@ -11,6 +11,7 @@ from typing import Any, cast
 import hmac
 import html
 import json
+import re
 
 from longform_engine.agent_tasks import list_manifests, manifest_output, relative_path
 from longform_engine.chapter_contract import load_verified_chapter_contract
@@ -33,6 +34,7 @@ from longform_engine.human_review_consultation import (
 )
 from longform_engine.human_story_review import (
     CHECK_FIELDS,
+    apply_human_story_review,
     create_human_story_review_task,
     human_story_review_status,
     validate_human_story_review,
@@ -45,7 +47,6 @@ from longform_engine.human_author_revision import (
 )
 from longform_engine.local_web import LocalWebError, LoopbackHTTPServer, LoopbackRequestHandler
 from longform_engine.orchestration.pipeline import submit_agent_draft
-from longform_engine.quality import compile_effective_quality_contract
 from longform_engine.reader_promises_v2 import load_reader_promise_ledger
 from longform_engine.repair_coordination import (
     create_repair_candidate_task,
@@ -57,7 +58,6 @@ from longform_engine.storage.layout import manuscript_chapter_path
 from longform_engine.story_brief import load_current_story_brief_binding, story_brief_status
 
 
-MAX_JSON_BYTES = 2 * 1024 * 1024
 CHECK_ORDER = (
     "story_contract_preserved",
     "desire_opposition_and_question_clear",
@@ -134,20 +134,6 @@ class ReviewDeskService:
             human_status = human_story_review_status(self.config, chapter_number=chapter)
         except ValueError as exc:
             human_status = {"status": "pending", "reason": str(exc)}
-        try:
-            market = compile_effective_quality_contract(
-                self.config,
-                chapter_number=chapter,
-                compare_markets=("fanqie_free",),
-            )
-            market_view = {
-                "primary_market": market.get("primary_market"),
-                "blocking_policy": market.get("blocking_policy"),
-                "compatibility_observations": market.get("compatibility_observations") or [],
-            }
-        except ValueError as exc:
-            market_view = {"error": str(exc), "compatibility_observations": []}
-
         template_path = (
             self.root
             / "50_workbench"
@@ -155,6 +141,8 @@ class ReviewDeskService:
             / f"ch{chapter:03d}.{draft_hash[:12]}.{story_brief_basis_hash[:12]}.candidate.json"
         )
         review_template = _load_json(template_path, default={})
+        review_validation_path = template_path.with_suffix(".validation.json")
+        review_validation = _load_json(review_validation_path, default={})
         manual = self.manual_repair_state()
         candidate_text = str(manual.get("text") or "") if manual.get("candidate_exists") else ""
         diff_text = ""
@@ -212,11 +200,12 @@ class ReviewDeskService:
             "review_template_file": (
                 relative_path(self.root, template_path) if template_path.is_file() else ""
             ),
+            "review_template_sha256": _file_hash(template_path) if template_path.is_file() else "",
             "review_template": review_template,
+            "review_validation": review_validation,
             "review_checks": [
                 {"id": check_id, "label": CHECK_LABELS[check_id]} for check_id in CHECK_ORDER
             ],
-            "market_observations": market_view,
             "consultations": consult,
             "coedit": coedit,
             "human_chapter_intent": human_chapter_intent_status(self.root, chapter),
@@ -271,6 +260,41 @@ class ReviewDeskService:
                 self.config,
                 chapter_number=self.chapter_number,
                 file_path=candidate,
+            )
+        return asdict(result)
+
+    def apply_human_review(
+        self,
+        *,
+        expected_candidate_sha256: str,
+        expected_review_sha256: str,
+        approved_by: str,
+        acknowledge_human_decision: bool,
+    ) -> dict[str, Any]:
+        self._require_current_candidate(expected_candidate_sha256)
+        if approved_by != "human" or acknowledge_human_decision is not True:
+            raise ReviewServerError("human review apply requires an explicit human decision")
+        state = self.state()
+        relative = str(state.get("review_template_file") or "")
+        review = (self.root / relative).resolve()
+        base = (self.root / "50_workbench" / "human_story_reviews").resolve()
+        try:
+            review.relative_to(base)
+        except ValueError as exc:
+            raise ReviewServerError("human review candidate escaped its workbench") from exc
+        if not review.is_file() or _file_hash(review) != expected_review_sha256:
+            raise ReviewServerError("human review changed; refresh before apply")
+        validation = state.get("review_validation") or {}
+        if not isinstance(validation, dict) or validation.get("ok") is not True:
+            raise ReviewServerError("human review must pass validation before apply")
+        with acquire_project_lock(
+            self.config, owner="review-desk", command="review human-review-apply"
+        ):
+            result = apply_human_story_review(
+                self.config,
+                chapter_number=self.chapter_number,
+                file_path=review,
+                approved_by="human",
             )
         return asdict(result)
 
@@ -718,6 +742,132 @@ class ReviewDeskService:
         return views
 
 
+REVIEW_ACTION_FIELDS: dict[str, frozenset[str]] = {
+    "/human-review/prepare": frozenset({"expected_candidate_sha256"}),
+    "/human-review/validate": frozenset({"expected_candidate_sha256", "review"}),
+    "/human-review/apply": frozenset(
+        {
+            "expected_candidate_sha256",
+            "expected_review_sha256",
+            "approved_by",
+            "acknowledge_human_decision",
+        }
+    ),
+    "/consult/task": frozenset(
+        {"expected_candidate_sha256", "start", "end", "question", "phase"}
+    ),
+    "/consult/validate": frozenset({"response_file", "phase"}),
+    "/consult/record": frozenset({"response_file", "phase"}),
+    "/coedit/rewrite-task": frozenset(
+        {"session_id", "turn_number", "option_id", "adjustment"}
+    ),
+    "/coedit/candidate-validate": frozenset({"candidate_file"}),
+    "/human-revision/prepare": frozenset({"expected_candidate_sha256"}),
+    "/human-revision/save": frozenset(
+        {
+            "expected_draft_sha256",
+            "expected_candidate_sha256",
+            "expected_record_sha256",
+            "text",
+            "record",
+        }
+    ),
+    "/human-revision/validate": frozenset({"expected_draft_sha256"}),
+    "/human-revision/submit": frozenset(
+        {"expected_draft_sha256", "expected_candidate_sha256"}
+    ),
+    "/manual-repair/prepare": frozenset({"expected_candidate_sha256"}),
+    "/manual-repair/save": frozenset(
+        {"expected_draft_sha256", "expected_candidate_sha256", "text"}
+    ),
+    "/manual-repair/submit": frozenset(
+        {"expected_draft_sha256", "expected_candidate_sha256"}
+    ),
+}
+
+
+def dispatch_review_action(
+    service: ReviewDeskService,
+    action: str,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    """Dispatch one exact Review Desk workbench action without Canon authority."""
+
+    expected_fields = REVIEW_ACTION_FIELDS.get(action)
+    if expected_fields is None:
+        raise ReviewServerError("review action is not allowed")
+    if set(body) != expected_fields:
+        raise ReviewServerError("review action fields are incomplete or contain unknown values")
+    routes = {
+        "/human-review/prepare": lambda: service.prepare_human_review(
+            expected_candidate_sha256=str(body["expected_candidate_sha256"])
+        ),
+        "/human-review/validate": lambda: service.validate_human_review(
+            expected_candidate_sha256=str(body["expected_candidate_sha256"]),
+            review=cast(dict[str, Any], body["review"]),
+        ),
+        "/human-review/apply": lambda: service.apply_human_review(
+            expected_candidate_sha256=str(body["expected_candidate_sha256"]),
+            expected_review_sha256=str(body["expected_review_sha256"]),
+            approved_by=str(body["approved_by"]),
+            acknowledge_human_decision=cast(bool, body["acknowledge_human_decision"]),
+        ),
+        "/consult/task": lambda: service.create_consultation(
+            expected_candidate_sha256=str(body["expected_candidate_sha256"]),
+            start=int(body["start"]),
+            end=int(body["end"]),
+            question=str(body["question"]),
+            phase=str(body["phase"]),
+        ),
+        "/consult/validate": lambda: service.validate_consultation(
+            response_file=str(body["response_file"]), phase=str(body["phase"])
+        ),
+        "/consult/record": lambda: service.record_consultation(
+            response_file=str(body["response_file"]), phase=str(body["phase"])
+        ),
+        "/coedit/rewrite-task": lambda: service.create_coedit_rewrite(
+            session_id=str(body["session_id"]),
+            turn_number=int(body["turn_number"]),
+            option_id=str(body["option_id"]),
+            adjustment=str(body["adjustment"]),
+        ),
+        "/coedit/candidate-validate": lambda: service.validate_coedit_candidate(
+            candidate_file=str(body["candidate_file"])
+        ),
+        "/human-revision/prepare": lambda: service.prepare_human_revision(
+            expected_candidate_sha256=str(body["expected_candidate_sha256"])
+        ),
+        "/human-revision/save": lambda: service.save_human_revision(
+            expected_draft_sha256=str(body["expected_draft_sha256"]),
+            expected_candidate_sha256=str(body["expected_candidate_sha256"]),
+            expected_record_sha256=str(body["expected_record_sha256"]),
+            text=str(body["text"]),
+            record=cast(dict[str, Any], body["record"]),
+        ),
+        "/human-revision/validate": lambda: service.validate_human_revision(
+            expected_draft_sha256=str(body["expected_draft_sha256"])
+        ),
+        "/human-revision/submit": lambda: service.submit_human_revision(
+            expected_draft_sha256=str(body["expected_draft_sha256"]),
+            expected_candidate_sha256=str(body["expected_candidate_sha256"]),
+        ),
+        "/manual-repair/prepare": lambda: service.prepare_manual_repair(
+            expected_candidate_sha256=str(body["expected_candidate_sha256"])
+        ),
+        "/manual-repair/save": lambda: service.save_manual_repair(
+            expected_draft_sha256=str(body["expected_draft_sha256"]),
+            expected_candidate_sha256=str(body["expected_candidate_sha256"]),
+            text=str(body["text"]),
+        ),
+        "/manual-repair/submit": lambda: service.submit_manual_repair(
+            expected_draft_sha256=str(body["expected_draft_sha256"]),
+            expected_candidate_sha256=str(body["expected_candidate_sha256"]),
+        ),
+    }
+    result = routes[action]()
+    return {**result, "canonical_mutated": action == "/human-review/apply"}
+
+
 class ReviewHTTPServer(LoopbackHTTPServer):
     """Threaded loopback HTTP server; domain mutations still serialize on project.lock."""
 
@@ -767,84 +917,39 @@ class ReviewRequestHandler(LoopbackRequestHandler):
             self._require_csrf()
             parsed = self._safe_url()
             body = self._read_json()
-            routes = {
-                "/api/human-review/prepare": lambda: self.server.service.prepare_human_review(
-                    expected_candidate_sha256=str(body.get("expected_candidate_sha256") or "")
-                ),
-                "/api/human-review/validate": lambda: self.server.service.validate_human_review(
-                    expected_candidate_sha256=str(body.get("expected_candidate_sha256") or ""),
-                    review=cast(dict[str, Any], body.get("review")),
-                ),
-                "/api/consult/task": lambda: self.server.service.create_consultation(
-                    expected_candidate_sha256=str(body.get("expected_candidate_sha256") or ""),
-                    start=int(body.get("start") or 0),
-                    end=int(body.get("end") or 0),
-                    question=str(body.get("question") or ""),
-                    phase=str(body.get("phase") or ""),
-                ),
-                "/api/consult/validate": lambda: self.server.service.validate_consultation(
-                    response_file=str(body.get("response_file") or ""),
-                    phase=str(body.get("phase") or ""),
-                ),
-                "/api/consult/record": lambda: self.server.service.record_consultation(
-                    response_file=str(body.get("response_file") or ""),
-                    phase=str(body.get("phase") or ""),
-                ),
-                "/api/coedit/rewrite-task": lambda: self.server.service.create_coedit_rewrite(
-                    session_id=str(body.get("session_id") or ""),
-                    turn_number=int(body.get("turn_number") or 0),
-                    option_id=str(body.get("option_id") or ""),
-                    adjustment=str(body.get("adjustment") or ""),
-                ),
-                "/api/coedit/candidate-validate": lambda: self.server.service.validate_coedit_candidate(
-                    candidate_file=str(body.get("candidate_file") or "")
-                ),
-                "/api/human-revision/prepare": lambda: self.server.service.prepare_human_revision(
-                    expected_candidate_sha256=str(body.get("expected_candidate_sha256") or "")
-                ),
-                "/api/human-revision/save": lambda: self.server.service.save_human_revision(
-                    expected_draft_sha256=str(body.get("expected_draft_sha256") or ""),
-                    expected_candidate_sha256=str(body.get("expected_candidate_sha256") or ""),
-                    expected_record_sha256=str(body.get("expected_record_sha256") or ""),
-                    text=str(body.get("text") or ""),
-                    record=cast(dict[str, Any], body.get("record")),
-                ),
-                "/api/human-revision/validate": lambda: self.server.service.validate_human_revision(
-                    expected_draft_sha256=str(body.get("expected_draft_sha256") or "")
-                ),
-                "/api/human-revision/submit": lambda: self.server.service.submit_human_revision(
-                    expected_draft_sha256=str(body.get("expected_draft_sha256") or ""),
-                    expected_candidate_sha256=str(body.get("expected_candidate_sha256") or ""),
-                ),
-                "/api/manual-repair/prepare": lambda: self.server.service.prepare_manual_repair(
-                    expected_candidate_sha256=str(body.get("expected_candidate_sha256") or "")
-                ),
-                "/api/manual-repair/save": lambda: self.server.service.save_manual_repair(
-                    expected_draft_sha256=str(body.get("expected_draft_sha256") or ""),
-                    expected_candidate_sha256=str(body.get("expected_candidate_sha256") or ""),
-                    text=str(body.get("text") or ""),
-                ),
-                "/api/manual-repair/submit": lambda: self.server.service.submit_manual_repair(
-                    expected_draft_sha256=str(body.get("expected_draft_sha256") or ""),
-                    expected_candidate_sha256=str(body.get("expected_candidate_sha256") or ""),
-                ),
-            }
-            action = routes.get(parsed.path)
-            if action is None:
+            action = parsed.path.removeprefix("/api")
+            if action not in REVIEW_ACTION_FIELDS:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "route_not_found"})
                 return
-            self._send_json(HTTPStatus.OK, {"ok": True, "result": action()})
+            self._send_json(
+                HTTPStatus.OK,
+                {"ok": True, "result": dispatch_review_action(self.server.service, action, body)},
+            )
         except (ReviewServerError, LocalWebError) as exc:
             self._send_json(HTTPStatus.FORBIDDEN, {"error": str(exc)})
         except (KeyError, TypeError, ValueError) as exc:
             self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
 
-def review_page_html(csrf_token: str, *, csp_nonce: str = "reviewdesk") -> str:
+def review_page_html(
+    csrf_token: str,
+    *,
+    csp_nonce: str = "reviewdesk",
+    api_prefix: str = "/api",
+) -> str:
     """Render a static shell; all project text enters the DOM through textContent/value only."""
 
+    if re.fullmatch(
+        r"/api(?:/projects/project_[0-9a-f]{20}/chapters/[1-9][0-9]*/review)?",
+        api_prefix,
+    ) is None:
+        raise ReviewServerError("review API prefix is invalid")
     csrf = html.escape(csrf_token, quote=True)
     nonce = html.escape(csp_nonce, quote=True)
-    return _REVIEW_PAGE.replace("__CSRF_TOKEN__", csrf).replace("reviewdesk", nonce)
+    return (
+        _REVIEW_PAGE.replace("__CSRF_TOKEN__", csrf)
+        .replace("reviewdesk", nonce)
+        .replace('"/api/', f'"{api_prefix}/')
+    )
 
 
 def _file_hash(path: Path) -> str:
@@ -877,12 +982,12 @@ textarea{width:100%;min-height:120px;border:1px solid var(--line);border-radius:
 </style></head><body>
 <header><strong id="title">人工可视化深审</strong><span id="candidate" class="muted"></span><button id="reload">刷新</button><span id="globalStatus"></span></header>
 <div id="layout">
-<aside class="col"><section><h2>人类章节意图</h2><pre id="chapterIntent"></pre></section><section><h2>Story Brief</h2><pre id="brief"></pre></section><section><h2>章节合同</h2><pre id="contract"></pre></section><section><h2>承诺账本</h2><pre id="promises"></pre></section><section><h2>起点 / 番茄非阻断观察</h2><pre id="market"></pre></section></aside>
+<aside class="col"><section><h2>人类章节意图</h2><pre id="chapterIntent"></pre></section><section><h2>Story Brief</h2><pre id="brief"></pre></section><section><h2>章节合同</h2><pre id="contract"></pre></section><section><h2>承诺账本</h2><pre id="promises"></pre></section></aside>
 <main class="col"><section><h2>正文与精确 span</h2><textarea id="manuscript" readonly></textarea><div class="toolbar"><button data-evidence="key_turn">设为关键转折</button><button data-evidence="character_choice_or_emotion">设为人物选择/情绪</button><button data-evidence="reader_gain">设为读者收益</button></div><pre id="evidenceView" class="muted"></pre></section>
 <section><h2>AI 源稿—人工终稿—diff—修改意图</h2><div id="revisionMeta" class="muted"></div><textarea id="revisionText"></textarea><label>human_author_revision_v4 记录（含 intent_ref、读者影响与终稿确认）</label><textarea id="revisionRecord"></textarea><pre id="diff"></pre><div class="toolbar"><button id="revisionPrepare">建立人工终稿工作区</button><button id="revisionSave">保存到 workbench</button><button id="revisionValidate">语义复核并锁定</button><button id="revisionSubmit" class="primary">以 human 提交并全量复审</button></div><div id="revisionStatus" class="status"></div></section>
 <section><h2>人工完整 repair 候选</h2><div id="repairMeta" class="muted"></div><textarea id="repairText"></textarea><div class="toolbar"><button id="repairPrepare">建立 human repair 工单</button><button id="repairSave">保存完整候选</button><button id="repairSubmit" class="primary">转入人工修订验证</button></div><div id="repairStatus" class="status"></div></section></main>
 <aside class="col"><section><h2>独立审稿 finding</h2><div id="findings"></div></section>
-<section><h2>风险分层人工深审</h2><div id="checks"></div><label>十维覆盖（核心理由必须人工填写）</label><textarea id="coverageJson"></textarea><label>finding 处置（理由必须人工填写）</label><textarea id="findingJson"></textarea><label>决定 <select id="decision"><option>repair</option><option>accept</option><option>redirect</option></select></label><label>redirect 范围 <select id="redirect"><option>direction</option><option>outline_revision</option></select></label><input id="gainNote" placeholder="读者收益说明"><input id="reviewReason" placeholder="决定理由"><div class="toolbar"><button id="reviewPrepare">准备冻结深审表</button><button id="reviewValidate" class="primary">保存并校验（不 apply）</button></div><div id="reviewStatus" class="status"></div></section>
+<section><h2>风险分层人工深审</h2><div id="checks"></div><label>十维覆盖（核心理由必须人工填写）</label><textarea id="coverageJson"></textarea><label>finding 处置（理由必须人工填写）</label><textarea id="findingJson"></textarea><label>决定 <select id="decision"><option>repair</option><option>accept</option><option>redirect</option></select></label><label>redirect 范围 <select id="redirect"><option>direction</option><option>outline_revision</option></select></label><input id="gainNote" placeholder="读者收益说明"><input id="reviewReason" placeholder="决定理由"><div class="toolbar"><button id="reviewPrepare">准备冻结深审表</button><button id="reviewValidate" class="primary">保存并校验（不 apply）</button></div><label><input id="reviewApplyAck" type="checkbox"> 我确认采用当前精确哈希的人工深审决定</label><button id="reviewApply" class="primary">明确 apply 人工深审决定</button><div id="reviewStatus" class="status"></div></section>
 <section><h2>结构化批注</h2><select id="severity"><option>P1</option><option>P0</option><option>P2</option></select><select id="action"><option>rewrite</option><option>expand_scene</option><option>compress</option><option>clarify</option><option>reorder</option><option>replace_carrier</option><option>preserve</option></select><input id="checkId" placeholder="check_id"><input id="intent" placeholder="修改意图"><input id="preserve" placeholder="必须保护项，逗号分隔"><button id="addAnnotation">将当前 span 转为批注</button><pre id="annotationView"></pre></section>
 <section><h2>对话式协作 / 终稿只读咨询</h2><div id="consultPhase" class="muted"></div><textarea id="question" placeholder="围绕当前选中 span 提问"></textarea><div class="toolbar"><button id="consultTask">创建咨询工单</button><button id="consultValidate">校验最新回答</button><button id="consultRecord">记录最新回答</button></div><input id="optionId" placeholder="coedit 方案 ID，例如 OPTION-A"><input id="optionAdjustment" placeholder="人工调整（可空）"><div class="toolbar"><button id="coeditRewrite">从已记录方案创建完整改写任务</button><button id="coeditCandidateValidate">校验完整协作候选</button></div><div id="consultHistory"></div><div id="consultStatus" class="status"></div></section></aside>
 </div>
@@ -892,10 +997,10 @@ const $=id=>document.getElementById(id);const show=(id,value,cls="")=>{const el=
 async function api(path,body){const r=await fetch(path,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-Review-CSRF":csrf},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(data.error||"request failed");return data.result}
 function utf16ToCodePoint(text,index){return Array.from(text.slice(0,index)).length}
 function capture(){const el=$("manuscript");const utf16Start=el.selectionStart,utf16End=el.selectionEnd;selected={start:utf16ToCodePoint(el.value,utf16Start),end:utf16ToCodePoint(el.value,utf16End),text:el.value.slice(utf16Start,utf16End)};if(selected.end<=selected.start)throw new Error("请先圈选正文 span");return selected}
-async function load(){state=await fetch("/api/state",{credentials:"same-origin"}).then(r=>r.json());$("title").textContent=`ch${String(state.chapter_number).padStart(3,"0")} 人工可视化深审`;$("candidate").textContent=state.consultation_candidate.sha256;$("chapterIntent").textContent=JSON.stringify(state.human_chapter_intent,null,2);$("brief").textContent=state.story_brief.text;$("contract").textContent=JSON.stringify(state.chapter_contract,null,2);$("promises").textContent=JSON.stringify(state.reader_promises,null,2);$("market").textContent=JSON.stringify(state.market_observations,null,2);$("manuscript").value=state.consultation_candidate.text;$("consultPhase").textContent=state.consultation_candidate.phase==="coedit"?"coedit：可生成完整 workbench 候选":"human_final：锁定后仅只读咨询";
+async function load(){state=await fetch("/api/state",{credentials:"same-origin"}).then(r=>r.json());$("title").textContent=`ch${String(state.chapter_number).padStart(3,"0")} 人工可视化深审`;$("candidate").textContent=state.consultation_candidate.sha256;$("chapterIntent").textContent=JSON.stringify(state.human_chapter_intent,null,2);$("brief").textContent=state.story_brief.text;$("contract").textContent=JSON.stringify(state.chapter_contract,null,2);$("promises").textContent=JSON.stringify(state.reader_promises,null,2);$("manuscript").value=state.consultation_candidate.text;$("consultPhase").textContent=state.consultation_candidate.phase==="coedit"?"coedit：可生成完整 workbench 候选":"human_final：锁定后仅只读咨询";
 $("findings").replaceChildren(...(state.review_barrier.findings||[]).map(f=>{const d=document.createElement("div");d.className="finding";d.textContent=`[${f.severity}] ${f.code||f.finding_id}: ${f.diagnosis||""}`;return d}));
 $("checks").replaceChildren(...state.review_checks.map(c=>{const l=document.createElement("div");l.className="check";const current=(state.review_template.dimension_coverage||{})[c.id]||{};l.textContent=`${c.label} — ${current.coverage_source||"待覆盖"} / ${current.status||"待判断"}`;return l}));
-const t=state.review_template||{};$("coverageJson").value=JSON.stringify(t.dimension_coverage||{},null,2);$("findingJson").value=JSON.stringify(t.finding_resolutions||[],null,2);evidence=Object.fromEntries((t.evidence_spans||[]).map(x=>[x.kind,x]));annotations=t.annotations||[];renderEvidence();renderAnnotations();renderRevision();renderRepair();renderConsult();show("globalStatus",`屏障：${state.review_barrier.status}`)}
+const t=state.review_template||{};$("coverageJson").value=JSON.stringify(t.dimension_coverage||{},null,2);$("findingJson").value=JSON.stringify(t.finding_resolutions||[],null,2);evidence=Object.fromEntries((t.evidence_spans||[]).map(x=>[x.kind,x]));annotations=t.annotations||[];renderEvidence();renderAnnotations();renderRevision();renderRepair();renderConsult();$("reviewApply").disabled=state.review_validation?.ok!==true||!state.review_template_sha256;show("globalStatus",`屏障：${state.review_barrier.status}`)}
 function renderEvidence(){$("evidenceView").textContent=JSON.stringify(evidence,null,2)}function renderAnnotations(){$("annotationView").textContent=JSON.stringify(annotations,null,2)}
 function renderRevision(){const r=state.human_author_revision||{};$("revisionMeta").textContent=r.available?`${r.status||"pending"} / ${r.candidate_file}`:"尚未建立人工修订工作区";$("revisionText").value=r.text||state.draft.text;$("revisionRecord").value=JSON.stringify(r.record||{},null,2);$("diff").textContent=r.diff||"暂无人工改稿 diff";$("revisionPrepare").disabled=!!r.available;$("revisionSave").disabled=!r.available;$("revisionValidate").disabled=!r.available;$("revisionSubmit").disabled=!r.available||r.status!=="validated_for_submit"}
 function renderRepair(){const r=state.manual_repair||{};$("repairMeta").textContent=r.available?`${r.task_id} / ${r.task_status} / 剩余 ${r.attempts.remaining}`:r.reason||"无 repair 工单";$("repairText").value=r.text||state.draft.text;$("repairSave").disabled=!r.available||!r.editable;$("repairSubmit").disabled=!r.available||!r.editable;$("repairPrepare").disabled=!!r.available}
@@ -906,6 +1011,7 @@ document.querySelectorAll("[data-evidence]").forEach(b=>b.onclick=()=>{try{const
 $("addAnnotation").onclick=()=>{try{const s=capture();annotations.push({annotation_id:`HR-${Date.now()}`,start:s.start,end:s.end,text:s.text,check_id:$("checkId").value,severity:$("severity").value,action:$("action").value,intent:$("intent").value,must_preserve:$("preserve").value.split(",").map(x=>x.trim()).filter(Boolean),note:"由人工在审稿台明确转换"});renderAnnotations()}catch(e){show("reviewStatus",e.message,"error")}};
 $("reviewPrepare").onclick=async()=>{try{show("reviewStatus",await api("/api/human-review/prepare",{expected_candidate_sha256:state.draft.sha256}),"ok");await load()}catch(e){show("reviewStatus",e.message,"error")}};
 $("reviewValidate").onclick=async()=>{try{const base=state.review_template;if(!base.schema)throw new Error("请先准备深审表");const dimension_coverage=JSON.parse($("coverageJson").value);const finding_resolutions=JSON.parse($("findingJson").value);const review={...base,dimension_coverage,finding_resolutions,decision:$("decision").value,evidence_spans:Object.values(evidence),reader_gain_note:$("gainNote").value,annotations,redirect_scope:$("redirect").value,reason:$("reviewReason").value};show("reviewStatus",await api("/api/human-review/validate",{expected_candidate_sha256:state.draft.sha256,review}),"ok");await load()}catch(e){show("reviewStatus",e.message,"error")}};
+$("reviewApply").onclick=async()=>{try{if(!$("reviewApplyAck").checked)throw new Error("请先明确确认采用当前人工深审决定");show("reviewStatus",await api("/api/human-review/apply",{expected_candidate_sha256:state.draft.sha256,expected_review_sha256:state.review_template_sha256,approved_by:"human",acknowledge_human_decision:true}),"ok");await load()}catch(e){show("reviewStatus",e.message,"error")}};
 $("consultTask").onclick=async()=>{try{const s=capture();show("consultStatus",await api("/api/consult/task",{phase:state.consultation_candidate.phase,expected_candidate_sha256:state.consultation_candidate.sha256,start:s.start,end:s.end,question:$("question").value}),"ok");await load()}catch(e){show("consultStatus",e.message,"error")}};
 $("consultValidate").onclick=async()=>{try{const t=latestTurn();if(!t)throw new Error("暂无咨询工单");show("consultStatus",await api("/api/consult/validate",{phase:state.consultation_candidate.phase,response_file:t.response_file}),"ok");await load()}catch(e){show("consultStatus",e.message,"error")}};
 $("consultRecord").onclick=async()=>{try{const t=latestTurn();if(!t)throw new Error("暂无咨询工单");show("consultStatus",await api("/api/consult/record",{phase:state.consultation_candidate.phase,response_file:t.response_file}),"ok");await load()}catch(e){show("consultStatus",e.message,"error")}};
@@ -923,8 +1029,10 @@ $("reload").onclick=()=>load().catch(e=>show("globalStatus",e.message,"error"));
 
 
 __all__ = [
+    "REVIEW_ACTION_FIELDS",
     "ReviewDeskService",
     "ReviewHTTPServer",
     "ReviewServerError",
+    "dispatch_review_action",
     "review_page_html",
 ]

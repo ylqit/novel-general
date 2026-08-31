@@ -29,8 +29,6 @@ INGEST_BATCH_SCHEMA = "source_ingest_batch_v1"
 PROCESSING_JOB_SCHEMA = "source_processing_job_v1"
 NORMALIZATION_SCHEMA = "source_normalization_manifest_v1"
 EVIDENCE_SEGMENT_SCHEMA = "source_evidence_segment_v1"
-EVIDENCE_REVIEW_SCHEMA = "source_evidence_review_v1"
-OBSERVATION_CANDIDATE_SCHEMA = "source_observation_candidate_v1"
 EXTRACTION_SCHEMA = "source_extraction_candidate_v2"
 REMOTE_DECISION_SCHEMA = "source_remote_processing_decision_v1"
 PROVIDER_RECEIPT_SCHEMA = "source_provider_receipt_v1"
@@ -86,10 +84,6 @@ PROCESSING_STATES = frozenset(
         "cancelled",
     }
 )
-
-
-class SourceProtocolError(ValueError):
-    """Raised when a current multi-format source protocol is invalid."""
 
 
 def canonical_json_hash(value: Any) -> str:
@@ -200,161 +194,6 @@ def validate_evidence_segment(segment: Any) -> list[str]:
     return errors
 
 
-def validate_observation_candidate(payload: Any) -> list[str]:
-    """Validate the bounded Host-Agent visual observation protocol."""
-
-    required = {
-        "schema",
-        "item_id",
-        "normalization_sha256",
-        "observations",
-        "uncertainties",
-    }
-    if not isinstance(payload, dict) or set(payload) != required:
-        return [f"observation candidate must contain exactly: {', '.join(sorted(required))}"]
-    errors: list[str] = []
-    if payload.get("schema") != OBSERVATION_CANDIDATE_SCHEMA:
-        errors.append(f"schema must be {OBSERVATION_CANDIDATE_SCHEMA}")
-    if not stable_id(payload.get("item_id")):
-        errors.append("item_id must be a stable id")
-    if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("normalization_sha256") or "")):
-        errors.append("normalization_sha256 must be a SHA-256 digest")
-    observations = payload.get("observations")
-    if not isinstance(observations, list) or not observations:
-        errors.append("observations must be a non-empty list")
-        observations = []
-    seen: set[str] = set()
-    fields = {
-        "id",
-        "source_segment_ids",
-        "origin_locator",
-        "observable",
-        "interpretation",
-        "confidence",
-        "limitations",
-    }
-    for index, observation in enumerate(observations):
-        prefix = f"observations[{index}]"
-        if not isinstance(observation, dict) or set(observation) != fields:
-            errors.append(f"{prefix} must contain exactly {sorted(fields)}")
-            continue
-        observation_id = str(observation.get("id") or "")
-        if not stable_id(observation_id) or observation_id in seen:
-            errors.append(f"{prefix}.id must be stable and unique")
-        seen.add(observation_id)
-        source_ids = observation.get("source_segment_ids")
-        if not isinstance(source_ids, list) or any(not stable_id(item) for item in source_ids):
-            errors.append(f"{prefix}.source_segment_ids must contain stable segment ids")
-        errors.extend(f"{prefix}.{item}" for item in validate_origin_locator(observation.get("origin_locator")))
-        if not str(observation.get("observable") or "").strip():
-            errors.append(f"{prefix}.observable is required")
-        confidence = observation.get("confidence")
-        if (
-            not isinstance(confidence, (int, float))
-            or isinstance(confidence, bool)
-            or not 0 <= float(confidence) <= 1
-        ):
-            errors.append(f"{prefix}.confidence must be between 0 and 1")
-        limitations = observation.get("limitations")
-        if not isinstance(limitations, list) or any(
-            not isinstance(item, str) or not item.strip() for item in limitations
-        ):
-            errors.append(f"{prefix}.limitations must be a list of non-empty strings")
-    uncertainties = payload.get("uncertainties")
-    if not isinstance(uncertainties, list) or any(
-        not isinstance(item, str) or not item.strip() for item in uncertainties
-    ):
-        errors.append("uncertainties must be a list of non-empty strings")
-    return errors
-
-
-def validate_source_review(payload: Any, *, task_type: str) -> list[str]:
-    """Validate one of the three review variants sharing source_evidence_review_v1."""
-
-    expected_review_type = {
-        "source_evidence_review": {"segment_evidence", "visual_observation"},
-        "source_version_conflict_review": {"version_conflict"},
-        "source_coverage_gap_analysis": {"coverage_gap"},
-    }.get(task_type, set())
-    if not isinstance(payload, dict):
-        return ["source evidence review must be an object"]
-    errors: list[str] = []
-    if payload.get("schema") != EVIDENCE_REVIEW_SCHEMA:
-        errors.append(f"schema must be {EVIDENCE_REVIEW_SCHEMA}")
-    review_type = str(payload.get("review_type") or "")
-    if review_type not in expected_review_type:
-        errors.append(
-            f"review_type for {task_type} must be one of: {', '.join(sorted(expected_review_type))}"
-        )
-    base = {"schema", "review_type", "item_id", "normalization_sha256"}
-    if not stable_id(payload.get("item_id")):
-        errors.append("item_id must be a stable id")
-    if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("normalization_sha256") or "")):
-        errors.append("normalization_sha256 must be a SHA-256 digest")
-    if review_type in {"segment_evidence", "visual_observation"}:
-        if set(payload) != base | {"decisions"}:
-            errors.append("segment/visual review fields are invalid")
-            return errors
-        decisions = payload.get("decisions")
-        if not isinstance(decisions, list) or not decisions:
-            errors.append("decisions must be a non-empty list")
-            return errors
-        identity_field = "segment_id" if review_type == "segment_evidence" else "observation_id"
-        decision_fields = (
-            {"segment_id", "decision", "corrected_text", "reason"}
-            if review_type == "segment_evidence"
-            else {"observation_id", "decision", "corrected_observable", "reason"}
-        )
-        seen: set[str] = set()
-        for index, decision in enumerate(decisions):
-            if not isinstance(decision, dict) or set(decision) != decision_fields:
-                errors.append(f"decisions[{index}] fields are invalid")
-                continue
-            identity = str(decision.get(identity_field) or "")
-            if not stable_id(identity) or identity in seen:
-                errors.append(f"decisions[{index}].{identity_field} must be stable and unique")
-            seen.add(identity)
-            if decision.get("decision") not in {"approve", "reject"}:
-                errors.append(f"decisions[{index}].decision must be approve or reject")
-            if not str(decision.get("reason") or "").strip():
-                errors.append(f"decisions[{index}].reason is required")
-    elif review_type in {"version_conflict", "coverage_gap"}:
-        if set(payload) != base | {"findings", "uncertainties"}:
-            errors.append("version/coverage review fields are invalid")
-            return errors
-        findings = payload.get("findings")
-        if not isinstance(findings, list):
-            errors.append("findings must be a list")
-        else:
-            for index, finding in enumerate(findings):
-                if not isinstance(finding, dict):
-                    errors.append(f"findings[{index}] must be an object")
-                    continue
-                required_finding = (
-                    {"id", "evidence_segment_ids", "versions", "conflict", "recommendation", "uncertainty"}
-                    if review_type == "version_conflict"
-                    else {"id", "coverage_unit", "semantic_dimension", "evidence_segment_ids", "status", "reason"}
-                )
-                if set(finding) != required_finding:
-                    errors.append(f"findings[{index}] fields are invalid")
-                    continue
-                if not stable_id(finding.get("id")):
-                    errors.append(f"findings[{index}].id must be stable")
-                refs = finding.get("evidence_segment_ids")
-                if not isinstance(refs, list) or any(not stable_id(item) for item in refs):
-                    errors.append(f"findings[{index}].evidence_segment_ids are invalid")
-                if review_type == "coverage_gap" and finding.get("status") not in {
-                    "covered", "gap", "not_applicable", "need_human"
-                }:
-                    errors.append(f"findings[{index}].status is invalid")
-        uncertainties = payload.get("uncertainties")
-        if not isinstance(uncertainties, list) or any(
-            not isinstance(item, str) or not item.strip() for item in uncertainties
-        ):
-            errors.append("uncertainties must be a list of non-empty strings")
-    return errors
-
-
 def _validate_int_range(value: dict[str, Any], start_key: str, end_key: str, errors: list[str]) -> None:
     start, end = value.get(start_key), value.get(end_key)
     if (
@@ -422,7 +261,6 @@ __all__ = [
     "ASSET_SCHEMA",
     "CANON_SCHEMA",
     "COVERAGE_SCHEMA",
-    "EVIDENCE_REVIEW_SCHEMA",
     "EVIDENCE_SEGMENT_SCHEMA",
     "EXTRACTION_SCHEMA",
     "INGEST_BATCH_SCHEMA",
@@ -430,7 +268,6 @@ __all__ = [
     "LIBRARY_ITEM_SCHEMA",
     "LIBRARY_WORK_SCHEMA",
     "NORMALIZATION_SCHEMA",
-    "OBSERVATION_CANDIDATE_SCHEMA",
     "PROCESSING_EXECUTIONS",
     "PROCESSING_JOB_SCHEMA",
     "PROCESSING_STATES",
@@ -438,11 +275,8 @@ __all__ = [
     "PROVIDER_RECEIPT_SCHEMA",
     "REMOTE_DECISION_SCHEMA",
     "STORAGE_MODES",
-    "SourceProtocolError",
     "canonical_json_hash",
     "stable_id",
     "validate_evidence_segment",
-    "validate_observation_candidate",
     "validate_origin_locator",
-    "validate_source_review",
 ]

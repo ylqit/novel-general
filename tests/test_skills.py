@@ -1,4 +1,3 @@
-import json
 import os
 import subprocess
 import sys
@@ -66,81 +65,68 @@ def test_platform_descriptions_are_mutually_exclusive():
         assert "production next" in description[:300]
 
 
-def test_readme_is_public_pipx_skill_package_homepage():
+def test_readme_describes_the_current_product_and_web_entry():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     lower = readme.lower()
-    release_channel = json.loads((ROOT / "config" / "release-channel.json").read_text(encoding="utf-8"))
-    public_version = release_channel["public_stable_version"]
 
     for term in (
-        "longform-novel-engine = Python engine + Codex skill + Claude Code skill",
-        "https://github.com/ylqit/novel-general",
-        f"git+https://github.com/ylqit/novel-general.git@v{public_version}",
-        "longform-novel-engine[semantic]",
-        "pipx",
+        "本地生产控制面",
+        '".[semantic]"',
         "longform-engine skills install --tool codex",
         "longform-engine doctor --tool codex",
+        "studio serve --workspace",
+        "studio shortcut-install",
+        "原创小说",
+        "同人小说",
         "production next",
-        "agent-task brief",
         "chapter_contract_v5",
         "chapter_story_brief_basis_v3",
         "chapter_story_brief_v5",
         "chapter_writing_task_v7",
         "human_author_revision_v4",
         "human_story_review_v7",
-        "10_bible/",
-        "20_outline/",
-        "40_manuscript/final/",
-        "literary_evidence_ready=false",
+        "canonical_delta_v1",
+        "chapter close",
+        "recovery status",
+        "web_studio.md",
     ):
         assert term.lower() in lower
-    for forbidden in ("<owner>", "README.zh-CN.md", "clone 到临时目录", "curl | bash"):
+    for forbidden in (
+        "<owner>",
+        "README.zh-CN.md",
+        "clone 到临时目录",
+        "curl | bash",
+        "--compare-market",
+        "longform-engine benchmark",
+        "literary_evidence_ready",
+        "release_checklist",
+        "quality_benchmark_runbook",
+    ):
         assert forbidden.lower() not in lower
-    assert readme.count("\n## 安装稳定版\n") == 1
-    assert 280 <= len(readme.splitlines()) <= 340
 
 
-def test_current_release_checklist_and_management_docs_are_linked():
+def test_current_timeless_management_docs_are_linked():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     install = (ROOT / "docs" / "SKILL_INSTALLATION.md").read_text(encoding="utf-8")
     history = (ROOT / "docs" / "RELEASE_HISTORY.md").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_13_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
 
     for document in (
         "ARCHITECTURE.md",
         "STORAGE_MODEL.md",
+        "CONFIGURATION.md",
         "OPERATOR_GUIDE.md",
+        "WEB_STUDIO.md",
         "RELEASE_HISTORY.md",
-        "V0_13_FANFICTION_ARCHITECTURE.md",
-        "V0_13_0_RELEASE_CHECKLIST.md",
     ):
         assert document in readme
-    assert "OPERATOR_GUIDE.md" in agents
-    assert "V0_13_0_RELEASE_CHECKLIST.md" in agents
-    assert "OPERATOR_GUIDE.md" in install
-    for historical in (
-        "V0_4_4_RELEASE_CHECKLIST.md",
-        "V0_5_0_RELEASE_CHECKLIST.md",
-        "V0_6_0_RELEASE_CHECKLIST.md",
-        "V0_7_0_RELEASE_CHECKLIST.md",
-    ):
-        assert historical in history
-    assert "V0_4_4_RELEASE_CHECKLIST.md" in install
-    assert "V0_5_0_RELEASE_CHECKLIST.md" in install
-    assert "V0_6_0_RELEASE_CHECKLIST.md" in install
-    assert "V0_7_0_RELEASE_CHECKLIST.md" in install
-    assert "V0_13_0_RELEASE_CHECKLIST.md" in install
-    assert "协议收口" in checklist
-    assert "semantic_document_v1" in checklist
-    for section in (
-        "协议收口",
-        "版本与活动文档",
-        "本地发布验证",
-        "提交与远程发布",
-        "本机同步",
-    ):
-        assert section in checklist
+    for document in ("ARCHITECTURE.md", "STORAGE_MODEL.md", "CONFIGURATION.md", "OPERATOR_GUIDE.md"):
+        assert document in agents
+        assert document in install
+    for public_text in (readme, agents, install, history):
+        assert "RELEASE_CHECKLIST" not in public_text
+        assert "QUALITY_BENCHMARK_RUNBOOK" not in public_text
+        assert "V0_13_FANFICTION_ARCHITECTURE" not in public_text
 
 
 def test_shared_protocols_keep_chapter_and_editorial_contracts():

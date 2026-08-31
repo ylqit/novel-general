@@ -1,6 +1,6 @@
 ---
 name: longform-novel-codex
-description: Codex App / Codex CLI 中文长篇小说生产 Skill；用户说“/工程下一步”或需要 production next、同人/AU/续写、修章、审稿、图谱与记忆任务时触发。Codex 只写任务清单允许的候选文件，longform-engine 负责校验、显式 apply/finalize 与持久化。
+description: Codex App / Codex CLI 中文长篇小说生产 Skill；用户说“/打开小说创作工作台”“/打开创作控制台”“/打开章节工作台”“/工程下一步”或需要 production next、同人/AU/续写、修章、审稿、图谱与记忆任务时触发。Codex 只写任务清单允许的候选文件，longform-engine 负责校验、显式 apply/finalize 与持久化。
 ---
 
 # Longform Novel Codex
@@ -17,7 +17,11 @@ description: Codex App / Codex CLI 中文长篇小说生产 Skill；用户说“
 
 完整中文命令映射见 `references/command_protocol.md`，任务顺序见 `references/workflow_mapping.md`，写作操作见 `references/creative_operator_protocol.md`。
 
-严格执行工作单的 `session`：项目开书/卷级规划可继续协调会话；每章 `chapter_write` 新开作者会话；`repair` 可继续本章作者会话；自然度修订、人物/节奏/收益/连贯/同人审稿与 final 后语义档案均新开隔离会话。CLI 不会自动开子进程，必须由用户或宿主显式开启新会话，并以 `session.first_command` 为第一条命令。
+## Web 工作台入口
+
+`/打开小说创作工作台`、`/打开创作控制台`、`/打开章节工作台` 严格按 `references/command_protocol.md` 映射；要求绝对工作区并复用实例。打开只选上下文，绝不批准 apply、finalize、semantic、事件/承诺或 close。
+
+严格执行工作单的 `session`：项目开书/卷级规划可继续协调会话；每章 `chapter_write` 新开作者会话；`repair` 可继续本章作者会话；自然度修订、人物/节奏/收益/连贯/同人审稿与 final 后语义档案均新开隔离会话。普通 CLI 由宿主显式开会话；Web 仅在用户点击当前 manifest 后以 stdin 调用本机 Codex，隔离 staging、唯一输出、禁止浏览器 Prompt，校验后仍等待人工批准。
 
 上下文采用 `compact/standard/large` 自适应容量。字符数和文件数只是诊断；遇到顺序批次时按清单读取，不把范围证据一次塞满。章节正文始终一次输出完整正文；工作单出现 `prompt_budget_exceeded` 或 `need_human` 时停止，不静默截断核心事实。
 
@@ -29,7 +33,7 @@ description: Codex App / Codex CLI 中文长篇小说生产 Skill；用户说“
 
 `sandbox create` 产生的构思和试写永远非 Canon；`sandbox promote` 经人工选择后也只生成待独立复核的正式候选。v0.11 项目只允许 `migrate audit-v011` 与非原地 `migrate v011-to-v012`，不得双读旧 Canon 或自动改写 final。
 
-资料操作优先使用 `/打开创作控制台`（`longform-engine studio serve project.yaml`）。批量导入依次执行 `source-library ingest-plan`、`ingest-preview`、`ingest-confirm --approved-by human`、`ingest-apply --approved-by human`；格式处理执行 `process-plan/process-run`；资料级语义工单执行 `source-library task-create/task-validate/task-apply --approved-by human`。OpenAI 直连只允许 `remote-prepare -> remote-approve -> remote-run` 的逐任务资料预处理，默认关闭，不得自动回退，也不得用于正文、规划、审稿、Canon 决策或发布判断。
+整个工作区优先使用 `/打开小说创作工作台`，指定项目的资料操作使用 `/打开创作控制台`，章节创作与审稿使用 `/打开章节工作台`。批量导入依次执行 `source-library ingest-plan`、`ingest-preview`、`ingest-confirm --approved-by human`、`ingest-apply --approved-by human`；格式处理执行 `process-plan/process-run`；资料级语义工单执行 `source-library task-create/task-validate/task-apply --approved-by human`。OpenAI 直连只允许 `remote-prepare -> remote-approve -> remote-run` 的逐任务资料预处理，默认关闭，不得自动回退，也不得用于正文、规划、审稿、Canon 决策或发布判断。
 
 覆盖通过并应用 Canon 后，先执行 `fanfiction story-engine-task/validate/apply`，再执行 `fanfiction design-task/validate`；故事发动机必须选择 OC/SI、原著角色中心或混合路线，并声明主角与原著关系、读者识别承诺和独立原创主线。路线必须交给隔离会话完成 `design-review-task/validate`，最后以 `design-apply --review REVIEW --approved-by human` 应用。跨界路线使用 fixed host、fusion world 或 sequential worlds 拓扑，按实际载荷生成来源适配器，不预建世界两两矩阵。`production next` 会自动路由这些任务。当前章通过 `fanfiction context-status --chapter N` 查看显式必需 claim、带理由递归依赖、结构化来源分区、人物知识、原著事件命运、命名冲突、预算和动态跨界规则；内部只接受 `fanfiction_context_bundle_v2`，作者只看到自然中文，多来源/冲突时保留来源标签，审阅器只读精确 review projection 和 evidence 闭包。`rights status` 是人工声明的来源治理信息，不代表法律核验，也不能授权保存或复现受保护全文。普通创作不受发布权利决定阻断；只有 `publication export --target ...` 要求当前人工 `proceed`，其配置、Canon、逐来源权利声明和政策快照任一变化后必须重新决定。
 

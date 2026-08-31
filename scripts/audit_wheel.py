@@ -42,7 +42,7 @@ REQUIRED = (
     "longform_engine/quality/status.py",
     "longform_engine/publication.py",
     "longform_engine/rag/production_benchmark.py",
-    "longform_engine/reader_promises.py",
+    "longform_engine/reader_promises_v2.py",
     "longform_engine/release_readiness.py",
     "longform_engine/review_server.py",
     "longform_engine/storage/recovery.py",
@@ -74,6 +74,10 @@ REQUIRED = (
     "longform_engine/resources/longform-novel-claude/references/command_protocol.md",
     "longform_engine/resources/resource-manifest.json",
     "longform_engine/resources/pyproject.toml",
+)
+
+FORBIDDEN = (
+    "longform_engine/reader_promises.py",
 )
 
 
@@ -111,6 +115,12 @@ def main() -> int:
         print("Wheel resource audit failed:", file=sys.stderr)
         for name in missing:
             print(f"- missing {name}", file=sys.stderr)
+        return 1
+    forbidden = [name for name in FORBIDDEN if name in names]
+    if forbidden:
+        print("Wheel resource audit failed:", file=sys.stderr)
+        for name in forbidden:
+            print(f"- forbidden {name}", file=sys.stderr)
         return 1
     integrity_errors: list[str] = []
     if manifest.get("hash_policy") != RESOURCE_HASH_POLICY:

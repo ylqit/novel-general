@@ -4453,30 +4453,6 @@ def _update_library_item_processing(
     _write_library_index(index)
 
 
-def _expanded_extraction_evidence(
-    item: dict[str, Any], evidence: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    try:
-        segments = load_normalized_segments(
-            _resolve_library_item_directory(item),
-            expected_sha256=str(item.get("normalization_sha256") or ""),
-        )
-    except SourceProcessingError as exc:
-        raise FanfictionSourceError(str(exc)) from exc
-    by_id = {str(segment["segment_id"]): segment for segment in segments}
-    expanded: list[dict[str, Any]] = []
-    for record in evidence:
-        segment = by_id[str(record["segment_id"])]
-        expanded.append(
-            {
-                **record,
-                "origin_locator": segment["origin_locator"],
-                "segment_text_sha256": segment["text_sha256"],
-            }
-        )
-    return expanded
-
-
 def _resolve_library_work_directory(record: dict[str, Any]) -> Path:
     root = source_library_root()
     configured = root / str(record.get("path") or "")

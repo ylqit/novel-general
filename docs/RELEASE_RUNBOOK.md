@@ -1,6 +1,6 @@
 # Public Release Runbook
 
-公开源固定为 `https://github.com/ylqit/novel-general`，默认分支为 `master`。发布工具只负责诊断，不会自动 commit、push、tag、创建 Release 或覆盖全局 Skill。当前公开稳定版本为 v0.13.0；旧的 v0.13/v0.14 多媒体阶段名从未发布，与本次国内平台同人长篇版本无继承关系。
+公开源固定为 `https://github.com/ylqit/novel-general`，默认分支为 `master`。发布工具只负责诊断，不会自动 commit、push、tag、创建 Release 或覆盖全局 Skill。发布分为默认的完整制品路径和用户逐次明确授权的 Tag-only 直接路径。
 
 ## 1. 完成实现
 
@@ -11,11 +11,11 @@ python scripts/sync_skill_references.py --write
 python scripts/build_resource_manifest.py --write
 ```
 
-这一阶段不运行回归测试。必须保持单进程，不使用 xdist 或并行 Agent worker。
+选择执行验证和构建时必须保持单进程，不使用 xdist 或并行 Agent worker。Tag-only 路径仍需同步版本、文档和资源清单，但可以不执行后续验证。
 
-## 2. 一次单进程完整本地验证
+## 2. 完整制品路径的本地验证
 
-所有实现和资源同步结束后，运行完整单进程测试与发布验证；禁止 xdist。先前阶段性测试数量不能作为最终发布证据：
+默认的完整制品路径在所有实现和资源同步结束后，运行完整单进程维护检查；禁止 xdist：
 
 ```powershell
 python -m ruff check src tests
@@ -30,9 +30,7 @@ python scripts/release_surface_guards.py
 longform-engine release check --repository . --channel rc --json
 ```
 
-v0.13.0 的功能提交已经完成一次单进程本地链路验证；若后续只改变版本、发布文档、版本断言和确定性资源清单，可在用户明确要求下不重复本地回归，但必须在 checklist 记录已验证提交，并以最终 `master` 的远程 CI 作为 tag 前门禁。实现阶段不得修改用户全局 CLI 或 Skill。
-
-## 3. 发布提交与主分支
+## 3. 完整制品发布
 
 审查 `git diff` 后提交：
 
@@ -45,11 +43,11 @@ longform-engine release check --repository . --channel public --json
 git push origin master
 ```
 
-发布应等待 `master` 的 GitHub Actions 成功；失败时停止，不创建 tag。
+完整制品发布应手工启动 CI workflow 并等待成功；失败时停止，不创建 tag。
 
-## 4. 不可变 Tag 与 GitHub Release
+## 4. 完整制品的不可变 Tag 与 GitHub Release
 
-主分支 CI 成功后执行：
+手工 CI 成功后执行：
 
 ```powershell
 git tag -a v<VERSION> -m "longform-novel-engine v<VERSION>"
@@ -58,10 +56,26 @@ git push origin v<VERSION>
 longform-engine release check --repository . --channel public --check-remote --tag v<VERSION> --json
 ```
 
-Release workflow 从 tag 构建 wheel/sdist、生成 `SHA256SUMS` 并上传三个制品。它不运行测试、Skill/Markdown 守卫、分发审计或安装 smoke。tag 不得移动或覆盖；发布后缺陷使用新的补丁版本。
+Tag 推送不会自动构建制品。维护者需要完整 GitHub Release 时，手工启动 Release workflow；该 workflow 从指定 tag 构建 wheel/sdist、生成 `SHA256SUMS` 并上传三个制品。tag 不得移动或覆盖；发布后缺陷使用新的补丁版本。
 
-## 5. Release 证据与本机更新
+## 5. 用户授权的 Tag-only 直接发布
 
-等待 tag 的制品发布任务成功，并确认 GitHub Release 包含 wheel、sdist 与 `SHA256SUMS`。Actions run、不可变 tag 和 Release assets 是发布事实；不追加发布后证据提交，也不移动 tag。
+用户逐次明确授权后，可以跳过本地验证、手工 CI、wheel/sdist 构建、分发审计、pipx smoke 和 GitHub Release：
 
-只有用户显式授权时才更新全局 CLI 与 Skill。v0.13.0 使用现有 pipx 的 Python 3.12 环境从不可变 tag 强制安装 `[semantic]`，再执行 `longform-engine skills update --tool codex`。随后核对版本、资源 hash 与 doctor；不得更新用户未授权的其他宿主 Skill。
+```powershell
+git add --all
+git commit -m "release: publish v<VERSION>"
+git switch master
+git merge --ff-only <reviewed-release-branch>
+git push origin master
+git tag -a v<VERSION> -m "longform-novel-engine v<VERSION>"
+git push origin v<VERSION>
+```
+
+该路径只发布不可变源码 tag，不产生 GitHub Release 页面、wheel、sdist 或 `SHA256SUMS`，也不表示兼容性、安装或语义依赖已经过本轮验证。发布记录和交接必须明确说明这些边界。
+
+## 6. Release 证据与本机更新
+
+完整制品路径以 Actions run、不可变 tag 和 Release assets 为发布事实；Tag-only 路径仅以远程不可变 tag 及其指向的 commit 为发布事实。两种路径都不追加发布后证据提交，也不移动 tag。
+
+只有用户显式授权时才更新全局 CLI 与 Skill。从目标不可变 tag 安装 `[semantic]`，再执行 `longform-engine skills update --tool codex`。随后核对版本、资源 hash 与 doctor；不得更新用户未授权的其他宿主 Skill。

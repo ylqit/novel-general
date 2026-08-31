@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any, Iterable
+from typing import Any
 import json
 import re
 
@@ -834,15 +834,3 @@ def _range_difference(expected: set[int], actual: set[int]) -> str:
     if extra:
         parts.append("extra=" + ",".join(map(str, extra)))
     return "; ".join(parts) or "no difference"
-
-
-def referenced_ids(values: Iterable[dict[str, Any]], field: str) -> set[str]:
-    """Return explicit references without guessing from prose or lexical markers."""
-
-    return {
-        str(item)
-        for value in values
-        if isinstance(value, dict)
-        for item in value.get(field, [])
-        if isinstance(item, str) and item
-    }

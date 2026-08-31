@@ -55,7 +55,7 @@ Plain `rag build` still builds canonical paragraph chunks and does not download 
 - Default reranker model: `BAAI/bge-reranker-v2-m3`.
 - If models are missing and `semantic.allow_network_download=true`, the command may auto-install the default BGE profile into `70_runtime/models/`.
 - If real embedding is unavailable and `semantic.allow_fallback=false`, `rag query/context --semantic` fails instead of returning local-hash results.
-- Deterministic `local-hash` remains available for tests/development only when `semantic.allow_fallback=true`.
+- Deterministic `local-hash` is an explicit diagnostic fallback and is only used when `semantic.allow_fallback=true`.
 
 ## Full Rebuild 与逐章 Delta
 

@@ -604,23 +604,6 @@ def release_cache_lock(path: Path) -> None:
         path.unlink()
 
 
-def hash_tree(path: Path, *, exclude_names: set[str] | None = None) -> str:
-    excluded = exclude_names or set()
-    digest = hashlib.sha256()
-    if not path.exists():
-        return digest.hexdigest()
-    for item in sorted((candidate for candidate in path.rglob("*") if candidate.is_file()), key=lambda value: value.as_posix()):
-        if item.name in excluded:
-            continue
-        digest.update(item.relative_to(path).as_posix().encode("utf-8"))
-        digest.update(b"\0")
-        with item.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        digest.update(b"\0")
-    return digest.hexdigest()
-
-
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:

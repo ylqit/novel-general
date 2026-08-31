@@ -2293,13 +2293,6 @@ def expansion_instructions(expansion_types: tuple[str, ...]) -> list[str]:
     return [catalog[item] for item in expansion_types]
 
 
-def clip_text(text: str, max_chars: int) -> str:
-    value = str(text or "")
-    if len(value) <= max_chars:
-        return value
-    return value[: max(0, max_chars - 3)].rstrip() + "..."
-
-
 def detect_expansion_issues(
     root: Path,
     chapter_number: int,

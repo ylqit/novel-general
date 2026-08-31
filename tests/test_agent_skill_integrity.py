@@ -86,8 +86,8 @@ def test_progressive_prompts_cover_current_protocols_without_pollution(tmp_path)
     assert readiness["ready_for_data_pipeline"] is True
     assert readiness["schema"] == "agent_data_pipeline_readiness_v5"
     assert readiness["production_contract_ready"] is True
-    assert readiness["literary_evidence_ready"] is False
-    assert readiness["literary_evidence_blockers"]
+    assert "literary_evidence_ready" not in readiness
+    assert "literary_evidence_blockers" not in readiness
     assert "production_chain_ready" not in readiness
     assert readiness["professional_prompt_ready"] is True
     assert readiness["provenance"]["execution_model"] == "single_process_sequential"
@@ -399,9 +399,10 @@ def test_adaptive_context_profiles_and_hybrid_sessions(tmp_path):
     assert {item["aggregation"] for item in batches} == {"deterministic_source_hash_and_evidence_id"}
 
 
-def test_release_guard_tracks_current_v013_contracts():
+def test_release_guard_tracks_current_timeless_contracts():
     guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
-    checklist = (ROOT / "docs" / "V0_13_0_RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+    architecture = (ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    storage = (ROOT / "docs" / "STORAGE_MODEL.md").read_text(encoding="utf-8")
     operator_guide = (ROOT / "docs" / "OPERATOR_GUIDE.md").read_text(encoding="utf-8")
     production = (ROOT / "src" / "longform_engine" / "production.py").read_text(encoding="utf-8")
 
@@ -415,14 +416,19 @@ def test_release_guard_tracks_current_v013_contracts():
         "rollback_restores_touched_paths",
     ):
         assert marker in guard
-    for section in (
-        "协议收口",
-        "版本与活动文档",
-        "本地发布验证",
-        "提交与远程发布",
-        "本机同步",
+    for marker in (
+        "semantic_document_v1",
+        "fanfiction_context_bundle_v2",
+        "chapter_contract_v5",
+        "transaction v3",
     ):
-        assert section in checklist
+        assert marker in architecture
+    for marker in (
+        "reader_promise_ledger_v2",
+        "chapter_closure_v2",
+        "future_knowledge_provenance_pins_v1",
+    ):
+        assert marker in storage
     for marker in (
         "human_chapter_intent_v2",
         "chapter_coedit_session_v2",
@@ -480,7 +486,7 @@ def test_release_guard_covers_agent_data_pipeline_readiness_gate():
         assert marker in guard
 
 
-def test_release_guard_covers_benchmark_and_readiness_contracts():
+def test_release_guard_keeps_internal_evaluation_api_off_public_surfaces():
     guard = (ROOT / "scripts" / "release_surface_guards.py").read_text(encoding="utf-8")
 
     for marker in (
@@ -490,8 +496,10 @@ def test_release_guard_covers_benchmark_and_readiness_contracts():
         "stores_manuscript_body",
         "forbidden_git_mutation",
         "cmd_release_check",
-        "cmd_benchmark_record",
-        "cmd_benchmark_compare",
+        "FORBIDDEN_PUBLIC_CONTENT_PATTERNS",
+        "check_public_content_guards",
+        'subparsers.add_parser(\"benchmark\"',
+        '--compare-market',
     ):
         assert marker in guard
 

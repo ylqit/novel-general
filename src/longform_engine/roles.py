@@ -23,7 +23,6 @@ from longform_engine.resources import resource_root
 ROLE_REGISTRY_SCHEMA = "agent_role_registry_v3"
 ROLE_REGISTRY_PATH = Path("config/agent_roles/registry.json")
 EMPTY_PROJECT_OVERLAY_HASH = sha256(b"").hexdigest()
-ROLE_PROMPT_HEADINGS = ("core",)
 ROLE_PROFESSIONAL_SECTIONS = {
     "core": "always",
     "decision_model": "task",

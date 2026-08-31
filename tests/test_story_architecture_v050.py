@@ -574,12 +574,12 @@ def test_human_review_v7_rejects_review_bundle_hash_drift(tmp_path):
     assert "review_bundle_sha256 is stale" in result.errors
 
 
-def test_quality_status_keeps_author_acceptance_separate_from_literary_evidence(tmp_path):
+def test_quality_status_reports_current_author_acceptance(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
     before = quality_status(config)
     assert before["protocol_ready"] is True
     assert before["author_acceptance_ready"] is False
-    assert before["literary_evidence_ready"] is False
+    assert "literary_evidence_ready" not in before
 
     task = create_human_story_review_task(config, chapter_number=1)
     review = write_review(root, task.template_file, decision="accept")
@@ -588,7 +588,7 @@ def test_quality_status_keeps_author_acceptance_separate_from_literary_evidence(
 
     accepted = quality_status(config)
     assert accepted["author_acceptance_ready"] is True
-    assert accepted["literary_evidence_ready"] is False
+    assert "literary_evidence_ready" not in accepted
     assert accepted["author_acceptance"]["chapters"][0]["accepted"] is True
 
     decision_path = root / accepted["author_acceptance"]["chapters"][0]["decision_file"]

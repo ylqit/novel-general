@@ -1,12 +1,7 @@
 {
   "schema": "release_channel_v1",
-  "development_version": "0.13.0",
-  "public_stable_version": "0.13.0",
+  "development_version": "0.14.0",
+  "public_stable_version": "0.14.0",
   "status": "stable",
-  "release_blockers": [],
-  "deferred_quality_evidence": [
-    "qidian_opening_3_blind_review",
-    "fanqie_opening_3_blind_review",
-    "serial_arc_15_blind_review"
-  ]
+  "release_blockers": []
 }

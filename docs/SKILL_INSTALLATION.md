@@ -2,7 +2,7 @@
 
 公开发行源：`https://github.com/ylqit/novel-general`。普通用户使用 pipx 安装 engine，再由 `longform-engine skills` 管理内置的自包含 Skill；无需手工复制 `shared/`，也无需 OpenAI、Anthropic 或 provider API key。
 
-当前公开稳定版是 `v0.13.0` 国内平台同人长篇版本。稳定安装命令固定到不可变 tag；升级 engine 后必须显式同步 Skill，并按目标版本 checklist 运行 doctor 与隔离验证。
+稳定安装命令固定到不可变 tag；升级 engine 后必须显式同步 Skill，并运行 doctor 核对安装状态。
 
 ## Public Install
 
@@ -13,7 +13,7 @@ py -3 -m pip install --user --upgrade pipx
 py -3 -m pipx ensurepath
 $env:PIPX_BIN_DIR = if ($env:PIPX_BIN_DIR) { $env:PIPX_BIN_DIR } else { Join-Path $env:USERPROFILE ".local\bin" }
 $env:PATH = "$env:PIPX_BIN_DIR;$env:PATH"
-py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.13.0'
+py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.14.0'
 longform-engine skills install --tool all --force
 longform-engine doctor --tool all
 ```
@@ -25,7 +25,7 @@ python3 -m pip install --user --upgrade pipx
 python3 -m pipx ensurepath
 export PIPX_BIN_DIR="${PIPX_BIN_DIR:-$HOME/.local/bin}"
 export PATH="$PIPX_BIN_DIR:$PATH"
-python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.13.0'
+python3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.14.0'
 longform-engine skills install --tool all --force
 longform-engine doctor --tool all
 ```
@@ -132,13 +132,7 @@ bash scripts/install-agent-skills.sh --tool all --mode symlink --force
 - `docs/ARCHITECTURE.md`
 - `docs/STORAGE_MODEL.md`
 - `docs/CONFIGURATION.md`
-- `docs/RELEASE_RUNBOOK.md`
-- `docs/V0_4_4_RELEASE_CHECKLIST.md`
-- `docs/V0_5_0_RELEASE_CHECKLIST.md`
-- `docs/V0_6_0_RELEASE_CHECKLIST.md`
-- `docs/V0_7_0_RELEASE_CHECKLIST.md`
-- `docs/V0_11_0_RELEASE_CHECKLIST.md`
-- `docs/V0_12_SEMANTIC_ARCHITECTURE.md`
-- `docs/V0_12_0_RELEASE_CHECKLIST.md`
-- `docs/V0_13_FANFICTION_ARCHITECTURE.md`
-- `docs/V0_13_0_RELEASE_CHECKLIST.md`
+- `docs/PIPELINE_MODEL.md`
+- `docs/RAG_MODEL.md`
+- `docs/GRAPH_MODEL.md`
+- `docs/SQLITE_MODEL.md`

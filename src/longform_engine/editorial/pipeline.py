@@ -1742,23 +1742,8 @@ def load_editorial_context(root: Path, *, chapter_number: int, role_id: str) -> 
     return payload
 
 
-def normalize_confidence(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    try:
-        confidence = float(value)
-    except (TypeError, ValueError):
-        return None
-    return round(confidence, 4) if 0.0 <= confidence <= 1.0 else None
-
-
 def editorial_validation_file(root: Path, chapter_number: int, role_id: str) -> Path:
     return review_root(root) / "results" / f"ch{chapter_number:03d}.{role_id}.validation.json"
-
-
-def normalize_verdict(value: Any) -> str:
-    verdict = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    return verdict if verdict in {"pass", "conditional_pass", "needs_revision", "rewrite", "blocked"} else ""
 
 
 def normalize_string_list(value: Any) -> list[str]:
@@ -1767,10 +1752,6 @@ def normalize_string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
-
-
-def normalize_evidence_text(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "")).strip()
 
 
 def repeated_conditional_pass(root: Path, chapter_number: int, verdicts: list[str]) -> bool:

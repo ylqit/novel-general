@@ -629,6 +629,10 @@ def studio_page_html(csrf_token: str, csp_nonce: str) -> str:
         _STUDIO_PAGE.replace("__CSRF_TOKEN__", html.escape(csrf_token, quote=True))
         .replace("studiononce", html.escape(csp_nonce, quote=True))
     )
+    page = page.replace(
+        'rights_status:"user_claimed_authorized",retention_mode:"full_text"',
+        'rights_status:"unverified",retention_mode:"short_evidence"',
+    )
     legacy_transport = (
         'const r=await fetch(`/api/upload/file?session=${encodeURIComponent(session.session_id)}'
         '&path=${encodeURIComponent(path)}`,{method:"POST",credentials:"same-origin",headers:'
@@ -760,7 +764,7 @@ _STUDIO_PAGE = r'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"
 <body><header><h1>小说创作控制台</h1><div id="project"></div></header><main><nav id="nav"></nav><div id="content">
 <section data-panel="创建小说"><h2>创建小说</h2><div class="card">选择原创、灵感原创、改编研究、同人或跨作品同人。修改模式需要编辑并重新校验 project.yaml；本页不会绕过配置门禁。<pre id="createCommand">longform-engine project init ...</pre></div></section>
 <section data-panel="创作目标"><h2>创作目标</h2><div class="card grid"><label>创作目的<input id="purpose" value="兴趣创作"></label><label>创作类型<select id="workType"><option>原创</option><option>灵感原创</option><option>改编研究</option><option>同人</option><option>跨作品同人</option></select></label><label>篇幅形式<input id="format" value="长篇连载"></label><label>目标平台<input id="platform"></label><label>更新能力<input id="capacity" value="按实际填写"></label><label>验证周期<input id="period" value="按卷复盘"></label></div><label><input id="commercial" type="checkbox" style="width:auto"> 计划商业化</label><label><input id="rights" type="checkbox" style="width:auto"> 已理解同人权利风险声明不是法律鉴定</label><button class="action" id="saveGoal">保存创作目标</button><pre id="goalResult"></pre></section>
-<section data-panel="创作沙盒"><h2>创作沙盒</h2><div class="card"><p>沙盒用于试写、比较分歧和测试人物组合，不更新 Canon、图谱、RAG 或正式大纲。</p><pre id="sandboxCommand"></pre></div></section>
+<section data-panel="创作沙盒"><h2>创作沙盒</h2><div class="card"><p>沙盒用于非 Canon 试写，不更新 Canon、图谱、RAG 或正式大纲。</p><pre id="sandboxCommand"></pre></div></section>
 <section data-panel="语义文档"><h2>语义文档</h2><div class="card grid"><label>文档类型<input id="semanticType" value="人物理解"></label><label>标题<input id="semanticTitle"></label><label>连续性<input id="semanticContinuity" value="项目候选"></label><label>作用域<input id="semanticScope" value="project_semantic_candidate"></label></div><label>中文 Markdown 语义正文<textarea id="semanticBody" rows="14"></textarea></label><button class="action" id="saveSemantic">保存待独立复核候选</button><pre id="semanticResult"></pre><h3>现有语义文档</h3><pre id="semanticDocuments"></pre></section>
 <section data-panel="原著资料库"><h2>原著资料库</h2><button class="action" id="refresh">刷新</button><pre id="catalog"></pre></section>
 <section data-panel="批量导入"><h2>批量导入</h2><div class="card"><p>浏览器只上传相对路径和字节；不会把浏览器路径当成服务器的 D:\ 路径。大型 MP4/MKV 外部引用请使用 CLI。</p><label>作品ID<input id="uploadWork"></label><label>资料类型<input id="sourceType" value="动态资料"></label><label>版本<input id="sourceVersion" value="用户指定版本"></label><label>覆盖范围<input id="unitRange" value="待确认"></label><label>选择文件或目录<input id="files" type="file" multiple webkitdirectory></label><button class="action" id="upload">上传并生成分组预览</button><pre id="uploadResult"></pre><label>资料分组（JSON；逐一覆盖全部 file_id）<textarea id="groupPlan" rows="12"></textarea></label><button class="action" id="confirmGroups">确认资料分组</button> <button class="action" id="applyIngest">导入已批准分组</button><pre id="groupResult"></pre></div></section>

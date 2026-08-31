@@ -1565,12 +1565,6 @@ def edge_active_for_chapter(edge: dict[str, Any], chapter_number: int) -> bool:
     return start <= chapter_number and (not end or chapter_number <= end)
 
 
-def summarize_scenes(scenes: Any) -> str:
-    if not isinstance(scenes, list):
-        return ""
-    return " ".join(str(item.get("summary") or item.get("text") or "") for item in scenes if isinstance(item, dict)).strip()
-
-
 def infer_recent_emotion(root: Path, chapter_number: int) -> str:
     memories = []
     for path in sorted((root / "60_rag" / "memory" / "chapters").glob("ch*.json")):
@@ -1580,26 +1574,6 @@ def infer_recent_emotion(root: Path, chapter_number: int) -> str:
             if isinstance(payload, dict) and payload.get("emotion_state"):
                 memories.append(str(payload.get("emotion_state")))
     return memories[-1] if memories else "unknown"
-
-
-def infer_emotion_state(text: str) -> str:
-    lowered = text.lower()
-    if any(item in lowered for item in ("愤怒", "恨", "anger", "hate")):
-        return "hostile"
-    if any(item in lowered for item in ("信任", "和解", "relief", "trust")):
-        return "softening"
-    if any(item in lowered for item in ("恐惧", "fear")):
-        return "afraid"
-    return "unknown"
-
-
-def infer_conflict_state(text: str) -> str:
-    lowered = text.lower()
-    if any(item in lowered for item in ("升级", "冲突", "决裂", "escalate", "conflict")):
-        return "escalating"
-    if any(item in lowered for item in ("解决", "和解", "resolved", "reconcile")):
-        return "softening"
-    return "open"
 
 
 def style_fingerprint(text: str) -> dict[str, Any]:

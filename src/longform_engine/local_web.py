@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 import hmac
 import json
 import secrets
+import threading
 
 
 class LocalWebError(ValueError):
@@ -32,6 +33,7 @@ class LoopbackHTTPServer(ThreadingHTTPServer):
         csrf_header: str,
         app_label: str,
         form_action: str = "'none'",
+        bootstrap_path: str = "/",
     ) -> None:
         if port < 0 or port > 65535:
             raise LocalWebError("port must be between 0 and 65535")
@@ -41,12 +43,23 @@ class LoopbackHTTPServer(ThreadingHTTPServer):
         self.app_label = app_label
         if form_action not in {"'none'", "'self'"}:
             raise LocalWebError("form_action must be 'none' or 'self'")
+        if (
+            not bootstrap_path.startswith("/")
+            or bootstrap_path.startswith("//")
+            or "\\" in bootstrap_path
+            or ".." in bootstrap_path
+            or "\r" in bootstrap_path
+            or "\n" in bootstrap_path
+        ):
+            raise LocalWebError("bootstrap_path must be a safe local absolute path")
         self.form_action = form_action
+        self.bootstrap_path = bootstrap_path
         self.bootstrap_token = secrets.token_urlsafe(32)
         self.session_token = secrets.token_urlsafe(32)
         self.csrf_token = secrets.token_urlsafe(32)
         self.csp_nonce = secrets.token_urlsafe(24)
         self.bootstrap_used = False
+        self._bootstrap_lock = threading.Lock()
         super().__init__(("127.0.0.1", port), handler)
 
     @property
@@ -56,6 +69,24 @@ class LoopbackHTTPServer(ThreadingHTTPServer):
     @property
     def bootstrap_url(self) -> str:
         return f"http://127.0.0.1:{self.port}/?{urlencode({'token': self.bootstrap_token})}"
+
+    def issue_bootstrap(self, path: str = "/") -> str:
+        """Issue a fresh one-use browser bootstrap for a trusted local launcher."""
+
+        if (
+            not path.startswith("/")
+            or path.startswith("//")
+            or "\\" in path
+            or ".." in path
+            or "\r" in path
+            or "\n" in path
+        ):
+            raise LocalWebError("bootstrap path must be a safe local absolute path")
+        with self._bootstrap_lock:
+            self.bootstrap_path = path
+            self.bootstrap_token = secrets.token_urlsafe(32)
+            self.bootstrap_used = False
+            return self.bootstrap_url
 
 
 class LoopbackRequestHandler(BaseHTTPRequestHandler):
@@ -72,13 +103,15 @@ class LoopbackRequestHandler(BaseHTTPRequestHandler):
         values = parse_qs(query, keep_blank_values=True)
         token = values.get("token") if set(values) == {"token"} else None
         supplied = token[0] if isinstance(token, list) and len(token) == 1 else ""
-        if self.server.bootstrap_used or not hmac.compare_digest(
-            supplied, self.server.bootstrap_token
-        ):
-            raise LocalWebError("bootstrap token is invalid or already used")
-        self.server.bootstrap_used = True
+        with self.server._bootstrap_lock:
+            if self.server.bootstrap_used or not hmac.compare_digest(
+                supplied, self.server.bootstrap_token
+            ):
+                raise LocalWebError("bootstrap token is invalid or already used")
+            self.server.bootstrap_used = True
+            bootstrap_path = self.server.bootstrap_path
         headers = {
-            "Location": "/",
+            "Location": bootstrap_path,
             "Set-Cookie": (
                 f"{self.server.session_cookie}={self.server.session_token}; Path=/; HttpOnly; "
                 "SameSite=Strict; Max-Age=43200"

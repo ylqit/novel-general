@@ -9,7 +9,7 @@
 ```powershell
 git status --short
 git log -1 --oneline
-git tag --list "v0.1[1-3].*"
+git tag --list "v*"
 longform-engine --version
 longform-engine skills status --tool codex --json
 python scripts/check_agent_data_pipeline_readiness.py
@@ -17,22 +17,21 @@ python scripts/check_agent_data_pipeline_readiness.py
 
 先判断当前任务属于哪一类：
 
-- **引擎开发**：以本仓库源码、测试和当前 diff 为准。先阅读本文件与当前版本 checklist，不要自动更新全局 Skill。
+- **引擎开发**：以本仓库源码、测试和当前 diff 为准。先阅读本文件与无版本号事实文档，不要自动更新全局 Skill。
 - **小说生产**：以目标小说的 `project.yaml`、`production next` 和 AgentTaskManifest 为准。不要扫描整个项目补上下文。
 - **发布工作**：额外阅读 `docs/RELEASE_RUNBOOK.md`，核对版本、资源、构建产物、远程 tag 和安装环境，不得把本地 RC 写成已公开版本。
 
 工作区可能包含用户或上一会话尚未提交的修改。不要 reset、checkout、覆盖或删除未知改动；先理解 diff，再在其上继续。
 
-## 2. 当前发布状态
+## 2. 当前维护边界
 
-- 当前公开稳定版为 `v0.13.0` 国内平台同人长篇版本，以 v0.12 语义优先架构为底座，加入路线家族、章节上下文 v2、跨界拓扑、平台质量档和目标级发布权利决定。旧的 v0.13/v0.14 多媒体阶段名从未发布，与本版本无继承关系；发布事实以当前 checklist、远程 CI、不可变 tag 和 GitHub Release 制品为准。
+- 当前运行合同以无版本号架构文档、源码和测试为准；发布记录只说明已经发布的行为变化。
 - 协议与生产合同 readiness 以 `scripts/check_agent_data_pipeline_readiness.py` 的输出为准。
-- `literary_evidence_ready` 保持 `false`，直到真实章节与独立盲评证据完整。
-- 不要把任一本地小说运行、全局 Skill 状态或历史阶段文档当作源码事实源。
+- 不要把任一本地小说运行、全局 Skill 状态或历史发布说明当作源码事实源。
 
 ## 3. 产品与架构定位
 
-本项目是面向百万字、数百章中文网文的本地工程化生产引擎，不是单次 Prompt 包，也不是脚本内 LLM 客户端。
+本项目是面向百万字、数百章中文网文的本地工程化生产引擎，不是单次 Prompt 包，也不是允许任意 Prompt 的通用 LLM 客户端。
 
 ```text
 Host Agent
@@ -54,8 +53,8 @@ Derived views
 核心原则：
 
 - 默认 `writing.mode = agent_skill`，使用 Codex/Claude 当前宿主会话，不需要 OpenAI、Anthropic 或 provider API key。
-- Python 代码不得调用 LLM 代替 Host Agent，也不得新增多进程、worker 或并行 Agent 编排。
-- CLI 是正式状态变更入口；Agent 只能写 manifest 允许的候选文件。
+- 普通 CLI 不得调用 LLM 代替 Host Agent。Workspace Studio 只允许在用户点击当前 manifest 后启动一个受控 Codex CLI Job；不得新增任意 Prompt 入口、多 worker 或并行 Agent 编排。
+- CLI 与 Workspace Studio 的结构化动作属于同一确定性控制面；Agent 只能写 manifest 允许的候选文件，canonical 仍要求显式人工批准。
 - 文件是事实源；SQLite、向量索引和查询缓存是可重建派生状态。
 - final 是唯一正文证据源。摘要、RAG 命中、图谱和 Agent 推断不能覆盖 final 中的事实。
 - 设计 Markdown 是创作事实权威；`canonical_delta_v1` 是经证据绑定的机器解释。
@@ -224,7 +223,7 @@ book spine / volume skeletons / active volume / rolling_window_plan_v2
 - final 后语义档案使用独立档案会话。
 - coedit 同一候选可复用会话并只生成完整 workbench 候选；human_final 咨询始终只读。候选变化后旧咨询全部 stale。
 
-CLI 不创建 Codex/Claude 子进程，聊天记录也不是长期状态。交接只依赖 manifest、brief、canonical 文件和审计事件。
+普通 CLI 不创建 Codex/Claude 子进程；Workspace Studio 只能为当前 manifest 创建一个隔离 `codex exec --json` 子进程，并验证 staging inventory 与唯一输出。聊天记录不是长期状态，交接只依赖 manifest、brief、canonical 文件和审计事件。
 
 ## 9. 审稿屏障与 Repair
 
@@ -326,26 +325,26 @@ task event/index 记录：
 2. `docs/OPERATOR_GUIDE.md`
 3. `docs/ARCHITECTURE.md`
 4. `docs/STORAGE_MODEL.md`
-5. `docs/V0_13_FANFICTION_ARCHITECTURE.md`
-6. 当前目标版本 checklist：`docs/V0_13_0_RELEASE_CHECKLIST.md`
-7. `docs/RELEASE_HISTORY.md`
-8. `docs/GATE_MODEL.md`
-9. `docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md`
-10. `docs/CONFIGURATION.md`
-11. `docs/RAG_MODEL.md`
-12. `docs/QUALITY_BENCHMARK_RUNBOOK.md`
-13. `docs/SKILL_INSTALLATION.md`
-14. `docs/RELEASE_RUNBOOK.md`
+5. `docs/CONFIGURATION.md`
+6. `docs/PIPELINE_MODEL.md`
+7. `docs/GATE_MODEL.md`
+8. `docs/RAG_MODEL.md`
+9. `docs/GRAPH_MODEL.md`
+10. `docs/SQLITE_MODEL.md`
+11. `docs/WEB_STUDIO.md`
+12. `docs/SKILL_INSTALLATION.md`
+13. `docs/RELEASE_HISTORY.md`
+14. `docs/RELEASE_RUNBOOK.md`（仅发布维护任务）
 
 历史发布说明只记录版本变化，不得覆盖当前 Manifest v5、开放语义文档、角色注册表或 `chNNN.md` 存储契约。
 
 ## 15. 验证与发布纪律
 
-代码收口至少运行：
+默认维护路径在代码收口时运行：
 
 ```powershell
 python -m ruff check src tests
-python -m mypy --follow-imports=skip src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/story_brief.py src/longform_engine/storage/recovery.py src/longform_engine/human_author_revision.py src/longform_engine/human_story_review.py src/longform_engine/human_review_consultation.py src/longform_engine/author_voice.py src/longform_engine/publication.py src/longform_engine/semantic_protocols.py src/longform_engine/source_protocols.py src/longform_engine/source_processing.py src/longform_engine/fanfiction_sources.py src/longform_engine/source_materialization.py src/longform_engine/fanfiction_context.py src/longform_engine/local_web.py src/longform_engine/studio_server.py
+python -m mypy --follow-imports=skip src/longform_engine/vector_backends.py src/longform_engine/chapter_contract.py src/longform_engine/story_brief.py src/longform_engine/storage/recovery.py src/longform_engine/human_author_revision.py src/longform_engine/human_story_review.py src/longform_engine/human_review_consultation.py src/longform_engine/author_voice.py src/longform_engine/publication.py src/longform_engine/semantic_protocols.py src/longform_engine/source_protocols.py src/longform_engine/source_processing.py src/longform_engine/fanfiction_sources.py src/longform_engine/source_materialization.py src/longform_engine/fanfiction_context.py src/longform_engine/local_web.py src/longform_engine/studio_server.py src/longform_engine/workspace_studio.py src/longform_engine/agent_jobs.py src/longform_engine/studio_instance.py src/longform_engine/studio_shortcut.py
 python -m pytest --cov=longform_engine --cov-report=term-missing
 python scripts/validate_skills.py
 python scripts/sync_skill_references.py --check
@@ -356,4 +355,4 @@ python scripts/release_surface_guards.py
 longform-engine release check --repository . --channel rc --json
 ```
 
-发布候选还需构建并审计 wheel/sdist、执行临时 pipx smoke 和远程版本检查。只有用户明确授权后才能创建 tag、推送或发布。tag 不得移动或覆盖；发现缺陷时使用新补丁版本。
+完整制品发布默认还会构建并审计 wheel/sdist、执行临时 pipx smoke 和远程版本检查。用户可以逐次明确授权 Tag-only 直接发布；该路径可以跳过本地验证、远程 CI、构建审计、安装 smoke 和 GitHub Release 制品，但必须在发布记录中明确说明未生成制品。任何发布都需要用户明确授权，tag 不得移动或覆盖；发现缺陷时使用新补丁版本。

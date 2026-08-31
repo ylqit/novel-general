@@ -1,4 +1,4 @@
-"""Read-only protocol, author-acceptance, and literary-evidence readiness."""
+"""Read-only production, human-acceptance, and publication readiness."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import re
 from typing import Any
 
 from longform_engine.agent_protocol_readiness import check_agent_data_pipeline_readiness
-from longform_engine.blind_review import literary_evidence_status
 from longform_engine.config import ConfigDocument
 from longform_engine.storage import resolve_project_root
 from longform_engine.storage.layout import list_finalized_chapter_files
@@ -17,12 +16,11 @@ from longform_engine.story_brief import story_brief_status
 
 
 def quality_status(config: ConfigDocument) -> dict[str, Any]:
-    """Report three independent readiness claims without allowing one to imply another."""
+    """Report current production readiness without publishing evaluation claims."""
 
     root = resolve_project_root(config)
     protocol = check_agent_data_pipeline_readiness()
     author_ready, author_blockers, chapters = author_acceptance_status(root)
-    literary_ready, literary_blockers = literary_evidence_status(root)
     from longform_engine.publication import publication_preflight_status
 
     platform_preflights = {
@@ -41,10 +39,9 @@ def quality_status(config: ConfigDocument) -> dict[str, Any]:
     )
     brief_chapters = [story_brief_status(root, chapter) for chapter in story_brief_chapters]
     return {
-        "schema": "quality_status_v2",
+        "schema": "quality_status_v3",
         "protocol_ready": bool(protocol.get("protocol_ready")),
         "author_acceptance_ready": author_ready,
-        "literary_evidence_ready": literary_ready,
         "author_acceptance": {
             "finalized_chapter_count": len(chapters),
             "chapters": chapters,
@@ -64,14 +61,10 @@ def quality_status(config: ConfigDocument) -> dict[str, Any]:
         },
         "platform_preflights": platform_preflights,
         "protocol_blockers": list(protocol.get("blocking_reasons") or []),
-        "literary_evidence_blockers": literary_blockers,
         "claim_boundaries": {
             "protocol_ready": "The executable production protocol is structurally valid.",
             "author_acceptance_ready": (
                 "Every finalized chapter has a verifiable current-protocol human accept record."
-            ),
-            "literary_evidence_ready": (
-                "Independent blind-review evidence satisfies the literary evidence manifest."
             ),
         },
     }

@@ -1,6 +1,6 @@
 # longform-novel-engine 配置说明
 
-0.13.0 国内平台同人长篇稳定版继续使用项目 schema v2。配置合并顺序为：
+当前项目使用 schema v2。配置合并顺序为：
 
 ```text
 config/default.engine.yaml
@@ -9,6 +9,20 @@ config/default.engine.yaml
 ```
 
 未知字段直接失败；删除字段不双读、不迁移。
+
+## Workspace Studio
+
+Workspace Studio 的工作区不是项目配置字段，也没有隐式默认值。每次启动必须给出明确绝对目录：
+
+```powershell
+longform-engine studio serve --workspace "D:\NovelProjects" --create-workspace
+```
+
+工作区不能是磁盘根、操作系统用户目录或仓库根，浏览器只能发现、创建和导入该目录内的项目。同一工作区只允许一个 Studio 实例；后续桌面、Codex 或 CLI 启动会向现有实例申请新的单次 bootstrap URL，不会创建竞争服务。项目深链接使用 `studio serve project.yaml`，章节深链接另加 `--chapter N`。
+
+Windows 桌面入口通过 `studio shortcut-install --workspace WORKSPACE` 显式安装。快捷方式使用当前 Python 环境的 `pythonw.exe`，只保存固定 Studio 启动参数；不保存 Codex 登录凭据、provider API key 或 Prompt。
+
+Codex Agent 按钮只在本机 `codex --version` 与 `codex login status` 可用时启用。Agent Job 只能消费当前 `AgentTaskManifest v5`，每个项目同一时刻最多一个状态变化任务，输入和唯一输出都受 manifest 限定。这个边界没有浏览器可配置的命令、Prompt、sandbox 或任意输出路径。
 
 ## 同人资料触发与资料库路径
 
@@ -28,7 +42,7 @@ LONGFORM_SOURCE_LIBRARY=D:/author-data/原著资料库
 
 ## 字数与滚动规划
 
-`length.metric=content_characters_v1` 是唯一规模度量。总字数、章节软硬区间和卷目标都是 forecast，不是机械章节数。默认滚动窗口最多 20 章，但 v0.10 固定语义层级为：
+`length.metric=content_characters_v1` 是唯一规模度量。总字数、章节软硬区间和卷目标都是 forecast，不是机械章节数。默认滚动窗口最多 20 章，语义层级为：
 
 - firm：下一至第三章，必须有 v5 合同；其中改变长期故事状态的重大 Plot Node 逐项人工审批，微观动作、对话和过渡不建立审批配额；
 - directional：第四至第十章；
@@ -52,7 +66,7 @@ chapter_writing_task_v7
 
 ## 可组合故事画像
 
-市场、setting、plot engine、叙事形式、前提装置、关系模式和 tone 保持正交。`story_profile.market.primary=qidian_male` 是主要编辑画像；`fanqie_free` 只作为 P2 非阻断兼容观察。
+目标平台、setting、plot engine、叙事形式、前提装置、关系模式和 tone 保持正交。`story_profile.market.primary` 记录项目选择的主要编辑画像；平台标识不代表效果判断，也不会自动产生跨平台比较。
 
 画像不进入作者工作单形成固定数值配额，也不推断平台推荐、留存或内部 AI 判断算法。
 
@@ -60,7 +74,7 @@ chapter_writing_task_v7
 
 `compact|standard|large` 是保守的 engine-controlled 容量档位。作者正文始终一次输出完整；核心证据装不下时返回 `prompt_budget_exceeded`，不静默截断。
 
-开书/卷级规划可延续协调会话；每章作者使用新会话；repair 可继续本章；自然度、独立审稿和 final 后语义档案使用隔离会话。CLI 不创建后台 Agent。
+开书/卷级规划可延续协调会话；每章作者使用新会话；repair 可继续本章；自然度、独立审稿和 final 后语义档案使用隔离会话。普通 CLI 不创建后台 Agent；Workspace Studio 只在用户点击当前 manifest 后调用一个受控 Codex CLI 任务，并按同一 session 策略选择新会话或 resume。
 
 ## 设定与反馈
 
@@ -72,14 +86,10 @@ chapter_writing_task_v7
 
 Agent 只能读取 manifest 的 `io.inputs` 并写唯一 `io.output.path`。Bible、outline、state、final、RAG、vector 和 SQLite 只能由 CLI 在 validate 后事务化写入。
 
-本地审稿台固定 `127.0.0.1`，不提供远程监听配置。默认生产不需要 provider API key。
+本地 Workspace Studio 与兼容 Review Desk 固定 `127.0.0.1`，不提供远程监听配置。默认生产不需要 provider API key。
 
-## 平台和质量
+## 平台、权利和资料处理
 
-起点、番茄的内容质量与平台接受观察仍为 P2 advisory；项目不配置 AI 概率、检测规避、平台必过或人工写作比例。平台政策注册表分别记录分类、投稿、签约、特定激励、内容治理、权利风险和未知项。`creation.mode=fanfiction` 时，只有 `publication export --target ...` 要求当前 `fanfiction_publication_rights_decision_v1=proceed`；该决定绑定有效配置、来源 Canon、逐来源 `rights_status/commercial_intent/platform_policy_url` 声明和目标政策快照。缺失、`hold`、绑定变化或政策复核过期只阻断对应目标导出，不阻断创作、审阅、Canon 或定稿。原创项目不触发该门禁。
-
-`literary_evidence_ready` 只能由可回验真实正文 hash、无 P1 的 gate report、两条各 20 章同人路线、三名独立人类盲审及全部实质分歧人工处理形成的 manifest（或既有正式多范围盲审 manifest）改变；当前仓库没有真实文学材料，保持 `false`。
-
-当前公开稳定配置是 v0.13.0；同人路线、上下文、跨界和平台导出边界见 [`V0_13_FANFICTION_ARCHITECTURE.md`](V0_13_FANFICTION_ARCHITECTURE.md)，底层开放语义原则仍见历史 [`V0_12_SEMANTIC_ARCHITECTURE.md`](V0_12_SEMANTIC_ARCHITECTURE.md)。发布事实以 v0.13 checklist、远程 CI 和不可变 Release 为准。
+项目不配置 AI 概率、检测规避、平台必过或人工写作比例。平台政策注册表分别记录分类、投稿、签约、特定激励、内容治理、权利风险和未知项。`creation.mode=fanfiction` 时，只有 `publication export --target ...` 要求当前 `fanfiction_publication_rights_decision_v1=proceed`；该决定绑定有效配置、来源 Canon、逐来源 `rights_status/commercial_intent/platform_policy_url` 声明和目标政策快照。缺失、`hold`、绑定变化或政策复核过期只阻断对应目标导出，不阻断创作、审阅、Canon 或定稿。原创项目不触发该门禁。
 
 `source_processing.default_execution` 默认为 `local`。`source_processing.cloud.enabled` 默认为 `false`；启用 OpenAI 时必须显式填写版本化的视觉或转写模型，并保持 `require_per_job_human_approval=true`、`allow_automatic_fallback=false`、`retain_remote_files=false`。密钥只能由环境变量或操作系统凭据边界提供。

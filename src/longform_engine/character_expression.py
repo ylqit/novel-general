@@ -37,16 +37,6 @@ CHARACTER_CONTRACT_LIST_FIELDS = (
     "social_masks",
     "contrast_with",
 )
-CHARACTER_REVIEW_DIMENSIONS = (
-    "voice_fit",
-    "swapability",
-    "character_as_function",
-    "embodied_presence",
-    "narrator_over_explains",
-    "dialogue_as_exposition",
-)
-
-
 @dataclass(frozen=True)
 class VoiceSampleApprovalResult:
     approved_by: str

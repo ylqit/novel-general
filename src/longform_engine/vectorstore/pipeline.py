@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 from contextlib import contextmanager
@@ -1088,7 +1088,3 @@ def as_optional_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
-
-
-def asdict_records(records: list[VectorHit]) -> list[dict[str, Any]]:
-    return [asdict(record) for record in records]

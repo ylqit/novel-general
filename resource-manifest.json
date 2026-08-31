@@ -322,8 +322,8 @@
     },
     {
       "path": "config/release-channel.json",
-      "sha256": "8bdc6b36bba47d011449ce8b5552ff04b5f486dcb469a3309ee2190c948679ef",
-      "size": 302
+      "sha256": "e4e8d6ceb73bb72af890e456551b6e9b28ac07e7ba1219a458c090913a13b111",
+      "size": 157
     },
     {
       "path": "config/story_facets/narrative_forms.yaml",
@@ -372,18 +372,18 @@
     },
     {
       "path": "longform-novel-claude/references/command_protocol.md",
-      "sha256": "3b8d91f421f0f0b47a5398821c72a66c710dddf6c76d6a9f0e8098f313a71682",
-      "size": 49401
+      "sha256": "fa589d36cdb1819e5a850e1ce46e626eae0e4fa54c27e8e7b6bdbd7cc4d5347b",
+      "size": 50220
     },
     {
       "path": "longform-novel-claude/references/creative_operator_protocol.md",
-      "sha256": "c9cb078ef2ff62d03963ae68ad7f7f24ab9120283e5edefd685248b34ce47296",
-      "size": 12776
+      "sha256": "82e3af7e5a79873d54e655dd1240209d8282acf9a6adf24ec2ef07385168220b",
+      "size": 12829
     },
     {
       "path": "longform-novel-claude/references/iron_laws.md",
-      "sha256": "6dd1ddde6243e5298a58a758f439666e0c03b5c6eabf02b135bee62d235095fb",
-      "size": 16295
+      "sha256": "e087082c23a007a3558f052b59464fb8777140c8128b55ff8f82167af85dfb3a",
+      "size": 15463
     },
     {
       "path": "longform-novel-claude/references/workflow_mapping.md",
@@ -407,18 +407,18 @@
     },
     {
       "path": "longform-novel-codex/references/command_protocol.md",
-      "sha256": "3b8d91f421f0f0b47a5398821c72a66c710dddf6c76d6a9f0e8098f313a71682",
-      "size": 49401
+      "sha256": "fa589d36cdb1819e5a850e1ce46e626eae0e4fa54c27e8e7b6bdbd7cc4d5347b",
+      "size": 50220
     },
     {
       "path": "longform-novel-codex/references/creative_operator_protocol.md",
-      "sha256": "c9cb078ef2ff62d03963ae68ad7f7f24ab9120283e5edefd685248b34ce47296",
-      "size": 12776
+      "sha256": "82e3af7e5a79873d54e655dd1240209d8282acf9a6adf24ec2ef07385168220b",
+      "size": 12829
     },
     {
       "path": "longform-novel-codex/references/iron_laws.md",
-      "sha256": "6dd1ddde6243e5298a58a758f439666e0c03b5c6eabf02b135bee62d235095fb",
-      "size": 16295
+      "sha256": "e087082c23a007a3558f052b59464fb8777140c8128b55ff8f82167af85dfb3a",
+      "size": 15463
     },
     {
       "path": "longform-novel-codex/references/workflow_mapping.md",
@@ -427,12 +427,12 @@
     },
     {
       "path": "longform-novel-codex/SKILL.md",
-      "sha256": "49f949c926dc954a7abc4e2d34141da7a8314b7f1b094e8105f6385509d99248",
-      "size": 10764
+      "sha256": "89d54a63e96b629826f22085dc60280415b01113fe8166068a28853fa9557a2a",
+      "size": 11293
     },
     {
       "path": "pyproject.toml",
-      "sha256": "3ff125fb0202a9800b5a2efbe07589df2d86e69423e913ae05877aced5a8d37e",
+      "sha256": "3a593a4eab63baa38126f1b3a8fbbf8f23d5e82c9a39368d6bd390eac27f11d0",
       "size": 3037
     },
     {
@@ -442,18 +442,18 @@
     },
     {
       "path": "shared/command_protocol.md",
-      "sha256": "3b8d91f421f0f0b47a5398821c72a66c710dddf6c76d6a9f0e8098f313a71682",
-      "size": 49401
+      "sha256": "fa589d36cdb1819e5a850e1ce46e626eae0e4fa54c27e8e7b6bdbd7cc4d5347b",
+      "size": 50220
     },
     {
       "path": "shared/creative_operator_protocol.md",
-      "sha256": "c9cb078ef2ff62d03963ae68ad7f7f24ab9120283e5edefd685248b34ce47296",
-      "size": 12776
+      "sha256": "82e3af7e5a79873d54e655dd1240209d8282acf9a6adf24ec2ef07385168220b",
+      "size": 12829
     },
     {
       "path": "shared/iron_laws.md",
-      "sha256": "6dd1ddde6243e5298a58a758f439666e0c03b5c6eabf02b135bee62d235095fb",
-      "size": 16295
+      "sha256": "e087082c23a007a3558f052b59464fb8777140c8128b55ff8f82167af85dfb3a",
+      "size": 15463
     },
     {
       "path": "shared/workflow_mapping.md",
@@ -466,7 +466,7 @@
       "size": 1037
     }
   ],
-  "engine_version": "0.13.0",
+  "engine_version": "0.14.0",
   "hash_policy": "text-lf-v1",
   "schema": "longform_resource_manifest_v1"
 }

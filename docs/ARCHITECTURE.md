@@ -1,6 +1,6 @@
 # Architecture
 
-本文描述 `longform-novel-engine` v0.13.0 稳定架构。它保留 v0.12 的确定性基础设施、LLM 语义引擎和人工决定三层分工，并把国内平台同人长篇的路线、上下文、跨界与发布边界纳入正式协议；人物、事件、关系、能力、外观或跨界规则仍不固化成封闭内容表。
+本文描述 `longform-novel-engine` 的当前架构：确定性基础设施、Host Agent 语义工作和人工决定各自拥有明确边界；原创、同人及跨作品同人共用生产控制面，但人物、事件、关系、能力、外观或跨界规则不固化成封闭内容表。
 
 ```text
 浏览器/CLI 暂存 → source_asset_v1 → 内部资料项/处理记录
@@ -10,11 +10,11 @@
 → 项目 Graph / RAG / SQLite 增量物化
 ```
 
-`studio serve` 和 `review serve` 共用 loopback Web 安全边界，但挂载不同路由。资料处理默认本地；OpenAI 只允许逐任务人工授权的非 Canon OCR、视觉或 ASR 预处理，不能用于小说正文、规划、审稿、Canon 决策或发布判断。
+`studio serve` 提供工作区级统一 loopback Web；章节审稿挂载在同一 Studio 路由，`review serve` 只保留为恢复与兼容入口。资料处理默认本地；OpenAI 只允许逐任务人工授权的非 Canon OCR、视觉或 ASR 预处理，不能用于小说正文、规划、审稿、Canon 决策或发布判断。
 
 ## 1. 系统定位
 
-Host Agent 负责创作、规划、语义判断和独立审稿；CLI 负责协议、路径、hash、状态机、事务和 canonical 写入。Python 不在后台调用 LLM，也不创建并行写入者。
+Host Agent 负责创作、规划、语义判断和独立审稿；确定性控制面负责协议、路径、hash、状态机、事务和 canonical 写入。普通 CLI 工作流不在后台调用 LLM。Workspace Studio 只有在用户点击当前 manifest 的 Agent 动作后，才能启动一个受限的本机 Codex CLI 子进程；它不是通用 LLM 客户端，也不创建并行写入者。
 
 ```text
 Host Agent
@@ -26,6 +26,24 @@ Host Agent
   -> transaction v3 canonical apply
   -> rebuildable graph / RAG / vector / SQLite views
 ```
+
+### 1.1 Workspace Studio 与 Codex 边界
+
+```text
+浏览器结构化动作
+  -> 当前 production action / 当前 AgentTaskManifest v5
+  -> manifest 声明输入复制到隔离 staging
+  -> prompt 经 stdin 交给 codex exec --json
+  -> Codex 只写 staging 中声明的唯一 output
+  -> 检测额外文件与输入篡改
+  -> 协议校验后复制回项目 workbench 候选
+  -> 人类预览、选择并显式批准
+  -> 确定性 transaction v3 canonical mutation
+```
+
+Web 后端不接受浏览器提供的命令行或 Prompt，不保存 OpenAI API key，也不把 Codex 进程输出保存为完整 Prompt 日志。每个项目同一时刻最多一个状态变化 Agent Job；章节写作、repair、独立审稿和语义档案仍遵守 manifest 的 session 策略。Web 页面关闭不改变任务状态，Codex 失败也不会改变正式项目状态。
+
+工作区必须是用户给出的绝对目录，不能隐式指向用户目录、磁盘根或仓库根。每个工作区由 lock 与本机实例元数据保证只有一个 Studio；可信启动器可通过随机 launcher secret 请求新的单次 bootstrap URL。浏览器会话继续使用 loopback、Host、Origin、session cookie、CSRF 与 CSP 防护。启动或打开任何页面都不构成 canonical 授权。
 
 ## 2. 事实层级
 
@@ -151,10 +169,8 @@ preparing -> prepared -> applied
 
 文件是事实源；SQLite、vector、RAG 和查询缓存可重建。普通命令发现 pending transaction 或 stale lock 时必须先路由 `recovery status`。恢复动作绑定精确报告 SHA 和人工审批，禁止手工删锁或快照。
 
-## 9. 平台与质量边界
+## 9. 平台、权利与导出边界
 
-共享 `cn_longform_fanfiction` 合同之上，起点男频同人层检查长主线、卷级增长、持续阻力、原著人物价值与后续故事来源；番茄免费同人层独立检查移动阅读清晰度、较快兑现、反填充、反粗制批量结构与章节可读性。二者均为 P2 文学/兼容观察，不能升级为句长、对白率、章尾、字数、更新、签约、推荐或付费配额。
+平台注册表按目标和 `category_availability | submission_eligibility | signing_eligibility | incentive_eligibility | content_governance | rights_risk | disclosure_requirement` 分开保存来源、核对日期、下次复核日期、状态和未知项。`platform_publication_preflight_v2` 只报告当前配置、政策和权利状态，不预测平台接受，也不形成正文配额。
 
-平台政策注册表按目标和 `category_availability | submission_eligibility | signing_eligibility | incentive_eligibility | content_governance | rights_risk | disclosure_requirement` 分开保存官方来源、验证日期、下次复核日期、状态和未知项。`platform_publication_preflight_v2` 的内容观察不预测平台接受；同人项目只有具体 `publication export --target` 会读取 `fanfiction_publication_rights_decision_v1`。决定必须为当前 `proceed` 并精确绑定有效配置、来源 Canon、逐来源权利声明和目标政策快照；缺失、`hold`、hash 漂移或政策复核过期只阻断该目标导出。该决定不是法律意见、授权或接受保证，原创项目不触发。
-
-`protocol_ready`、`author_acceptance_ready`、`literary_evidence_ready` 独立报告。同人文学证据要求 OC/SI 与原著角色中心两条各 20 章路线、hash-only 自动门禁报告、三名未参与生成的人类盲审、中位数阈值及全部实质分歧人工处理；系统不选择更有利的个别意见。当前仍无合格真实盲评 manifest，因此 `literary_evidence_ready=false`。
+同人项目只有具体 `publication export --target` 会读取 `fanfiction_publication_rights_decision_v1`。决定必须为当前 `proceed` 并精确绑定有效配置、来源 Canon、逐来源权利声明和目标政策快照；缺失、`hold`、hash 漂移或政策复核过期只阻断该目标导出。该决定不是法律意见、授权或接受保证，原创项目不触发。

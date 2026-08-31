@@ -188,7 +188,7 @@ def test_quality_status_reports_revision_coverage_and_nonblocking_platform_state
 
     payload = quality_status(config)
 
-    assert payload["schema"] == "quality_status_v2"
+    assert payload["schema"] == "quality_status_v3"
     assert payload["human_author_revision_coverage"]["complete"] is False
     assert payload["story_brief_currentness"]["contract_current"] is True
     assert payload["story_brief_currentness"]["human_chapter_intent_current"] is True
@@ -201,7 +201,7 @@ def test_quality_status_reports_revision_coverage_and_nonblocking_platform_state
         item["human_revision_coverage"]["complete"] is True
         for item in payload["platform_preflights"].values()
     )
-    assert payload["literary_evidence_ready"] is False
+    assert "literary_evidence_ready" not in payload
 
 
 def test_review_desk_has_no_prefilled_human_pass_reason_or_direct_repair_submit_button():

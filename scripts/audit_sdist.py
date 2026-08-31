@@ -40,7 +40,6 @@ REQUIRED_SUFFIXES = (
     "docs/GRAPH_MODEL.md",
     "docs/OPERATOR_GUIDE.md",
     "docs/PIPELINE_MODEL.md",
-    "docs/QUALITY_BENCHMARK_RUNBOOK.md",
     "docs/RAG_MODEL.md",
     "docs/RELEASE_RUNBOOK.md",
     "docs/RESEARCH_MODEL.md",
@@ -49,19 +48,7 @@ REQUIRED_SUFFIXES = (
     "docs/SQLITE_MODEL.md",
     "docs/STORAGE_MODEL.md",
     "docs/RELEASE_HISTORY.md",
-    "docs/V0_4_4_RELEASE_CHECKLIST.md",
-    "docs/V0_5_0_RELEASE_CHECKLIST.md",
-    "docs/V0_6_0_RELEASE_CHECKLIST.md",
-    "docs/V0_7_0_RELEASE_CHECKLIST.md",
-    "docs/V0_8_0_RELEASE_CHECKLIST.md",
-    "docs/V0_9_0_RELEASE_CHECKLIST.md",
-    "docs/V0_10_0_RELEASE_CHECKLIST.md",
-    "docs/V0_11_0_IMPLEMENTATION.md",
-    "docs/V0_11_0_RELEASE_CHECKLIST.md",
-    "docs/V0_12_SEMANTIC_ARCHITECTURE.md",
-    "docs/V0_12_0_RELEASE_CHECKLIST.md",
-    "docs/V0_13_FANFICTION_ARCHITECTURE.md",
-    "docs/V0_13_0_RELEASE_CHECKLIST.md",
+    "docs/WEB_STUDIO.md",
     "docs/releases/v0.4.0.md",
     "docs/releases/v0.4.1.md",
     "docs/releases/v0.4.2.md",
@@ -75,6 +62,7 @@ REQUIRED_SUFFIXES = (
     "docs/releases/v0.11.0.md",
     "docs/releases/v0.12.0.md",
     "docs/releases/v0.13.0.md",
+    "docs/releases/v0.14.0.md",
     "longform-novel-codex/SKILL.md",
     "longform-novel-codex/references/command_protocol.md",
     "longform-novel-claude/SKILL.md",
@@ -121,7 +109,6 @@ REQUIRED_SUFFIXES = (
     "src/longform_engine/quality/editorial_patterns.py",
     "src/longform_engine/publication.py",
     "src/longform_engine/rag/production_benchmark.py",
-    "src/longform_engine/reader_promises.py",
     "src/longform_engine/release_readiness.py",
     "src/longform_engine/storage/recovery.py",
     "src/longform_engine/vector_backends.py",
@@ -143,6 +130,17 @@ REQUIRED_SUFFIXES = (
     "tests/test_fanfiction_source_library.py",
     "tests/test_source_processing.py",
     "tests/test_studio_server.py",
+)
+
+FORBIDDEN_SUFFIXES = (
+    "src/longform_engine/reader_promises.py",
+    "docs/QUALITY_BENCHMARK_RUNBOOK.md",
+    "docs/SEMANTIC_KNOWLEDGE_AND_ARTIFACT_COMPACTION.md",
+    "docs/V0_10_0_IMPLEMENTATION.md",
+    "docs/V0_11_0_IMPLEMENTATION.md",
+    "docs/V0_12_SEMANTIC_ARCHITECTURE.md",
+    "docs/V0_13_FANFICTION_ARCHITECTURE.md",
+    "RELEASE_CHECKLIST.md",
 )
 
 
@@ -169,6 +167,16 @@ def main() -> int:
         print("sdist audit failed:", file=sys.stderr)
         for suffix in missing:
             print(f"- missing {suffix}", file=sys.stderr)
+        return 1
+    forbidden = [
+        suffix
+        for suffix in FORBIDDEN_SUFFIXES
+        if any(name.endswith("/" + suffix) or name.endswith(suffix) for name in names)
+    ]
+    if forbidden:
+        print("sdist audit failed:", file=sys.stderr)
+        for suffix in forbidden:
+            print(f"- forbidden {suffix}", file=sys.stderr)
         return 1
     print(f"OK: sdist audit passed ({len(names)} entries): {sdist}")
     return 0

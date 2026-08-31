@@ -19,7 +19,6 @@ from longform_engine.agent_tasks import (
     SUPPORTED_AGENT_TASK_SCHEMA_VERSIONS,
     TASK_CONTRACTS,
 )
-from longform_engine.blind_review import literary_evidence_status
 from longform_engine.distribution import tree_hash
 from longform_engine.resources import resource_root
 from longform_engine.prompting import estimate_text_units, load_context_profile_registry
@@ -74,7 +73,6 @@ PROTOCOL_SURFACE_FILES = (
     "src/longform_engine/agent_results.py",
     "src/longform_engine/agent_tasks.py",
     "src/longform_engine/author_voice.py",
-    "src/longform_engine/blind_review.py",
     "src/longform_engine/chapter_contract.py",
     "src/longform_engine/canon_changes.py",
     "src/longform_engine/fanfiction_sources.py",
@@ -431,7 +429,6 @@ def check_agent_data_pipeline_readiness(
     failures = [item for item in checks if item["status"] == "fail"]
     protocol_ready = not failures
     production_contract_ready = protocol_ready
-    literary_evidence_ready, literary_evidence_blockers = literary_evidence_status(root)
     professional_prompt_ready = not any(
         item["id"] == "professional_prompt_calibration" and item["status"] == "fail"
         for item in checks
@@ -445,7 +442,6 @@ def check_agent_data_pipeline_readiness(
         "ready_for_data_pipeline": protocol_ready and production_contract_ready,
         "protocol_ready": protocol_ready,
         "production_contract_ready": production_contract_ready,
-        "literary_evidence_ready": literary_evidence_ready,
         "professional_prompt_ready": professional_prompt_ready,
         "repository": str(root),
         "provenance": {
@@ -461,7 +457,6 @@ def check_agent_data_pipeline_readiness(
             "failures": len(failures),
         },
         "blocking_reasons": [item["id"] for item in failures],
-        "literary_evidence_blockers": literary_evidence_blockers,
         "next_command": (
             failures[0]["next_command"]
             if failures
@@ -496,7 +491,6 @@ def render_agent_data_pipeline_readiness(report: dict[str, Any]) -> str:
         f"Execution: {report.get('provenance', {}).get('execution_model') or 'unknown'}",
         f"Protocol ready: {bool(report.get('protocol_ready'))}",
         f"Production contract ready: {bool(report.get('production_contract_ready'))}",
-        f"Literary evidence ready: {bool(report.get('literary_evidence_ready'))}",
     ]
     for item in report.get("checks") or []:
         lines.append(f"[{str(item.get('status')).upper()}] {item.get('id')}")

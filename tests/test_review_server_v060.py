@@ -66,6 +66,7 @@ def test_loopback_review_server_burns_token_and_rejects_host_origin_csrf_path_an
         page = body.decode("utf-8")
         assert status == 200
         assert injected not in page
+        assert "明确 apply 人工深审决定" in page
         assert f"nonce-{server.csp_nonce}" in headers["Content-Security-Policy"]
         assert f'nonce="{server.csp_nonce}"' in page
 
@@ -120,6 +121,20 @@ def test_review_desk_mutations_obey_project_lock(tmp_path):
     with acquire_project_lock(config, owner="test", command="hold"):
         with pytest.raises(ValueError, match="Project lock already exists"):
             service.prepare_human_review(expected_candidate_sha256=digest)
+
+
+def test_review_desk_human_decision_apply_requires_explicit_confirmation(tmp_path):
+    config, _root, _task = seed_candidate(tmp_path)
+    service = ReviewDeskService(config, chapter_number=1)
+    digest = service.state()["draft"]["sha256"]
+
+    with pytest.raises(ReviewServerError, match="explicit human decision"):
+        service.apply_human_review(
+            expected_candidate_sha256=digest,
+            expected_review_sha256="0" * 64,
+            approved_by="human",
+            acknowledge_human_decision=False,
+        )
 
 
 def test_manual_full_repair_submit_consumes_budget_and_stales_old_review_and_consultation(tmp_path):

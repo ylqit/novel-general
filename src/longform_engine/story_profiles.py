@@ -13,7 +13,6 @@ import yaml
 from longform_engine.resources import resource_path
 
 
-STORY_PROFILE_SCHEMA = "story_profile_v1"
 BUILTIN_MARKET_IDS = frozenset({"general_cn", "qidian_male", "fanqie_free", "jinjiang_female"})
 FACET_KINDS = (
     "setting",

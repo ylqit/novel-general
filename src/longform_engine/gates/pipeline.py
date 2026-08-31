@@ -341,26 +341,6 @@ def semantic_review_participant_ids(
     return dedupe_strings([value.strip() for value in values if value.strip()])
 
 
-def semantic_review_voice_contracts(value: Any, participant_ids: list[str]) -> list[dict[str, Any]]:
-    allowed = {item.casefold() for item in participant_ids}
-    contracts: list[dict[str, Any]] = []
-    for record in semantic_review_all_records(value):
-        character_id = str(record.get("character_id") or "").strip()
-        if character_id.casefold() not in allowed:
-            continue
-        if not any(key in record for key in ("baseline_voice", "voice", "invariants", "forbidden_shortcuts")):
-            continue
-        contracts.append(record)
-    return contracts[:8]
-
-
-def semantic_review_chapter_record(value: Any, chapter_number: int) -> Any:
-    for record in semantic_review_all_records(value):
-        if int(record.get("chapter_number") or 0) == chapter_number:
-            return record
-    return {}
-
-
 def semantic_review_matching_records(value: Any, terms: list[str]) -> list[dict[str, Any]]:
     if not terms:
         return []
@@ -402,21 +382,6 @@ def semantic_review_all_records(value: Any) -> list[dict[str, Any]]:
 
     visit(value, 0)
     return records
-
-
-def semantic_review_declared_fanfiction_policy(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    keys = (
-        "continuity_mode",
-        "canon_cutoff",
-        "divergence_point",
-        "divergence_points",
-        "ooc_tolerance",
-        "world_rule_changes",
-        "relationship_boundaries",
-    )
-    return {key: value.get(key) for key in keys if value.get(key) not in (None, "", [], {})}
 
 
 def fit_semantic_context_value(value: Any, max_chars: int, terms: list[str]) -> Any:
@@ -1876,15 +1841,6 @@ def check_reverse_brake(
     return failures, warnings, payload
 
 
-def check_anchor_resolution(
-    config: ConfigDocument,
-    root: Path,
-    chapter_number: int,
-    text: str,
-) -> tuple[list[dict[str, Any]], list[str]]:
-    failures, warnings, _ = check_reverse_brake(config, root, chapter_number, text)
-    return failures, warnings
-
 def current_outline_anchor(root: Path, chapter_number: int) -> dict[str, Any]:
     payload = load_json(root / "20_outline" / "outline_anchors.json", default=[])
     anchors = normalize_records(payload)
@@ -2755,95 +2711,6 @@ def resolve_semantic_review_result_path(root: Path, artifact_dir: Path, file_pat
     if resolved != expected:
         raise GateError("semantic review result must be 50_workbench/gate_artifacts/chNNN/semantic_review_result.json.")
     return resolved
-
-
-def resolve_review_source(root: Path, chapter_number: int, source_path: str) -> Path | None:
-    if not source_path:
-        return None
-    candidate = (root / source_path).resolve()
-    allowed = {
-        path.resolve()
-        for lane in ("draft", "final")
-        for path in [chapter_text_path(root, chapter_number, source=lane)]
-        if path is not None
-    }
-    return candidate if candidate in allowed and candidate.exists() else None
-
-
-def is_canonical_reference(path: str) -> bool:
-    normalized = path.replace("\\", "/")
-    return normalized.startswith(("10_bible/", "20_outline/", "30_state/", "60_rag/memory/"))
-
-
-def validate_semantic_review_finding(
-    finding: Any,
-    *,
-    index: int,
-    source_text: str,
-    allowed_refs: set[str],
-    known_entities: set[str],
-    errors: list[str],
-) -> None:
-    if not isinstance(finding, dict):
-        errors.append(f"findings[{index}] must be an object.")
-        return
-    expected = {
-        "code",
-        "category",
-        "severity",
-        "message",
-        "evidence_span",
-        "canonical_refs",
-        "entity_ids",
-        "recommendation",
-    }
-    if set(finding) != expected:
-        errors.append(f"findings[{index}] keys must be exactly {sorted(expected)}.")
-    if not str(finding.get("code") or "").strip():
-        errors.append(f"findings[{index}].code is required.")
-    if str(finding.get("category") or "") not in {
-        "motivation",
-        "location",
-        "ability",
-        "relationship",
-        "foreshadowing",
-        "causality",
-        "canon_fidelity",
-        "voice",
-        "divergence",
-        "original_contribution",
-    }:
-        errors.append(f"findings[{index}].category is invalid.")
-    if str(finding.get("severity") or "").upper() not in {"P0", "P1", "P2"}:
-        errors.append(f"findings[{index}].severity must be P0, P1, or P2.")
-    if not str(finding.get("message") or "").strip() or not str(finding.get("recommendation") or "").strip():
-        errors.append(f"findings[{index}] requires message and recommendation.")
-    span = finding.get("evidence_span")
-    if not isinstance(span, dict) or set(span) != {"start", "end", "text"}:
-        errors.append(f"findings[{index}].evidence_span must contain exactly start, end, text.")
-    else:
-        start = span.get("start")
-        end = span.get("end")
-        quoted = span.get("text")
-        if not isinstance(start, int) or not isinstance(end, int) or not (0 <= start < end <= len(source_text)):
-            errors.append(f"findings[{index}].evidence_span is outside the chapter.")
-        elif quoted != source_text[start:end]:
-            errors.append(f"findings[{index}].evidence_span.text does not match the chapter slice.")
-    refs = finding.get("canonical_refs")
-    if not isinstance(refs, list) or not refs:
-        errors.append(f"findings[{index}].canonical_refs must be a non-empty list.")
-    else:
-        for ref in refs:
-            normalized = str(ref).replace("\\", "/")
-            if normalized not in allowed_refs:
-                errors.append(f"findings[{index}] references undeclared canonical file: {normalized}.")
-    entity_ids = finding.get("entity_ids")
-    if not isinstance(entity_ids, list):
-        errors.append(f"findings[{index}].entity_ids must be a list.")
-    else:
-        for entity_id in entity_ids:
-            if str(entity_id) not in known_entities:
-                errors.append(f"findings[{index}] references unknown entity_id: {entity_id}.")
 
 
 def sha256_text(text: str) -> str:

@@ -855,11 +855,6 @@ def relation_marker_present(marker: str, lowered: str, evidence: str) -> bool:
     return marker in evidence
 
 
-def detect_status_change(text: str, label: str) -> str | None:
-    match = detect_status_change_evidence(text, label)
-    return match[0] if match else None
-
-
 def detect_status_change_evidence(text: str, label: str) -> tuple[str, str] | None:
     """Return only status statements grammatically bound to the named entity."""
 

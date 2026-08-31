@@ -1,6 +1,6 @@
 # Storage Model
 
-本文定义 0.13.0 国内平台同人长篇稳定版的落盘合同。人物、事件、关系、能力、外观和跨界规则不再各自拥有封闭内容表；它们使用开放 `semantic_document_v1`。`fanfiction_source_canon_v1/v2/v3` 不能作为当前协议证据。
+本文定义当前落盘合同。人物、事件、关系、能力、外观和跨界规则不各自拥有封闭内容表；它们使用开放 `semantic_document_v1`。`fanfiction_source_canon_v1/v2/v3` 不能作为当前协议证据。
 
 用户级资料库包含 `原件对象/`、`暂存区/`、`派生索引/`，每个动态资料项保存原件清单、不可变规范化版本、证据分段、语义候选和处理回执。一个资料项可以绑定多个 `source_asset_v1`；排序后的 asset 清单决定 bundle 哈希。项目只保存固定绑定、批准语义主张、短证据与 Canon，不复制完整原件或完整规范化全文。内部索引/作业记录服务确定性存储，不是公共人物或剧情本体。
 
@@ -37,7 +37,6 @@
 | `50_workbench/fanfiction_context/chNNN.json` | 可重建且仅接受当前版本的内部 `fanfiction_context_bundle_v2`；包含显式必需 claim、带理由依赖闭包、结构化分区、作者/审阅双投影、命名冲突和预算，不是作者稿 |
 | `50_workbench/fanfiction_knowledge_impacts/chNNN.<trigger-digest>.workflow.json` | 每项经人工确认的重大分歧各自对应的未来知识可靠性待审工作流；按触发身份幂等，不自动改变 Canon 或路线 |
 | `50_workbench/publication/rights_decisions/<target>.decision.json` | `fanfiction_publication_rights_decision_v1`；仅保存人工 `proceed/hold`、风险说明及配置/Canon/逐来源权利声明/目标政策快照 hash，不保存原著、Prompt 或正文 |
-| `70_runtime/literary_evidence/fanfiction_trials/<trial-id>/` | 两条各 20 章同人路线的匿名公开包、私有路线映射、三份独立人类评审、不可改写中位数聚合和实质分歧人工处理；正文只存在项目运行时公开盲审包，不进入仓库 |
 | `50_workbench/创作沙盒/` | 可自由试验的非 Canon `semantic_document_v1` |
 | `50_workbench/语义候选/` | 沙盒提升或 Host Agent 生成、仍待复核/审批的候选 |
 

@@ -22,23 +22,6 @@ from longform_engine.storage.layout import manuscript_chapter_path
 
 
 EVENT_REALIZATION_APPLICATION_SCHEMA = "event_realization_application_v1"
-EVENT_STATES = frozenset(
-    {
-        "proposed",
-        "planned_approved",
-        "rejected",
-        "waiting_preconditions",
-        "ready",
-        "human_activated",
-        "realized",
-        "partially_realized",
-        "not_realized",
-        "contradicted",
-        "deferred",
-        "cancelled",
-        "superseded",
-    }
-)
 REALIZATION_STATES = frozenset(
     {"realized", "partially_realized", "not_realized", "contradicted", "deferred", "cancelled"}
 )

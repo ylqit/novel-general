@@ -1,5 +1,30 @@
 # Operator Guide
 
+## Web 小说创作工作台
+
+日常使用优先启动一个明确的工作区：
+
+```powershell
+longform-engine studio serve --workspace "D:\NovelProjects" --create-workspace
+```
+
+Windows 可先安装桌面入口：
+
+```powershell
+longform-engine studio shortcut-install --workspace "D:\NovelProjects"
+```
+
+工作区首页可创建原创、同人和跨作品同人项目，或导入工作区内已有 `project.yaml`。项目驾驶舱始终显示 `production next` 的当前安全动作；只有 manifest 当前、Codex CLI 已登录且用户点击“交给 Codex”时才启动 Agent Job。设计候选批准、编译后的 Canon apply、人工深审决定、finalize、semantic apply、事件/承诺确认和 close 是彼此独立的人类确认动作。
+
+已有项目或章节可以深链接打开：
+
+```powershell
+longform-engine studio serve "D:\NovelProjects\my-book\project.yaml"
+longform-engine studio serve "D:\NovelProjects\my-book\project.yaml" --chapter 12
+```
+
+浏览器关闭不会取消正在运行的 Agent Job；重新打开同一工作区后可恢复查看。Codex 不可用时仍能查看项目、编辑人工材料和执行不依赖 Agent 的结构化操作。详细安全边界和页面路由见 [`WEB_STUDIO.md`](WEB_STUDIO.md)。
+
 ## 同人原著资料
 
 作者侧中文入口与底层命令映射如下：
@@ -30,7 +55,7 @@
 
 项目原著基线 Canon 获批后，先批准同人故事发动机，再设计路线；路线必须经过不同隔离会话的独立复核。故事发动机、路线、复核和原著 Canon 的 hash 共同决定当前状态。原著事件命运、人物知识边界和跨界规则通过开放 `semantic_document_v1` claim 表达，不建立专用封闭 Schema。当前章内部上下文以稳定 claim 引用和 Token 预算编译；作者 Story Brief 只显示自然中文。
 
-本指南对应 0.13.0 国内平台同人长篇稳定版。`fanfiction_source_canon_v1/v2/v3` 与旧固定内容协议不能继续作为当前证据；v0.11 项目必须使用显式审计和非原地导入。
+`fanfiction_source_canon_v1/v2/v3` 与旧固定内容协议不能继续作为当前证据；旧资料项目必须使用显式审计和非原地导入。
 
 创作沙盒与迁移入口：
 
@@ -146,7 +171,28 @@ longform-engine reader-feedback propose project.yaml --batch BATCH_PATH --decisi
 
 反馈不能直接改正文、承诺或平台策略，只能生成 planning proposal 或 canon-change seed。
 
-## 8. 恢复和平台边界
+## 8. 发布、产物与恢复
+
+发布前先查看目标预检和来源权利状态：
+
+```powershell
+longform-engine publication risk-report project.yaml --target TARGET
+longform-engine publication preflight project.yaml --target TARGET
+longform-engine publication rights-decision project.yaml --target TARGET --decision proceed --approved-by human --note NOTE
+longform-engine publication export project.yaml --target TARGET
+```
+
+同人权利决定只约束指定目标的导出。配置、来源 Canon、逐来源权利声明或政策快照变化后必须重新决定；预检和决定都不构成授权、法律意见或平台接受保证。
+
+历史 workbench 产物先预览再归档：
+
+```powershell
+longform-engine artifacts compact project.yaml --through N --dry-run
+longform-engine artifacts compact project.yaml --through N
+longform-engine artifacts verify project.yaml
+```
+
+审计 ZIP 保留清单和内容哈希；final、语义账本、规划账本、关闭记录和当前状态视图不会被归档删除。
 
 发生写入中断先执行：
 
@@ -155,6 +201,4 @@ longform-engine recovery status project.yaml --json
 longform-engine production next project.yaml
 ```
 
-不要手工删除锁、事务或 SQLite。起点是主要编辑画像，番茄是非阻断观察；预检不承诺平台通过，也不报告 AI 概率或规避检测。
-
-`literary_evidence_ready=false` 仍是当前事实。
+不要手工删除锁、事务或 SQLite。恢复动作必须绑定 `recovery status` 的当前报告 hash，并由人明确选择允许的恢复操作。

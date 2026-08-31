@@ -400,3 +400,11 @@ def test_creation_goal_and_market_claim_remain_noncanonical_workbench_records(
     assert claim["canon"] is False
     assert claim["quality_gate"] is False
     assert not (root / "10_bible" / "creation_goal.yaml").exists()
+
+
+def test_browser_source_upload_defaults_to_unverified_short_evidence():
+    page = studio_page_html("csrf", "nonce")
+
+    assert 'rights_status:"unverified"' in page
+    assert 'retention_mode:"short_evidence"' in page
+    assert 'rights_status:"user_claimed_authorized"' not in page
