@@ -39,6 +39,40 @@ from longform_engine.storage.layout import (
 )
 
 
+def read_chapter_audit_artifact(root: Path, chapter_number: int, relative: str) -> bytes:
+    """Read evidence from its live file or verified archive without restoring it."""
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root.resolve()) or Path(relative).is_absolute():
+        raise ValueError("chapter audit evidence must stay inside the source project")
+    if path.is_file():
+        return path.read_bytes()
+    archive = root / "70_runtime/artifacts/chapters" / f"ch{chapter_number:03d}.zip"
+    if not archive.is_file():
+        raise FileNotFoundError(f"chapter audit evidence unavailable: {relative}")
+    try:
+        with zipfile.ZipFile(archive) as handle:
+            manifest = json.loads(handle.read("_audit/manifest.json"))
+            if manifest.get("schema") != "chapter_artifact_archive_v3" or manifest.get("chapter_number") != chapter_number:
+                raise ValueError("chapter audit archive protocol mismatch")
+            entries = [item for item in manifest["entries"] if item.get("path") == relative]
+            if not entries:
+                raise FileNotFoundError(f"chapter audit evidence unavailable: {relative}")
+            if len(entries) != 1:
+                raise ValueError(f"chapter audit evidence ambiguous: {relative}")
+            entry = entries[0]
+            member = entry.get("member", "")
+            if not member.startswith("_audit/blobs/") or ".." in PurePosixPath(member).parts:
+                raise ValueError(f"chapter audit blob missing: {relative}")
+            content = handle.read(member)
+            if sha256(content).hexdigest() != entry.get("sha256"):
+                raise ValueError(f"chapter audit evidence hash mismatch: {relative}")
+            return content
+    except FileNotFoundError:
+        raise
+    except (OSError, KeyError, TypeError, AttributeError, zipfile.BadZipFile) as exc:
+        raise ValueError(f"chapter audit evidence unavailable: {relative}") from exc
+
+
 CHAPTER_PATTERN = re.compile(r"(?:^|[._/-])ch0*(\d+)(?:[._/-]|$)", re.IGNORECASE)
 ARCHIVE_ROOT = "70_runtime/artifacts/chapters"
 PROJECT_SETUP_ARCHIVE = "70_runtime/artifacts/project-setup.zip"

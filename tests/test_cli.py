@@ -10,7 +10,7 @@ import yaml
 from longform_engine.cli import build_parser
 from longform_engine.config import load_project_config
 from longform_engine.storage import acquire_project_lock, apply_transaction
-from tests.project_fixtures import approve_story_candidate, mark_project_ready
+from tests.project_fixtures import approve_story_candidate, compile_chapter_brief_fixture, mark_project_ready
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -119,8 +119,8 @@ def test_cli_mutating_commands_are_marked_for_project_lock():
         ("graph", "check", "project.yaml"),
         ("open-book", "project.yaml"),
         ("open-book", "--interactive"),
-        ("plan-chapter", "project.yaml", "--chapter", "1"),
-        ("beat", "project.yaml", "--chapter", "1"),
+        ("literary", "create", "project.yaml", "--trial-id", "trial", "--stage", "opening", "--samples-file", "samples.json"),
+        ("literary", "reviewer-add", "project.yaml", "--trial-id", "trial", "--reviewer-id", "reader"),
         ("continue-write", "project.yaml"),
         ("auto-write", "plan", "project.yaml"),
         ("auto-write", "run", "project.yaml"),
@@ -417,6 +417,7 @@ def test_cli_unified_chapter_semantic_task_prints_manifest(tmp_path):
     )
 
     project_yaml = tmp_path / "novel" / "project.yaml"
+    mark_cli_project_ready(project_yaml)
     semantic = run_cli("chapter", "semantic-task", str(project_yaml), "--chapter", "1")
 
     assert semantic.returncode == 0
@@ -424,23 +425,18 @@ def test_cli_unified_chapter_semantic_task_prints_manifest(tmp_path):
     assert "ch001.semantic.agent_task.json" in semantic.stdout
 
 
-def test_cli_open_plan_beat_continue(tmp_path):
+def test_cli_current_planning_continue_without_retired_cards(tmp_path):
     init = run_cli("init-project", "--template", "qidian-longform", "--output", str(tmp_path / "novel"))
     assert init.returncode == 0
 
     project_yaml = tmp_path / "novel" / "project.yaml"
     open_book = run_cli("open-book", str(project_yaml))
     mark_cli_project_ready(project_yaml)
-    plan = run_cli("plan-chapter", str(project_yaml), "--chapter", "1")
-    beat = run_cli("beat", str(project_yaml), "--chapter", "1")
     cont = run_cli("continue-write", str(project_yaml), "--chapter", "1")
 
     assert open_book.returncode == 0
     assert "OK: open-book confirmed" in open_book.stdout
-    assert plan.returncode == 0
-    assert "OK: chapter card ready" in plan.stdout
-    assert beat.returncode == 0
-    assert "OK: beat sheet ready" in beat.stdout
+    assert not (project_yaml.parent / "20_outline/chapter_cards").exists()
     assert cont.returncode == 0
     assert "OK: continue-write task package ready" in cont.stdout
     assert "Writing task:" in cont.stdout
@@ -655,8 +651,7 @@ def test_cli_failed_gate_reports_review_barrier_before_repair(tmp_path):
     assert init.returncode == 0
 
     project_yaml = tmp_path / "novel" / "project.yaml"
-    plan = run_cli("plan-chapter", str(project_yaml), "--chapter", "1")
-    assert plan.returncode == 0
+    mark_cli_project_ready(project_yaml)
     draft = tmp_path / "novel" / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# 第一章\n\nTODO 写作说明：这里需要补剧情。\n", encoding="utf-8")
 
@@ -733,7 +728,7 @@ def test_cli_creative_expand_task_and_check(tmp_path):
     assert init.returncode == 0
 
     project_yaml = tmp_path / "novel" / "project.yaml"
-    assert run_cli("plan-chapter", str(project_yaml), "--chapter", "1").returncode == 0
+    mark_cli_project_ready(project_yaml)
     draft = tmp_path / "novel" / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\nShort draft at the gate.\n", encoding="utf-8")
     gate = run_cli("gate-check", str(project_yaml), "--chapter", "1")
@@ -768,10 +763,12 @@ def test_cli_editorial_review_and_need_human_request(tmp_path):
     project_yaml = tmp_path / "novel" / "project.yaml"
     assert run_cli("open-book", str(project_yaml)).returncode == 0
     mark_cli_project_ready(project_yaml)
+    compile_chapter_brief_fixture(project_yaml.parent, load_project_config(project_yaml))
     draft = tmp_path / "novel" / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\nTODO verify continuity before publication.\n", encoding="utf-8")
 
     review = run_cli("editorial", "review", str(project_yaml), "--chapter", "1", "--json")
+    assert review.returncode == 1, review.stderr  # TODO produces a blocking editorial finding.
     payload = json.loads(review.stdout)
     need = run_cli(
         "editorial",
@@ -832,14 +829,11 @@ def test_cli_revision_branch_rollback_and_impact(tmp_path):
     project_yaml = tmp_path / "novel" / "project.yaml"
     final_dir = tmp_path / "novel" / "40_manuscript" / "final"
     summary_dir = tmp_path / "novel" / "40_manuscript" / "summaries"
-    cards = tmp_path / "novel" / "20_outline" / "chapter_cards"
+    mark_cli_project_ready(project_yaml)
     for number in (1, 2):
         (final_dir / f"ch{number:03d}.md").write_text(f"# 第{number}章\n\n林迟推进主线。\n", encoding="utf-8")
         (summary_dir / f"ch{number:03d}.md").write_text(f"ch{number:03d} 摘要。\n", encoding="utf-8")
-        (cards / f"ch{number:03d}.json").write_text(
-            json.dumps({"chapter_number": number, "status": "planned", "title": f"第{number}章"}, ensure_ascii=False),
-            encoding="utf-8",
-        )
+
 
     branch = run_cli(
         "revision",

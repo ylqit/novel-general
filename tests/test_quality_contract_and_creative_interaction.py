@@ -1,5 +1,4 @@
 import json
-from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -8,16 +7,12 @@ from longform_engine.agent_protocols import (
     CANONICAL_DELTA_SCHEMA,
     DESIGN_REQUIRED_HEADINGS,
 )
-from longform_engine.agent_tasks import list_manifests, load_manifest, validate_manifest_strict
-from longform_engine.arc_simulation import load_active_arc_simulation
+from longform_engine.agent_tasks import list_manifests, load_manifest
 from longform_engine.config import ConfigError, load_project_config
 from longform_engine.intelligence import (
-    apply_compiled_design,
     approve_design_document,
-    assess_chapter_direction,
     create_design_compile_task,
     create_intelligence_task,
-    record_chapter_direction_selection,
     validate_design_compile_delta,
     validate_intelligence_candidate,
 )
@@ -26,7 +21,6 @@ from longform_engine.production import agent_task_brief, production_next
 from longform_engine.quality import approve_style_baseline, compile_effective_quality_contract
 from longform_engine.storage import init_project
 from tests.project_fixtures import mark_project_ready
-import longform_engine.intelligence.pipeline as intelligence_pipeline
 
 
 def seed_project(tmp_path: Path):
@@ -92,15 +86,6 @@ def prepare_design_delta(
         and candidate.relative_to(root).as_posix() == (item.get("io") or {}).get("output", {}).get("path")
     )
     assert validate_intelligence_output(config, root, manifest, candidate).ok
-    if task_type == "chapter_direction":
-        record_chapter_direction_selection(
-            config,
-            document_path=candidate,
-            selected_option_id=str(payload["selected_direction"]["id"]),
-            user_adjustments=dict(payload["selection"]["user_adjustments"]),
-            repetition_reason=str(payload["selection"]["repetition_reason"]),
-            selected_by="human",
-        )
     approve_design_document(
         config,
         task_type=task_type,
@@ -159,125 +144,6 @@ def prepare_design_delta(
     return delta
 
 
-def valid_direction_candidate(root: Path, chapter_number: int, reasons: list[str]) -> dict:
-    card = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-    card_payload = json.loads(card.read_text(encoding="utf-8"))
-    scene_chain = [
-        {
-            "scene_id": "verify_witness",
-            "location": "archive gate",
-            "participants": ["lead_ari", "ally_mira"],
-            "carrier": "pursuit",
-            "desire_collision": "Ari wants verification while Mira wants immediate pursuit.",
-            "action": "Ari wedges the damaged seal into the closing gate while Mira reaches for the witness.",
-            "reaction": "The alarm seals the lower stair and the witness changes route.",
-            "choice": "Ari spends the last safe minute checking the damaged seal.",
-            "cost": "The visible suspect gains distance.",
-            "turn": "The seal proves the suspect used an internal route.",
-            "exit_state": "The pursuit moves inside the archive and the witness has a lead.",
-        },
-        {
-            "scene_id": "share_evidence",
-            "location": "witness stair",
-            "participants": ["lead_ari", "ally_mira"],
-            "carrier": "relationship conflict",
-            "desire_collision": "Mira demands the route while Ari wants sole control of the clue.",
-            "action": "Mira blocks Ari's path and offers her faster route in exchange for the clue.",
-            "reaction": "Ari sees the witness vanish below and can no longer keep both control and speed.",
-            "choice": "Ari shares the route and accepts Mira's condition.",
-            "cost": "He loses sole control of the evidence.",
-            "turn": "Their alliance becomes an operational obligation.",
-            "exit_state": "Mira owns the route copy and Ari owes her a public defense.",
-        },
-    ]
-    common = {
-        "book_goal": "Expose who controls collective memory.",
-        "volume_goal": "Prove the archive is being altered from inside.",
-        "protagonist_goal": "Preserve evidence without treating Mira as a tool.",
-        "featured_character_ids": card_payload["featured_character_ids"],
-        "scene_chain": scene_chain,
-        "cast_desires": {
-            "lead_ari": "Verify the physical trace before pursuit.",
-            "ally_mira": "Catch the witness before the gate closes.",
-        },
-        "dialogue_ownership": "Ari narrows claims; Mira forces decisions and names costs.",
-        "embodiment_plan": "Use Ari's careful handling and Mira's changing distance under pressure.",
-        "interiority_function": "Expose Ari's urge to control information immediately before he shares it.",
-        "immediate_desire": "Catch the witness before the archive gate closes.",
-        "opposition_force": "The gate alarm and Mira's competing plan deny Ari sole control.",
-        "dramatic_question": "Can Ari catch the witness without surrendering control of the clue?",
-        "conflict": "Verification consumes the only safe pursuit window.",
-        "key_failure": "Ari's direct pursuit fails when the seal triggers the gate alarm.",
-        "irreversible_choice": "Ari gives Mira the only route copy and accepts her condition.",
-        "chapter_turn": card_payload["chapter_turn"],
-        "reveal_boundary": "Reveal internal access but not the archive editor's identity.",
-        "must_dramatize": ["the alarm stopping the pursuit", "Ari sharing the route", "the witness escaping"],
-        "may_summarize": ["routine movement between archive levels"],
-        "primary_story_engine": "pursuit_and_leverage",
-        "scene_carriers": ["pursuit", "relationship conflict"],
-        "protected_story_outcomes": card_payload["protected_story_outcomes"],
-        "prohibited_drift": ["Do not replace the pursuit with document verification."],
-        "state_change_kind": card_payload["state_change_kind"],
-        "dramatic_method": "failed_pursuit_then_shared_choice",
-        "exposition_carrier": "embedded_in_action",
-        "local_payoff": card_payload["reader_gain"],
-        "character_cost": "Ari surrenders sole control and loses pursuit time.",
-        "mainline_move": "The investigation moves from outside sabotage to internal access.",
-        "character_arc_move": "Ari makes one bounded trust decision.",
-        "foreshadow_move": "The false treaty thread echoes through the matching seal cut.",
-        "relationship_move": card_payload["relationship_move"],
-        "ending_mode": "changed_problem",
-        "ending_intent": "The shared route makes the next pursuit possible while preserving the editor's identity.",
-        "emotional_aftereffect": "Ari feels the cost of sharing control and the alliance becomes harder to deny.",
-        "must_preserve_suspense": ["identity of the archive editor"],
-        "resolution_markers": [],
-        "main_risks": ["Too much procedure could flatten the choice."],
-        "canon_refs": [],
-        "world_rule_refs": [],
-        "foreshadow_refs": [],
-        "forbidden_reveals": ["identity of the archive editor"],
-    }
-    selected = {
-        "id": "verify_witness",
-        "title": "先核验目击者",
-        "chapter_duty": card_payload["chapter_duty"],
-        **common,
-    }
-    selected["reader_gain"] = selected.pop("local_payoff")
-    selected["cost"] = selected.pop("character_cost")
-    simulation, simulation_path, simulation_hash = load_active_arc_simulation(
-        root, chapter_number=chapter_number
-    )
-    selected["reader_promise_actions"] = [
-        {
-            "promise_id": "story_engine:opening_three" if chapter_number <= 3 else "story_engine:early_serial",
-            "action": "setup" if chapter_number in {1, 4} else "escalate",
-            "stage_id": None,
-            "intended_reader_gain": selected["reader_gain"],
-            "evidence_requirement": "Show a concrete changed condition in the final prose.",
-            "defer_reason": "",
-        }
-    ]
-    selected["arc_simulation_ref"] = {
-        "path": simulation_path.relative_to(root).as_posix(),
-        "sha256": simulation_hash,
-        "from_chapter": simulation["from_chapter"],
-        "to_chapter": simulation["to_chapter"],
-    }
-    return {
-        "schema": "chapter_direction_candidate_v5",
-        "chapter_number": chapter_number,
-        "chapter_card_sha256": sha256(card.read_bytes()).hexdigest(),
-        "trigger_reasons": reasons,
-        "selected_direction": selected,
-        "selection": {
-            "direction_id": "verify_witness",
-            "user_adjustments": {},
-            "repetition_reason": "",
-        },
-        "canonical_refs": selected["canon_refs"],
-        "introduced_elements": [],
-    }
 
 
 def test_effective_quality_contract_merges_resource_layers_and_project_override(tmp_path):
@@ -528,239 +394,3 @@ def test_production_next_honors_active_book_ideation_before_formal_planning(tmp_
     assert action["status"] == "agent_task_awaiting_agent"
     assert action["task_type"] == "book_ideation"
     assert action["next_command"].startswith("longform-engine agent-task brief ")
-
-
-def test_chapter_direction_is_required_strict_and_human_applied(tmp_path):
-    config, root = seed_project(tmp_path)
-    mark_project_ready(root, config, direction_applied=False)
-
-    assessment = assess_chapter_direction(config, 1)
-    task = create_intelligence_task(config, task_type="chapter_direction", chapter_number=1)
-    manifest = load_manifest(root, task.task_id)
-    assert validate_manifest_strict(root, manifest).ok
-    assert manifest["scope"] == {"kind": "chapter", "chapter_number": 1}
-    assert manifest["policy"]["context"]["budget_profile"] == "standard"
-    assert manifest["policy"]["context"]["capacity_units"] == 48_000
-    assert manifest["policy"]["requires_human_apply"] is True
-    candidate = root / manifest["io"]["output"]["path"]
-    card = root / "20_outline" / "chapter_cards" / "ch001.json"
-    plan = root / "20_outline" / "chapter_plan.json"
-    before = {"card": card.read_bytes(), "plan": plan.read_bytes()}
-
-    valid = valid_direction_candidate(root, 1, assessment["reasons"])
-    write_design_candidate(candidate, "chapter_direction", valid)
-    delta = prepare_design_delta(config, root, "chapter_direction", candidate, valid)
-    valid_delta_bytes = delta.read_bytes()
-    invalid_payload = json.loads(delta.read_text(encoding="utf-8"))
-    invalid_payload["changes"]["chapter_card_sha256"] = "0" * 64
-    source = candidate.relative_to(root).as_posix()
-    invalid_payload["evidence"]["/changes/chapter_card_sha256"] = [
-        f"{source}@0:{len(candidate.read_text(encoding='utf-8'))}"
-    ]
-    delta.write_text(json.dumps(invalid_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    control = validate_production_agent_result(
-        root,
-        next(
-            load_manifest(root, item["task_id"])
-            for item in reversed(list_manifests(root))
-            if item.get("task_type") == "design_semantic_compile"
-        ),
-        result_file=delta,
-    )
-    assert control.ok, control.normalization.errors
-    invalid_result = validate_design_compile_delta(
-        config,
-        task_type="chapter_direction",
-        document_path=candidate,
-        delta_path=delta,
-    )
-    assert not invalid_result.ok
-    assert card.read_bytes() == before["card"]
-    assert plan.read_bytes() == before["plan"]
-
-    delta.write_bytes(valid_delta_bytes)
-    control = validate_production_agent_result(
-        root,
-        next(
-            load_manifest(root, item["task_id"])
-            for item in reversed(list_manifests(root))
-            if item.get("task_type") == "design_semantic_compile"
-        ),
-        result_file=delta,
-    )
-    assert control.ok, control.normalization.errors
-    validated = validate_design_compile_delta(
-        config,
-        task_type="chapter_direction",
-        document_path=candidate,
-        delta_path=delta,
-    )
-    assert validated.ok, validated.errors
-    with pytest.raises(ValueError, match="approved-by human"):
-        apply_compiled_design(
-            config,
-            task_type="chapter_direction",
-            document_path=candidate,
-            delta_path=delta,
-            approved_by="agent",
-        )
-    applied = apply_compiled_design(
-        config,
-        task_type="chapter_direction",
-        document_path=candidate,
-        delta_path=delta,
-        approved_by="human",
-    )
-    applied_card = json.loads(card.read_text(encoding="utf-8"))
-    assert applied.status == "applied"
-    assert applied_card["direction_selection"]["direction_id"] == "verify_witness"
-    assert applied_card["reader_gain"] == valid["selected_direction"]["reader_gain"]
-    assert assess_chapter_direction(config, 1)["required"] is False
-    next_after_direction = production_next(config)
-    assert next_after_direction["status"] == "planning_refresh_required"
-    assert next_after_direction["task_type"] == "planning_semantic_review"
-
-
-def test_chapter_direction_selection_sidecar_binds_document_option_and_compile_inputs(tmp_path):
-    config, root = seed_project(tmp_path)
-    mark_project_ready(root, config, direction_applied=False)
-    task = create_intelligence_task(config, task_type="chapter_direction", chapter_number=1)
-    candidate = root / task.candidate_file
-    payload = valid_direction_candidate(root, 1, assess_chapter_direction(config, 1)["reasons"])
-    write_design_candidate(candidate, "chapter_direction", payload)
-    manifest = load_manifest(root, task.task_id)
-    assert validate_intelligence_output(config, root, manifest, candidate).ok
-
-    selected = record_chapter_direction_selection(
-        config,
-        document_path=candidate,
-        selected_option_id="verify_witness",
-        user_adjustments={},
-        repetition_reason="",
-        selected_by="human",
-    )
-    selection_path = root / selected.selection_file
-    sidecar = json.loads(selection_path.read_text(encoding="utf-8"))
-    assert sidecar["schema"] == "chapter_direction_selection_v1"
-    assert sidecar["document_sha256"] == sha256(candidate.read_bytes()).hexdigest()
-    assert sidecar["selected_option_id"] == "verify_witness"
-    assert sidecar["option_ids"] == ["verify_witness", "alternate_route"]
-
-    approve_design_document(
-        config,
-        task_type="chapter_direction",
-        document_path=candidate,
-        approved_by="human",
-    )
-    compile_task = create_design_compile_task(
-        config,
-        task_type="chapter_direction",
-        document_path=candidate,
-    )
-    compile_manifest = load_manifest(root, compile_task.task_id)
-    assert selected.selection_file in [item["path"] for item in compile_manifest["io"]["inputs"]]
-
-    selection_path.write_text(selection_path.read_text(encoding="utf-8") + " ", encoding="utf-8")
-    with pytest.raises(ValueError, match="selection changed after approval"):
-        create_design_compile_task(
-            config,
-            task_type="chapter_direction",
-            document_path=candidate,
-        )
-
-
-def test_specific_chapter_requires_mandatory_direction_and_regenerates_retired_reason(tmp_path):
-    config, root = seed_project(tmp_path)
-    mark_project_ready(root, config, direction_applied=False)
-    plan_path = root / "20_outline" / "chapter_plan.json"
-    plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    plan[1].update(
-        {
-            "title": "第二份口供",
-            "chapter_duty": "核对两份口供中的时间差并迫使主角放弃一个先入判断。",
-            "conflict": "证人安全与当夜追踪机会不能同时保全。",
-            "chapter_turn": "追踪失败迫使主角公开求助，并证明嫌疑人获得了内部协助。",
-            "hook": "错误记录使用了主角父亲旧案的编号规则。",
-        }
-    )
-    plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    status = assess_chapter_direction(config, 2)
-
-    assert status["required"] is True
-    assert "mandatory_chapter_direction" in status["reasons"]
-
-    task = create_intelligence_task(config, task_type="chapter_direction", chapter_number=2)
-    candidate = root / task.candidate_file
-    retired = valid_direction_candidate(root, 2, ["guided_mode"])
-    write_design_candidate(candidate, "chapter_direction", retired)
-    delta = prepare_design_delta(config, root, "chapter_direction", candidate, retired)
-    delta_payload = json.loads(delta.read_text(encoding="utf-8"))
-    assert "trigger_reasons" not in delta_payload["changes"]
-    validation = validate_design_compile_delta(
-        config,
-        task_type="chapter_direction",
-        document_path=candidate,
-        delta_path=delta,
-    )
-    assert validation.ok, validation.errors
-
-    applied = apply_compiled_design(
-        config,
-        task_type="chapter_direction",
-        document_path=candidate,
-        delta_path=delta,
-        approved_by="human",
-    )
-    card = json.loads(
-        (root / "20_outline" / "chapter_cards" / "ch002.json").read_text(encoding="utf-8")
-    )
-    assert applied.status == "applied"
-    assert card["direction_selection"]["trigger_reasons"] == status["reasons"]
-    assert "guided_mode" not in card["direction_selection"]["trigger_reasons"]
-
-
-def test_chapter_direction_apply_failure_rolls_back_card_and_plan(tmp_path, monkeypatch):
-    config, root = seed_project(tmp_path)
-    mark_project_ready(root, config, direction_applied=False)
-    task = create_intelligence_task(config, task_type="chapter_direction", chapter_number=1)
-    candidate = root / task.candidate_file
-    reasons = assess_chapter_direction(config, 1)["reasons"]
-    direction = valid_direction_candidate(root, 1, reasons)
-    write_design_candidate(candidate, "chapter_direction", direction)
-    delta = prepare_design_delta(config, root, "chapter_direction", candidate, direction)
-    assert validate_design_compile_delta(
-        config,
-        task_type="chapter_direction",
-        document_path=candidate,
-        delta_path=delta,
-    ).ok
-    card = root / "20_outline" / "chapter_cards" / "ch001.json"
-    plan = root / "20_outline" / "chapter_plan.json"
-    before = {"card": card.read_bytes(), "plan": plan.read_bytes()}
-
-    def fail_after_partial_write(
-        project_config,
-        project_root,
-        task_type,
-        payload,
-        *,
-        scope=None,
-        current_fanfiction=None,
-    ):
-        card.write_text('{"partial": true}', encoding="utf-8")
-        plan.write_text("[]", encoding="utf-8")
-        raise RuntimeError("injected direction apply failure")
-
-    monkeypatch.setattr(intelligence_pipeline, "write_targets", fail_after_partial_write)
-    with pytest.raises(RuntimeError, match="injected direction apply failure"):
-        apply_compiled_design(
-            config,
-            task_type="chapter_direction",
-            document_path=candidate,
-            delta_path=delta,
-            approved_by="human",
-        )
-
-    assert card.read_bytes() == before["card"]
-    assert plan.read_bytes() == before["plan"]
-    assert list((root / "70_runtime" / "transactions").glob("*.rollback.json"))

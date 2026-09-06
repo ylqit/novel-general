@@ -3854,8 +3854,6 @@ def _mark_source_binding_dependents_stale(
         for path in ("10_bible/characters.json", "10_bible/character_expression.json")
     ):
         marker_keys.update(("book_design", "character_expression_design"))
-    if any(path.startswith("20_outline/") for path in artifact_paths):
-        marker_keys.add("outline_design")
     for key in marker_keys:
         marker = markers.get(key)
         if not isinstance(marker, dict) or marker.get("status") != "applied":

@@ -12,10 +12,11 @@ from longform_engine.creative import (
     style_extract,
 )
 from longform_engine.gates import gate_check, pacing_review
-from longform_engine.orchestration import continue_write, open_book as engine_open_book, plan_chapter
+from longform_engine.orchestration import continue_write, open_book as engine_open_book
 from longform_engine.storage import init_project
 from tests.project_fixtures import (
     mark_project_ready,
+    compile_chapter_brief_fixture,
     rebind_human_intent_fixture,
     refresh_arc_simulation_fixture,
     update_chapter_contract_fixture,
@@ -84,17 +85,6 @@ def test_continue_write_writes_writable_brief_beat_expansion_and_constraints(tmp
         ),
         encoding="utf-8",
     )
-    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card = json.loads(card_path.read_text(encoding="utf-8"))
-    card.update(
-        {
-            "chapter_duty": "plant the bell debt without solving it",
-            "forbidden_reveals": ["Dragon Crown"],
-            "resolution_markers": ["ultimate patron"],
-            "must_preserve_suspense": ["who controls the bell"],
-        }
-    )
-    card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     contract = update_chapter_contract_fixture(
         root,
         1,
@@ -141,10 +131,11 @@ def test_prose_naturalness_task_and_check_stay_in_workbench(tmp_path):
     project_config.data["quality"]["profile"]["strictness"] = "light"
     root = tmp_path / "novel"
     mark_project_ready(root, project_config)
-    plan_chapter(project_config, chapter_number=1)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\nThis stands as a pivotal moment. TODO: keep prompt residue.\n", encoding="utf-8")
 
+    compile_chapter_brief_fixture(root, project_config)
     task = prose_naturalness_task(project_config, chapter_number=1, source="draft")
     candidate = root / "50_workbench" / "repair_candidates" / "ch001.prose_naturalness_candidate.md"
     candidate.write_text(
@@ -172,6 +163,8 @@ def test_chinese_prose_naturalness_detects_webnovel_ai_categories(tmp_path):
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# 第一章\n\nTODO 写作说明：这里需要改成正文。\n", encoding="utf-8")
 
+    mark_project_ready(root, project_config)
+    compile_chapter_brief_fixture(root, project_config)
     task = prose_naturalness_task(project_config, chapter_number=1, source="draft")
     candidate = root / "50_workbench" / "repair_candidates" / "ch001.prose_naturalness_candidate.md"
     candidate.write_text(
@@ -240,7 +233,7 @@ def test_prose_naturalness_v4_rejects_empty_text_and_counts_repeated_same_patter
 def test_gate_keeps_isolated_significance_language_as_nonblocking_p2_signal(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(project_config, chapter_number=1)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     scene = "林远站在城门前，听见旧钟压过雨声。他看见守卫换岗，也看见债牌被人翻到背面。"
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# 第一章\n\n" + scene * 90 + "这一刻意义深远，却没人敢把原因说出口。", encoding="utf-8")
@@ -283,7 +276,7 @@ def test_slow_scene_without_dialogue_or_cliffhanger_is_not_a_deterministic_block
 def test_expand_task_and_check_repair_short_chapter_without_pollution(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(project_config, chapter_number=1)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\nShort draft at the gate.\n", encoding="utf-8")
 
@@ -369,7 +362,7 @@ def test_gate_reports_style_drift_from_active_sample_profile_as_p2_signal(tmp_pa
         encoding="utf-8",
     )
     style_extract(project_config, sample_files=[sample], name="short_dialogue", source_project="reference-book")
-    plan_chapter(project_config, chapter_number=1)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     long_sentence = (
         "Lin considered the geography of the gate, the unfinished debt, the weathered road, "
         "the council's older promises, the private fear behind every delayed answer, and the "
@@ -394,6 +387,7 @@ def test_gate_reports_style_drift_from_active_sample_profile_as_p2_signal(tmp_pa
 
 def test_semantic_reader_pacing_review_writes_reader_experience_artifact(tmp_path):
     project_config = seed_project(tmp_path)
+    mark_project_ready(project_config.path.parent, project_config)
     root = tmp_path / "novel"
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\nHe walked across the room. He waited. He stopped.\n", encoding="utf-8")
@@ -408,6 +402,7 @@ def test_semantic_reader_pacing_review_writes_reader_experience_artifact(tmp_pat
 
 def test_semantic_reader_recognizes_chinese_deadline_as_concrete_tail_pressure(tmp_path):
     project_config = seed_project(tmp_path)
+    mark_project_ready(project_config.path.parent, project_config)
     root = tmp_path / "novel"
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text(
@@ -424,7 +419,7 @@ def test_semantic_reader_recognizes_chinese_deadline_as_concrete_tail_pressure(t
 def test_gate_defers_repair_plan_until_review_barrier(tmp_path):
     project_config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(project_config, chapter_number=1)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\nTODO: write later. as an ai language model\n", encoding="utf-8")
 

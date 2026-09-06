@@ -18,7 +18,6 @@ from longform_engine.agent_protocols import (
     AgentProtocolError,
     build_validation_report,
     canonical_delta_domain_payload,
-    chapter_direction_option_ids,
     output_protocol_for_task,
     parse_design_document,
     validate_canonical_delta,
@@ -37,18 +36,14 @@ from longform_engine.agent_tasks import (
     manifest_output,
     mark_tasks_for_output,
     mark_tasks_for_chapter_type,
-    update_task_status,
     validate_current_task_result,
     validate_manifest_strict,
     write_manifest,
 )
 from longform_engine.arc_simulation import (
     SIMULATION_DIR,
-    ArcSimulationError,
     arc_simulation_path,
     current_basis_hashes,
-    load_active_arc_simulation,
-    load_covering_arc_simulation,
     mark_overlapping_arc_simulations_stale,
     permitted_arc_simulation_ranges,
     validate_arc_causal_simulation,
@@ -62,8 +57,11 @@ from longform_engine.character_expression import (
     write_character_expression_profile,
 )
 from longform_engine.config import ConfigDocument
-from longform_engine.db import sync_database, sync_fanfiction_source_canon
+from longform_engine.db import sync_fanfiction_source_canon
 from longform_engine import fanfiction_contracts
+from longform_engine.fanfiction_creative_requirements import (
+    CREATIVE_CONTRACT_VERSION, ROUTE_FAMILIES, compile_fanfiction_creative_requirements,
+)
 from longform_engine.fanfiction_sources import (
     CANON_SCHEMA as FANFICTION_CANON_SCHEMA,
     fanfiction_canon_input_files,
@@ -86,17 +84,7 @@ from longform_engine.future_knowledge_current import (
 )
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
-from longform_engine.quality import truncate_editorial_pattern_registry
-from longform_engine.reader_promises_v2 import (
-    LEDGER_PATH,
-    apply_planning_deferrals,
-    load_reader_promise_ledger,
-    promise_deadline_status,
-    validate_promise_actions_v2,
-    validate_planning_deferrals,
-    write_reader_promise_ledger,
-)
-from longform_engine.story_profiles import BUILTIN_MARKET_IDS, active_story_facets, compile_story_profile
+from longform_engine.story_profiles import BUILTIN_MARKET_IDS, compile_story_profile
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import list_finalized_chapter_files, manuscript_chapter_path
 from longform_engine.source_materialization import materialize_fanfiction_source_canon
@@ -137,11 +125,7 @@ INTELLIGENCE_TASK_TYPES = (
     "book_design",
     "character_expression_design",
     "character_expression_review",
-    "outline_design",
     "arc_simulation",
-    "outline_extension",
-    "chapter_direction",
-    "outline_revision",
     "research_synthesis",
     "style_analysis",
     "adaptation_analysis",
@@ -342,28 +326,6 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
             "10_bible/character_expression.json",
         ),
     },
-    "outline_design": {
-        "schema": "outline_design_candidate_v2",
-        "scope": "project",
-        "human": True,
-        "targets": (
-            "20_outline/book_outline.md",
-            "20_outline/story_arcs.json",
-            "20_outline/volumes.json",
-            "20_outline/chapter_plan.json",
-            "20_outline/planning_window.json",
-            "20_outline/foreshadowing_ledger.json",
-            "30_state/reader_promise_ledger.json",
-            "30_state/novel_state.json",
-        ),
-        "defaults": (
-            "project.yaml",
-            "10_bible/creative_brief.json",
-            "10_bible/world.md",
-            "10_bible/characters.json",
-            "10_bible/relationships.json",
-        ),
-    },
     "arc_simulation": {
         "schema": "arc_causal_simulation_v1",
         "scope": "range",
@@ -375,60 +337,10 @@ TASK_SPECS: dict[str, dict[str, Any]] = {
             "10_bible/characters.json",
             "10_bible/relationships.json",
             "20_outline/book_outline.md",
-            "20_outline/story_arcs.json",
-            "20_outline/chapter_plan.json",
+            "20_outline/volume_skeletons.json",
+            "20_outline/rolling_window.json",
             "30_state/reader_promise_ledger.json",
             "30_state/character_state.json",
-        ),
-    },
-    "outline_extension": {
-        "schema": "outline_extension_candidate_v1",
-        "scope": "range",
-        "human": True,
-        "targets": (
-            "20_outline/chapter_plan.json",
-            "20_outline/planning_window.json",
-            "20_outline/foreshadowing_ledger.json",
-            "30_state/reader_promise_ledger.json",
-            "30_state/novel_state.json",
-        ),
-        "defaults": (
-            "project.yaml",
-            "10_bible/creative_brief.json",
-            "20_outline/story_arcs.json",
-            "20_outline/volumes.json",
-            "20_outline/chapter_plan.json",
-            "20_outline/planning_window.json",
-            "20_outline/foreshadowing_ledger.json",
-        ),
-    },
-    "chapter_direction": {
-        "schema": "chapter_direction_candidate_v5",
-        "scope": "chapter",
-        "human": True,
-        "targets": (),
-        "defaults": (),
-    },
-    "outline_revision": {
-        "schema": "outline_revision_candidate_v1",
-        "scope": "range",
-        "human": True,
-        "targets": (
-            "20_outline/book_outline.md",
-            "20_outline/story_arcs.json",
-            "20_outline/volumes.json",
-            "20_outline/chapter_plan.json",
-            "20_outline/planning_window.json",
-            "20_outline/foreshadowing_ledger.json",
-            "30_state/reader_promise_ledger.json",
-            "30_state/novel_state.json",
-        ),
-        "defaults": (
-            "20_outline/book_outline.md",
-            "20_outline/volumes.json",
-            "20_outline/chapter_plan.json",
-            "20_outline/foreshadowing_ledger.json",
-            "30_state/novel_state.json",
         ),
     },
     "research_synthesis": {
@@ -464,11 +376,7 @@ FANFICTION_CURRENT_CHAIN_TASK_TYPES = frozenset(
         "book_design",
         "character_expression_design",
         "character_expression_review",
-        "outline_design",
         "arc_simulation",
-        "outline_extension",
-        "chapter_direction",
-        "outline_revision",
         "fanfiction_future_knowledge_reassessment",
     }
 )
@@ -521,20 +429,9 @@ class DesignApprovalResult:
     document_file: str
     approval_file: str
     document_sha256: str
-    selection_file: str
-    selection_sha256: str
     next_command: str
 
 
-@dataclass(frozen=True)
-class ChapterDirectionSelectionResult:
-    chapter_number: int
-    document_file: str
-    selection_file: str
-    document_sha256: str
-    selection_sha256: str
-    selected_option_id: str
-    next_command: str
 
 
 @dataclass(frozen=True)
@@ -573,21 +470,6 @@ def create_intelligence_task(
             )
         except fanfiction_contracts.FanfictionContractError as exc:
             raise ValueError(str(exc)) from exc
-    if task_type == "chapter_direction":
-        direction_status = assess_chapter_direction(config, int(scope["chapter_number"]))
-        if direction_status.get("status") == "outline_revision_required":
-            raise ValueError(
-                "chapter direction is blocked by an unresolved outline redirect; create an "
-                "outline_revision task before selecting a new direction."
-            )
-        if direction_status.get("status") == "arc_simulation_required":
-            raise ValueError(
-                "chapter direction requires a current human-approved arc_causal_simulation_v1 "
-                "covering this chapter."
-            )
-        from longform_engine.orchestration.pipeline import plan_chapter
-
-        plan_chapter(config, chapter_number=int(scope["chapter_number"]))
     provided_inputs = tuple(input_files)
     requested_inputs: Iterable[str | Path] = provided_inputs
     if task_type == "fanfiction_canon" and not provided_inputs:
@@ -644,6 +526,17 @@ def create_intelligence_task(
             current_engine.paths["story_engine"],
             current_engine.paths["source_canon"],
         ]
+        requirements_path = root / "50_workbench" / "intelligence_context" / "fanfiction_creative_review.project.context.json"
+        write_json(requirements_path, {
+            "schema": "fanfiction_creative_review_context_v1",
+            "creative_requirements": compile_fanfiction_creative_requirements(
+                current_engine.story_engine["extensions"]["continuity_mode"],
+                current_engine.story_engine["extensions"]["route_family"],
+            ),
+            "coverage_shape": {"status": "checked|insufficient|contradicted", "reason": "independent reasoning", "basis_claim_ids": []},
+            "instruction": "extensions.creative_coverage must cover every independent_review_focus with exact current route/engine claims; insufficient or contradicted cannot pass.",
+        })
+        inputs.append(requirements_path)
     if task_type == "fanfiction_future_knowledge_reassessment":
         if len(inputs) != 3:
             raise ValueError(
@@ -651,17 +544,13 @@ def create_intelligence_task(
                 "and event ledger inputs"
             )
     if task_type == "chapter_semantic_planning":
-        inputs = [write_chapter_direction_context(config, root, int(scope["chapter_number"]))]
+        inputs = [write_chapter_semantic_planning_context(config, root, int(scope["chapter_number"]))]
     if task_type in {"draft_semantic_review", "prose_revision_review"} and not inputs:
         chapter_number = int(scope["chapter_number"])
         draft = manuscript_chapter_path(root, chapter_number, lane="draft")
         if not draft.is_file():
             raise ValueError(f"{task_type} requires the current ch{chapter_number:03d} draft")
         inputs = [draft]
-    if task_type == "outline_extension":
-        inputs = [write_outline_extension_context(config, root, scope)]
-    if task_type == "chapter_direction":
-        inputs = [write_chapter_direction_context(config, root, int(scope["chapter_number"]))]
     if task_type in {
         "fanfiction_canon",
         "research_synthesis",
@@ -678,6 +567,17 @@ def create_intelligence_task(
         for path in current_fanfiction.paths.values():
             if path not in inputs:
                 inputs.append(path)
+
+    if str(config.data.get("creation", {}).get("mode") or "") == "fanfiction" and task_type in {"book_design", "book_ideation", "arc_simulation", "story_semantic_planning", "chapter_semantic_planning"}:
+        requirements_path = root / "50_workbench/intelligence_context" / f"{task_type}.creative_requirements.context.json"
+        if current_fanfiction is not None:
+            selected_routes = [current_fanfiction.story_engine["extensions"]["route_family"]]
+        else:
+            selected_routes = sorted(ROUTE_FAMILIES)
+        write_json(requirements_path, {"schema": "fanfiction_creative_requirements_context_v1",
+                   "requirements_by_route": {route: compile_fanfiction_creative_requirements(config.data["fanfiction"]["continuity_mode"], route) for route in selected_routes},
+                   "instruction": "按人类批准的叙事承担方式使用对应要求；开书、人物变化和大纲不得重新强制改命、升级或独立原创主线。未选择路线时只讨论选项。"})
+        inputs.append(requirements_path)
 
     token = scope_token(scope)
     round_number = next_book_ideation_round(root) if task_type == "book_ideation" else 0
@@ -727,9 +627,6 @@ def create_intelligence_task(
                 "dimension": next_book_ideation_dimension(root),
             }
         )
-    if task_type == "chapter_direction":
-        status = assess_chapter_direction(config, int(scope["chapter_number"]))
-        instruction_context["trigger_reasons"] = list(status["reasons"])
     atomic_write_text(
         instruction,
         render_instruction(task_type, spec, instruction_context, input_rel, relative(root, candidate)),
@@ -737,11 +634,7 @@ def create_intelligence_task(
     input_rel.append(relative(root, instruction))
 
     range_args = scope_command_args(scope)
-    input_args = (
-        ""
-        if task_type == "chapter_direction"
-        else "".join(f" --input {path}" for path in input_rel if path != relative(root, instruction))
-    )
+    input_args = "".join(f" --input {path}" for path in input_rel if path != relative(root, instruction))
     validate_command, apply_command, failure_command = intelligence_commands(
         task_type,
         candidate=relative(root, candidate),
@@ -1488,82 +1381,6 @@ def mark_fanfiction_semantic_dependents_stale(
     )
 
 
-def record_chapter_direction_selection(
-    config: ConfigDocument,
-    *,
-    document_path: str | Path,
-    selected_option_id: str,
-    user_adjustments: dict[str, Any] | None = None,
-    repetition_reason: str = "",
-    selected_by: str,
-) -> ChapterDirectionSelectionResult:
-    """Record the human choice separately from Agent-authored direction Markdown."""
-
-    if selected_by != "human":
-        raise ValueError("Chapter direction selection requires selected_by=human.")
-    root = resolve_project_root(config)
-    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
-        try:
-            fanfiction_contracts.load_current_fanfiction_documents(config, root)
-        except fanfiction_contracts.FanfictionContractError as exc:
-            raise ValueError(str(exc)) from exc
-    document = resolve_candidate(root, document_path)
-    try:
-        parsed = parse_design_document(
-            document.read_text(encoding="utf-8"),
-            expected_type="chapter_direction",
-        )
-    except (OSError, UnicodeError, AgentProtocolError) as exc:
-        raise ValueError(f"Chapter direction document is invalid: {exc}") from exc
-    option_ids = chapter_direction_option_ids(parsed)
-    selected_option_id = str(selected_option_id or "").strip()
-    if selected_option_id not in option_ids:
-        raise ValueError("selected_option_id must reference one stable option ID in the document.")
-    adjustments = {} if user_adjustments is None else user_adjustments
-    if not isinstance(adjustments, dict) or any(
-        not isinstance(key, str)
-        or not key.strip()
-        or value in (None, "", [], {})
-        for key, value in adjustments.items()
-    ):
-        raise ValueError("user_adjustments must be an object with non-empty field names and values.")
-    if not isinstance(repetition_reason, str):
-        raise ValueError("repetition_reason must be text.")
-    manifest = manifest_for_output(root, "chapter_direction", document)
-    if manifest is None:
-        raise ValueError("Chapter direction document is not bound to an active Agent task.")
-    chapter_number = manifest_chapter_number(manifest)
-    if chapter_number <= 0:
-        raise ValueError("Chapter direction task has no valid chapter scope.")
-    document_hash = sha256(document.read_bytes()).hexdigest()
-    selection_path = chapter_direction_selection_path(root, document)
-    selection = {
-        "schema": "chapter_direction_selection_v1",
-        "task_id": str(manifest.get("task_id") or ""),
-        "chapter_number": chapter_number,
-        "document_path": relative(root, document),
-        "document_sha256": document_hash,
-        "option_ids": list(option_ids),
-        "selected_option_id": selected_option_id,
-        "user_adjustments": adjustments,
-        "repetition_reason": repetition_reason.strip(),
-        "selected_by": selected_by,
-        "selected_at": datetime.now(timezone.utc).isoformat(),
-    }
-    atomic_write_text(selection_path, json.dumps(selection, ensure_ascii=False, indent=2) + "\n")
-    selection_hash = sha256(selection_path.read_bytes()).hexdigest()
-    return ChapterDirectionSelectionResult(
-        chapter_number=chapter_number,
-        document_file=relative(root, document),
-        selection_file=relative(root, selection_path),
-        document_sha256=document_hash,
-        selection_sha256=selection_hash,
-        selected_option_id=selected_option_id,
-        next_command=(
-            "longform-engine intelligence approve project.yaml --task-type chapter_direction "
-            f"--document {relative(root, document)} --approved-by human"
-        ),
-    )
 
 
 def approve_design_document(
@@ -1602,12 +1419,6 @@ def approve_design_document(
     if manifest is None:
         raise ValueError("Design document is not bound to an active Agent task.")
     document_hash = sha256(document.read_bytes()).hexdigest()
-    selection_file = ""
-    selection_hash = ""
-    if task_type == "chapter_direction":
-        selection = load_chapter_direction_selection(root, document)
-        selection_file = str(selection["selection_file"])
-        selection_hash = str(selection["selection_sha256"])
     approval = design_approval_path(root, document)
     approval_payload: dict[str, Any] = {
         "schema": "design_document_approval_v1",
@@ -1618,13 +1429,6 @@ def approve_design_document(
         "approved_by": approved_by,
         "approved_at": datetime.now(timezone.utc).isoformat(),
     }
-    if task_type == "chapter_direction":
-        approval_payload.update(
-            {
-                "selection_file": selection_file,
-                "selection_sha256": selection_hash,
-            }
-        )
     if current_fanfiction is not None:
         approval_payload["fanfiction_chain"] = (
             fanfiction_contracts.current_fanfiction_chain_binding(
@@ -1646,8 +1450,6 @@ def approve_design_document(
         document_file=relative(root, document),
         approval_file=relative(root, approval),
         document_sha256=document_hash,
-        selection_file=selection_file,
-        selection_sha256=selection_hash,
         next_command=(
             "longform-engine intelligence compile-task project.yaml "
             f"--task-type {task_type} --document {relative(root, document)}"
@@ -1708,11 +1510,6 @@ def create_design_compile_task(
     instruction = root / "50_workbench" / "intelligence_tasks" / f"{base}.md"
     delta = root / "50_workbench" / "intelligence_candidates" / f"{base}.delta.json"
     manifest_file = root / "50_workbench" / "agent_tasks" / f"{base}.manifest.json"
-    selection_path = (
-        root / str(approval["selection_file"])
-        if task_type == "chapter_direction"
-        else None
-    )
     approval_path = design_approval_path(root, document)
     instruction_text = render_design_compile_instruction(
         task_type=task_type,
@@ -1720,11 +1517,6 @@ def create_design_compile_task(
         document_hash=str(approval["document_sha256"]),
         domain_schema=str(TASK_SPECS[task_type]["schema"]),
         output=relative(root, delta),
-        selection=(
-            load_chapter_direction_selection(root, document)
-            if task_type == "chapter_direction"
-            else None
-        ),
     )
     atomic_write_text(instruction, instruction_text)
     document_rel = relative(root, document)
@@ -1742,7 +1534,6 @@ def create_design_compile_task(
         instruction,
         document,
         approval_path,
-        *([selection_path] if selection_path is not None else []),
         *(current_fanfiction.paths.values() if current_fanfiction is not None else ()),
     ]
     compile_inputs = list(dict.fromkeys(compile_inputs))
@@ -1979,11 +1770,6 @@ def apply_compiled_design(
     scope = dict(manifest.get("scope") or {})
     canonical_document = design_document_target(root, task_type, scope)
     canonical_delta = design_delta_target(root, task_type, scope)
-    selection = (
-        load_chapter_direction_selection(root, document)
-        if task_type == "chapter_direction"
-        else {}
-    )
     touched = design_apply_targets(root, task_type, scope, payload=domain_payload)
     touched.append(root / "50_workbench" / "agent_tasks")
     touched = list(dict.fromkeys(touched))
@@ -1994,11 +1780,6 @@ def apply_compiled_design(
         source_paths=(
             document,
             delta,
-            *(
-                [root / str(selection["selection_file"])]
-                if selection
-                else []
-            ),
             *(current_fanfiction.paths.values() if current_fanfiction is not None else ()),
         ),
         touched_paths=tuple(touched),
@@ -2007,7 +1788,6 @@ def apply_compiled_design(
             "compile_task_id": str(manifest.get("task_id") or ""),
             "approved_by": approved_by,
             "document_sha256": sha256(document.read_bytes()).hexdigest(),
-            "selection_sha256": str(selection.get("selection_sha256") or ""),
             **(
                 {
                     "fanfiction_chain": (
@@ -2030,15 +1810,6 @@ def apply_compiled_design(
                 "scope": scope,
                 "document_path": relative(root, canonical_document),
                 "document_sha256": sha256(document.read_bytes()).hexdigest(),
-                "selection": (
-                    {
-                        "path": str(selection["selection_file"]),
-                        "sha256": str(selection["selection_sha256"]),
-                        "selected_option_id": str(selection["selected_option_id"]),
-                    }
-                    if selection
-                    else {}
-                ),
                 "delta": raw_delta,
             },
         )
@@ -2050,20 +1821,6 @@ def apply_compiled_design(
             scope=scope,
             current_fanfiction=current_fanfiction,
         )
-        if task_type == "chapter_direction" and selection:
-            from longform_engine.orchestration.pipeline import upsert_chapter_plan, write_chapter_card_artifacts
-
-            chapter_number = int(scope.get("chapter_number") or 0)
-            card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-            card = read_json(card_path, {})
-            direction_selection = card.get("direction_selection") if isinstance(card, dict) else None
-            if not isinstance(card, dict) or not isinstance(direction_selection, dict):
-                raise ValueError("chapter direction apply did not produce a direction selection record.")
-            direction_selection["selection_file"] = str(selection["selection_file"])
-            direction_selection["selection_sha256"] = str(selection["selection_sha256"])
-            direction_selection["document_sha256"] = sha256(document.read_bytes()).hexdigest()
-            write_chapter_card_artifacts(root, card)
-            upsert_chapter_plan(root, card)
         mark_tasks_for_chapter_type(
             root,
             chapter_number=int(scope.get("chapter_number") or 0),
@@ -2088,62 +1845,8 @@ def design_approval_path(root: Path, document: Path) -> Path:
     return root / "50_workbench" / "intelligence_approvals" / f"{document.stem}.approval.json"
 
 
-def chapter_direction_selection_path(root: Path, document: Path) -> Path:
-    return root / "50_workbench" / "intelligence_selections" / f"{document.stem}.selection.json"
 
 
-def load_chapter_direction_selection(
-    root: Path,
-    document: Path,
-    *,
-    errors: list[str] | None = None,
-) -> dict[str, Any]:
-    target = errors if errors is not None else []
-    path = chapter_direction_selection_path(root, document)
-    payload = read_json(path, {})
-    required = {
-        "schema", "task_id", "chapter_number", "document_path", "document_sha256",
-        "option_ids", "selected_option_id", "user_adjustments", "repetition_reason",
-        "selected_by", "selected_at",
-    }
-    if not isinstance(payload, dict) or set(payload) != required:
-        target.append("chapter direction has no valid chapter_direction_selection_v1 record.")
-    else:
-        if payload.get("schema") != "chapter_direction_selection_v1":
-            target.append("chapter direction selection schema is invalid.")
-        if payload.get("document_path") != relative(root, document):
-            target.append("chapter direction selection points to a different document.")
-        document_hash = sha256(document.read_bytes()).hexdigest() if document.is_file() else ""
-        if payload.get("document_sha256") != document_hash:
-            target.append("chapter direction document changed after selection; select an option again.")
-        try:
-            parsed = parse_design_document(
-                document.read_text(encoding="utf-8"),
-                expected_type="chapter_direction",
-            )
-            option_ids = chapter_direction_option_ids(parsed)
-        except (OSError, UnicodeError, AgentProtocolError) as exc:
-            target.append(f"chapter direction selection cannot parse current options: {exc}")
-            option_ids = ()
-        if payload.get("option_ids") != list(option_ids):
-            target.append("chapter direction option IDs changed after selection; select an option again.")
-        if payload.get("selected_option_id") not in option_ids:
-            target.append("chapter direction selected option is not present in the current document.")
-        if payload.get("selected_by") != "human":
-            target.append("chapter direction selection must be recorded by human.")
-        if not isinstance(payload.get("user_adjustments"), dict):
-            target.append("chapter direction user_adjustments must be an object.")
-        if not isinstance(payload.get("repetition_reason"), str):
-            target.append("chapter direction repetition_reason must be text.")
-    if target and errors is None:
-        raise ValueError(" ".join(target))
-    if not isinstance(payload, dict):
-        return {}
-    return {
-        **payload,
-        "selection_file": relative(root, path),
-        "selection_sha256": sha256(path.read_bytes()).hexdigest() if path.is_file() else "",
-    }
 
 
 def load_design_approval(
@@ -2180,14 +1883,6 @@ def load_design_approval(
                     "design approval fanfiction chain is stale: "
                     + "; ".join(chain_errors)
                 )
-        if task_type == "chapter_direction":
-            selection_errors: list[str] = []
-            selection = load_chapter_direction_selection(root, document, errors=selection_errors)
-            target.extend(selection_errors)
-            if payload.get("selection_file") != selection.get("selection_file"):
-                target.append("design approval points to a different chapter direction selection.")
-            if payload.get("selection_sha256") != selection.get("selection_sha256"):
-                target.append("chapter direction selection changed after approval; approve it again.")
     if target and errors is None:
         raise ValueError(" ".join(target))
     return payload if isinstance(payload, dict) else {}
@@ -2200,50 +1895,20 @@ def render_design_compile_instruction(
     document_hash: str,
     domain_schema: str,
     output: str,
-    selection: dict[str, Any] | None = None,
 ) -> str:
-    task_specific = (
-        "chapter_direction 只编译 selected_direction、selection、canonical_refs、introduced_elements；"
-        "不得把未选方向复制进 delta。"
-        if task_type == "chapter_direction"
-        else "只编译文档中经人工批准的最终设计事实。"
-    )
-    return "\n".join(
-        (
-            "# 设计文档语义编译任务",
-            "",
-            f"- 原设计任务：`{task_type}`",
-            f"- 已批准文档：`{document}`",
-            f"- 文档 SHA-256：`{document_hash}`",
-            *(
-                (
-                    f"- 人工选择：`{selection['selected_option_id']}`",
-                    f"- 选择 sidecar：`{selection['selection_file']}`",
-                    f"- 选择 SHA-256：`{selection['selection_sha256']}`",
-                )
-                if selection is not None
-                else ()
-            ),
-            f"- CLI 内部领域 schema：`{domain_schema}`",
-            f"- 唯一输出：`{output}`",
-            "",
-            "## 编译职责",
-            "只把已批准 Markdown 中明确成立的事实编译为 canonical_delta_v1。",
-            "changes 使用目标领域字段，但不要写 schema、路径、hash、章节范围、命令或时间。",
-            "evidence 必须使用 /changes/... JSON Pointer 映射到 document@start:end。",
-            "备选方案、被否决内容、示例和分析理由不能作为已批准事实。",
-            task_specific,
-            *(
-                (
-                    "chapter_direction 的 selection 由 CLI 从 sidecar 注入；delta 不得自行编写 selection。",
-                )
-                if selection is not None
-                else ()
-            ),
-            "任何稳定 ID、窗口、关系或语义存在歧义时写入 uncertainties；CLI 将阻止 apply。",
-            "",
-        )
-    )
+    return "\n".join((
+        "# 设计文档语义编译任务", "",
+        f"- 原设计任务：`{task_type}`",
+        f"- 已批准文档：`{document}`",
+        f"- 文档 SHA-256：`{document_hash}`",
+        f"- CLI 内部领域 schema：`{domain_schema}`",
+        f"- 唯一输出：`{output}`", "", "## 编译职责",
+        "只把已批准 Markdown 中明确成立的事实编译为 canonical_delta_v1。",
+        "changes 使用目标领域字段，但不要写 schema、路径、hash、章节范围、命令或时间。",
+        "evidence 必须使用 /changes/... JSON Pointer 映射到 document@start:end。",
+        "备选方案、被否决内容、示例和分析理由不能作为已批准事实。",
+        "任何稳定 ID、窗口、关系或语义存在歧义时写入 uncertainties；CLI 将阻止 apply。", "",
+    ))
 
 
 def design_cli_fields(
@@ -2253,27 +1918,6 @@ def design_cli_fields(
     manifest: dict[str, Any] | None,
 ) -> dict[str, Any]:
     scope = (manifest or {}).get("scope") if isinstance((manifest or {}).get("scope"), dict) else {}
-    if task_type == "chapter_direction":
-        chapter_number = int(scope.get("chapter_number") or 0)
-        card = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-        document = (
-            root / str(manifest_input_paths(manifest or {})[1])
-            if len(manifest_input_paths(manifest or {})) >= 2
-            else None
-        )
-        if document is None or not document.is_file():
-            raise ValueError("chapter direction compile task is missing its approved Markdown input.")
-        selection = load_chapter_direction_selection(root, document)
-        return {
-            "chapter_number": chapter_number,
-            "chapter_card_sha256": sha256(card.read_bytes()).hexdigest() if card.is_file() else "",
-            "trigger_reasons": assess_chapter_direction(config, chapter_number)["reasons"],
-            "selection": {
-                "direction_id": str(selection["selected_option_id"]),
-                "user_adjustments": dict(selection["user_adjustments"]),
-                "repetition_reason": str(selection["repetition_reason"]),
-            },
-        }
     if task_type == "arc_simulation":
         return {
             "from_chapter": int(scope.get("from_chapter") or 0),
@@ -2281,11 +1925,6 @@ def design_cli_fields(
             "basis_hashes": current_basis_hashes(root),
             "approved_by": "human",
             "status": "approved",
-        }
-    if task_type == "outline_revision":
-        return {
-            "from_chapter": int(scope.get("from_chapter") or 0),
-            "to_chapter": int(scope.get("to_chapter") or 0),
         }
     if task_type == "book_ideation":
         return {
@@ -2366,9 +2005,7 @@ def normalize_grounding_text(value: str) -> str:
 
 def design_document_target(root: Path, task_type: str, scope: dict[str, Any]) -> Path:
     token = scope_token(scope)
-    if task_type == "chapter_direction":
-        return root / "20_outline" / "chapter_directions" / f"{token}.md"
-    if task_type in {"outline_design", "arc_simulation", "outline_extension", "outline_revision"}:
+    if task_type == "arc_simulation":
         return root / "20_outline" / "design_documents" / f"{task_type}.{token}.md"
     return root / "10_bible" / "design_documents" / f"{task_type}.{token}.md"
 
@@ -2386,7 +2023,7 @@ def design_apply_targets(
 ) -> list[Path]:
     if payload is None:
         targets = [root / item for item in TASK_SPECS[task_type]["targets"]]
-        if task_type in {"book_design", "fanfiction_design", "outline_design"}:
+        if task_type in {"book_design", "fanfiction_design"}:
             targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
         if task_type == "arc_simulation":
             targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
@@ -2396,34 +2033,6 @@ def design_apply_targets(
                     int(scope.get("from_chapter") or 0),
                     int(scope.get("to_chapter") or 0),
                 )
-            )
-        if task_type == "outline_extension":
-            targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
-        if task_type == "chapter_direction":
-            chapter = int(scope.get("chapter_number") or 0)
-            targets.extend(
-                (
-                    root / "20_outline" / "chapter_cards" / f"ch{chapter:03d}.json",
-                    root / "20_outline" / "chapter_cards" / f"ch{chapter:03d}.md",
-                    root / "20_outline" / "chapter_plan.json",
-                )
-            )
-        if task_type == "outline_revision":
-            targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
-            targets.extend(
-                outline_revision_side_effect_targets(
-                    root,
-                    range(
-                        int(scope.get("from_chapter") or 0),
-                        int(scope.get("to_chapter") or 0) + 1,
-                    ),
-                )
-            )
-            targets.append(
-                root
-                / "20_outline"
-                / "revise_reports"
-                / f"agent_revision_ch{int(scope.get('from_chapter') or 0):03d}-ch{int(scope.get('to_chapter') or 0):03d}.json"
             )
     else:
         targets = apply_targets(root, task_type, payload, scope=scope)
@@ -2437,6 +2046,11 @@ def design_apply_targets(
 
 
 def require_spec(task_type: str) -> dict[str, Any]:
+    if task_type in {"outline_design", "outline_extension", "chapter_direction", "outline_revision"}:
+        raise ValueError(
+            f"{task_type} is retired: rebuild and approve the current planning bundle through "
+            "longform-engine planning task; existing final and source Canon remain authoritative."
+        )
     if task_type not in TASK_SPECS:
         raise ValueError(f"task_type must be one of: {', '.join(INTELLIGENCE_TASK_TYPES)}")
     return TASK_SPECS[task_type]
@@ -2598,29 +2212,13 @@ def assess_project_readiness(config: ConfigDocument) -> ProjectReadinessResult:
     )
     if book_errors:
         return ProjectReadinessResult(False, "book_design", "book_design", tuple(book_errors))
-    outline_marker = markers.get("outline_design") if isinstance(markers.get("outline_design"), dict) else {}
-    if outline_marker.get("status") != "applied":
-        return ProjectReadinessResult(False, "outline_design", "outline_design", ("outline_design has not been explicitly applied.",))
-    outline_errors: list[str] = []
-    outline_payload = {
-        "story_arcs": read_json(root / "20_outline" / "story_arcs.json", []),
-        "volumes": read_json(root / "20_outline" / "volumes.json", []),
-        "chapter_plan": read_json(root / "20_outline" / "chapter_plan.json", []),
-        "foreshadowing_ledger": [
-            {
-                key: item.get(key)
-                for key in ("id", "description", "plant", "payoff", "completion_required", "status")
-            }
-            for item in read_json(root / "20_outline" / "foreshadowing_ledger.json", [])
-            if isinstance(item, dict)
-        ],
-        "planning_window": read_json(root / "20_outline" / "planning_window.json", {}),
-    }
-    if not read_text(root / "20_outline" / "book_outline.md").strip():
-        outline_errors.append("20_outline/book_outline.md must contain the approved macro outline.")
-    validate_canonical_rolling_outline(config, outline_payload, outline_errors)
-    if outline_errors:
-        return ProjectReadinessResult(False, "outline_design", "outline_design", tuple(outline_errors))
+    from longform_engine.planning.context import load_chapter_planning_context
+
+    chapter = int(state.get("last_closed_chapter") or 0) + 1
+    try:
+        load_chapter_planning_context(root, chapter)
+    except ValueError as exc:
+        return ProjectReadinessResult(False, "planning_refresh_required", "", (str(exc),))
     expression_marker = markers.get("character_expression_design")
     expression_path = root / "10_bible" / "character_expression.json"
     expression_ready, expression_errors = character_expression_readiness(root)
@@ -2710,14 +2308,12 @@ def intelligence_default_inputs(
             if current_fanfiction is not None
             else []
         )
-    if task_type in {"book_design", "outline_design", "outline_extension", "arc_simulation"}:
+    if task_type in {"book_design", "arc_simulation"}:
         candidates.extend(sorted((root / "20_outline" / "semantic" / "全书架构").glob("*.json")))
     if task_type in {
         "book_design",
         "character_expression_design",
-        "outline_design",
         "arc_simulation",
-        "chapter_direction",
     }:
         candidates.extend(sorted((root / "10_bible" / "semantic" / "人物理解").glob("*.json")))
     if task_type == "character_expression_design":
@@ -2737,17 +2333,6 @@ def intelligence_default_inputs(
             candidates.append(source)
     if task_type == "book_ideation":
         candidates.append(root / "10_bible" / "creative_decisions.json")
-    if task_type == "chapter_direction":
-        chapter_number = int(scope["chapter_number"])
-        candidates.extend(
-            [
-                root / "project.yaml",
-                root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
-                root / "20_outline" / "chapter_plan.json",
-                root / "20_outline" / "foreshadowing_ledger.json",
-                root / "10_bible" / "creative_brief.json",
-            ]
-        )
     if task_type == "arc_simulation":
         candidates.extend(
             sorted((root / "60_rag" / "memory" / "characters").glob("*.json"))
@@ -2789,7 +2374,12 @@ def write_fanfiction_story_engine_context(config: ConfigDocument, root: Path) ->
         if isinstance(item, dict)
     ]
     payload = {
-        "schema": "fanfiction_story_engine_context_v1",
+        "schema": "fanfiction_story_engine_context_v2",
+        "creative_contract_version": CREATIVE_CONTRACT_VERSION,
+        "creative_requirements_by_route": {
+            route: compile_fanfiction_creative_requirements(str(configured.get("continuity_mode") or ""), route)
+            for route in sorted(ROUTE_FAMILIES)
+        },
         "project": {
             "title": str(config.data.get("project", {}).get("title") or ""),
             "target_platform": str(config.data.get("novel", {}).get("target_platform") or ""),
@@ -2939,7 +2529,11 @@ def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
             "approved design-core claims; narrow the Canon baseline or use a larger context profile"
         )
     payload = {
-        "schema": "fanfiction_semantic_context_v1",
+        "schema": "fanfiction_semantic_context_v2",
+        "creative_contract_version": CREATIVE_CONTRACT_VERSION,
+        "creative_requirements": compile_fanfiction_creative_requirements(
+            str(fanfiction.get("continuity_mode") or ""), str(story_engine["extensions"]["route_family"])
+        ),
         "project_contract": {
             "title": project.get("title"),
             "continuity_mode": fanfiction.get("continuity_mode"),
@@ -3039,366 +2633,34 @@ def write_fanfiction_design_context(config: ConfigDocument, root: Path) -> Path:
     return target
 
 
-def write_chapter_direction_context(
-    config: ConfigDocument,
-    root: Path,
-    chapter_number: int,
+def write_chapter_semantic_planning_context(
+    config: ConfigDocument, root: Path, chapter_number: int
 ) -> Path:
-    """Compile one chapter's decision evidence without exposing the full outline."""
+    """Bind open semantic planning to approved scope without inventing chapter choices."""
+    from longform_engine.planning.context import load_chapter_planning_context
+    from longform_engine.human_chapter_intent import require_current_human_chapter_intent
 
-    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-    plan_path = root / "20_outline" / "chapter_plan.json"
-    ledger_path = root / "20_outline" / "foreshadowing_ledger.json"
-    brief_path = root / "10_bible" / "creative_brief.json"
-    arcs_path = root / "20_outline" / "story_arcs.json"
-    volumes_path = root / "20_outline" / "volumes.json"
-    characters_path = root / "10_bible" / "characters.json"
-    expression_path = root / "10_bible" / "character_expression.json"
-    structure_path = root / "30_state" / "quality" / "structure_history.jsonl"
-    promise_path = root / LEDGER_PATH
-    card = read_json(card_path, {})
-    plan = read_json(plan_path, [])
-    ledger = read_json(ledger_path, [])
-    brief = read_json(brief_path, {})
-    arcs = read_json(arcs_path, [])
-    volumes = read_json(volumes_path, [])
-    characters = read_json(characters_path, [])
-    expression = read_json(expression_path, {})
-    promises = load_reader_promise_ledger(root)
-    simulation, simulation_path, simulation_hash = load_active_arc_simulation(
-        root, chapter_number=chapter_number
-    )
-    card = card if isinstance(card, dict) else {}
-    plan_rows = plan if isinstance(plan, list) else []
-    ledger_rows = ledger if isinstance(ledger, list) else []
-    plan_row = next(
-        (
-            item
-            for item in plan_rows
-            if isinstance(item, dict) and int(item.get("chapter_number") or 0) == chapter_number
-        ),
-        {},
-    )
-    active_threads = []
-    for item in ledger_rows:
-        if not isinstance(item, dict):
-            continue
-        plant = int(item.get("plant_chapter") or 0)
-        window = item.get("payoff_window") if isinstance(item.get("payoff_window"), list) else []
-        payoff_end = int(window[-1]) if window and isinstance(window[-1], int) else chapter_number
-        if plant <= chapter_number <= payoff_end:
-            active_threads.append(
-                {
-                    key: item.get(key)
-                    for key in ("id", "thread_id", "description", "plant_chapter", "payoff_window", "status")
-                    if item.get(key) not in (None, "", [], {})
-                }
-            )
-        if len(active_threads) >= 8:
-            break
-    arc_id = str(plan_row.get("arc_id") or "") if isinstance(plan_row, dict) else ""
-    volume_id = str(plan_row.get("volume_id") or "") if isinstance(plan_row, dict) else ""
-    current_arc = next(
-        (item for item in arcs if isinstance(item, dict) and str(item.get("id") or "") == arc_id),
-        {},
-    ) if isinstance(arcs, list) else {}
-    current_volume = next(
-        (item for item in volumes if isinstance(item, dict) and str(item.get("id") or "") == volume_id),
-        {},
-    ) if isinstance(volumes, list) else {}
-    featured_ids = [
-        str(item) for item in (card.get("featured_character_ids") or plan_row.get("featured_character_ids") or [])
-    ][:5]
-    character_by_id = {
-        str(item.get("id")): item for item in characters if isinstance(item, dict) and item.get("id")
-    } if isinstance(characters, list) else {}
-    expression_rows = expression.get("character_expression_contracts") if isinstance(expression, dict) else []
-    expression_by_id = {
-        str(item.get("character_id")): item
-        for item in expression_rows or []
-        if isinstance(item, dict) and item.get("character_id")
-    }
-    compiled_story = compile_story_profile(config.data["story_profile"], market_ids=set(BUILTIN_MARKET_IDS))
-    requested_facets = list(plan_row.get("active_facets") or []) if isinstance(plan_row, dict) else []
-    semantic_plan_paths = sorted(
-        (
-            root
-            / "20_outline"
-            / "semantic"
-            / "章节规划"
-            / f"ch{chapter_number:03d}"
-        ).glob("*.json"),
-        key=lambda item: item.stat().st_mtime_ns,
-    )
-    semantic_plan = read_json(semantic_plan_paths[-1], {}) if semantic_plan_paths else {}
-    if not isinstance(semantic_plan, dict) or semantic_plan.get("schema") != SEMANTIC_DOCUMENT_SCHEMA:
-        semantic_plan = {}
-    source_paths = [
-        path
-        for path in (
-            card_path, plan_path, ledger_path, brief_path, arcs_path, volumes_path,
-            characters_path, expression_path, root / "project.yaml",
-            structure_path, promise_path, simulation_path,
-            *(semantic_plan_paths[-1:] if semantic_plan_paths else []),
-        )
-        if path.is_file()
-    ]
+    planning = load_chapter_planning_context(root, chapter_number)
+    intent = require_current_human_chapter_intent(root, chapter_number)
     payload = {
-        "schema": "chapter_direction_context_v1",
+        "schema": "chapter_semantic_planning_context_v1",
         "chapter_number": chapter_number,
-        "chapter_card": {
-            key: card.get(key)
-            for key in (
-                "chapter_number",
-                "title",
-                "chapter_duty",
-                "conflict",
-                "chapter_turn",
-                "primary_story_engine",
-                "scene_carriers",
-                "state_change_kind",
-                "dramatic_method",
-                "reader_gain",
-                "cost",
-                "relationship_move",
-                "forbidden_reveals",
-                "protected_reveals",
-                "protected_story_outcomes",
-                "protected_canon_outcomes",
-                "prohibited_drift",
-                "immediate_desire",
-                "opposition_force",
-                "key_failure",
-                "irreversible_choice",
-                "pov_character_id",
-                "featured_character_ids",
-            )
-            if card.get(key) not in (None, "", [], {})
-        },
-        "chapter_plan": plan_row,
-        "approved_semantic_planning": {
-            key: semantic_plan.get(key)
-            for key in ("document_type", "title", "body", "claims", "uncertainties")
-            if semantic_plan.get(key) not in (None, "", [], {})
-        },
-        "goal_ladder": {
-            "book_goal": str((brief.get("design_decisions") or {}).get("long_conflict") or ""),
-            "volume_goal": str(current_volume.get("goal") or ""),
-            "arc_goal": str(current_arc.get("goal") or ""),
-            "protagonist_goal": str((brief.get("design_decisions") or {}).get("protagonist_desire") or ""),
-        },
-        "active_story_facets": active_story_facets(compiled_story, requested_facets, limit=3),
-        "featured_cast": [
-            {
-                "id": character_id,
-                "name": str(character_by_id.get(character_id, {}).get("name") or character_id),
-                "desire": str(
-                    (plan_row.get("scene_wants") or {}).get(character_id)
-                    or character_by_id.get(character_id, {}).get("goal")
-                    or ""
-                ),
-                "voice": {
-                    key: expression_by_id.get(character_id, {}).get(key)
-                    for key in (
-                        "perception_bias", "decision_pattern", "speech_register",
-                        "conversation_tactics", "emotional_leakage", "physical_presence",
-                    )
-                    if expression_by_id.get(character_id, {}).get(key) not in (None, "", [], {})
-                },
-            }
-            for character_id in featured_ids
-        ],
-        "active_foreshadowing": active_threads,
-        "reader_promises": [
-            item
-            for item in promises["items"]
-            if item["status"] not in {"paid", "retired"}
-            and int(item["payoff_window"]["earliest"]) <= chapter_number
-            <= int(item["payoff_window"]["latest"]) + 1
-        ],
-        "arc_causal_simulation": {
-            **simulation,
-            "path": relative(root, simulation_path),
-            "sha256": simulation_hash,
-        },
-        "book_contract": {
-            key: brief.get(key)
-            for key in (
-                "design_decisions", "reader_contract", "core_taboo", "story_profile",
-                "story_engine_contract",
-            )
-            if isinstance(brief, dict) and brief.get(key) not in (None, "", [], {})
-        },
-        "recent_structure": [
-            {
-                key: item.get(key)
-                for key in (
-                    "chapter_number", "primary_story_engine", "primary_scene_carrier",
-                    "state_change_kind", "dramatic_method", "exposition_carrier",
-                )
-            }
-            for item in read_jsonl_records(structure_path)[-5:]
-            if isinstance(item, dict)
-        ],
-        "project_contract": {
-            "length": config.data.get("length", {}),
-            "primary_market": str(config.data["story_profile"]["market"]["primary"]),
-        },
-        "provenance": [
-            {"path": relative(root, path), "sha256": sha256(path.read_bytes()).hexdigest()}
-            for path in source_paths
-        ],
-        "selection": {
-            "mode": "single_chapter_projection",
-            "full_chapter_plan_exposed": False,
-            "active_foreshadow_limit": 8,
-        },
+        "chapter_contract": planning.contract,
+        "approved_nodes": list(planning.nodes),
+        "semantic_obligations": list(planning.obligations),
+        "volume": planning.volume,
+        "human_intent": intent["payload"],
+        "source_files": [*planning.source_files, {"path": intent["path"], "sha256": intent["sha256"]}],
+        "boundary": "Planning claims describe intended changes. Only final-bound semantic evidence proves actual events.",
     }
-    rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     budget = resolve_context_budget_contract(root)
-    payload["selection"]["estimated_units"] = estimate_text_units(rendered, budget.estimator)
-    payload["selection"]["budget_profile"] = budget.profile
-    payload["selection"]["capacity_units"] = budget.capacity_units
-    rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    path = root / "50_workbench" / "intelligence_tasks" / f"chapter_direction.ch{chapter_number:03d}.context.json"
-    atomic_write_text(path, rendered)
+    if estimate_text_units(json.dumps(payload, ensure_ascii=False), budget.estimator) > budget.capacity_units:
+        raise ValueError("prompt_budget_exceeded: approved semantic planning context cannot be truncated")
+    path = root / "50_workbench" / "intelligence_tasks" / f"chapter_semantic_planning.ch{chapter_number:03d}.context.json"
+    write_json(path, payload)
     return path
 
 
-def write_outline_extension_context(
-    config: ConfigDocument,
-    root: Path,
-    scope: dict[str, Any],
-) -> Path:
-    """Compile bounded continuation evidence instead of resending the growing outline."""
-
-    start = int(scope["from_chapter"])
-    end = int(scope["to_chapter"])
-    simulation, simulation_path, _simulation_hash = load_covering_arc_simulation(
-        root,
-        from_chapter=start,
-        to_chapter=end,
-    )
-    plan_path = root / "20_outline" / "chapter_plan.json"
-    arcs_path = root / "20_outline" / "story_arcs.json"
-    volumes_path = root / "20_outline" / "volumes.json"
-    ledger_path = root / "20_outline" / "foreshadowing_ledger.json"
-    brief_path = root / "10_bible" / "creative_brief.json"
-    plan = read_json(plan_path, [])
-    arcs = read_json(arcs_path, [])
-    volumes = read_json(volumes_path, [])
-    ledger = read_json(ledger_path, [])
-    brief = read_json(brief_path, {})
-    recent_plan = [item for item in plan if isinstance(item, dict)][-8:] if isinstance(plan, list) else []
-    active_threads = [
-        {
-            key: item.get(key)
-            for key in ("id", "description", "plant", "payoff", "completion_required", "status")
-            if item.get(key) not in (None, "", [], {})
-        }
-        for item in ledger
-        if isinstance(item, dict) and str(item.get("status") or "") not in {"resolved", "expired"}
-    ][:12] if isinstance(ledger, list) else []
-    source_paths = [
-        path
-        for path in (
-            plan_path,
-            arcs_path,
-            volumes_path,
-            ledger_path,
-            brief_path,
-            simulation_path,
-            root / "project.yaml",
-        )
-        if path.is_file()
-    ]
-    compiled_story = compile_story_profile(
-        config.data["story_profile"], market_ids=set(BUILTIN_MARKET_IDS)
-    )
-    forecast = compile_length_forecast(config.data["length"])
-    start_progress = min(1.0, max(0.0, (start - 1) / max(1, forecast.estimated_chapters)))
-    end_progress = min(1.0, max(start_progress, end / max(1, forecast.estimated_chapters)))
-    relevant_arcs = [
-        item
-        for item in arcs if isinstance(item, dict) and valid_progress_window(item.get("progress_window"))
-        and float(item["progress_window"][0]) <= end_progress
-        and float(item["progress_window"][1]) >= start_progress
-    ] if isinstance(arcs, list) else []
-    requested_facets = [
-        str(facet_id)
-        for arc in relevant_arcs
-        for facet_id in arc.get("active_facets") or []
-    ]
-    selected_facets = active_story_facets(compiled_story, requested_facets, limit=3)
-    payload = {
-        "schema": "outline_extension_context_v1",
-        "requested_range": {"from_chapter": start, "to_chapter": end},
-        "length_forecast": forecast.to_dict(),
-        "story_profile": {
-            "market": compiled_story["market"],
-            "selected_facets": [
-                {
-                    "kind": item.get("kind"),
-                    "id": item.get("id"),
-                    "level": item.get("level"),
-                    "requirements": list(item.get("requirements") or [])[:2],
-                    "risks": list(item.get("risks") or [])[:2],
-                }
-                for item in selected_facets
-            ],
-            "resolutions": compiled_story["resolutions"],
-        },
-        "book_contract": {
-            key: brief.get(key)
-            for key in ("design_decisions", "reader_contract", "core_taboo", "story_engine_contract")
-            if isinstance(brief, dict) and brief.get(key) not in (None, "", [], {})
-        },
-        "story_arc_map": [
-            {
-                key: item.get(key)
-                for key in ("id", "number", "progress_window", "target_characters", "goal", "active_facets")
-            }
-            for item in arcs if isinstance(item, dict)
-        ] if isinstance(arcs, list) else [],
-        "active_story_arcs": relevant_arcs,
-        "volume_map": [
-            {
-                key: item.get(key)
-                for key in ("id", "number", "target_characters", "arc_ids", "goal", "ending_turn")
-            }
-            for item in volumes if isinstance(item, dict)
-        ] if isinstance(volumes, list) else [],
-        "recent_chapter_plan": recent_plan,
-        "active_foreshadowing": active_threads,
-        "arc_causal_simulation": {
-            key: value
-            for key, value in simulation.items()
-            if key not in {"basis_hashes", "approved_by", "status"}
-        },
-        "provenance": [
-            {"path": relative(root, path), "sha256": sha256(path.read_bytes()).hexdigest()}
-            for path in source_paths
-        ],
-        "selection": {
-            "full_history_exposed": False,
-            "recent_chapter_limit": 8,
-            "active_foreshadow_limit": 12,
-            "story_facet_limit": 3,
-            "active_arc_ids": [str(item.get("id") or "") for item in relevant_arcs],
-        },
-    }
-    rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    budget = resolve_context_budget_contract(root)
-    payload["selection"]["estimated_units"] = estimate_text_units(rendered, budget.estimator)
-    payload["selection"]["budget_profile"] = budget.profile
-    payload["selection"]["capacity_units"] = budget.capacity_units
-    rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-    target = (
-        root / "50_workbench" / "intelligence_context" /
-        f"outline_extension.ch{start:03d}-ch{end:03d}.context.json"
-    )
-    atomic_write_text(target, rendered)
-    return target
 
 
 def intelligence_canonical_targets(
@@ -3412,13 +2674,6 @@ def intelligence_canonical_targets(
             for path in design_apply_targets(root, task_type, scope)
         )
         return tuple(path for path in targets if is_canonical_output(path))
-    if task_type == "chapter_direction":
-        chapter_number = int(scope["chapter_number"])
-        return (
-            f"20_outline/chapter_cards/ch{chapter_number:03d}.json",
-            f"20_outline/chapter_cards/ch{chapter_number:03d}.md",
-            "20_outline/chapter_plan.json",
-        )
     return tuple(str(item) for item in TASK_SPECS[task_type]["targets"])
 
 
@@ -3453,89 +2708,6 @@ def next_book_ideation_dimension(root: Path) -> str:
     return "complete"
 
 
-def assess_chapter_direction(config: ConfigDocument, chapter_number: int) -> dict[str, Any]:
-    """Return deterministic reasons for requiring a human chapter-direction choice."""
-
-    root = resolve_project_root(config)
-    deadlines = promise_deadline_status(root, chapter_number=chapter_number)
-    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-    card = read_json(card_path, {})
-    selected = card.get("direction_selection") if isinstance(card, dict) else None
-    if isinstance(selected, dict) and selected.get("status") == "outline_revision_required":
-        return {
-            "required": True,
-            "reasons": ["outline_revision_required"],
-            "warnings": deadlines["warnings"],
-            "status": "outline_revision_required",
-        }
-    try:
-        load_active_arc_simulation(root, chapter_number=chapter_number)
-    except ArcSimulationError as exc:
-        return {
-            "required": True,
-            "reasons": [str(exc)],
-            "warnings": deadlines["warnings"],
-            "status": "arc_simulation_required",
-        }
-    if isinstance(card, dict):
-        if isinstance(selected, dict) and selected.get("status") == "applied":
-            return {
-                "required": False,
-                "reasons": [],
-                "warnings": [*deadlines["warnings"], *deadlines["blockers"]],
-                "status": "applied",
-            }
-    if deadlines["blockers"]:
-        return {
-            "required": True,
-            "reasons": deadlines["blockers"],
-            "warnings": deadlines["warnings"],
-            "status": "outline_revision_required",
-        }
-    plan = read_json(root / "20_outline" / "chapter_plan.json", [])
-    planned = next(
-        (
-            item
-            for item in plan
-            if isinstance(item, dict) and int(item.get("chapter_number") or 0) == chapter_number
-        ),
-        {},
-    ) if isinstance(plan, list) else {}
-    reasons: list[str] = ["mandatory_chapter_direction", *deadlines["warnings"]]
-    text = " ".join(
-        str(planned.get(key) or "")
-        for key in ("title", "chapter_duty", "conflict", "chapter_turn", "ending_intent")
-    ).lower()
-    abstract_markers = (
-        "待定",
-        "推进主线",
-        "推进剧情",
-        "advance the active investigation",
-        "advance one bounded",
-        "open the next contradiction",
-    )
-    if any(marker in text for marker in abstract_markers):
-        reasons.append("abstract_outline_target")
-    if any(bool(planned.get(key)) for key in ("major_turn", "major_reveal", "relationship_turn")):
-        reasons.append("major_turn")
-    if isinstance(planned.get("plotline_options"), list) and len(planned["plotline_options"]) >= 2:
-        reasons.append("multiple_valid_plotlines")
-    if planned.get("multiple_valid_plotlines") is True:
-        reasons.append("multiple_valid_plotlines")
-    repair_count = sum(
-        1
-        for task in list_manifests(root, chapter_number=chapter_number)
-        if task.get("task_type") == "repair" and task.get("status") in {"invalid", "applied"}
-    )
-    if repair_count >= 2:
-        reasons.append("repeated_repairs")
-    deduped = list(dict.fromkeys(reasons))
-    return {
-        "required": bool(deduped),
-        "reasons": deduped,
-        "warnings": deadlines["warnings"],
-        "status": "required" if deduped else "not_required",
-    }
 
 
 def normalize_inputs(root: Path, inputs: Iterable[str | Path]) -> list[Path]:
@@ -3693,9 +2865,9 @@ def load_candidate(
                 if task_type == "fanfiction_canon":
                     payload = hydrate_fanfiction_semantic_document(config, payload)
                 elif task_type == "fanfiction_story_engine":
-                    payload = hydrate_fanfiction_story_engine_document(config, root, payload)
+                    payload = hydrate_fanfiction_story_engine_document(config, root, payload, manifest)
                 elif task_type == "fanfiction_design":
-                    payload = hydrate_fanfiction_design_document(config, root, payload)
+                    payload = hydrate_fanfiction_design_document(config, root, payload, manifest)
                 elif task_type == "fanfiction_design_review":
                     payload = hydrate_fanfiction_design_review_document(
                         config, root, payload, manifest
@@ -3753,13 +2925,37 @@ def hydrate_fanfiction_semantic_document(
     return seal_semantic_document(hydrated)
 
 
+def bound_fanfiction_creative_version(root: Path, manifest: dict[str, Any] | None) -> str:
+    """Read the version fixed in the immutable task input; never upgrade old work."""
+    matches: list[str] = []
+    for item in ((manifest or {}).get("io") or {}).get("inputs") or []:
+        relative_path = str(item.get("path") or "")
+        if not relative_path.endswith(".context.json"):
+            continue
+        path = (root / relative_path).resolve()
+        if not path.is_relative_to(root.resolve()):
+            raise AgentProtocolError("creative contract input escapes project")
+        raw = path.read_bytes()
+        context = json.loads(raw)
+        if not isinstance(context, dict) or context.get("schema") not in {
+            "fanfiction_story_engine_context_v2", "fanfiction_semantic_context_v2"
+        }:
+            continue
+        if sha256(raw).hexdigest() != item.get("sha256"):
+            raise AgentProtocolError("creative contract task input is stale; rebuild task")
+        matches.append(str(context.get("creative_contract_version") or ""))
+    if matches != [CREATIVE_CONTRACT_VERSION]:
+        raise AgentProtocolError("creative contract version is missing or incompatible in task input; rebuild task")
+    return matches[0]
+
+
 def hydrate_fanfiction_design_document(
-    config: ConfigDocument, root: Path, payload: dict[str, Any]
+    config: ConfigDocument, root: Path, payload: dict[str, Any], manifest: dict[str, Any] | None
 ) -> dict[str, Any]:
     """Bind a route proposal to the exact approved project Canon used to design it."""
 
     extensions = payload.get("extensions") if isinstance(payload.get("extensions"), dict) else {}
-    cli_fields = {"continuity_mode", "source_canon_sha256", "story_engine_sha256"}
+    cli_fields = {"creative_contract_version", "continuity_mode", "source_canon_sha256", "story_engine_sha256"}
     repeated = sorted(cli_fields & set(extensions))
     if repeated:
         raise AgentProtocolError(
@@ -3777,6 +2973,7 @@ def hydrate_fanfiction_design_document(
     hydrated["extensions"].update(
         {
             "task_type": "fanfiction_design",
+            "creative_contract_version": bound_fanfiction_creative_version(root, manifest),
             "continuity_mode": str(configured.get("continuity_mode") or ""),
             "source_canon_sha256": current.sha256["source_canon"],
             "story_engine_sha256": current.sha256["story_engine"],
@@ -3789,11 +2986,12 @@ def hydrate_fanfiction_story_engine_document(
     config: ConfigDocument,
     root: Path,
     payload: dict[str, Any],
+    manifest: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Bind a story-engine proposal to the exact approved source baseline."""
 
     extensions = payload.get("extensions") if isinstance(payload.get("extensions"), dict) else {}
-    cli_fields = {"task_type", "continuity_mode", "source_canon_sha256"}
+    cli_fields = {"creative_contract_version", "task_type", "continuity_mode", "source_canon_sha256"}
     repeated = sorted(cli_fields & set(extensions))
     if repeated:
         raise AgentProtocolError(
@@ -3809,6 +3007,7 @@ def hydrate_fanfiction_story_engine_document(
     hydrated["extensions"].update(
         {
             "task_type": "fanfiction_story_engine",
+            "creative_contract_version": bound_fanfiction_creative_version(root, manifest),
             "continuity_mode": str(configured.get("continuity_mode") or ""),
             "source_canon_sha256": canon.sha256,
         }
@@ -3992,15 +3191,9 @@ def validate_payload(
         "character_expression_review": lambda value, target: target.extend(
             validate_evidence_review(value)
         ),
-        "outline_design": lambda value, target: validate_outline_design(config, value, target),
         "arc_simulation": lambda value, target: validate_arc_simulation_payload(
             root, value, manifest, target
         ),
-        "outline_extension": lambda value, target: validate_outline_extension(
-            config, root, value, manifest, target
-        ),
-        "chapter_direction": lambda value, target: validate_chapter_direction(config, root, value, manifest, target),
-        "outline_revision": lambda value, target: validate_outline_revision(config, root, value, target),
         "research_synthesis": validate_research_synthesis,
         "style_analysis": validate_style_analysis,
         "adaptation_analysis": validate_adaptation_analysis,
@@ -4156,283 +3349,6 @@ def validate_book_ideation(root: Path, payload: dict[str, Any], errors: list[str
             errors.append("selection.answer must be non-empty when mode=provided_answer.")
 
 
-def validate_chapter_direction(
-    config: ConfigDocument,
-    root: Path,
-    payload: dict[str, Any],
-    manifest: dict[str, Any] | None,
-    errors: list[str],
-) -> None:
-    required = {
-        "schema",
-        "chapter_number",
-        "chapter_card_sha256",
-        "trigger_reasons",
-        "selected_direction",
-        "selection",
-        "canonical_refs",
-        "introduced_elements",
-    }
-    require_keys(payload, required, required, errors)
-    chapter_number = payload.get("chapter_number")
-    manifest_chapter = manifest_chapter_number(manifest or {})
-    if not isinstance(chapter_number, int) or chapter_number <= 0:
-        errors.append("chapter_number must be a positive integer.")
-        return
-    if chapter_number != manifest_chapter:
-        errors.append("chapter_number must match the active Agent task.")
-    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-    if not card_path.is_file():
-        errors.append("declared chapter card does not exist.")
-        return
-    expected_hash = sha256(card_path.read_bytes()).hexdigest()
-    if payload.get("chapter_card_sha256") != expected_hash:
-        errors.append("chapter_card_sha256 does not match the current chapter card.")
-    status = assess_chapter_direction(config, chapter_number)
-    reasons = payload.get("trigger_reasons")
-    if not isinstance(reasons, list) or sorted(str(item) for item in reasons) != sorted(status["reasons"]):
-        errors.append("trigger_reasons must match CLI-computed chapter direction reasons.")
-
-    direction = payload.get("selected_direction")
-    required_direction = {
-        "id",
-        "title",
-        "book_goal",
-        "volume_goal",
-        "protagonist_goal",
-        "chapter_duty",
-        "immediate_desire",
-        "opposition_force",
-        "dramatic_question",
-        "key_failure",
-        "irreversible_choice",
-        "chapter_turn",
-        "reveal_boundary",
-        "emotional_aftereffect",
-        "ending_intent",
-        "must_preserve_suspense",
-        "resolution_markers",
-        "must_dramatize",
-        "may_summarize",
-        "primary_story_engine",
-        "scene_carriers",
-        "reader_promise_actions",
-        "arc_simulation_ref",
-        "protected_story_outcomes",
-        "prohibited_drift",
-        "state_change_kind",
-        "dramatic_method",
-        "exposition_carrier",
-        "scene_chain",
-        "featured_character_ids",
-        "cast_desires",
-        "dialogue_ownership",
-        "embodiment_plan",
-        "interiority_function",
-        "conflict",
-        "reader_gain",
-        "cost",
-        "mainline_move",
-        "character_arc_move",
-        "foreshadow_move",
-        "relationship_move",
-        "canon_refs",
-        "world_rule_refs",
-        "foreshadow_refs",
-        "forbidden_reveals",
-        "ending_mode",
-        "main_risks",
-    }
-    fanfiction_mode = str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
-    fanfiction_fields = {
-        "protected_canon_outcomes",
-        "changed_scene_means",
-        "canon_character_agency",
-        "new_long_term_facts",
-        "outline_revision_required",
-    }
-    if fanfiction_mode:
-        required_direction |= fanfiction_fields
-    if not isinstance(direction, dict) or set(direction) != required_direction:
-        errors.append(
-            "selected_direction must contain exactly: "
-            + ", ".join(sorted(required_direction))
-            + "."
-        )
-        direction = {}
-    direction_id = stable_id(direction.get("id"))
-    if not direction_id:
-        errors.append("selected_direction.id must be stable.")
-    for field in (
-        "title", "book_goal", "volume_goal", "protagonist_goal", "chapter_duty",
-        "dialogue_ownership", "embodiment_plan", "interiority_function", "conflict",
-        "immediate_desire", "opposition_force", "dramatic_question", "key_failure",
-        "irreversible_choice", "chapter_turn", "reveal_boundary", "reader_gain", "cost",
-        "primary_story_engine", "state_change_kind", "dramatic_method", "exposition_carrier",
-        "mainline_move",
-        "character_arc_move", "foreshadow_move", "relationship_move", "ending_mode",
-        "emotional_aftereffect", "ending_intent",
-    ):
-        if not isinstance(direction.get(field), str) or not direction[field].strip():
-            errors.append(f"selected_direction.{field} must be non-empty text.")
-    for field in (
-        "featured_character_ids", "canon_refs", "world_rule_refs", "foreshadow_refs",
-        "forbidden_reveals", "main_risks", "must_dramatize", "may_summarize",
-        "scene_carriers", "protected_story_outcomes", "prohibited_drift",
-        "must_preserve_suspense", "resolution_markers",
-    ):
-        values = direction.get(field)
-        if not isinstance(values, list) or any(not isinstance(item, str) or not item.strip() for item in values):
-            errors.append(f"selected_direction.{field} must be a string list.")
-    for field in (
-        "featured_character_ids", "must_dramatize", "scene_carriers",
-        "protected_story_outcomes", "prohibited_drift",
-    ):
-        if not direction.get(field):
-            errors.append(f"selected_direction.{field} must be non-empty.")
-    ledger = load_reader_promise_ledger(root)
-    errors.extend(
-        f"selected_direction.{item}"
-        for item in validate_promise_actions_v2(direction.get("reader_promise_actions"), ledger)
-    )
-    try:
-        simulation, simulation_path, simulation_hash = load_active_arc_simulation(
-            root, chapter_number=chapter_number
-        )
-    except ArcSimulationError as exc:
-        errors.append(str(exc))
-    else:
-        expected_simulation_ref = {
-            "path": relative(root, simulation_path),
-            "sha256": simulation_hash,
-            "from_chapter": simulation["from_chapter"],
-            "to_chapter": simulation["to_chapter"],
-        }
-        if direction.get("arc_simulation_ref") != expected_simulation_ref:
-            errors.append(
-                "selected_direction.arc_simulation_ref must reference the current approved causal simulation."
-            )
-    current_card = read_json(card_path, {})
-    protected_scalar_fields = (
-        "chapter_duty", "chapter_turn", "reader_gain", "relationship_move", "state_change_kind",
-    )
-    protected_list_fields = ("featured_character_ids", "protected_story_outcomes")
-    authority_changes = [
-        field
-        for field in protected_scalar_fields
-        if isinstance(current_card, dict)
-        and current_card.get(field) not in (None, "")
-        and direction.get(field) != current_card.get(field)
-    ]
-    authority_changes.extend(
-        field
-        for field in protected_list_fields
-        if isinstance(current_card, dict)
-        and isinstance(current_card.get(field), list)
-        and current_card.get(field)
-        and direction.get(field) != current_card.get(field)
-    )
-    if authority_changes:
-        errors.append(
-            "selected direction changes protected chapter outcomes outside chapter-direction authority "
-            f"({', '.join(authority_changes)}); create an outline_revision task."
-        )
-    scenes = direction.get("scene_chain")
-    scene_fields = {
-        "scene_id", "location", "participants", "carrier", "desire_collision", "action",
-        "reaction", "choice", "cost", "turn", "exit_state",
-    }
-    if not isinstance(scenes, list) or not 2 <= len(scenes) <= 5:
-        errors.append("selected_direction.scene_chain must contain two to five scenes.")
-    else:
-        for scene_index, scene in enumerate(scenes):
-            if not isinstance(scene, dict) or set(scene) != scene_fields:
-                errors.append(
-                    f"selected_direction.scene_chain[{scene_index}] must contain exactly: "
-                    f"{', '.join(sorted(scene_fields))}."
-                )
-                continue
-            for key in scene_fields - {"participants"}:
-                if not isinstance(scene.get(key), str) or not scene[key].strip():
-                    errors.append(f"selected_direction.scene_chain[{scene_index}].{key} must be non-empty.")
-            if not isinstance(scene.get("participants"), list) or not scene["participants"]:
-                errors.append(f"selected_direction.scene_chain[{scene_index}].participants must be non-empty.")
-    cast_desires = direction.get("cast_desires")
-    if not isinstance(cast_desires, dict) or not cast_desires:
-        errors.append("selected_direction.cast_desires must be a non-empty character-id object.")
-    elif any(
-        not stable_id(key) or not isinstance(value, str) or not value.strip()
-        for key, value in cast_desires.items()
-    ):
-        errors.append("selected_direction.cast_desires must map stable character IDs to visible desires.")
-    if fanfiction_mode:
-        for field in ("changed_scene_means", "canon_character_agency"):
-            if not isinstance(direction.get(field), str) or not direction[field].strip():
-                errors.append(f"selected_direction.{field} must be non-empty text.")
-        for field in ("protected_canon_outcomes", "new_long_term_facts"):
-            values = direction.get(field)
-            if not isinstance(values, list) or any(not isinstance(item, str) or not item.strip() for item in values):
-                errors.append(f"selected_direction.{field} must be a string list.")
-        if not isinstance(direction.get("outline_revision_required"), bool):
-            errors.append("selected_direction.outline_revision_required must be boolean.")
-        protected_canon_outcomes = direction.get("protected_canon_outcomes")
-        card_protected_canon = (
-            current_card.get("protected_canon_outcomes")
-            if isinstance(current_card, dict)
-            else None
-        )
-        if not isinstance(card_protected_canon, list) or not card_protected_canon:
-            errors.append(
-                "chapter card lacks protected_canon_outcomes; create an outline_revision task before selecting a fanfiction direction."
-            )
-        elif protected_canon_outcomes != card_protected_canon:
-            errors.append(
-                "selected fanfiction direction changes protected canon outcomes; create an outline_revision task."
-            )
-        changed_outcomes = (
-            bool(direction.get("new_long_term_facts"))
-            or not bool(protected_canon_outcomes)
-            or (
-                isinstance(card_protected_canon, list)
-                and bool(card_protected_canon)
-                and protected_canon_outcomes != card_protected_canon
-            )
-        )
-        if changed_outcomes and direction.get("outline_revision_required") is not True:
-            errors.append(
-                "fanfiction direction changing protected outcomes or long-term facts must require outline revision."
-            )
-        if direction.get("outline_revision_required") is True:
-            errors.append(
-                "selected fanfiction direction is outside chapter-direction authority; create an outline_revision task."
-            )
-    selection = payload.get("selection")
-    selection_fields = {"direction_id", "user_adjustments", "repetition_reason"}
-    if not isinstance(selection, dict) or set(selection) != selection_fields:
-        errors.append("selection must contain direction_id, user_adjustments, and repetition_reason only.")
-        return
-    if selection.get("direction_id") != direction_id:
-        errors.append("selection.direction_id must reference selected_direction.id.")
-    adjustments = selection.get("user_adjustments")
-    allowed_adjustments = required_direction - {"id", "title", "main_risks"}
-    if not isinstance(adjustments, dict) or set(adjustments) - allowed_adjustments:
-        errors.append("selection.user_adjustments contains unsupported fields.")
-    elif any(value in (None, "", [], {}) for value in adjustments.values()):
-        errors.append("selection.user_adjustments values must be non-empty.")
-    repetition = chapter_carrier_repetition_status(root, direction, chapter_number=chapter_number)
-    if not isinstance(selection.get("repetition_reason"), str):
-        errors.append("selection.repetition_reason must be text.")
-    repetition_reason = str(selection.get("repetition_reason") or "").strip()
-    if repetition["requires_reason"] and not repetition_reason:
-        errors.append(
-            "selection.repetition_reason is required because the primary carrier and dramatic method repeat in four of five chapters."
-        )
-    if not isinstance(payload.get("canonical_refs"), list):
-        errors.append("canonical_refs must be a list.")
-    elif sorted(payload["canonical_refs"]) != sorted(direction.get("canon_refs") or []):
-        errors.append("canonical_refs must match selected_direction.canon_refs.")
-    if not isinstance(payload.get("introduced_elements"), list):
-        errors.append("introduced_elements must be a list.")
 
 
 def chapter_carrier_repetition_status(
@@ -4652,214 +3568,12 @@ def validate_book_design(payload: dict[str, Any], errors: list[str]) -> None:
     )
 
 
-def validate_outline_design(config: ConfigDocument, payload: dict[str, Any], errors: list[str]) -> None:
-    required = {
-        "schema",
-        "book_outline_markdown",
-        "story_arcs",
-        "volumes",
-        "planning_window",
-        "chapter_plan",
-        "foreshadowing_ledger",
-    }
-    require_keys(payload, required, required, errors)
-    require_nonempty_string(payload, "book_outline_markdown", errors)
-    for key in ("story_arcs", "volumes", "chapter_plan", "foreshadowing_ledger"):
-        require_list(payload, key, errors)
-    if not isinstance(payload.get("planning_window"), dict):
-        errors.append("planning_window must be an object.")
-    validate_outline_structures(config, payload, errors, initial=True)
 
 
-def validate_canonical_rolling_outline(
-    config: ConfigDocument,
-    payload: dict[str, Any],
-    errors: list[str],
-) -> None:
-    """Validate the accumulated canonical outline after zero or more rolling extensions."""
-
-    forecast = compile_length_forecast(config.data["length"])
-    story = compile_story_profile(
-        config.data["story_profile"],
-        market_ids=set(BUILTIN_MARKET_IDS),
-    )
-    selected_facets = {
-        f"{item['kind']}:{item['id']}" for item in story["selected_facets"]
-    }
-    arc_ids = validate_story_arcs(payload.get("story_arcs"), forecast, selected_facets, errors)
-    volume_ids = validate_rolling_volumes(payload.get("volumes"), forecast, arc_ids, errors)
-    active_window = validate_planning_window(
-        config,
-        payload.get("planning_window"),
-        errors,
-        expected_range=None,
-        initial=False,
-    )
-    plan = payload.get("chapter_plan")
-    rows = [item for item in plan if isinstance(item, dict)] if isinstance(plan, list) else []
-    last_planned = max(
-        (int(item.get("chapter_number") or 0) for item in rows),
-        default=0,
-    )
-    full_range = (1, last_planned) if last_planned > 0 else None
-    validate_rolling_chapter_plan(
-        plan,
-        full_range,
-        arc_ids,
-        volume_ids,
-        selected_facets,
-        errors,
-        fanfiction_mode=str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction",
-    )
-    if active_window is not None and last_planned > 0:
-        horizon = int(config.data["length"]["planning"]["detailed_horizon"])
-        expected_start = max(1, last_planned - horizon + 1)
-        if active_window != (expected_start, last_planned):
-            errors.append(
-                "planning_window must identify the latest bounded section of the accumulated chapter plan."
-            )
-    validate_arc_foreshadowing(
-        payload.get("foreshadowing_ledger"),
-        arc_ids,
-        errors,
-        allow_empty=False,
-    )
 
 
-def validate_outline_extension(
-    config: ConfigDocument,
-    root: Path,
-    payload: dict[str, Any],
-    manifest: dict[str, Any] | None,
-    errors: list[str],
-) -> None:
-    required = {"schema", "planning_window", "chapter_plan", "foreshadowing_updates"}
-    require_keys(payload, required, required, errors)
-    for key in ("chapter_plan", "foreshadowing_updates"):
-        require_list(payload, key, errors)
-    if not isinstance(payload.get("planning_window"), dict):
-        errors.append("planning_window must be an object.")
-    scope = (manifest or {}).get("scope")
-    scope = scope if isinstance(scope, dict) else {}
-    start = int(scope.get("from_chapter") or 0)
-    end = int(scope.get("to_chapter") or 0)
-    try:
-        load_covering_arc_simulation(
-            root,
-            from_chapter=start,
-            to_chapter=end,
-        )
-    except ArcSimulationError as exc:
-        errors.append(f"outline_extension requires a current covering causal simulation: {exc}")
-    current_plan = read_json(root / "20_outline" / "chapter_plan.json", [])
-    if not isinstance(current_plan, list) or not current_plan:
-        errors.append("outline_extension requires an existing rolling chapter plan.")
-        return
-    current_end = max(
-        (int(item.get("chapter_number") or 0) for item in current_plan if isinstance(item, dict)),
-        default=0,
-    )
-    if start != current_end + 1:
-        errors.append(f"outline_extension must start at the next unplanned chapter: {current_end + 1}.")
-    rows = payload.get("chapter_plan")
-    if isinstance(rows, list) and rows:
-        numbers = [int(item.get("chapter_number") or 0) for item in rows if isinstance(item, dict)]
-        if numbers != list(range(start, end + 1)):
-            errors.append("outline_extension chapter_plan must exactly cover the declared range.")
-    combined = {
-        "story_arcs": read_json(root / "20_outline" / "story_arcs.json", []),
-        "volumes": read_json(root / "20_outline" / "volumes.json", []),
-        "planning_window": payload.get("planning_window"),
-        "chapter_plan": rows,
-        "foreshadowing_ledger": payload.get("foreshadowing_updates"),
-    }
-    validate_outline_structures(
-        config,
-        combined,
-        errors,
-        initial=False,
-        expected_range=(start, end),
-        allow_empty_ledger=True,
-    )
 
 
-def validate_outline_revision(config: ConfigDocument, root: Path, payload: dict[str, Any], errors: list[str]) -> None:
-    required = {"schema", "from_chapter", "to_chapter", "change_summary", "impact", "replacements"}
-    require_keys(payload, required, required, errors)
-    start, end = payload.get("from_chapter"), payload.get("to_chapter")
-    if not isinstance(start, int) or start <= 0 or not isinstance(end, int) or end < start:
-        errors.append("from_chapter/to_chapter must be a valid positive range.")
-    elif any(
-        manuscript_chapter_path(root, chapter_number, lane="final").is_file()
-        for chapter_number in range(start, end + 1)
-    ):
-        errors.append(
-            "outline_revision cannot rewrite finalized chapters; run revision rollback to a safe boundary first."
-        )
-    require_nonempty_string(payload, "change_summary", errors)
-    impact = payload.get("impact")
-    if not isinstance(impact, dict) or not isinstance(impact.get("stale_chapters"), list) or not isinstance(impact.get("stale_artifacts"), list):
-        errors.append("impact must contain stale_chapters and stale_artifacts lists.")
-    replacements = payload.get("replacements")
-    allowed = {
-        "book_outline_markdown",
-        "story_arcs",
-        "volumes",
-        "planning_window",
-        "chapter_plan",
-        "foreshadowing_ledger",
-        "reader_promise_deferrals",
-    }
-    if not isinstance(replacements, dict) or not replacements:
-        errors.append("replacements must be a non-empty object.")
-    elif set(replacements) - allowed:
-        errors.append("replacements contains unknown targets.")
-    elif isinstance(replacements, dict):
-        if "reader_promise_deferrals" in replacements:
-            errors.extend(
-                validate_planning_deferrals(
-                    replacements["reader_promise_deferrals"],
-                    load_reader_promise_ledger(root),
-                )
-            )
-        replacement_window = replacements.get(
-            "planning_window", read_json(root / "20_outline" / "planning_window.json", {})
-        )
-        replacement_plan = replacements.get(
-            "chapter_plan", read_json(root / "20_outline" / "chapter_plan.json", [])
-        )
-        if isinstance(replacement_window, dict) and isinstance(replacement_plan, list):
-            window_start = int(replacement_window.get("start_chapter") or 0)
-            window_end = int(replacement_window.get("end_chapter") or 0)
-            replacement_plan = [
-                item
-                for item in replacement_plan
-                if isinstance(item, dict)
-                and window_start <= int(item.get("chapter_number") or 0) <= window_end
-            ]
-        replacement_payload = {
-            "story_arcs": replacements.get("story_arcs", read_json(root / "20_outline" / "story_arcs.json", [])),
-            "volumes": replacements.get("volumes", read_json(root / "20_outline" / "volumes.json", [])),
-            "planning_window": replacement_window,
-            "chapter_plan": replacement_plan,
-            "foreshadowing_ledger": replacements.get("foreshadowing_ledger") or [
-                {
-                    key: item.get(key)
-                    for key in ("id", "description", "plant", "payoff", "completion_required", "status")
-                }
-                for item in read_json(root / "20_outline" / "foreshadowing_ledger.json", [])
-                if isinstance(item, dict)
-            ],
-        }
-        validate_outline_structures(config, replacement_payload, errors, initial=False)
-    if isinstance(start, int) and isinstance(end, int) and start > 0 and end >= start and isinstance(impact, dict):
-        expected_chapters, expected_artifacts = recompute_revision_impact(root, start, end)
-        supplied_chapters = sorted({item for item in impact.get("stale_chapters", []) if isinstance(item, int)})
-        supplied_artifacts = sorted({str(item) for item in impact.get("stale_artifacts", [])})
-        if supplied_chapters != expected_chapters:
-            errors.append("impact.stale_chapters does not match CLI-recomputed project dependencies.")
-        if supplied_artifacts != expected_artifacts:
-            errors.append("impact.stale_artifacts does not match CLI-recomputed project dependencies.")
 
 
 def validate_research_synthesis(payload: dict[str, Any], errors: list[str]) -> None:
@@ -4968,6 +3682,10 @@ def validate_fanfiction_design_review(
         review_target_path=relative(root, route),
         review_target_sha256=sha256(route.read_bytes()).hexdigest(),
     )
+    if not errors:
+        fanfiction_contracts.validate_creative_review_coverage(
+            payload, read_json(route, {}), current.story_engine, errors
+        )
 
 
 def validate_sources(
@@ -5030,302 +3748,16 @@ def stable_id(value: Any) -> str:
     return text
 
 
-def validate_outline_structures(
-    config: ConfigDocument,
-    payload: dict[str, Any],
-    errors: list[str],
-    *,
-    initial: bool,
-    expected_range: tuple[int, int] | None = None,
-    allow_empty_ledger: bool = False,
-) -> None:
-    forecast = compile_length_forecast(config.data["length"])
-    story = compile_story_profile(
-        config.data["story_profile"],
-        market_ids=set(BUILTIN_MARKET_IDS),
-    )
-    selected_facets = {
-        f"{item['kind']}:{item['id']}" for item in story["selected_facets"]
-    }
-    arc_ids = validate_story_arcs(payload.get("story_arcs"), forecast, selected_facets, errors)
-    volume_ids = validate_rolling_volumes(payload.get("volumes"), forecast, arc_ids, errors)
-    window = validate_planning_window(
-        config,
-        payload.get("planning_window"),
-        errors,
-        expected_range=expected_range,
-        initial=initial,
-    )
-    validate_rolling_chapter_plan(
-        payload.get("chapter_plan"),
-        window,
-        arc_ids,
-        volume_ids,
-        selected_facets,
-        errors,
-        fanfiction_mode=str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction",
-    )
-    validate_arc_foreshadowing(
-        payload.get("foreshadowing_ledger"),
-        arc_ids,
-        errors,
-        allow_empty=allow_empty_ledger,
-    )
 
 
-def validate_story_arcs(
-    value: Any,
-    forecast: Any,
-    selected_facets: set[str],
-    errors: list[str],
-) -> set[str]:
-    required = {
-        "id", "number", "title", "phase", "progress_window", "target_characters", "goal",
-        "conflict_escalation", "character_arc_moves", "promise_ids", "active_facets",
-        "quality_focus",
-    }
-    if not isinstance(value, list) or not value:
-        errors.append("story_arcs must contain the full-book macro arcs.")
-        return set()
-    arc_ids: set[str] = set()
-    previous_end = 0.0
-    total_characters = 0
-    for index, arc in enumerate(value):
-        if not isinstance(arc, dict) or set(arc) != required:
-            errors.append(f"story_arcs[{index}] must contain exactly: {', '.join(sorted(required))}.")
-            continue
-        arc_id = stable_id(arc.get("id"))
-        if not arc_id or arc_id in arc_ids:
-            errors.append(f"story_arcs[{index}].id must be stable and unique.")
-        else:
-            arc_ids.add(arc_id)
-        if arc.get("number") != index + 1:
-            errors.append(f"story_arcs[{index}].number must be {index + 1}.")
-        window = arc.get("progress_window")
-        if not valid_progress_window(window) or abs(float(window[0]) - previous_end) > 0.000001:
-            errors.append(f"story_arcs[{index}].progress_window must continue from {previous_end:.6f}.")
-        else:
-            previous_end = float(window[1])
-        target = arc.get("target_characters")
-        if not isinstance(target, int) or isinstance(target, bool) or target <= 0:
-            errors.append(f"story_arcs[{index}].target_characters must be a positive integer.")
-        else:
-            total_characters += target
-        for field in ("title", "phase", "goal", "conflict_escalation"):
-            if not isinstance(arc.get(field), str) or not arc[field].strip():
-                errors.append(f"story_arcs[{index}].{field} must be a non-empty string.")
-        for field in ("character_arc_moves", "promise_ids"):
-            if not isinstance(arc.get(field), list):
-                errors.append(f"story_arcs[{index}].{field} must be a list.")
-        active = arc.get("active_facets")
-        if not isinstance(active, list) or not 1 <= len(active) <= 3:
-            errors.append(f"story_arcs[{index}].active_facets must contain one to three selected facets.")
-        elif any(str(item) not in selected_facets for item in active):
-            errors.append(f"story_arcs[{index}].active_facets references an unselected facet.")
-        quality_focus = arc.get("quality_focus")
-        focus_fields = {"requirements", "preferences", "risks", "review_questions"}
-        if not isinstance(quality_focus, dict) or set(quality_focus) != focus_fields:
-            errors.append(
-                f"story_arcs[{index}].quality_focus must contain exactly: "
-                + ", ".join(sorted(focus_fields))
-                + "."
-            )
-        else:
-            for field in sorted(focus_fields):
-                entries = quality_focus.get(field)
-                if not isinstance(entries, list) or any(
-                    not isinstance(item, str) or not item.strip() for item in entries
-                ):
-                    errors.append(f"story_arcs[{index}].quality_focus.{field} must be a string list.")
-    if abs(previous_end - 1.0) > 0.000001:
-        errors.append("story_arcs progress windows must end at 1.0.")
-    if not forecast.completion_min_characters <= total_characters <= forecast.completion_max_characters:
-        errors.append("story_arcs target_characters must fit the book completion tolerance.")
-    return arc_ids
 
 
-def validate_rolling_volumes(
-    value: Any,
-    forecast: Any,
-    arc_ids: set[str],
-    errors: list[str],
-) -> set[str]:
-    required = {
-        "id", "number", "title", "target_characters", "arc_ids", "goal", "escalation", "ending_turn",
-    }
-    if not isinstance(value, list) or not value:
-        errors.append("volumes must contain the full-book volume budget.")
-        return set()
-    volume_ids: set[str] = set()
-    total_characters = 0
-    for index, volume in enumerate(value):
-        if not isinstance(volume, dict) or set(volume) != required:
-            errors.append(f"volumes[{index}] must contain exactly: {', '.join(sorted(required))}.")
-            continue
-        volume_id = stable_id(volume.get("id"))
-        if not volume_id or volume_id in volume_ids:
-            errors.append(f"volumes[{index}].id must be stable and unique.")
-        else:
-            volume_ids.add(volume_id)
-        if volume.get("number") != index + 1:
-            errors.append(f"volumes[{index}].number must be {index + 1}.")
-        target = volume.get("target_characters")
-        if not isinstance(target, int) or isinstance(target, bool) or target <= 0:
-            errors.append(f"volumes[{index}].target_characters must be a positive integer.")
-        else:
-            total_characters += target
-        declared_arcs = volume.get("arc_ids")
-        if not isinstance(declared_arcs, list) or not declared_arcs:
-            errors.append(f"volumes[{index}].arc_ids must be a non-empty list.")
-        elif any(str(item) not in arc_ids for item in declared_arcs):
-            errors.append(f"volumes[{index}].arc_ids references an undeclared story arc.")
-        for field in ("title", "goal", "escalation", "ending_turn"):
-            if not isinstance(volume.get(field), str) or not volume[field].strip():
-                errors.append(f"volumes[{index}].{field} must be a non-empty string.")
-    if not forecast.completion_min_characters <= total_characters <= forecast.completion_max_characters:
-        errors.append("volumes target_characters must fit the book completion tolerance.")
-    return volume_ids
 
 
-def validate_planning_window(
-    config: ConfigDocument,
-    value: Any,
-    errors: list[str],
-    *,
-    expected_range: tuple[int, int] | None,
-    initial: bool,
-) -> tuple[int, int] | None:
-    required = {"schema", "start_chapter", "end_chapter", "detailed_horizon", "refill_threshold"}
-    if not isinstance(value, dict) or set(value) != required:
-        errors.append("planning_window must contain schema, start_chapter, end_chapter, detailed_horizon, refill_threshold only.")
-        return None
-    if value.get("schema") != "rolling_outline_window_v1":
-        errors.append("planning_window.schema must be rolling_outline_window_v1.")
-    planning = config.data["length"]["planning"]
-    start = value.get("start_chapter")
-    end = value.get("end_chapter")
-    if not isinstance(start, int) or not isinstance(end, int) or start <= 0 or end < start:
-        errors.append("planning_window start_chapter/end_chapter must be a positive continuous range.")
-        return None
-    if initial and start != 1:
-        errors.append("initial planning_window must start at chapter 1.")
-    if expected_range and (start, end) != expected_range:
-        errors.append("planning_window must match the Agent task range.")
-    if value.get("detailed_horizon") != int(planning["detailed_horizon"]):
-        errors.append("planning_window.detailed_horizon must match the length contract.")
-    if value.get("refill_threshold") != int(planning["refill_threshold"]):
-        errors.append("planning_window.refill_threshold must match the length contract.")
-    if end - start + 1 > int(planning["detailed_horizon"]):
-        errors.append("planning_window exceeds the configured detailed horizon.")
-    return start, end
 
 
-def validate_rolling_chapter_plan(
-    value: Any,
-    window: tuple[int, int] | None,
-    arc_ids: set[str],
-    volume_ids: set[str],
-    selected_facets: set[str],
-    errors: list[str],
-    *,
-    fanfiction_mode: bool,
-) -> None:
-    required = {
-        "chapter_number", "title", "chapter_duty", "conflict", "chapter_turn", "ending_intent",
-        "reader_gain", "volume_id", "arc_id", "featured_character_ids", "characterization_focus",
-        "scene_wants", "relationship_move", "active_facets", "forbidden_reveals",
-        "primary_story_engine", "primary_scene_carrier", "state_change_kind", "dramatic_method",
-    }
-    if fanfiction_mode:
-        required.add("protected_canon_outcomes")
-    if not isinstance(value, list) or not value:
-        errors.append("chapter_plan must contain the current detailed rolling window.")
-        return
-    expected_numbers = list(range(window[0], window[1] + 1)) if window else []
-    numbers: list[int] = []
-    for index, chapter in enumerate(value):
-        if not isinstance(chapter, dict):
-            errors.append(f"chapter_plan[{index}] must be an object.")
-            continue
-        removed_aliases = sorted(REMOVED_CHAPTER_PLAN_ALIAS_FIELDS & set(chapter))
-        if removed_aliases:
-            errors.append(
-                f"chapter_plan[{index}] contains removed aliases: {', '.join(removed_aliases)}."
-            )
-        missing = required - set(chapter)
-        if missing:
-            errors.append(f"chapter_plan[{index}] missing fields: {', '.join(sorted(missing))}.")
-            continue
-        number = chapter.get("chapter_number")
-        numbers.append(number if isinstance(number, int) else 0)
-        if str(chapter.get("arc_id") or "") not in arc_ids:
-            errors.append(f"chapter_plan[{index}].arc_id must reference a declared story arc.")
-        if str(chapter.get("volume_id") or "") not in volume_ids:
-            errors.append(f"chapter_plan[{index}].volume_id must reference a declared volume.")
-        for field in (
-            "title", "chapter_duty", "conflict", "chapter_turn", "ending_intent", "reader_gain",
-            "relationship_move", "primary_story_engine", "primary_scene_carrier",
-            "state_change_kind", "dramatic_method",
-        ):
-            if not isinstance(chapter.get(field), str) or not chapter[field].strip():
-                errors.append(f"chapter_plan[{index}].{field} must be a non-empty string.")
-        for field in ("featured_character_ids", "characterization_focus"):
-            items = chapter.get(field)
-            if not isinstance(items, list) or not items or any(not stable_id(item) for item in items):
-                errors.append(f"chapter_plan[{index}].{field} must be a non-empty stable-id list.")
-        if not isinstance(chapter.get("scene_wants"), dict) or not chapter["scene_wants"]:
-            errors.append(f"chapter_plan[{index}].scene_wants must be a non-empty object.")
-        active = chapter.get("active_facets")
-        if not isinstance(active, list) or not 1 <= len(active) <= 3:
-            errors.append(f"chapter_plan[{index}].active_facets must contain one to three facets.")
-        elif any(str(item) not in selected_facets for item in active):
-            errors.append(f"chapter_plan[{index}].active_facets references an unselected facet.")
-        if not isinstance(chapter.get("forbidden_reveals"), list):
-            errors.append(f"chapter_plan[{index}].forbidden_reveals must be a list.")
-        if fanfiction_mode:
-            protected = chapter.get("protected_canon_outcomes")
-            if not isinstance(protected, list) or not protected or any(
-                not isinstance(item, str) or not item.strip() for item in protected
-            ):
-                errors.append(
-                    f"chapter_plan[{index}].protected_canon_outcomes must be a non-empty string list."
-                )
-    if window and numbers != expected_numbers:
-        errors.append("chapter_plan chapter numbers must exactly match planning_window.")
 
 
-def validate_arc_foreshadowing(
-    value: Any,
-    arc_ids: set[str],
-    errors: list[str],
-    *,
-    allow_empty: bool,
-) -> None:
-    required = {"id", "description", "plant", "payoff", "completion_required", "status"}
-    if not isinstance(value, list) or (not value and not allow_empty):
-        errors.append("foreshadowing_ledger must contain at least one arc-relative planned thread.")
-        return
-    seen: set[str] = set()
-    for index, thread in enumerate(value):
-        if not isinstance(thread, dict) or set(thread) != required:
-            errors.append(f"foreshadowing_ledger[{index}] must contain exactly: {', '.join(sorted(required))}.")
-            continue
-        thread_id = stable_id(thread.get("id"))
-        if not thread_id or thread_id in seen:
-            errors.append(f"foreshadowing_ledger[{index}].id must be stable and unique.")
-        else:
-            seen.add(thread_id)
-        for field in ("description", "status"):
-            if not isinstance(thread.get(field), str) or not thread[field].strip():
-                errors.append(f"foreshadowing_ledger[{index}].{field} must be a non-empty string.")
-        if not isinstance(thread.get("completion_required"), bool):
-            errors.append(f"foreshadowing_ledger[{index}].completion_required must be boolean.")
-        for field in ("plant", "payoff"):
-            marker = thread.get(field)
-            if not isinstance(marker, dict) or set(marker) != {"arc_id", "progress_window"}:
-                errors.append(f"foreshadowing_ledger[{index}].{field} must contain arc_id and progress_window only.")
-            elif str(marker.get("arc_id") or "") not in arc_ids or not valid_progress_window(marker.get("progress_window")):
-                errors.append(f"foreshadowing_ledger[{index}].{field} must reference an arc and valid progress window.")
 
 
 def valid_progress_window(value: Any) -> bool:
@@ -5337,25 +3769,6 @@ def valid_progress_window(value: Any) -> bool:
     )
 
 
-def recompute_revision_impact(root: Path, start: int, end: int) -> tuple[list[int], list[str]]:
-    chapters: set[int] = set()
-    artifacts: set[str] = set()
-    patterns = (
-        ("20_outline/chapter_cards", "ch*.json"),
-        ("50_workbench/beats", "ch*.json"),
-        ("50_workbench/writing_tasks", "ch*.json"),
-        ("30_state/tcs", "ch*.json"),
-    )
-    for directory, pattern in patterns:
-        for path in (root / directory).glob(pattern):
-            match = re.search(r"ch(\d+)", path.name)
-            if not match:
-                continue
-            number = int(match.group(1))
-            if start <= number <= end:
-                chapters.add(number)
-                artifacts.add(path.resolve().relative_to(root.resolve()).as_posix())
-    return sorted(chapters), sorted(artifacts)
 
 
 def validate_adaptation_similarity(root: Path, payload: dict[str, Any], errors: list[str]) -> None:
@@ -5429,17 +3842,6 @@ def apply_targets(
         end = int(payload["to_chapter"])
         targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
         targets.append(arc_simulation_path(root, start, end))
-    if task_type == "outline_extension":
-        targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
-    if task_type == "chapter_direction":
-        chapter_number = int(payload["chapter_number"])
-        targets.extend(
-            [
-                root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
-                root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.md",
-                root / "20_outline" / "chapter_plan.json",
-            ]
-        )
     if task_type == "book_design":
         targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
         for optional in ("factions", "locations"):
@@ -5456,24 +3858,6 @@ def apply_targets(
         )
     if task_type == "fanfiction_design":
         targets.append(root / "10_bible" / "fanfiction" / "fanfiction_bible.json")
-    if task_type == "outline_revision":
-        targets.append(root / "20_outline" / "revise_reports" / revision_report_name(payload))
-        for chapter_number in range(int(payload["from_chapter"]), int(payload["to_chapter"]) + 1):
-            targets.extend(
-                [
-                    root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
-                    root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.md",
-                ]
-            )
-        targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
-        targets.extend(
-            outline_revision_side_effect_targets(
-                root,
-                payload["impact"]["stale_chapters"],
-            )
-        )
-    if task_type == "outline_design":
-        targets.extend(sorted((root / SIMULATION_DIR).glob("ch*-ch*.json")))
     if task_type in {
         "character_interpretation",
         "story_architecture_design",
@@ -5529,92 +3913,10 @@ def semantic_task_target(root: Path, task_type: str, payload: dict[str, Any]) ->
     return directories[task_type] / f"{token[:120]}.json"
 
 
-def outline_revision_side_effect_targets(
-    root: Path,
-    chapter_numbers: Iterable[int],
-) -> list[Path]:
-    """Declare every derived/editorial owner mutated by an outline revision."""
-
-    chapters = sorted(
-        {
-            int(chapter_number)
-            for chapter_number in chapter_numbers
-            if isinstance(chapter_number, int)
-            and not isinstance(chapter_number, bool)
-            and chapter_number > 0
-        }
-    )
-    return [
-        root / "50_workbench" / "editorial_patterns" / "registry.jsonl",
-        root / "50_workbench" / "agent_tasks",
-        root / "70_runtime" / "db",
-        *(
-            root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.json"
-            for chapter_number in chapters
-        ),
-    ]
 
 
-def invalidate_outline_revision_tasks(
-    root: Path,
-    *,
-    chapter_numbers: Iterable[int],
-    artifact: Path,
-) -> None:
-    """Supersede task projections whose chapter contract was replaced by a revision."""
-
-    affected = {
-        int(chapter_number)
-        for chapter_number in chapter_numbers
-        if isinstance(chapter_number, int)
-        and not isinstance(chapter_number, bool)
-        and chapter_number > 0
-    }
-    for task in list_manifests(root):
-        if manifest_chapter_number(task) not in affected:
-            continue
-        task_type = str(task.get("task_type") or "")
-        status = str(task.get("status") or "awaiting_agent")
-        if task_type in {"outline_revision", "design_semantic_compile"} or status in {
-            "rolled_back",
-            "superseded",
-        }:
-            continue
-        update_task_status(
-            root,
-            str(task.get("task_id") or ""),
-            to_status="superseded",
-            command="intelligence apply compiled outline_revision",
-            artifact=artifact,
-            result="chapter planning contract changed",
-        )
 
 
-def mark_outline_revision_writing_tasks_stale(
-    root: Path,
-    *,
-    chapter_numbers: Iterable[int],
-) -> None:
-    """Invalidate compiled author briefs after their planning contract changes."""
-
-    chapters = sorted(
-        {
-            int(chapter_number)
-            for chapter_number in chapter_numbers
-            if isinstance(chapter_number, int)
-            and not isinstance(chapter_number, bool)
-            and chapter_number > 0
-        }
-    )
-    for chapter_number in chapters:
-        path = root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.json"
-        payload = read_json(path, {})
-        if not isinstance(payload, dict):
-            continue
-        payload["status"] = "stale"
-        payload["stale_reason"] = "outline_revision"
-        payload["stale_at"] = datetime.now(timezone.utc).isoformat()
-        write_json(path, payload)
 
 
 def write_targets(
@@ -5759,20 +4061,6 @@ def write_targets(
         write_json(state_path, state)
         append_creation_event(root, "fanfiction_design_applied", canonical)
         return
-    if task_type == "outline_design":
-        basis_before = current_basis_hashes(root)
-        atomic_write_text(root / "20_outline" / "book_outline.md", payload["book_outline_markdown"].rstrip() + "\n")
-        write_json(root / "20_outline" / "story_arcs.json", payload["story_arcs"])
-        write_json(root / "20_outline" / "volumes.json", payload["volumes"])
-        write_json(root / "20_outline" / "chapter_plan.json", payload["chapter_plan"])
-        write_json(root / "20_outline" / "planning_window.json", payload["planning_window"])
-        materialized_threads = materialize_foreshadowing_ledger(
-            config, payload["foreshadowing_ledger"], payload["story_arcs"]
-        )
-        write_json(root / "20_outline" / "foreshadowing_ledger.json", materialized_threads)
-        mark_project_intelligence_applied(root, "outline_design", payload)
-        stale_causal_simulations_if_basis_changed(root, basis_before)
-        return
     if task_type == "arc_simulation":
         mark_overlapping_arc_simulations_stale(
             root,
@@ -5780,90 +4068,6 @@ def write_targets(
             to_chapter=int(payload["to_chapter"]),
         )
         write_arc_causal_simulation(root, payload)
-        return
-    if task_type == "outline_extension":
-        basis_before = current_basis_hashes(root)
-        existing_plan = read_json(root / "20_outline" / "chapter_plan.json", [])
-        existing_ledger = read_json(root / "20_outline" / "foreshadowing_ledger.json", [])
-        arcs = read_json(root / "20_outline" / "story_arcs.json", [])
-        write_json(root / "20_outline" / "chapter_plan.json", list(existing_plan) + list(payload["chapter_plan"]))
-        write_json(root / "20_outline" / "planning_window.json", payload["planning_window"])
-        merged_threads = {
-            str(item.get("id")): item for item in existing_ledger if isinstance(item, dict) and item.get("id")
-        }
-        for item in materialize_foreshadowing_ledger(config, payload["foreshadowing_updates"], arcs):
-            merged_threads[str(item["id"])] = item
-        merged_thread_rows = list(merged_threads.values())
-        write_json(root / "20_outline" / "foreshadowing_ledger.json", merged_thread_rows)
-        stale_causal_simulations_if_basis_changed(root, basis_before)
-        return
-    if task_type == "chapter_direction":
-        write_chapter_direction(root, payload)
-        return
-    if task_type == "outline_revision":
-        from longform_engine.orchestration.pipeline import plan_chapter
-
-        basis_before = current_basis_hashes(root)
-        replacements = payload["replacements"]
-        if "book_outline_markdown" in replacements:
-            atomic_write_text(root / "20_outline" / "book_outline.md", str(replacements["book_outline_markdown"]).rstrip() + "\n")
-        for key, filename in (
-            ("story_arcs", "story_arcs.json"),
-            ("volumes", "volumes.json"),
-            ("chapter_plan", "chapter_plan.json"),
-            ("planning_window", "planning_window.json"),
-        ):
-            if key in replacements:
-                write_json(root / "20_outline" / filename, replacements[key])
-        if "foreshadowing_ledger" in replacements:
-            arcs = replacements.get("story_arcs", read_json(root / "20_outline" / "story_arcs.json", []))
-            write_json(
-                root / "20_outline" / "foreshadowing_ledger.json",
-                materialize_foreshadowing_ledger(config, replacements["foreshadowing_ledger"], arcs),
-            )
-        promise_ledger = load_reader_promise_ledger(root)
-        if "reader_promise_deferrals" in replacements:
-            apply_planning_deferrals(
-                promise_ledger,
-                values=replacements["reader_promise_deferrals"],
-                chapter_number=int(payload["from_chapter"]),
-                approved_by="human",
-            )
-        write_reader_promise_ledger(root, promise_ledger)
-        basis_changed = current_basis_hashes(root) != basis_before
-        mark_overlapping_arc_simulations_stale(
-            root,
-            from_chapter=1 if basis_changed else int(payload["from_chapter"]),
-            to_chapter=10**9 if basis_changed else int(payload["to_chapter"]),
-        )
-        truncate_editorial_pattern_registry(
-            root,
-            to_chapter=max(0, int(payload["from_chapter"]) - 1),
-        )
-        invalidate_outline_revision_tasks(
-            root,
-            chapter_numbers=payload["impact"]["stale_chapters"],
-            artifact=root / "20_outline" / "revise_reports" / revision_report_name(payload),
-        )
-        mark_outline_revision_writing_tasks_stale(
-            root,
-            chapter_numbers=payload["impact"]["stale_chapters"],
-        )
-        state_path = root / "30_state" / "novel_state.json"
-        state = read_json(state_path, {})
-        stale = list(state.get("stale") or []) if isinstance(state, dict) else []
-        for item in payload["impact"]["stale_artifacts"]:
-            if item not in stale:
-                stale.append(item)
-        state["stale"] = stale
-        state["stale_chapters"] = payload["impact"]["stale_chapters"]
-        write_json(state_path, state)
-        write_json(root / "20_outline" / "revise_reports" / revision_report_name(payload), payload)
-        for chapter_number in range(int(payload["from_chapter"]), int(payload["to_chapter"]) + 1):
-            card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-            if card_path.is_file():
-                plan_chapter(config, chapter_number=chapter_number, overwrite=True)
-        sync_database(config)
         return
     if task_type == "research_synthesis":
         path = root / "10_bible" / "research_canon.jsonl"
@@ -6042,16 +4246,6 @@ def mark_project_intelligence_applied(root: Path, task_type: str, payload: dict[
         "candidate_hash": sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest(),
     }
     state["project_intelligence"] = project_intelligence
-    outline_marker = project_intelligence.get("outline_design")
-    expression_ready, _expression_errors = character_expression_readiness(root)
-    if (
-        isinstance(outline_marker, dict)
-        and outline_marker.get("status") == "applied"
-        and expression_ready
-    ):
-        state["status"] = "project_ready"
-    elif task_type == "outline_design":
-        state["status"] = "project_designed"
     write_json(state_path, state)
 
 
@@ -6121,89 +4315,6 @@ def write_book_ideation_decision(root: Path, payload: dict[str, Any]) -> None:
     write_json(state_path, state)
 
 
-def write_chapter_direction(root: Path, payload: dict[str, Any]) -> None:
-    from longform_engine.orchestration.pipeline import upsert_chapter_plan, write_chapter_card_artifacts
-
-    chapter_number = int(payload["chapter_number"])
-    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-    card = read_json(card_path, {})
-    if not isinstance(card, dict):
-        raise ValueError("Chapter card must be a JSON object.")
-    selection = payload["selection"]
-    selected = payload["selected_direction"]
-    resolved = dict(selected)
-    resolved.update(selection["user_adjustments"])
-    card.update(
-        {
-            "chapter_duty": resolved["chapter_duty"],
-            "immediate_desire": resolved["immediate_desire"],
-            "opposition_force": resolved["opposition_force"],
-            "dramatic_question": resolved["dramatic_question"],
-            "conflict": resolved["conflict"],
-            "key_failure": resolved["key_failure"],
-            "irreversible_choice": resolved["irreversible_choice"],
-            "chapter_turn": resolved["chapter_turn"],
-            "reveal_boundary": resolved["reveal_boundary"],
-            "emotional_aftereffect": resolved["emotional_aftereffect"],
-            "ending_mode": resolved["ending_mode"],
-            "ending_intent": resolved["ending_intent"],
-            "must_preserve_suspense": resolved["must_preserve_suspense"],
-            "resolution_markers": resolved["resolution_markers"],
-            "reader_gain": resolved["reader_gain"],
-            "cost": resolved["cost"],
-            "must_dramatize": resolved["must_dramatize"],
-            "may_summarize": resolved["may_summarize"],
-            "primary_story_engine": resolved["primary_story_engine"],
-            "scene_carriers": resolved["scene_carriers"],
-            "protected_story_outcomes": resolved["protected_story_outcomes"],
-            "prohibited_drift": resolved["prohibited_drift"],
-            "state_change_kind": resolved["state_change_kind"],
-            "dramatic_method": resolved["dramatic_method"],
-            "exposition_carrier": resolved["exposition_carrier"],
-            "book_goal": resolved["book_goal"],
-            "volume_goal": resolved["volume_goal"],
-            "protagonist_goal": resolved["protagonist_goal"],
-            "platform_promise": resolved["chapter_duty"],
-            "scene_chain": resolved["scene_chain"],
-            "featured_character_ids": resolved["featured_character_ids"],
-            "scene_wants": resolved["cast_desires"],
-            "dialogue_ownership": resolved["dialogue_ownership"],
-            "embodiment_strategy": resolved["embodiment_plan"],
-            "interiority_function": resolved["interiority_function"],
-            "longline_impact": resolved["mainline_move"],
-            "character_arc_move": resolved["character_arc_move"],
-            "foreshadow_impact": resolved["foreshadow_move"],
-            "relationship_impact": resolved["relationship_move"],
-            "relationship_move": resolved["relationship_move"],
-            "reader_promise_actions": resolved["reader_promise_actions"],
-            "arc_simulation_ref": resolved["arc_simulation_ref"],
-            "canon_refs": resolved["canon_refs"],
-            "world_rule_refs": resolved["world_rule_refs"],
-            "foreshadow_refs": resolved["foreshadow_refs"],
-            "forbidden_reveals": resolved["forbidden_reveals"],
-            "direction_risks": list(selected["main_risks"]),
-            "direction_selection": {
-                "status": "applied",
-                "direction_id": selected["id"],
-                "title": selected["title"],
-                "trigger_reasons": list(payload["trigger_reasons"]),
-                "candidate_hash": sha256(
-                    json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-                ).hexdigest(),
-                "repetition_reason": str(selection.get("repetition_reason") or ""),
-                "applied_at": datetime.now(timezone.utc).isoformat(),
-            },
-        }
-    )
-    for field in (
-        "protected_canon_outcomes", "changed_scene_means", "canon_character_agency",
-        "new_long_term_facts", "outline_revision_required",
-    ):
-        if field in resolved:
-            card[field] = resolved[field]
-    card.pop("chapter_contract_status", None)
-    write_chapter_card_artifacts(root, card)
-    upsert_chapter_plan(root, card)
 
 
 def revision_report_name(payload: dict[str, Any]) -> str:
@@ -6231,17 +4342,18 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
         ),
         "fanfiction_story_engine": (
             "把批准的原著基线转成可持续的中文长篇故事发动机。extensions.route_family 必须明确选择 "
-            "oc_si_progression、canon_character_centered 或 hybrid；必须分别形成唯一初始变量、独立长期目标、"
-            "可持续阻力、原著人物自主性、原作事件结束后的故事来源、主角与原著关系、读者识别承诺和"
-            "原创主线承诺主张。正文还要说明优势边界与代价、终局问题和禁止体验。资料范围不是人物知识，"
+            "oc_si_progression、canon_character_centered 或 hybrid；按任务输入 creative_requirements_by_route "
+            "中该路线对应的连续性合同形成主张。新增阅读价值可以来自关系、视角、人物理解或未展开情节。"
+            "不得把所有模式都写成改命、升级或原作结束后的原创主线。资料范围不是人物知识，"
             "不得把作者掌握的后期事实自动交给角色。claim 适用域和跨来源实体身份只能使用正式 "
             "extensions.source_ids/character_ids/event_ids/volume_ids/arc_ids/chapter_numbers/from_chapter/"
             "to_chapter 与 extensions.identity(identity_id,kind,display_name,source_id)；多个适用维度按 AND。"
             "CLI 会绑定 Canon、连续性和哈希。"
         ),
         "fanfiction_design": (
-            "基于已批准故事发动机建立同人形态、初始分歧、故事切入点、分阶段人物知识边界、原著人物职责、"
-            "原创主线和保护揭露。为进入路线的原著重大事件按“原著基线→变量→处置→职责→一阶→二阶→新问题”"
+            "基于已批准故事发动机和输入 creative_requirements 建立故事切入点、人物知识边界与原著人物职责。"
+            "按连续性模式回答必需创作问题。用 event_disposition_applicability 的 status、reason、basis_claim_ids "
+            "说明事件处置是否适用，不适用必须引用当前路线或发动机主张供独立复核。对适用的原著事件"
             "建立命运主张；extensions 必须列出非空责任承担、一阶影响和二阶影响稳定 claim 引用，并说明依赖。"
             "未来知识必须有每次重大分歧后的独立退化机制，可靠性结果只允许仍可靠、部分可靠、已失效或反向误导。"
             "触发联动合同时 extensions.crossover.topology 只允许 "
@@ -6255,6 +4367,11 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "sequential_worlds 先在 extensions.crossover.volume_ids 声明适用卷域，再以卷宿主世界 claim 为每个"
             "声明卷恰好指定一个 host_source_id。按 transfer 卷域与卷宿主归并实际 source-volume-host interaction，"
             "每个实际 interaction 恰好一个载荷精确匹配的适配器，每卷至少一个实际 interaction；不要求无关来源与卷的笛卡尔积。"
+            "章节实际引用的转移能力或人物必须同时批准引用适配器，适配器用 depends_on_claims 绑定规则。"
+            "选中的当前宿主、章节和载荷规则要覆盖激活、作用对象、补充、代价、限制、当地反制与后果；未来章规则不能补足当前章。"
+            "sequential_worlds 后续卷必须引用跨卷延续后果主张，用 volume_ids 和 depends_on_claims 表达范围与因果。"
+            "该主张只是计划：实际状态由 final 证据验证的 world_deltas.fact_id 使用同一 claim_id 更新，value 用自然语言记录"
+            "当前后果，包括解除或改变；正文未发生不得生成事实。"
             "跨界宪法 topics 按实际载荷派生，不做全量主题集、N×N 数值"
             "换算或导入未批准元素。路线 claim 的适用域只能使用 source_ids、character_ids、event_ids、"
             "volume_ids、arc_ids、chapter_numbers、from_chapter、to_chapter，所有声明维度按 AND。人物、能力、"
@@ -6262,8 +4379,8 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "不得使用旧式扁平 identity_kind/display_name。"
         ),
         "fanfiction_design_review": (
-            "作为与路线生成隔离的独立复核者，分别检查原著一致性与同人创造性：基线、唯一分歧、一二阶后果、"
-            "未来知识退化、原著人物目标与拒绝权、原著事件命运、原作结束后的原创发动机、主角资源垄断、"
+            "作为与路线生成隔离的独立复核者，按输入 creative_requirements 的 independent_review_focus 填写 extensions.creative_coverage：基线、适用的分歧因果、"
+            "适用的未来知识退化、原著人物目标与拒绝权、事件处置适用性及其主张依据、新增阅读价值、主角资源垄断、"
             "跨界规则、原著复演风险和中文长篇卷级可持续性。跨界时逐项核对 fixed_host、fusion_world 或 "
             "sequential_worlds 的宿主规则、transfers 中实际 payload_kinds 的派生主题、实际来源适配器，以及"
             "适配器 payload_kinds、host_source_id、volume_ids 与 transfer/宿主卷域一致；还要核对 fixed_host "
@@ -6282,8 +4399,8 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
         ),
         "book_design": (
             "明确读者承诺、核心卖点、世界规则、主角欲望与缺陷、长期冲突、升级方式和结局边界。"
-            "必须建立 story_engine_contract_v1：读者幻想、可重复行动循环、成长循环、关系循环、长线问题、"
-            "分阶段兑现、载体调色板和主题载体限制。每个重要人物都要有稳定 ID、目标、缺陷、关系与可观察的人物弧。"
+            "必须建立 story_engine_contract_v1：读者幻想、持续推进方式、人物或关系变化、长线问题、"
+            "分阶段兑现、载体调色板和主题载体限制；progression_loop 可说明理解、关系或处境变化，不强求升级与循环。每个重要人物都要有稳定 ID、目标、缺陷、关系与可观察的人物弧。"
         ),
         "character_expression_design": (
             "把人物设定转成可观察合同：感知偏向、决策习惯、语言层级、对话策略、情绪泄漏、"
@@ -6293,29 +4410,9 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
             "逐章检查声音匹配、对白可互换、人物工具化、具身存在、叙述者代替人物解释和说明式对白。"
             "问题结论必须引用 hash 绑定的精确 span；证据不足时明确 insufficient。"
         ),
-        "outline_design": (
-            "按正文字符预算全书故事弧和卷，只细化滚动窗口。每章说明故事弧、卷、章节职责、登场人物、"
-            "主故事引擎、主要场景载体、状态变化、戏剧方法、人物欲望、关系变化和最多三个活跃分面；"
-            "相同主题必须改变事件压力、承担者或载体。伏笔使用 arc_id 与进度窗口，不虚构固定终章数。"
-        ),
         "arc_simulation": (
             "对声明窗口进行角色因果模拟：逐个写明主角目标、对手议程、主要人物私欲与拒绝点、知识边界、"
             "场外行动、资源/关系变化、碰撞点和逐章因果义务。模拟是规划约束，不是正文顺序模板或世界事实。"
-        ),
-        "outline_extension": (
-            "只扩展声明的滚动章节范围，承接既有故事弧、人物、关系和承诺因果，不重复早期章节。"
-            "伏笔继续使用故事弧进度窗口，应用前必须有人明确批准。"
-        ),
-        "outline_revision": (
-            "明确修改目标、完整替换内容、依赖影响与保留项。stale 影响只能涉及声明范围内的现有文件，"
-            "CLI 会根据真实依赖重新计算。"
-        ),
-        "chapter_direction": (
-            "在方向选项下用 `### option:<stable_id> — 标题` 给出二至三个因果路径不同的方向，"
-            "稳定 ID 在人工选择后不得改名；明确当下欲望、真实阻力、最早失败、不可逆选择、可见代价、"
-            "chapter_turn，以及逐场行动、反应和离场状态；声明必须演出、可压缩过程、故事引擎、载体与状态变化。"
-            "最近五章载体达到重复门槛时记录人工理由。同人必须保护原作结果、人物能动性与情绪归属；"
-            "改变长期事实或保护结果必须要求 outline_revision。"
         ),
         "research_synthesis": (
             "每条 claim 都必须绑定声明来源的 hash 与 UTF-8 字符 span，证据必须与原文切片完全一致。"

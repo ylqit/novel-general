@@ -127,11 +127,11 @@ def _contract(*, claim_refs: list[str] | None = None) -> dict:
 
 
 def _persist_compile_inputs(root: Path, contract: dict, card: dict) -> None:
-    write_json(root / "20_outline/chapter_contracts" / f"ch{contract['chapter_number']:03d}.json", contract)
-    write_json(root / "20_outline/chapter_cards" / f"ch{contract['chapter_number']:03d}.json", card)
+    from tests.project_fixtures import persist_current_planning_fixture
+    persist_current_planning_fixture(root, contract, scope=card)
 
 
-def _write_current_semantic_and_plot(root: Path, final: Path) -> str:
+def _write_current_semantic_fixture(root: Path, final: Path) -> str:
     write_json(
         root / "30_state/semantic_ledger/ch001.json",
         {
@@ -144,16 +144,7 @@ def _write_current_semantic_and_plot(root: Path, final: Path) -> str:
             },
         },
     )
-    plot = {
-        "schema": "plot_node_table_v1",
-        "chapter_number": 1,
-        "nodes": [],
-        "approval_sha256": "a" * 64,
-    }
-    plot_path = write_json(
-        root / "20_outline/plot_nodes/ch001.json",
-        plot,
-    )
+    plot_path = root / "20_outline/plot_nodes/ch001.json"
     return sha256(plot_path.read_bytes()).hexdigest()
 
 
@@ -283,7 +274,7 @@ def test_applicability_dimensions_are_and_and_wrong_source_optional_hit_is_omitt
         project["config"],
         chapter_number=1,
         chapter_contract=contract,
-        chapter_card=card,
+
         character_packet={},
     )
 
@@ -302,7 +293,7 @@ def test_required_claim_ids_equal_only_the_formal_contract_channel(current_contr
         project["config"],
         chapter_number=1,
         chapter_contract=contract,
-        chapter_card=card,
+
         character_packet={"fanfiction_claim_refs": ["route:knowledge"]},
     )
 
@@ -323,7 +314,7 @@ def test_explicit_global_claim_remains_observable_as_required(current_contract_p
         project["config"],
         chapter_number=1,
         chapter_contract=contract,
-        chapter_card=card,
+
         character_packet={},
     )
 
@@ -498,7 +489,7 @@ def test_deep_v2_validator_rejects_rehashed_cross_field_tampering(
         project["config"],
         chapter_number=1,
         chapter_contract=contract,
-        chapter_card=card,
+
         character_packet={},
     )
     changed = deepcopy(bundle)
@@ -536,7 +527,7 @@ def test_realized_major_divergence_is_formal_and_not_inferred_from_event_depende
             config,
             chapter_number=1,
             chapter_contract=contract,
-            chapter_card=card,
+
             character_packet={},
         ),
     )
@@ -544,7 +535,7 @@ def test_realized_major_divergence_is_formal_and_not_inferred_from_event_depende
     final = root / "40_manuscript/final/ch001.md"
     final.parent.mkdir(parents=True, exist_ok=True)
     final.write_text(text, encoding="utf-8")
-    plot_sha = _write_current_semantic_and_plot(root, final)
+    plot_sha = _write_current_semantic_fixture(root, final)
     ledger_path = root / "30_state/narrative_events/ch001.json"
     write_json(
         ledger_path,
@@ -637,7 +628,7 @@ def test_event_realization_rejects_semantically_invalid_and_duplicate_divergence
             project["config"],
             chapter_number=1,
             chapter_contract=contract,
-            chapter_card=card,
+
             character_packet={},
         ),
     )
@@ -646,7 +637,7 @@ def test_event_realization_rejects_semantically_invalid_and_duplicate_divergence
     text = "# 第一章\n\n人物完成了一次有代价的选择。\n"
     final.parent.mkdir(parents=True, exist_ok=True)
     final.write_text(text, encoding="utf-8")
-    plot_sha = _write_current_semantic_and_plot(root, final)
+    plot_sha = _write_current_semantic_fixture(root, final)
     write_json(
         ledger,
         {
@@ -730,14 +721,14 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
         project["config"],
         chapter_number=1,
         chapter_contract=chapter_one,
-        chapter_card=chapter_one_card,
+
         character_packet={},
     )
     bundle_path = write_fanfiction_context_bundle(root, bundle)
     final = root / "40_manuscript/final/ch001.md"
     final.parent.mkdir(parents=True, exist_ok=True)
     final.write_text("证据显示人物作出有代价的选择。\n", encoding="utf-8")
-    plot_sha = _write_current_semantic_and_plot(root, final)
+    plot_sha = _write_current_semantic_fixture(root, final)
     planned_event = {
         "schema": "narrative_event_v1",
         "event_id": "event:ch001:gate",
@@ -947,7 +938,7 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
         project["config"],
         chapter_number=2,
         chapter_contract=chapter_two,
-        chapter_card=chapter_two_card,
+
         character_packet={},
     )
     assert "future:ch001:gate:knowledge" in next_bundle["dependency_claim_ids"]
@@ -998,7 +989,7 @@ def test_future_knowledge_reassessment_is_independent_typed_task_and_human_apply
                 project["config"],
                 chapter_number=2,
                 chapter_contract=chapter_two,
-                chapter_card=chapter_two_card,
+
                 character_packet={},
             )
         path.write_bytes(original)
@@ -1174,8 +1165,23 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
         "canon_sha": canon_sha,
     }
     install_route(project)
+    from longform_engine.fanfiction_contracts import crossover_required_topics
+    route_path = root / "10_bible/fanfiction/fanfiction_bible.json"
+    route = json.loads(route_path.read_text(encoding="utf-8"))
+    for claim in route["claims"]:
+        if claim["claim_id"] == "route:guest_adapter":
+            claim["extensions"]["depends_on_claims"] = ["route:constitution"]
+        elif claim["claim_id"] == "route:constitution":
+            claim["extensions"]["topics"] = sorted(crossover_required_topics(route["extensions"]["crossover"]))
+    _rebind_route(project, route)
+
 
     bundle = planning_bundle()
+    for table in bundle["plot_node_tables"]:
+        for node in table["nodes"]:
+            node["actors"] = [{"character:ari": "lead_ari", "character:mira": "ally_mira"}.get(actor, actor)
+                              for actor in node.get("actors", [])]
+
     active_refs = ["route:entry"]
     obligation_refs = ["route:knowledge", "route:event"]
     plot_refs = ["route:guest_adapter", "route:constitution", "route:divergence"]
@@ -1307,9 +1313,8 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
     assert context["chapter_provenance"]["chapter_contract_path"] == (
         "20_outline/chapter_contracts/ch001.json"
     )
-    assert context["chapter_provenance"]["chapter_card_path"] == (
-        "20_outline/chapter_cards/ch001.json"
-    )
+    assert "chapter_card_path" not in context["chapter_provenance"]
+    assert context["chapter_provenance"]["planning_sources"]
     task = json.loads(
         (root / "50_workbench/writing_tasks/ch001.json").read_text(encoding="utf-8")
     )
@@ -1548,9 +1553,6 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
         config,
         chapter_number=2,
         chapter_contract=chapter_two,
-        chapter_card=json.loads(
-            (root / "20_outline/chapter_cards/ch002.json").read_text(encoding="utf-8")
-        ),
         character_packet={},
     )
     delayed_update = "future:real_chain:1:knowledge"
@@ -1785,7 +1787,7 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
         config,
         chapter_number=4,
         chapter_contract=chapter_four,
-        chapter_card=chapter_four_card,
+
         character_packet={},
     )
     assert delayed_update not in chapter_four_context["dependency_claim_ids"]
@@ -1801,7 +1803,7 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
         config,
         chapter_number=5,
         chapter_contract=chapter_five,
-        chapter_card=chapter_five_card,
+
         character_packet={},
     )
     assert {delayed_update, indefinite_update} <= set(
@@ -1817,7 +1819,7 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
             config,
             chapter_number=4,
             chapter_contract=chapter_four,
-            chapter_card=chapter_four_card,
+
             character_packet={},
         )
     expired_archive.write_bytes(expired_archive_bytes)
@@ -1831,7 +1833,7 @@ def test_legal_planning_apply_and_continue_write_preserve_all_formal_claim_chann
             config,
             chapter_number=4,
             chapter_contract=chapter_four,
-            chapter_card=chapter_four_card,
+
             character_packet={},
         )
     pin_path.write_bytes(original_pins)

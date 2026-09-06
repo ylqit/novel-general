@@ -25,6 +25,8 @@ from longform_engine.roles import load_role_registry
 from longform_engine.storage import init_project
 from tests.project_fixtures import (
     checked_review_coverage,
+    compile_chapter_brief_fixture,
+    complete_required_quality_reviews,
     mark_project_ready,
     rebind_human_intent_fixture,
     update_chapter_contract_fixture,
@@ -148,6 +150,7 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
         + "\n",
         encoding="utf-8",
     )
+    complete_required_quality_reviews(root, config, include_pacing=False)
     barrier = review_barrier_status(config, chapter_number=1)
     next_action = production_next(config)
     synthesis = create_repair_synthesis_task(config, chapter_number=1)
@@ -163,23 +166,15 @@ def test_risk_selected_editorial_v2_isolates_context_and_preserves_minority_bloc
 
 def test_risk_selected_editorial_v2_recognizes_chinese_payoff_and_access_gain(tmp_path):
     config, root = seed_project(tmp_path)
-    card = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card_payload = json.loads(card.read_text(encoding="utf-8"))
-    card_payload.update(
-        {
-            "chapter_duty": "完成军粮失踪案第一层闭环",
-            "reader_gain": "追回军粮并取得三日旧账册调查权限",
-            "ending_mode": "question",
-        }
-    )
-    card.write_text(json.dumps(card_payload, ensure_ascii=False), encoding="utf-8")
     contract = update_chapter_contract_fixture(
         root,
         1,
         chapter_duty="完成军粮失踪案第一层闭环",
         reader_value="追回军粮并取得三日旧账册调查权限",
+        topology="payoff",
     )
     rebind_human_intent_fixture(root, 1, contract)
+    compile_chapter_brief_fixture(root, config)
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text(
         "# 第一章\n\n沈阙追回军粮，也拿到了三日旧账册调查权限。\n",
@@ -570,6 +565,7 @@ def seed_project(tmp_path: Path):
     project = init_project(template, output=tmp_path / "novel")
     config = load_project_config(project.project_config)
     mark_project_ready(project.root, config)
+    compile_chapter_brief_fixture(project.root, config)
     return config, project.root
 
 

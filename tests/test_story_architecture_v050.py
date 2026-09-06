@@ -1,13 +1,9 @@
 import json
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 import longform_engine.human_story_review as human_story_review_module
-import longform_engine.intelligence.pipeline as intelligence_pipeline
-from longform_engine.agent_tasks import list_manifests
-from longform_engine.arc_simulation import ArcSimulationError, load_active_arc_simulation
 from longform_engine.chapter_contract import (
     stamp_chapter_contract,
     validate_chapter_contract,
@@ -25,15 +21,8 @@ from longform_engine.human_story_review import (
     human_story_review_status,
     validate_human_story_review,
 )
-from longform_engine.intelligence import (
-    apply_compiled_design,
-    assess_chapter_direction,
-    create_intelligence_task,
-)
 from longform_engine.intelligence.pipeline import (
     chapter_carrier_repetition_status,
-    recompute_revision_impact,
-    validate_chapter_direction,
 )
 from longform_engine.orchestration import continue_write, finalize_chapter, open_book, submit_agent_draft
 from longform_engine.quality import refresh_editorial_pattern_registry
@@ -41,6 +30,7 @@ from longform_engine.quality.status import quality_status
 from longform_engine.reader_promises_v2 import (
     apply_planning_deferrals,
     load_reader_promise_ledger,
+    materialize_explicit_reader_promises,
     promise_deadline_status,
     write_reader_promise_ledger,
 )
@@ -49,57 +39,15 @@ from longform_engine.roles import load_role_registry
 from longform_engine.storage import init_project
 from tests.project_fixtures import (
     complete_human_author_revision,
+    complete_required_quality_reviews,
+    explicit_reader_promise_candidates,
     mark_project_ready,
-    write_arc_simulation_fixture,
 )
 from tests.test_agent_task_protocol import submit_editorial_review, write_editorial_role_result
-from tests.test_quality_contract_and_creative_interaction import (
-    prepare_design_delta,
-    valid_direction_candidate,
-    write_design_candidate,
-)
 
 
-def seed_direction_contract(tmp_path: Path, *, chapter_number: int = 1):
-    template = load_project_config(template="qidian-longform")
-    project = init_project(template, output=tmp_path / "direction")
-    config = load_project_config(project.project_config)
-    root = tmp_path / "direction"
-    open_book(config)
-    mark_project_ready(root, config, direction_applied=False)
-    if chapter_number > 3:
-        ledger = load_reader_promise_ledger(root)
-        opening = next(
-            item for item in ledger["items"] if item["promise_id"] == "story_engine:opening_three"
-        )
-        opening["status"] = "paid"
-        opening["completed_stage_ids"] = ["payoff:opening-three"]
-        opening["actual_evidence"] = [
-            {"chapter_number": 1, "action": "setup", "stage_id": None},
-            {"chapter_number": 3, "action": "payoff", "stage_id": "payoff:opening-three"},
-        ]
-        write_reader_promise_ledger(root, ledger)
-        window = json.loads((root / "20_outline" / "planning_window.json").read_text(encoding="utf-8"))
-        write_arc_simulation_fixture(
-            root,
-            from_chapter=int(window["start_chapter"]),
-            to_chapter=int(window["end_chapter"]),
-        )
-    create_intelligence_task(config, task_type="chapter_direction", chapter_number=chapter_number)
-    reasons = assess_chapter_direction(config, chapter_number)["reasons"]
-    return config, root, valid_direction_candidate(root, chapter_number, reasons)
 
 
-def direction_errors(config, root: Path, payload: dict) -> list[str]:
-    errors: list[str] = []
-    validate_chapter_direction(
-        config,
-        root,
-        payload,
-        {"scope": {"chapter_number": payload["chapter_number"]}},
-        errors,
-    )
-    return errors
 
 
 def seed_candidate(tmp_path: Path, *, complete_human: bool = True):
@@ -132,6 +80,8 @@ def seed_candidate(tmp_path: Path, *, complete_human: bool = True):
         submit_editorial_review(config, chapter_number=1, role=role, file_path=result_file)
     if complete_human:
         complete_human_author_revision(root, config, chapter_number=1)
+    else:
+        complete_required_quality_reviews(root, config, chapter_number=1)
     return config, root, task
 
 
@@ -202,7 +152,7 @@ def test_author_markdown_is_story_brief_and_fact_inventory_stays_internal(tmp_pa
     markdown = (root / task.writing_task_markdown).read_text(encoding="utf-8")
     payload = json.loads((root / task.writing_task_json).read_text(encoding="utf-8"))
 
-    assert payload["schema"] == "chapter_writing_task_v7"
+    assert payload["schema"] == "chapter_writing_task_v8"
     assert payload["story_brief"]["schema"] == "chapter_story_brief_v5"
     manifest = json.loads((root / payload["agent_task_manifest"]).read_text(encoding="utf-8"))
     assert [item["path"] for item in manifest["io"]["inputs"]] == [
@@ -230,9 +180,10 @@ def test_author_markdown_is_story_brief_and_fact_inventory_stays_internal(tmp_pa
 
 
 def test_chapter_contract_v5_rejects_old_chapter_card_aliases(tmp_path):
-    _config, root, _payload = seed_direction_contract(tmp_path)
+    from tests.test_current_planning_context import approved_project
+    _config, root = approved_project(tmp_path)
     card = json.loads(
-        (root / "20_outline" / "chapter_cards" / "ch001.json").read_text(encoding="utf-8")
+        (root / "20_outline" / "chapter_contracts" / "ch001.json").read_text(encoding="utf-8")
     )
     card["information_release"] = "legacy"
     assert validate_chapter_contract(card) == [
@@ -240,83 +191,23 @@ def test_chapter_contract_v5_rejects_old_chapter_card_aliases(tmp_path):
     ]
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("immediate_desire", ""),
-        ("opposition_force", ""),
-        ("key_failure", ""),
-        ("irreversible_choice", ""),
-        ("cost", ""),
-        ("state_change_kind", ""),
-        ("scene_carriers", []),
-    ],
-)
-def test_direction_rejects_missing_story_pressure(field, value, tmp_path):
-    config, root, payload = seed_direction_contract(tmp_path)
-    payload["selected_direction"][field] = value
-    errors = direction_errors(config, root, payload)
-    assert errors
-    assert any(field in error for error in errors)
 
 
-def test_direction_outcome_change_requires_outline_revision(tmp_path):
-    config, root, payload = seed_direction_contract(tmp_path)
-    payload["selected_direction"]["chapter_turn"] = "A different long-term outcome replaces the approved result."
-    errors = direction_errors(config, root, payload)
-    assert any("outside chapter-direction authority" in error for error in errors)
-    assert any("outline_revision" in error for error in errors)
 
 
-def test_direction_requires_current_causal_simulation_basis(tmp_path):
-    config, root, _payload = seed_direction_contract(tmp_path)
-    simulation, _path, _hash = load_active_arc_simulation(root, chapter_number=1)
-    assert simulation["status"] == "approved"
-
-    characters = root / "60_rag" / "memory" / "characters" / "lead_ari.json"
-    characters.parent.mkdir(parents=True, exist_ok=True)
-    characters.write_text(
-        json.dumps(
-            {
-                "schema_version": 2,
-                "memory_type": "character_current_view",
-                "character_id": "lead_ari",
-                "current_goal": "The semantic state now carries a changed private goal.",
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    status = assess_chapter_direction(config, 1)
-    assert status["status"] == "arc_simulation_required"
-    assert any("arc_causal_simulation_stale" in reason for reason in status["reasons"])
-    with pytest.raises(ArcSimulationError, match="stale"):
-        load_active_arc_simulation(root, chapter_number=1)
 
 
-def test_direction_rejects_missing_or_noncovering_causal_simulation(tmp_path):
-    config, root, _payload = seed_direction_contract(tmp_path)
-    simulation_path = next((root / "20_outline" / "arc_simulations").glob("ch*-ch*.json"))
-    original = simulation_path.read_bytes()
-    simulation_path.unlink()
-    missing = assess_chapter_direction(config, 1)
-    assert missing["status"] == "arc_simulation_required"
-    assert any("missing" in reason for reason in missing["reasons"])
-
-    simulation_path.write_bytes(original)
-    simulation = json.loads(simulation_path.read_text(encoding="utf-8"))
-    simulation["from_chapter"] = 2
-    simulation_path.write_text(json.dumps(simulation, ensure_ascii=False, indent=2), encoding="utf-8")
-    noncovering = assess_chapter_direction(config, 1)
-    assert noncovering["status"] == "arc_simulation_required"
-    assert any("missing" in reason for reason in noncovering["reasons"])
 
 
 def test_reader_promise_deadline_warning_defer_and_blocker(tmp_path):
-    _config, root, _payload = seed_direction_contract(tmp_path)
-    ledger = load_reader_promise_ledger(root)
+    from tests.test_current_planning_context import approved_project
+    _config, root = approved_project(tmp_path)
+    ledger = materialize_explicit_reader_promises(
+        explicit_reader_promise_candidates()[:1], approved_by="human"
+    )
     promise = ledger["items"][0]
     promise["payoff_window"] = {"earliest": 1, "target": 1, "latest": 2}
+    promise["staged_payoffs"][0]["window"] = [1, 2]
     write_reader_promise_ledger(root, ledger)
 
     assert promise_deadline_status(root, chapter_number=1)["warnings"] == [
@@ -344,20 +235,6 @@ def test_reader_promise_deadline_warning_defer_and_blocker(tmp_path):
     ]
 
 
-def test_fanfiction_new_long_term_fact_cannot_apply_as_direction(tmp_path):
-    config, root, payload = seed_direction_contract(tmp_path)
-    config.data["creation"]["mode"] = "fanfiction"
-    payload["selected_direction"].update(
-        {
-            "protected_canon_outcomes": ["The canon character keeps ownership of the decisive choice."],
-            "changed_scene_means": "The same result is reached through a rescue instead of a council scene.",
-            "canon_character_agency": "The canon character refuses, chooses, and bears the emotional consequence.",
-            "new_long_term_facts": ["A new permanent faction now controls the route."],
-            "outline_revision_required": False,
-        }
-    )
-    errors = direction_errors(config, root, payload)
-    assert any("long-term facts must require outline revision" in error for error in errors)
 
 
 def test_scene_editor_is_mandatory_and_other_roles_are_additive(tmp_path):
@@ -443,38 +320,6 @@ def test_five_chapter_carrier_diagnostics_warn_and_require_human_reason(tmp_path
     )
 
 
-def test_four_of_five_carrier_repetition_requires_and_accepts_human_reason(tmp_path):
-    config, root, payload = seed_direction_contract(tmp_path, chapter_number=5)
-    selected = payload["selected_direction"]
-    history = root / "30_state" / "quality" / "structure_history.jsonl"
-    history.parent.mkdir(parents=True, exist_ok=True)
-    history.write_text(
-        "".join(
-            json.dumps(
-                {
-                    "schema": "structure_observation_v2",
-                    "chapter_number": number,
-                    "primary_story_engine": selected["primary_story_engine"],
-                    "primary_scene_carrier": selected["scene_carriers"][0],
-                    "state_change_kind": selected["state_change_kind"],
-                    "dramatic_method": selected["dramatic_method"],
-                    "exposition_carrier": selected["exposition_carrier"],
-                }
-            )
-            + "\n"
-            for number in range(1, 5)
-        ),
-        encoding="utf-8",
-    )
-
-    errors = direction_errors(config, root, payload)
-    assert any("repetition_reason" in error for error in errors)
-
-    payload["selection"]["repetition_reason"] = (
-        "This legal-procedure sequence keeps the carrier, but a different character owns the refusal "
-        "and the state change moves from evidence access to relationship liability."
-    )
-    assert direction_errors(config, root, payload) == []
 
 
 def test_human_accept_is_hash_bound_and_unlocks_review_barrier(tmp_path):
@@ -714,127 +559,6 @@ def test_outline_redirect_records_scope_and_returns_to_replanning(tmp_path):
     assert applied.next_command == "longform-engine production next project.yaml"
 
 
-def test_outline_revision_transaction_invalidates_patterns_tasks_simulation_and_sqlite(
-    tmp_path,
-    monkeypatch,
-):
-    config, root, _task = seed_candidate(tmp_path)
-    promise_before = load_reader_promise_ledger(root)["items"][0]
-    extended_latest = int(promise_before["payoff_window"]["latest"]) + 5
-    refresh_editorial_pattern_registry(
-        root,
-        chapter_number=1,
-        observations=[
-            {
-                "role_id": "scene_prose_editor",
-                "finding_code": "RESTART_LOOP",
-                "severity": "P1",
-                "source_path": "50_workbench/editorial_reviews/ch001.aggregate.json",
-                "source_sha256": "a" * 64,
-                "candidate_sha256": "b" * 64,
-                "evidence_hash": "c" * 64,
-            }
-        ],
-    )
-    chapters, artifacts = recompute_revision_impact(root, 1, 1)
-    payload = {
-        "schema": "outline_revision_candidate_v1",
-        "from_chapter": 1,
-        "to_chapter": 1,
-        "change_summary": "Replace the current carrier while preserving the approved chapter outcome.",
-        "impact": {"stale_chapters": chapters, "stale_artifacts": artifacts},
-        "replacements": {
-            "book_outline_markdown": (
-                (root / "20_outline" / "book_outline.md").read_text(encoding="utf-8").rstrip()
-                + "\n\nThe first carrier now turns through an active refusal.\n"
-            ),
-            "reader_promise_deferrals": [
-                {
-                    "promise_id": promise_before["promise_id"],
-                    "extended_latest": extended_latest,
-                    "reason": "Human-approved causal delay after the carrier revision.",
-                }
-            ],
-        },
-    }
-    task = create_intelligence_task(
-        config,
-        task_type="outline_revision",
-        from_chapter=1,
-        to_chapter=1,
-    )
-    document = root / task.candidate_file
-    write_design_candidate(document, "outline_revision", payload)
-    delta = prepare_design_delta(config, root, "outline_revision", document, payload)
-    watched = [
-        root / "20_outline" / "book_outline.md",
-        root / "20_outline" / "chapter_cards" / "ch001.json",
-        root / "50_workbench" / "writing_tasks" / "ch001.json",
-        root / "50_workbench" / "editorial_patterns" / "registry.jsonl",
-        root / "50_workbench" / "agent_tasks" / "agent_task_index.json",
-        *sorted((root / "20_outline" / "arc_simulations").glob("ch*-ch*.json")),
-    ]
-    before = {path: path.read_bytes() for path in watched if path.is_file()}
-    databases = sorted((root / "70_runtime" / "db").glob("*.sqlite"))
-    database_before = {}
-    for database in databases:
-        with sqlite3.connect(database) as connection:
-            database_before[database] = tuple(connection.iterdump())
-    real_sync = intelligence_pipeline.sync_database
-
-    def fail_after_sqlite(current_config):
-        real_sync(current_config)
-        raise RuntimeError("outline revision fault after sqlite")
-
-    monkeypatch.setattr(intelligence_pipeline, "sync_database", fail_after_sqlite)
-    with pytest.raises(RuntimeError, match="outline revision fault after sqlite"):
-        apply_compiled_design(
-            config,
-            task_type="outline_revision",
-            document_path=document,
-            delta_path=delta,
-            approved_by="human",
-        )
-    mismatched = [
-        path.relative_to(root).as_posix()
-        for path, content in before.items()
-        if path.read_bytes() != content
-    ]
-    assert mismatched == []
-    for database, dump in database_before.items():
-        with sqlite3.connect(database) as connection:
-            assert tuple(connection.iterdump()) == dump
-            assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-
-    monkeypatch.setattr(intelligence_pipeline, "sync_database", real_sync)
-    result = apply_compiled_design(
-        config,
-        task_type="outline_revision",
-        document_path=document,
-        delta_path=delta,
-        approved_by="human",
-    )
-
-    transaction = json.loads((root / result.transaction_report).read_text(encoding="utf-8"))
-    assert transaction["status"] == "applied"
-    assert "70_runtime/db" in transaction["touched_paths"]
-    assert not (root / "50_workbench" / "editorial_patterns" / "registry.jsonl").read_text(
-        encoding="utf-8"
-    ).strip()
-    writing_task = json.loads(
-        (root / "50_workbench" / "writing_tasks" / "ch001.json").read_text(encoding="utf-8")
-    )
-    assert writing_task["status"] == "stale"
-    assert all(
-        json.loads(path.read_text(encoding="utf-8"))["status"] == "stale"
-        for path in (root / "20_outline" / "arc_simulations").glob("ch*-ch*.json")
-    )
-    promise_after = load_reader_promise_ledger(root)["items"][0]
-    assert promise_after["payoff_window"]["latest"] == extended_latest
-    assert promise_after["deferrals"][-1]["approved_by"] == "human"
-    affected_tasks = [item for item in list_manifests(root, chapter_number=1)]
-    assert affected_tasks
-    assert all(item["status"] == "superseded" for item in affected_tasks)
 
 
 def test_human_redirect_failure_restores_stale_registry_decision_and_patterns(tmp_path, monkeypatch):
@@ -858,8 +582,8 @@ def test_human_redirect_failure_restores_stale_registry_decision_and_patterns(tm
         ],
     )
     watched = [
-        root / "20_outline" / "chapter_cards" / "ch001.json",
-        root / "20_outline" / "chapter_plan.json",
+        root / "20_outline" / "chapter_contracts" / "ch001.json",
+        root / "20_outline" / "rolling_window.json",
         root / "40_manuscript" / "draft" / "ch001.md",
         root / "70_runtime" / "agent_tasks" / "index.json",
         root / "50_workbench" / "agent_tasks" / "events.jsonl",

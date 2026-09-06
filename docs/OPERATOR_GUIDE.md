@@ -101,13 +101,13 @@ longform-engine planning apply project.yaml --bundle 50_workbench/planning/plann
 
 ```powershell
 longform-engine chapter human-intent-task project.yaml --chapter N
-# 人工从空白字段填写 human_chapter_intent_v2
+# 人工从空白字段填写 human_chapter_intent_v3
 longform-engine chapter human-intent-validate project.yaml --chapter N --file INTENT_FILE
 longform-engine chapter human-intent-apply project.yaml --chapter N --file INTENT_FILE --approved-by human
 longform-engine continue-write project.yaml --chapter N
 ```
 
-作者只读 `chapter_story_brief_v5`。任务通过 `chapter_story_brief_basis_v3` 绑定 v5 合同、批准节点、语义义务、滚动窗口和必要事实。
+作者只读 `chapter_story_brief_v5`。任务通过 `chapter_story_brief_basis_v4` 绑定 v5 合同、批准节点、语义义务、滚动窗口和必要事实。
 
 ## 4. 候选、共编、审稿与人工终稿
 
@@ -202,3 +202,5 @@ longform-engine production next project.yaml
 ```
 
 不要手工删除锁、事务或 SQLite。恢复动作必须绑定 `recovery status` 的当前报告 hash，并由人明确选择允许的恢复操作。
+
+本地质量评测的创建、匿名评分、证据绑定和分阶段试写流程见[质量评测与试写指南](LITERARY_TRIALS.md)。生产协议可用、人工终稿验收、试写证据与平台预检分别显示，未完成真实试写时不宣称文学质量已合格。

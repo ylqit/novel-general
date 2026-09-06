@@ -18,6 +18,8 @@ from longform_engine.story_brief import story_brief_status
 def quality_status(config: ConfigDocument) -> dict[str, Any]:
     """Report current production readiness without publishing evaluation claims."""
 
+    from longform_engine.fanfiction_literary_trial import literary_trial_status
+
     root = resolve_project_root(config)
     protocol = check_agent_data_pipeline_readiness()
     author_ready, author_blockers, chapters = author_acceptance_status(root)
@@ -60,6 +62,7 @@ def quality_status(config: ConfigDocument) -> dict[str, Any]:
             "chapters": brief_chapters,
         },
         "platform_preflights": platform_preflights,
+        "literary_trials": literary_trial_status(root),
         "protocol_blockers": list(protocol.get("blocking_reasons") or []),
         "claim_boundaries": {
             "protocol_ready": "The executable production protocol is structurally valid.",

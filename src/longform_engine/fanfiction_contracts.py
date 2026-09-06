@@ -13,20 +13,11 @@ from longform_engine.fanfiction_sources import FanfictionSourceError, project_so
 from longform_engine.semantic_protocols import canonical_json_hash, validate_semantic_document
 
 
-STORY_ENGINE_REQUIRED_SEMANTIC_TYPES = (
-    "唯一初始变量",
-    "独立长期目标",
-    "可持续阻力",
-    "原著人物自主性",
-    "原作后续故事来源",
-    "主角与原著关系",
-    "读者识别承诺",
-    "原创主线承诺",
+from longform_engine.fanfiction_creative_requirements import (
+    CREATIVE_CONTRACT_VERSION, ROUTE_FAMILIES, compile_fanfiction_creative_requirements,
 )
 
-STORY_ENGINE_ROUTE_FAMILIES = frozenset(
-    {"oc_si_progression", "canon_character_centered", "hybrid"}
-)
+STORY_ENGINE_ROUTE_FAMILIES = ROUTE_FAMILIES
 
 EVENT_DISPOSITIONS = frozenset(
     {"保留", "提前", "延迟", "结果改变", "换人承担", "取消", "转化", "待决定"}
@@ -64,10 +55,10 @@ CROSSOVER_TOPICS_BY_PAYLOAD_KIND = {
         {"身体与灵魂", "感知", "身份组织法律", "死亡与复活", "返回"}
     ),
     "ability": frozenset(
-        {"能量关系", "能力作用对象", "激活与补充", "代价", "当地反制"}
+        {"能量关系", "能力作用对象", "激活与补充", "代价", "限制", "当地反制"}
     ),
     "item_or_contract": frozenset(
-        {"装备召唤物契约", "激活与补充", "代价", "当地反制"}
+        {"装备召唤物契约", "激活与补充", "代价", "限制", "当地反制"}
     ),
     "knowledge": frozenset({"来源时间点", "信息传播"}),
     "organization": frozenset({"身份组织法律", "信息传播"}),
@@ -781,6 +772,14 @@ def validate_crossover_route_contract(
         errors.append("fusion_world requires a 世界规则优先级 semantic claim")
     if topology == "sequential_worlds" and volume_host_claim_count == 0:
         errors.append("sequential_worlds requires at least one 卷宿主世界 semantic claim")
+    if topology == "sequential_worlds":
+        carryover = [claim for claim in payload.get("claims") or []
+                     if claim.get("extensions", {}).get("semantic_type") == "跨卷延续后果"]
+        for volume_id in declared_volume_ids[1:]:
+            matching = [claim for claim in carryover if volume_id in (claim.get("extensions", {}).get("volume_ids") or [])]
+            if not matching or any(not claim.get("extensions", {}).get("depends_on_claims") for claim in matching):
+                errors.append(f"sequential_worlds volume {volume_id} requires 跨卷延续后果 with stable causal dependencies")
+
 
 
 def fanfiction_route_review_projection(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1016,7 +1015,14 @@ def _validate_story_engine_semantics(
     if not str(payload.get("body") or "").strip():
         errors.append("fanfiction story engine body must describe the long-form reading promise")
     semantic_types = fanfiction_semantic_types(payload)
-    for semantic_type in STORY_ENGINE_REQUIRED_SEMANTIC_TYPES:
+    if extensions.get("creative_contract_version") != CREATIVE_CONTRACT_VERSION:
+        errors.append("creative contract is incompatible; rebuild the story-engine task and obtain human approval")
+    try:
+        requirements = compile_fanfiction_creative_requirements(str(extensions.get("continuity_mode") or ""), str(route_family))
+    except ValueError as exc:
+        errors.append(str(exc))
+        return
+    for semantic_type in requirements["story_engine_claim_types"]:
         if semantic_type not in semantic_types:
             errors.append(f"fanfiction story engine requires a {semantic_type} semantic claim")
 
@@ -1235,7 +1241,12 @@ def validate_fanfiction_route_contract(
     if not str(payload.get("body") or "").strip():
         errors.append("fanfiction route design body must describe its route and causal boundaries")
     semantic_types = fanfiction_semantic_types(payload)
-    for required_type in ("初始分歧", "故事切入点", "人物知识边界", "原著人物职责"):
+    if extensions.get("creative_contract_version") != CREATIVE_CONTRACT_VERSION:
+        errors.append("creative contract is incompatible; rebuild the route task and obtain human approval")
+    requirements = compile_fanfiction_creative_requirements(
+        str(configured.get("continuity_mode") or ""), str(story_engine["extensions"]["route_family"])
+    )
+    for required_type in requirements["route_claim_types"]:
         if required_type not in semantic_types:
             errors.append(f"fanfiction route design requires a {required_type} semantic claim")
     if extensions.get("future_knowledge_used") is True and "未来知识可靠性" not in semantic_types:
@@ -1246,13 +1257,30 @@ def validate_fanfiction_route_contract(
         extensions.get("future_knowledge_used"), bool
     ):
         errors.append("extensions.future_knowledge_used must be boolean when declared")
-    if "原著事件命运" not in semantic_types and not str(
-        extensions.get("event_disposition_not_applicable_reason") or ""
-    ).strip():
-        errors.append(
-            "fanfiction route design requires 原著事件命运 claims or an explicit "
-            "event_disposition_not_applicable_reason"
-        )
+    if "event_disposition_not_applicable_reason" in extensions:
+        errors.append("free-text event-disposition exemption is retired; use event_disposition_applicability")
+    applicability = extensions.get("event_disposition_applicability")
+    route_basis_ids = {
+        str(claim.get("claim_id")) for document in (payload, story_engine)
+        for claim in document.get("claims") or [] if isinstance(claim, dict) and claim.get("claim_id")
+    }
+    if not isinstance(applicability, dict) or set(applicability) != {"status", "reason", "basis_claim_ids"}:
+        errors.append("event_disposition_applicability requires status, reason and basis_claim_ids")
+    else:
+        status = applicability["status"]
+        basis_ids = applicability["basis_claim_ids"]
+        if status not in {"applicable", "not_applicable"}:
+            errors.append("event_disposition_applicability.status is invalid")
+        if not isinstance(applicability["reason"], str) or not applicability["reason"].strip():
+            errors.append("event_disposition_applicability.reason must explain the route scope")
+        if (not isinstance(basis_ids, list) or not basis_ids
+            or any(not isinstance(ref, str) or ref not in route_basis_ids for ref in basis_ids)
+            or len(basis_ids) != len(set(basis_ids))):
+            errors.append("event_disposition_applicability.basis_claim_ids must reference current route or story-engine claims")
+        if status == "applicable" and "原著事件命运" not in semantic_types:
+            errors.append("applicable event disposition requires 原著事件命运 claims with causal references")
+        if status == "not_applicable" and "原著事件命运" in semantic_types:
+            errors.append("not_applicable conflicts with declared event-disposition claims")
     validate_event_disposition_claims(
         config,
         root,
@@ -1418,6 +1446,34 @@ def validate_fanfiction_review_contract(
         errors.append(f"a {verdict} review requires at least one blocking claim")
 
 
+def validate_creative_review_coverage(
+    review: dict[str, Any], route: dict[str, Any], story_engine: dict[str, Any], errors: list[str]
+) -> None:
+    """Require independent, claim-bound judgments for the applicable creative contract."""
+    engine_extensions = story_engine["extensions"]
+    requirements = compile_fanfiction_creative_requirements(
+        engine_extensions["continuity_mode"], engine_extensions["route_family"]
+    )
+    coverage = review.get("extensions", {}).get("creative_coverage")
+    if not isinstance(coverage, dict) or set(coverage) != set(requirements["independent_review_focus"]):
+        errors.append("creative_coverage must review every applicable creative requirement")
+        return
+    claim_ids = {claim["claim_id"] for document in (route, story_engine) for claim in document["claims"]}
+    for dimension, judgment in coverage.items():
+        if not isinstance(judgment, dict) or set(judgment) != {"status", "reason", "basis_claim_ids"}:
+            errors.append(f"creative_coverage.{dimension} fields are invalid")
+            continue
+        if judgment["status"] not in {"checked", "insufficient", "contradicted"}:
+            errors.append(f"creative_coverage.{dimension}.status is invalid")
+        if not isinstance(judgment["reason"], str) or not judgment["reason"].strip():
+            errors.append(f"creative_coverage.{dimension} requires independent reasoning")
+        refs = judgment["basis_claim_ids"]
+        if not isinstance(refs, list) or not refs or any(not isinstance(ref, str) or ref not in claim_ids for ref in refs):
+            errors.append(f"creative_coverage.{dimension} requires current route/engine claim references")
+        if review.get("extensions", {}).get("verdict") == "pass" and judgment["status"] != "checked":
+            errors.append(f"creative_coverage.{dimension} is unresolved; pass is invalid")
+
+
 def _validate_independent_review(
     config: ConfigDocument,
     root: Path,
@@ -1535,6 +1591,7 @@ def _validate_independent_review(
         _source_canon=source_canon,
         _story_engine=story_engine,
     )
+    validate_creative_review_coverage(review_payload, target, story_engine, target_errors)
     if target_errors:
         raise FanfictionContractError(
             path=target_path,
@@ -1665,7 +1722,7 @@ __all__ = [
     "CurrentFanfictionDocuments",
     "CurrentFanfictionStoryEngineDocuments",
     "FanfictionContractError",
-    "STORY_ENGINE_REQUIRED_SEMANTIC_TYPES",
+    "compile_fanfiction_creative_requirements",
     "STORY_ENGINE_ROUTE_FAMILIES",
     "current_fanfiction_chain_binding",
     "current_fanfiction_source_contracts",

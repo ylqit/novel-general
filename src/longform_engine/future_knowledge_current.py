@@ -43,7 +43,7 @@ from longform_engine.storage.layout import manuscript_chapter_path
 
 
 FUTURE_KNOWLEDGE_TASK_TYPE = "fanfiction_future_knowledge_reassessment"
-FANFICTION_CONTEXT_BUNDLE_SCHEMA = "fanfiction_context_bundle_v2"
+FANFICTION_CONTEXT_BUNDLE_SCHEMA = "fanfiction_context_bundle_v3"
 
 
 class FutureKnowledgeCurrentError(ValueError):
@@ -830,9 +830,6 @@ def _current_context_errors(
     for kind, path in {
         "chapter_contract": (
             root / "20_outline" / "chapter_contracts" / f"ch{chapter:03d}.json"
-        ),
-        "chapter_card": (
-            root / "20_outline" / "chapter_cards" / f"ch{chapter:03d}.json"
         ),
     }.items():
         relative = path.relative_to(root).as_posix()

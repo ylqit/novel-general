@@ -65,7 +65,7 @@ Derived views
 ```text
 00_governance/   开书确认、读者合同和生产规则
 10_bible/        世界、人物、风格、同人 canon 和 research canon
-20_outline/      全书/卷级规划、章节卡、锚点和伏笔计划
+20_outline/      全书/卷级规划、章节合同、锚点和伏笔计划
 30_state/        semantic ledger、图谱、角色/伏笔当前状态和 TCS
 40_manuscript/   submitted draft 与 final
 50_workbench/    Agent task、brief、候选、审稿、修复和诊断
@@ -165,8 +165,8 @@ design task
 book spine / volume skeletons / active volume / rolling_window_plan_v2
 -> independent planning semantic review / human planning approval / every plot-node decision
 -> chapter_contract_v5
--> blank human_chapter_intent_v2 / validate / human apply
--> chapter_story_brief_basis_v3 / chapter_story_brief_v5 / chapter_writing_task_v7
+-> blank human_chapter_intent_v3 / validate / human apply
+-> chapter_story_brief_basis_v4 / chapter_story_brief_v5 / chapter_writing_task_v8
 -> chapter_write
 -> optional chapter_coedit_session_v2 with human-selected options and full workbench candidates
 -> draft submit and deterministic gate
@@ -190,13 +190,13 @@ book spine / volume skeletons / active volume / rolling_window_plan_v2
 
 `20_outline/chapter_contracts/chNNN.json` 是唯一 `chapter_contract_v5`。它只来自活动卷 firm 层，并绑定章节拓扑、可观察变化、读者价值、语义义务、当前 reader-promise 动作和逐节点人工审批。`failure`、`choice`、`cost`、`aftermath` 使用显式 applicability，不能强迫所有章节套用同一戏剧模板。
 
-规划应用后，人类必须从空白表单填写 `human_chapter_intent_v2`。内部事实仍编译为 `chapter_fact_inventory_v1`；`chapter_story_brief_basis_v3` 绑定合同、节点表、语义义务、滚动窗口、当前人工意图和所有会改变作者工作单的投影，作者只读取 `chapter_story_brief_v5` Markdown。内部 ID、来源 hash、promise ID、编辑代码、原始 RAG、Graph、TCS、SQLite 和平台诊断不得进入作者工作单。自然度、收益、节奏、人物、场景、同人和人工深审必须绑定同一合同、意图、basis 与候选。
+规划应用后，人类必须从空白表单填写 `human_chapter_intent_v3`。内部事实仍编译为 `chapter_fact_inventory_v1`；`chapter_story_brief_basis_v4` 绑定合同、节点表、语义义务、滚动窗口、当前人工意图和所有会改变作者工作单的投影，作者只读取 `chapter_story_brief_v5` Markdown。内部 ID、来源 hash、promise ID、编辑代码、原始 RAG、Graph、TCS、SQLite 和平台诊断不得进入作者工作单。自然度、收益、节奏、人物、场景、同人和人工深审必须绑定同一合同、意图、basis 与候选。
 
 事实清单中同一事实只出现一次，并保存来源 hash、优先级和选择理由。核心 canon/world-rule 引用必须完整解析；`[depth-limited]`、缺失来源或必要证据无法装入预算时返回 `context_evidence_incomplete` 或 `prompt_budget_exceeded`，不得在证据不完整时生成可 pass 的审稿任务。
 
 ## 8. Prompt、角色与会话
 
-当前注册表包含 29 个专业角色、28 类任务、4 类输出协议、12 个渐进式 Playbook 和 44 个正交故事分面。`repair_coordinator` 编排修复，`human_author_advisor` 在 coedit 提供方案、在 human_final 只读，始终不能直接写 canonical。
+当前注册表包含 32 个专业角色、42 类任务、5 类输出协议、12 个渐进式 Playbook 和 44 个正交故事分面。`repair_coordinator` 编排修复，`human_author_advisor` 在 coedit 提供方案、在 human_final 只读，始终不能直接写 canonical。
 
 运行时 Prompt 按以下顺序编译：
 

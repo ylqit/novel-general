@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from longform_engine.planning.context import load_chapter_planning_context
 from longform_engine.config import ConfigDocument
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.resources import resource_path
@@ -40,6 +41,7 @@ COMPACT_CONTRACT_FIELDS = (
     "foreshadow_release",
     "ending_distribution",
     "slow_chapter_policy",
+    "fanfiction_creative_requirements",
     "cn_longform_fanfiction",
     "qidian_male_fanfiction",
     "fanqie_free_fanfiction",
@@ -93,24 +95,12 @@ def compile_effective_quality_contract(
     market_source = load_quality_profile("markets", market)
     phase_source = load_quality_profile("phases", phase)
     root = resolve_project_root(config)
-    plan = read_json(root / "20_outline" / "chapter_plan.json", [])
-    plan_row = next(
-        (
-            item
-            for item in plan if isinstance(plan, list) and isinstance(item, dict)
-            and int(item.get("chapter_number") or 0) == chapter_number
-        ),
-        {},
-    )
-    arc_id = str(plan_row.get("arc_id") or "") if isinstance(plan_row, dict) else ""
-    arcs = read_json(root / "20_outline" / "story_arcs.json", [])
-    current_arc = next(
-        (
-            item for item in arcs
-            if isinstance(arcs, list) and isinstance(item, dict) and str(item.get("id") or "") == arc_id
-        ),
-        {},
-    )
+    current_arcs: list[dict[str, Any]] = []
+    arc_source = ""
+    if (root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json").is_file():
+        planning = load_chapter_planning_context(root, chapter_number)
+        current_arcs = [row for row in planning.volume.get("character_arcs") or [] if row.get("id") in planning.arc_ids]
+        arc_source = f"20_outline/volumes/vol{int(planning.skeleton['order']):03d}.json"
     contract: dict[str, Any] = {}
     source_records: list[dict[str, Any]] = []
     merge_trace: list[dict[str, Any]] = []
@@ -227,36 +217,37 @@ def compile_effective_quality_contract(
             }
         )
 
-    arc_focus = current_arc.get("quality_focus") if isinstance(current_arc, dict) else None
-    if isinstance(arc_focus, dict):
-        arc_contract = {
-            "current_story_arc": {
-                "arc_id": arc_id,
-                "goal": str(current_arc.get("goal") or ""),
-                "active_facets": copy.deepcopy(current_arc.get("active_facets") or []),
-                **copy.deepcopy(arc_focus),
+    for current_arc in current_arcs:
+        arc_id = str(current_arc["id"])
+        arc_focus = current_arc.get("quality_focus") if isinstance(current_arc, dict) else None
+        if isinstance(arc_focus, dict):
+            arc_contract = {
+                "current_story_arc": {
+                    "arc_id": arc_id,
+                    "goal": str(current_arc.get("goal") or ""),
+                    "active_facets": copy.deepcopy(current_arc.get("active_facets") or []),
+                    **copy.deepcopy(arc_focus),
+                }
             }
-        }
-        arc_source = "20_outline/story_arcs.json"
-        arc_path = root / arc_source
-        arc_digest = file_sha256(arc_path)
-        merge_contract_layer(
-            contract,
-            arc_contract,
-            layer="current_story_arc",
-            source=arc_source,
-            digest=arc_digest,
-            merge_trace=merge_trace,
-            overridden_fields=overridden_fields,
-        )
-        source_records.append(
-            {
-                "kind": "current_story_arc",
-                "id": arc_id,
-                "path": arc_source,
-                "sha256": arc_digest,
-            }
-        )
+            arc_path = root / arc_source
+            arc_digest = file_sha256(arc_path)
+            merge_contract_layer(
+                contract,
+                arc_contract,
+                layer="current_story_arc",
+                source=arc_source,
+                digest=arc_digest,
+                merge_trace=merge_trace,
+                overridden_fields=overridden_fields,
+            )
+            source_records.append(
+                {
+                    "kind": "current_story_arc",
+                    "id": arc_id,
+                    "path": arc_source,
+                    "sha256": arc_digest,
+                }
+            )
 
     baseline = load_approved_style_baseline(root)
     baseline_contract = baseline.get("contract_overrides")
@@ -283,6 +274,22 @@ def compile_effective_quality_contract(
             overridden_fields=overridden_fields,
         )
 
+    if str(config.data.get("creation", {}).get("mode") or "") == "fanfiction":
+        from longform_engine.fanfiction_creative_requirements import ROUTE_FAMILIES, compile_fanfiction_creative_requirements
+        from longform_engine.fanfiction_contracts import load_current_fanfiction_story_engine_documents
+        routes = sorted(ROUTE_FAMILIES)
+        engine_path = root / "10_bible/fanfiction/story_engine.json"
+        if engine_path.is_file():
+            current = load_current_fanfiction_story_engine_documents(config, root)
+            routes = [current.story_engine["extensions"]["route_family"]]
+            source_records.extend({"kind": "fanfiction_creative_contract", "id": name,
+                                   "path": path.relative_to(root).as_posix(), "sha256": current.sha256[name]}
+                                  for name, path in current.paths.items())
+        contract["fanfiction_creative_requirements"] = {
+            "status": "approved" if len(routes) == 1 else "route_not_selected",
+            "requirements_by_route": {route: compile_fanfiction_creative_requirements(config.data["fanfiction"]["continuity_mode"], route) for route in routes},
+        }
+
     blocking_policy = resolve_blocking_policy(contract)
     requested_compatibility = normalize_compatibility_markets(
         compiled_story["market"].get("compatibility"),
@@ -301,7 +308,7 @@ def compile_effective_quality_contract(
 
     approved_records = baseline.get("approved_chapters")
     approved_records = approved_records if isinstance(approved_records, list) else []
-    requested_facets = list(plan_row.get("active_facets") or []) if isinstance(plan_row, dict) else []
+    requested_facets = list(dict.fromkeys(item for arc in current_arcs for item in arc.get("active_facets") or []))
     return {
         "schema": "effective_quality_contract_v1",
         "chapter_number": chapter_number,
@@ -460,23 +467,13 @@ def approve_style_baseline(
 
 def infer_story_phase(config: ConfigDocument, chapter_number: int) -> str:
     root = resolve_project_root(config)
-    plan = read_json(root / "20_outline" / "chapter_plan.json", [])
-    plan_row = next(
-        (
-            item
-            for item in plan
-            if isinstance(plan, list) and isinstance(item, dict)
-            and int(item.get("chapter_number") or 0) == chapter_number
-        ),
-        {},
-    )
-    arc_id = str(plan_row.get("arc_id") or "") if isinstance(plan_row, dict) else ""
-    arcs = read_json(root / "20_outline" / "story_arcs.json", [])
-    if arc_id and isinstance(arcs, list):
-        arc = next((item for item in arcs if isinstance(item, dict) and item.get("id") == arc_id), {})
-        declared_phase = str(arc.get("phase") or "") if isinstance(arc, dict) else ""
-        if declared_phase in STORY_PHASE_IDS:
-            return declared_phase
+    if (root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json").is_file():
+        planning = load_chapter_planning_context(root, chapter_number)
+        declared = {str(arc.get("phase")) for arc in planning.volume.get("character_arcs") or [] if arc.get("id") in planning.arc_ids and arc.get("phase") in STORY_PHASE_IDS}
+        if len(declared) > 1:
+            raise ValueError("planning_context_conflicting_story_phases")
+        if declared:
+            return next(iter(declared))
     forecast = compile_length_forecast(config.data["length"])
     metrics = read_json(root / "30_state" / "manuscript_metrics.json", {})
     completed = (

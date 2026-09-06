@@ -13,6 +13,8 @@ from tests.project_fixtures import (
     complete_unified_semantic_lifecycle,
     mark_project_ready,
     refresh_arc_simulation_fixture,
+    refresh_planning_fixture_basis,
+    rebind_human_intent_fixture,
 )
 
 
@@ -29,6 +31,10 @@ def close_seed_research_chapters(root, config) -> None:
         json.dumps(rolling, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    refresh_planning_fixture_basis(root)
+    for chapter_number in range(5, 8):
+        contract = json.loads((root / f"20_outline/chapter_contracts/ch{chapter_number:03d}.json").read_text(encoding="utf-8"))
+        rebind_human_intent_fixture(root, chapter_number, contract)
 
 
 def seed_manual_human_revision_binding(root, chapter_number: int) -> None:

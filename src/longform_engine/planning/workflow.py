@@ -14,6 +14,7 @@ from longform_engine.agent_protocols import (
     validate_review_evidence_for_source,
 )
 from longform_engine.chapter_contract import stamp_chapter_contract
+from longform_engine.planning.context import resolve_planning_source_references
 from longform_engine.config import ConfigDocument
 from longform_engine import fanfiction_contracts
 from longform_engine.reader_promises_v2 import materialize_explicit_reader_promises
@@ -652,6 +653,12 @@ def apply_planning_bundle(
                 "path": "20_outline/volume_skeletons.json",
                 "sha256": _json_file_hash(bundle["volume_skeletons"]),
             },
+            {
+                "path": f"20_outline/volumes/vol{active_volume_order:03d}.json",
+                "sha256": _json_file_hash(canonical_payloads[
+                    root / "20_outline" / "volumes" / f"vol{active_volume_order:03d}.json"
+                ]),
+            },
             *(
                 [
                     {
@@ -732,6 +739,16 @@ def apply_planning_bundle(
             "realized_major_divergences": [],
             "source_plot_node_table_sha256": _json_file_hash(approved_table),
         }
+
+    # Bind approved planning bytes, including node decisions; copied candidate hashes
+    # alone do not prove that persisted actors or obligations remain approved.
+    basis_sources = canonical_payloads[root / "30_state/planning_basis.json"]["source_files"]
+    basis_sources.extend(
+        {"path": path.relative_to(root).as_posix(), "sha256": _json_file_hash(payload)}
+        for path, payload in canonical_payloads.items()
+        if (path.parent.name in {"chapter_contracts", "plot_nodes"}
+            or path.relative_to(root).as_posix() in {"20_outline/rolling_window.json", "30_state/semantic_obligations.json"})
+    )
 
     source_paths = (bundle_file, application_file, approval_file, decisions_file)
     stale_registry = root / "30_state" / "stale_artifacts.json"
@@ -840,17 +857,6 @@ def _validate_all_planning_fanfiction_claim_refs(
         if isinstance(subject, str) and subject
     )
 
-    identity_sources: dict[str, str] = {}
-    for claim in claims_by_id.values():
-        extensions = claim.get("extensions")
-        extensions = extensions if isinstance(extensions, dict) else {}
-        identity = extensions.get("identity")
-        identity = identity if isinstance(identity, dict) else {}
-        identity_id = str(identity.get("identity_id") or "")
-        source_id = str(identity.get("source_id") or extensions.get("source_id") or "")
-        if identity_id and source_id:
-            identity_sources[identity_id] = source_id
-
     active_arcs = [
         item for item in active.get("character_arcs") or [] if isinstance(item, dict)
     ]
@@ -882,17 +888,6 @@ def _validate_all_planning_fanfiction_claim_refs(
                 str(item.get("id")) in references
                 or bool(nested_string_values(item) & references)
             )
-        }
-
-    def source_ids_for(references: set[str]) -> set[str]:
-        return {
-            source_id
-            for reference in references
-            for source_id in (
-                identity_sources.get(reference, ""),
-                reference if reference in configured_sources else "",
-            )
-            if source_id
         }
 
     obligations_by_id = {
@@ -946,7 +941,7 @@ def _validate_all_planning_fanfiction_claim_refs(
                 "name": f"semantic_obligation:{obligation_id}",
                 "refs": list(obligation.get("fanfiction_claim_refs") or []),
                 "chapters": obligation_chapters.get(obligation_id, set()),
-                "source_ids": source_ids_for(obligation_references),
+                "source_ids": resolve_planning_source_references(obligation_references, list(claims_by_id.values()), configured_sources),
                 "character_ids": set(obligation.get("subject_refs") or []),
                 "event_ids": scoped_ids(active_events, obligation_references),
                 "arc_ids": scoped_ids(active_arcs, obligation_references),
@@ -983,7 +978,7 @@ def _validate_all_planning_fanfiction_claim_refs(
                     "name": f"plot_node:{node_id}",
                     "refs": list(node.get("fanfiction_claim_refs") or []),
                     "chapters": chapters,
-                    "source_ids": source_ids_for(node_references),
+                    "source_ids": resolve_planning_source_references(node_references, list(claims_by_id.values()), configured_sources),
                     "character_ids": character_ids,
                     "event_ids": {node_id} | scoped_ids(active_events, node_references),
                     "arc_ids": scoped_ids(active_arcs, node_references),
@@ -1031,7 +1026,7 @@ def _validate_all_planning_fanfiction_claim_refs(
                     "name": f"chapter_contract:{chapter}:{field}",
                     "refs": list(channel.get(field) or []),
                     "chapters": chapters,
-                    "source_ids": source_ids_for(contract_references),
+                    "source_ids": resolve_planning_source_references(contract_references, list(claims_by_id.values()), configured_sources),
                     "character_ids": contract_characters,
                     "event_ids": scoped_ids(active_events, contract_references),
                     "arc_ids": scoped_ids(active_arcs, contract_references),

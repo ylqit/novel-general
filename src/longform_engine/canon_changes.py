@@ -310,7 +310,7 @@ def apply_canon_change(
         _write_json(stale_file, {"schema": STALE_REGISTRY_SCHEMA, "items": list(stale_by_path.values())})
         for task_file in task_files:
             task = _read_json(task_file)
-            if task.get("schema") == "chapter_writing_task_v7":
+            if task.get("schema") == "chapter_writing_task_v8":
                 task["status"] = "stale"
                 _write_json(task_file, task)
     return CanonChangeApplyResult(

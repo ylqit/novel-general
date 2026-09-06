@@ -216,6 +216,7 @@ def build_agent_result_template(
             "fanfiction_canon": "项目原著基线Canon候选",
             "fanfiction_story_engine": "同人故事发动机",
             "fanfiction_design": "同人路线设计候选",
+            "fanfiction_design_review": "同人路线独立复核",
             "source_discovery_planning": "原著资料搜索规划",
             "source_candidate_triage": "原著来源候选筛选",
             "source_timeline_alignment": "原著媒体时间线对齐",
@@ -243,8 +244,14 @@ def build_agent_result_template(
                 "source_coverage_gap_analysis": "coverage_gap",
             }.get(contract.task_type, ""),
         }
+        if contract.task_type == "fanfiction_design_review":
+            extensions = {"verdict": "", "creative_coverage": {}}
         if contract.task_type == "fanfiction_story_engine":
             extensions = {"route_family": ""}
+        if contract.task_type == "fanfiction_design":
+            extensions["event_disposition_applicability"] = {
+                "status": "", "reason": "", "basis_claim_ids": []
+            }
         if scope.get("bundle_sha256"):
             extensions["bundle_sha256"] = str(scope["bundle_sha256"])
         return build_semantic_document(

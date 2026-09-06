@@ -14,7 +14,6 @@ from longform_engine.orchestration import (
     continue_write,
     finalize_chapter,
     open_book,
-    plan_chapter,
     submit_agent_draft,
 )
 from longform_engine.planning import revise_outline
@@ -24,6 +23,7 @@ from longform_engine.revision import rollback
 from longform_engine.storage import init_project
 from tests.project_fixtures import (
     approve_story_candidate,
+    compile_chapter_brief_fixture,
     complete_unified_semantic_lifecycle,
     mark_project_ready,
     refresh_arc_simulation_fixture,
@@ -94,10 +94,7 @@ def test_graph_suggestions_low_confidence_and_cascade(tmp_path):
 def test_revise_outline_blocks_until_db_rebuild(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    (root / "20_outline" / "chapter_plan.json").write_text(
-        json.dumps([{"chapter_number": 1, "title": "Old start", "chapter_duty": "old duty"}]),
-        encoding="utf-8",
-    )
+    mark_project_ready(root, config)
 
     result = revise_outline(config, from_chapter=1, change_description="change opening promise")
 
@@ -121,7 +118,7 @@ def test_revise_outline_blocks_until_db_rebuild(tmp_path):
 def test_gate_writes_style_prose_naturalness_copyedit_and_memory_artifacts(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(config, chapter_number=1)
+    mark_project_ready(config.path.parent, config, preserve_existing_characters=True)
     paragraph = "Ari repeats the same tactical beat and never changes the scene. "
     text = "# Chapter 1\n\n" + "\n\n".join([paragraph * 10 for _ in range(5)])
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(text, encoding="utf-8")
@@ -149,6 +146,7 @@ def test_editorial_research_gap_and_batch_agent_mode(tmp_path):
         "# Chapter 1\n\nTODO verify: medieval gate tax. Ari enters the city.\n",
         encoding="utf-8",
     )
+    compile_chapter_brief_fixture(root, config)
     review = editorial_review(config, chapter_number=1)
     status = editorial_status(config)
     gaps = detect_knowledge_gaps(config, chapter_number=1, text="needs research: medieval gate tax")
@@ -160,6 +158,7 @@ def test_editorial_research_gap_and_batch_agent_mode(tmp_path):
     assert all((root / path).exists() for path in review_payload["agent_task_files"])
     role_ids = {role["id"] for role in review_payload["editorial_team"]}
     assert role_ids == {
+        "planning_chief_editor",
         "scene_prose_editor",
         "anti_template_editor",
         "character_editor",
@@ -193,6 +192,8 @@ def test_editorial_batch_review_generates_editorial_team_health_reports(tmp_path
             encoding="utf-8",
         )
 
+    for chapter in range(1, 11):
+        compile_chapter_brief_fixture(root, config, chapter)
     batch = editorial_batch_review(config, chapter_start=1, chapter_end=10)
     status = editorial_status(config)
     batch_payload = json.loads(Path(batch.batch_file).read_text(encoding="utf-8"))
@@ -264,7 +265,7 @@ def test_anchor_anti_resolution_blocks_forbidden_reveal(tmp_path):
         ),
         encoding="utf-8",
     )
-    plan_chapter(config, chapter_number=1)
+    mark_project_ready(config.path.parent, config, preserve_existing_characters=True)
     draft = "# Chapter 1\n\n" + ("Ari reveals the Dragon Crown and the ultimate secret. " * 30)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(draft, encoding="utf-8")
 

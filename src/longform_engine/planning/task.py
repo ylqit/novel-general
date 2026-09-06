@@ -121,6 +121,19 @@ def write_planning_generation_task(config: ConfigDocument) -> PlanningGeneration
         "mode_rules": mode_rules,
         "source_files": source_files,
     }
+    if mode == "fanfiction":
+        from longform_engine.fanfiction_creative_requirements import ROUTE_FAMILIES, compile_fanfiction_creative_requirements
+        from longform_engine.fanfiction_contracts import load_current_fanfiction_story_engine_documents
+        engine_path = root / "10_bible/fanfiction/story_engine.json"
+        routes = sorted(ROUTE_FAMILIES)
+        if engine_path.is_file():
+            current = load_current_fanfiction_story_engine_documents(config, root)
+            routes = [current.story_engine["extensions"]["route_family"]]
+        contract["creative_requirements_by_route"] = {
+            route: compile_fanfiction_creative_requirements(config.data["fanfiction"]["continuity_mode"], route) for route in routes
+        }
+        contract["mode_rules"]["creative_applicability"] = "Use the approved route's compiled requirements. Relationships, viewpoints and untold scenes can provide reading value; growth and divergence are not universal obligations."
+        contract["mode_rules"]["chapter_transfers"] = "Bind actual adapters and their stable dependent rules in chapter refs; future/wrong-host rules cannot supply current evidence. Sequential volumes carry consequences via approved claims and final-evidenced semantic facts, never by promoting plans to facts."
     atomic_write_text(
         contract_path,
         json.dumps(contract, ensure_ascii=False, indent=2) + "\n",

@@ -1101,13 +1101,6 @@ def refresh_literary_evidence_manifest(root: Path) -> dict[str, Any] | None:
 def literary_evidence_status(root: Path) -> tuple[bool, list[str]]:
     manifest_path = root / LITERARY_MANIFEST_PATH
     manifest = read_object(manifest_path)
-    if manifest.get("schema") == "fanfiction_literary_evidence_manifest_v1":
-        from longform_engine.fanfiction_literary_trial import (
-            validate_fanfiction_literary_evidence,
-        )
-
-        fanfiction_errors = validate_fanfiction_literary_evidence(root, manifest)
-        return not fanfiction_errors, fanfiction_errors
     if manifest.get("schema") != LITERARY_MANIFEST_SCHEMA:
         return False, ["literary_evidence_manifest_missing"]
     stored_hash = str(manifest.get("manifest_sha256") or "")

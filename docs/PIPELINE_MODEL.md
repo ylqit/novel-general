@@ -9,7 +9,7 @@
 -> 同人故事发动机 / 人工 apply
 -> 同人路线 / 隔离独立复核 / 人工 apply
 -> 活动卷同人投影、原著事件命运和重大节点决定
--> fanfiction_context_bundle_v2
+-> fanfiction_context_bundle_v3
 ```
 
 ```text
@@ -20,9 +20,9 @@ planning_bundle_v1
 -> every firm state-changing plot-node human decision
 -> atomic planning apply
 -> chapter_contract_v5
--> human_chapter_intent_v2
--> chapter_story_brief_basis_v3
--> chapter_story_brief_v5 / chapter_writing_task_v7
+-> human_chapter_intent_v3
+-> chapter_story_brief_basis_v4
+-> chapter_story_brief_v5 / chapter_writing_task_v8
 -> chapter_write / optional chapter_coedit_session_v2
 -> deterministic gate + independent reviews
 -> human_author_revision_v4 + isolated semantic preservation review
@@ -57,3 +57,5 @@ semantic apply 只物化章节事实和派生视图，不自动兑现承诺。�
 ## 设定和反馈
 
 未来设定变更通过 stable fact ID 的依赖闭包使 forecast、合同、节点和任务 stale；影响已有 final 时创建 `revision_branch_v2`。读者反馈只形成非 canonical 假设与 proposal。
+
+收益审稿使用 `reader_payoff_context_v3`，从同一个经过验证的章节规划上下文读取合同、节点和语义义务，并投影本章动作绑定的读者承诺当前状态。旧收益上下文无法作为当前审稿任务继续使用；需经现有生命周期重建。

@@ -30,6 +30,7 @@ from longform_engine.agent_tasks import (
     write_manifest,
 )
 from longform_engine.character_expression import build_character_expression_packet, character_expression_diagnostics
+from longform_engine.planning.context import ChapterPlanningContext, load_chapter_planning_context
 from longform_engine.chapter_contract import (
     ChapterContractError,
     load_verified_chapter_contract,
@@ -70,7 +71,7 @@ from longform_engine.human_story_review import HumanStoryReviewError, require_hu
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.memory import build_tcs
 from longform_engine.models import semantic_enabled
-from longform_engine.planning import event_tier_for_types, recommend_event_types, record_event_usage
+from longform_engine.planning import record_event_usage
 from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.quality import (
     compact_effective_quality_contract,
@@ -115,30 +116,12 @@ class OpenBookResult:
 
 
 @dataclass(frozen=True)
-class ChapterPlanResult:
-    """Generated chapter card paths."""
-
-    chapter_number: int
-    json_file: str
-    markdown_file: str
-
-
-@dataclass(frozen=True)
-class BeatSheetResult:
-    """Generated beat sheet paths."""
-
-    chapter_number: int
-    json_file: str
-    markdown_file: str
-
-
-@dataclass(frozen=True)
 class ContinueWriteResult:
     """Artifacts produced by the continue-write pipeline."""
 
     chapter_number: int
     context_file: str
-    chapter_card: str
+    chapter_contract: str
     beat_sheet: str
     draft_file: str
     writing_task_json: str
@@ -305,7 +288,6 @@ def open_book(config: ConfigDocument, confirmations: dict[str, Any] | None = Non
     project_intelligence = {
         "book_ideation": {"status": "required"},
         "book_design": {"status": "blocked_by_book_ideation"},
-        "outline_design": {"status": "blocked_by_book_design"},
     }
     if creation_mode == "fanfiction":
         project_intelligence = {
@@ -313,7 +295,6 @@ def open_book(config: ConfigDocument, confirmations: dict[str, Any] | None = Non
             "book_ideation": {"status": "blocked_by_fanfiction_canon"},
             "fanfiction_design": {"status": "blocked_by_book_ideation"},
             "book_design": {"status": "blocked_by_fanfiction_design"},
-            "outline_design": {"status": "blocked_by_fanfiction_design"},
         }
     state.update(
         {
@@ -344,518 +325,6 @@ def open_book(config: ConfigDocument, confirmations: dict[str, Any] | None = Non
         book_outline=str(book_outline),
         state_file=str(state_file),
         creative_brief=creative_result.brief_file,
-    )
-
-
-def plan_chapter(config: ConfigDocument, *, chapter_number: int, overwrite: bool = False) -> ChapterPlanResult:
-    """Generate a deterministic chapter card for a target chapter."""
-
-    if chapter_number <= 0:
-        raise WorkflowError("chapter_number must be positive.")
-    root = resolve_project_root(config)
-    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
-        try:
-            fanfiction_contracts.load_current_fanfiction_documents(config, root)
-        except fanfiction_contracts.FanfictionContractError as exc:
-            raise WorkflowError(str(exc)) from exc
-    card_dir = root / "20_outline" / "chapter_cards"
-    json_path = card_dir / f"ch{chapter_number:03d}.json"
-    md_path = card_dir / f"ch{chapter_number:03d}.md"
-    if json_path.exists() and md_path.exists() and not overwrite:
-        return ChapterPlanResult(chapter_number=chapter_number, json_file=str(json_path), markdown_file=str(md_path))
-
-    novel = config.data.get("novel", {})
-    forbidden = as_list(novel.get("forbidden_experience")) + ["正文不得包含 TODO、写作说明、角色标签或 AI 自述。"]
-    volume = infer_volume(config, chapter_number)
-    anchor = current_outline_anchor(root, chapter_number)
-    event_recommendation = asdict(recommend_event_types(config, chapter_number=chapter_number))
-    graph_constraints = summarize_graph_constraints(root, chapter_number)
-    planned_chapter = next(
-        (
-            item
-            for item in normalize_records(load_json(root / "20_outline" / "chapter_plan.json", default=[]))
-            if isinstance(item, dict) and int(item.get("chapter_number") or 0) == chapter_number
-        ),
-        {},
-    )
-    characters = normalize_records(load_json(root / "10_bible" / "characters.json", default=[]))
-    character_ids = [str(item.get("id")) for item in characters if isinstance(item, dict) and item.get("id")]
-    planned_featured = dedupe_strings(as_list(planned_chapter.get("featured_character_ids")))
-    featured_character_ids = [item for item in planned_featured if item in character_ids]
-    pov_character_id = str(planned_chapter.get("pov_character_id") or "")
-    if pov_character_id not in character_ids:
-        pov_character_id = character_ids[0] if character_ids else ""
-    if pov_character_id and pov_character_id not in featured_character_ids:
-        featured_character_ids.insert(0, pov_character_id)
-    title = str(planned_chapter.get("title") or f"第{chapter_number}章 待定章节")
-    chapter_duty = str(
-        planned_chapter.get("chapter_duty")
-        or (anchor.get("duty") if isinstance(anchor, dict) else "")
-        or ("建立读者契约并打开第一层悬念。" if chapter_number == 1 else "承接上一章状态，推进一个明确的局部矛盾。")
-    )
-    reader_gain = str(
-        planned_chapter.get("reader_gain")
-        or "Pay off one local promise while preserving the core longform mystery."
-    )
-    topology_id = str(
-        planned_chapter.get("topology_id")
-        or infer_chapter_topology(chapter_duty, chapter_number)
-    )
-    effective_quality_contract = compile_effective_quality_contract(
-        config,
-        chapter_number=chapter_number,
-    )
-    quality_body = (
-        effective_quality_contract.get("contract")
-        if isinstance(effective_quality_contract.get("contract"), dict)
-        else {}
-    )
-    book_goal = chapter_book_goal(root)
-    volume_goal = chapter_volume_goal(root, volume)
-    protagonist_goal = chapter_protagonist_goal(root, pov_character_id)
-    scene_chain = planned_chapter.get("scene_chain")
-    if not isinstance(scene_chain, list) or not scene_chain:
-        scene_chain = [
-            {
-                "scene_id": f"ch{chapter_number:03d}:primary",
-                "location": str(planned_chapter.get("location") or "由当前 TCS 确认的场景地点"),
-                "participants": featured_character_ids,
-                "carrier": str(
-                    planned_chapter.get("primary_scene_carrier") or "行动冲突"
-                ),
-                "desire_collision": str(
-                    planned_chapter.get("conflict")
-                    or "主角近期目标受到可观察阻力，必须作出选择。"
-                ),
-                "action": str(
-                    planned_chapter.get("action")
-                    or "主角先采取最直接的行动争取本章目标。"
-                ),
-                "reaction": str(
-                    planned_chapter.get("reaction")
-                    or "对抗力量针对主角行动升级阻拦。"
-                ),
-                "choice": str(
-                    planned_chapter.get("choice")
-                    or "主角采取会改变后续条件的行动。"
-                ),
-                "cost": str(
-                    planned_chapter.get("cost")
-                    or "本章收益带来义务、损失或更窄的后续选择。"
-                ),
-                "turn": str(
-                    planned_chapter.get("chapter_turn")
-                    or "场景结束时至少一项事实、关系或行动条件发生变化。"
-                ),
-                "exit_state": str(
-                    planned_chapter.get("chapter_turn")
-                    or "人物带着改变后的关系、事实或行动条件离场。"
-                ),
-            }
-        ]
-    scene_carriers = dedupe_strings(
-        as_list(planned_chapter.get("scene_carriers"))
-        or [str(planned_chapter.get("primary_scene_carrier") or "行动冲突")]
-    )
-    primary_story_engine = str(
-        planned_chapter.get("primary_story_engine") or "行动推进"
-    )
-    chapter_turn = str(
-        planned_chapter.get("chapter_turn")
-        or "主角的行动让事实、关系或局势发生不可逆变化。"
-    )
-    card = {
-        "chapter_number": chapter_number,
-        "title": title,
-        "book_goal": book_goal,
-        "volume_goal": volume_goal,
-        "protagonist_goal": protagonist_goal,
-        "volume": volume,
-        "status": "planned",
-        "chapter_duty": chapter_duty,
-        "immediate_desire": str(
-            planned_chapter.get("immediate_desire") or protagonist_goal
-        ),
-        "opposition_force": str(
-            planned_chapter.get("opposition_force")
-            or planned_chapter.get("conflict")
-            or "一个拥有自身欲望的对手或现实障碍拒绝主角。"
-        ),
-        "dramatic_question": str(
-            planned_chapter.get("dramatic_question")
-            or "主角能否在付出代价前完成本章目标？"
-        ),
-        "conflict": planned_chapter.get("conflict") or "让主角在当前目标与外部阻力之间做出选择。",
-        "key_failure": str(
-            planned_chapter.get("key_failure")
-            or "主角最直接的办法先失败，并暴露真正阻力。"
-        ),
-        "irreversible_choice": str(
-            planned_chapter.get("irreversible_choice")
-            or "主角采取无法无代价撤回的行动。"
-        ),
-        "chapter_turn": chapter_turn,
-        "reveal_boundary": str(
-            planned_chapter.get("reveal_boundary")
-            or "只揭示完成本章转折所需的信息，不揭示受保护的长线答案。"
-        ),
-        "ending_mode": str(planned_chapter.get("ending_mode") or "changed_problem"),
-        "ending_intent": str(
-            planned_chapter.get("ending_intent")
-            or "以本章行动造成的新条件收束，不强制制造悬崖。"
-        ),
-        "emotional_aftereffect": str(
-            planned_chapter.get("emotional_aftereffect")
-            or "人物必须带着由本章选择造成、归属明确的情绪后果离场。"
-        ),
-        "outline_anchor": anchor,
-        "event_recommendation": event_recommendation,
-        "reader_gain": reader_gain,
-        "cost": str(planned_chapter.get("cost") or "本章收益必须带来可见代价、义务或更窄的后续选择。"),
-        "must_dramatize": dedupe_strings(
-            as_list(planned_chapter.get("must_dramatize"))
-            or ["最早失败", "不可逆选择", "可见代价", "章节状态变化"]
-        ),
-        "may_summarize": dedupe_strings(
-            as_list(planned_chapter.get("may_summarize"))
-            or ["例行移动", "不产生新选择的重复流程"]
-        ),
-        "primary_story_engine": primary_story_engine,
-        "scene_carriers": scene_carriers,
-        "protected_story_outcomes": dedupe_strings(
-            as_list(planned_chapter.get("protected_story_outcomes"))
-            or [chapter_turn]
-        ),
-        "prohibited_drift": dedupe_strings(
-            as_list(planned_chapter.get("prohibited_drift"))
-            or ["不得用说明或流程替代人物行动与选择"]
-        ),
-        "state_change_kind": str(
-            planned_chapter.get("state_change_kind") or "situation"
-        ),
-        "dramatic_method": str(
-            planned_chapter.get("dramatic_method") or "action_choice_consequence"
-        ),
-        "exposition_carrier": str(
-            planned_chapter.get("exposition_carrier") or "embedded_in_action"
-        ),
-        "platform_promise": str(
-            planned_chapter.get("platform_promise")
-            or quality_body.get("platform_promise")
-            or "以可观察的因果变化推进可持续的连载承诺。"
-        ),
-        "pov_character_id": pov_character_id,
-        "featured_character_ids": featured_character_ids[:6],
-        "characterization_focus": dedupe_strings(as_list(planned_chapter.get("characterization_focus"))),
-        "scene_wants": planned_chapter.get("scene_wants") if isinstance(planned_chapter.get("scene_wants"), dict) else {},
-        "opposing_wants": dedupe_strings(as_list(planned_chapter.get("opposing_wants"))),
-        "hidden_agenda": dedupe_strings(as_list(planned_chapter.get("hidden_agenda"))),
-        "relationship_move": str(
-            planned_chapter.get("relationship_move")
-            or "若无可见因果，不改变既有关系阶段。"
-        ),
-        "scene_chain": scene_chain,
-        "canon_refs": dedupe_strings(as_list(planned_chapter.get("canon_refs"))),
-        "world_rule_refs": dedupe_strings(as_list(planned_chapter.get("world_rule_refs"))),
-        "foreshadow_refs": dedupe_strings(
-            as_list(planned_chapter.get("foreshadow_refs"))
-            + as_list(planned_chapter.get("promise_refs"))
-        ),
-        "voice_state": planned_chapter.get("voice_state") if isinstance(planned_chapter.get("voice_state"), dict) else {},
-        "embodiment_strategy": str(planned_chapter.get("embodiment_strategy") or "selective scene-specific embodiment"),
-        "summary_scene_policy": str(
-            planned_chapter.get("summary_scene_policy")
-            or "Dramatize choices, costs, and relationship turns; summarize connective travel and routine procedure."
-        ),
-        "topology_id": topology_id,
-        "promise_refs": dedupe_strings(as_list(planned_chapter.get("promise_refs"))),
-        "forbidden_reveals": dedupe_strings(
-            as_list(planned_chapter.get("forbidden_reveals"))
-            + (anchor.get("forbidden_reveals", []) if isinstance(anchor, dict) else [])
-        ),
-        "graph_constraints": graph_constraints,
-        "rag_facts": ["Use next_plot_context.md as the only formal RAG packet."],
-        "forbidden": forbidden,
-        "required_context_files": [
-            "60_rag/context/next_plot_context.md",
-            "30_state/story_graph.json",
-            "20_outline/outline_anchors.json",
-        ],
-        "created_at": utc_now(),
-    }
-    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
-        card.update(
-            {
-                "canon_refs": dedupe_strings(as_list(planned_chapter.get("canon_refs"))),
-                "divergence_effects": dedupe_strings(as_list(planned_chapter.get("divergence_effects"))),
-                "voice_refs": dedupe_strings(as_list(planned_chapter.get("voice_refs"))),
-                "original_contribution": str(
-                    planned_chapter.get("original_contribution")
-                    or "Advance the declared original mainline without reducing canon characters to props."
-                ),
-                "protected_reveals": dedupe_strings(as_list(planned_chapter.get("protected_reveals"))),
-                "protected_canon_outcomes": dedupe_strings(
-                    as_list(planned_chapter.get("protected_canon_outcomes"))
-                ),
-            }
-        )
-    card["requires_semantic_review"] = requires_milestone_semantic_review(
-        config,
-        chapter_number,
-        volume,
-        planned_chapter,
-    )
-    reverse_brake = build_reverse_brake_contract(config, chapter_number, anchor, card=card)
-    card["reverse_brake"] = reverse_brake
-    card["forbidden_reveals"] = reverse_brake["forbidden_reveals"]
-    card["resolution_markers"] = reverse_brake["do_not_resolve"]
-    card["requires_tail_suspense"] = reverse_brake["requires_tail_suspense"]
-    card["allowed_reveal_level"] = reverse_brake["allowed_reveal_level"]
-    card["must_preserve_suspense"] = reverse_brake["must_preserve_suspense"]
-    card["effective_quality_contract"] = compact_effective_quality_contract(
-        effective_quality_contract
-    )
-    write_chapter_card_artifacts(root, card)
-    upsert_chapter_plan(root, card)
-    return ChapterPlanResult(chapter_number=chapter_number, json_file=str(json_path), markdown_file=str(md_path))
-
-
-def generate_beat_sheet(
-    config: ConfigDocument,
-    *,
-    chapter_number: int,
-    overwrite: bool = False,
-    auto_plan: bool = False,
-) -> BeatSheetResult:
-    """Generate a beat sheet from an existing chapter card."""
-
-    root = resolve_project_root(config)
-    if str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction":
-        try:
-            fanfiction_contracts.load_current_fanfiction_documents(config, root)
-        except fanfiction_contracts.FanfictionContractError as exc:
-            raise WorkflowError(str(exc)) from exc
-    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-    if not card_path.exists():
-        if auto_plan:
-            plan_chapter(config, chapter_number=chapter_number)
-        else:
-            raise WorkflowError(f"Chapter card missing: {card_path}")
-    card = load_json(card_path, default={})
-    beat_dir = root / "50_workbench" / "beats"
-    json_path = beat_dir / f"ch{chapter_number:03d}.json"
-    md_path = beat_dir / f"ch{chapter_number:03d}.md"
-    if json_path.exists() and md_path.exists() and not overwrite:
-        return BeatSheetResult(chapter_number=chapter_number, json_file=str(json_path), markdown_file=str(md_path))
-
-    pacing_mode = str(config.data.get("pacing", {}).get("default_mode") or "balanced")
-    event_types = card.get("event_recommendation", {}).get("recommended", []) if isinstance(card.get("event_recommendation"), dict) else []
-    beats = [
-        {
-            "order": 1,
-            "name": "Opening image",
-            "pacing_mode": pacing_mode,
-            "chapter_duty": card.get("chapter_duty"),
-            "scene_purpose": "re-anchor current state, promise, and location",
-            "conflict": "latent pressure",
-            "turn": "goal becomes concrete",
-            "beat_exit_intent": "micro question",
-            "event_type": event_types[0] if event_types else "setup",
-            "expansion_notes": "Start in-scene and avoid summary-only setup.",
-            "purpose": "承接上一章状态，明确本章场景和目标。",
-        },
-        {
-            "order": 2,
-            "name": "Pressure",
-            "pacing_mode": pacing_mode,
-            "chapter_duty": card.get("chapter_duty"),
-            "scene_purpose": "apply external resistance",
-            "conflict": card.get("conflict", "制造外部阻力。"),
-            "turn": "cost appears",
-            "beat_exit_intent": "pressure escalates",
-            "event_type": event_types[1] if len(event_types) > 1 else "conflict",
-            "expansion_notes": "Use action, dialogue, or concrete consequence before exposition.",
-            "purpose": card.get("conflict", "制造外部阻力。"),
-        },
-        {
-            "order": 3,
-            "name": "Choice",
-            "pacing_mode": pacing_mode,
-            "chapter_duty": card.get("chapter_duty"),
-            "scene_purpose": "force a non-free decision",
-            "conflict": "goal versus cost",
-            "turn": "protagonist commits",
-            "beat_exit_intent": "choice creates a new risk",
-            "event_type": "choice",
-            "expansion_notes": "Make the decision visible through behavior, not explanation.",
-            "purpose": "让主角做出带代价的选择。",
-        },
-        {
-            "order": 4,
-            "name": "Turn",
-            "pacing_mode": pacing_mode,
-            "chapter_duty": card.get("chapter_duty"),
-            "scene_purpose": "release one controlled information layer",
-            "conflict": "new fact changes the problem",
-            "turn": card.get("chapter_turn", "行动让事实、关系或局势发生不可逆变化。"),
-            "beat_exit_intent": "meaning reframed",
-            "event_type": "reveal",
-            "expansion_notes": "Do not solve the core conflict unless the anchor marks closure.",
-            "purpose": card.get("chapter_turn", "用行动完成本章状态变化。"),
-        },
-        {
-            "order": 5,
-            "name": "Exit",
-            "pacing_mode": pacing_mode,
-            "chapter_duty": card.get("chapter_duty"),
-            "scene_purpose": "land the approved ending intent and emotional aftereffect",
-            "conflict": "the chapter choice leaves a changed condition",
-            "turn": card.get("chapter_turn", "chapter meaning settles into a changed state"),
-            "beat_exit_intent": card.get("ending_intent", "以本章造成的变化自然收束。"),
-            "event_type": "exit_state",
-            "expansion_notes": "End on the approved changed condition; suspense is optional unless declared.",
-            "purpose": card.get("ending_intent", "以本章造成的变化自然收束。"),
-        },
-    ]
-    beats = apply_chapter_topology(beats, topology_id=str(card.get("topology_id") or "conflict_escalation"), card=card)
-    for beat in beats:
-        beat.setdefault("scene_tension", "make pressure visible through action, cost, or withheld information")
-        beat.setdefault("reader_gain", card.get("reader_gain", "one local payoff without core-resolution leakage"))
-        beat.setdefault("dialogue_intent", "each exchange must reveal pressure, status, concealment, or relationship movement")
-        beat.setdefault("sensory_anchor", "ground this beat in one concrete sensory or body detail")
-        beat.setdefault(
-            "ending_intent",
-            card.get("ending_intent", "close on the changed condition created by the chapter choice"),
-        )
-        beat.setdefault("scene_goal", beat.get("scene_purpose") or beat.get("purpose") or "advance the chapter duty in-scene")
-        beat.setdefault("conflict_point", beat.get("conflict") or card.get("conflict") or "visible pressure against the current goal")
-        beat.setdefault("chapter_turn", beat.get("turn") or card.get("chapter_turn") or "change one story state through action")
-        beat.setdefault(
-            "expansion_requirements",
-            {
-                "scene": "write this beat as concrete scene material, not synopsis",
-                "dialogue": beat.get("dialogue_intent"),
-                "psychology": "show inner pressure through action, hesitation, body cost, or subtext before naming emotion",
-                "action": "include one visible choice, movement, or consequence",
-                "transition": "exit with a changed problem, location pressure, or relationship state",
-            },
-        )
-        beat.setdefault(
-            "avoid_repetition",
-            [
-                "do not repeat the previous beat's scene shape",
-                "do not restate the chapter duty as exposition",
-                "do not solve the core mystery inside this beat",
-            ],
-        )
-        beat.setdefault("forbidden_reveals", as_list(card.get("forbidden_reveals")))
-        beat.setdefault("must_preserve_suspense", as_list(card.get("must_preserve_suspense")))
-    payload = {
-        "chapter_number": chapter_number,
-        "title": card.get("title", f"第{chapter_number}章"),
-        "source_card": relative_path(root, card_path),
-        "beats": beats,
-        "created_at": utc_now(),
-    }
-    write_json(json_path, payload)
-    atomic_write_text(
-        md_path,
-        "\n".join(
-            [
-                f"# Beat Sheet ch{chapter_number:03d}",
-                "",
-                f"- Source card: `{relative_path(root, card_path)}`",
-                "",
-                *[f"## Beat {beat['order']}: {beat['name']}\n\n{beat['purpose']}\n" for beat in beats],
-            ]
-        ),
-    )
-    return BeatSheetResult(chapter_number=chapter_number, json_file=str(json_path), markdown_file=str(md_path))
-
-
-def infer_chapter_topology(chapter_duty: str, chapter_number: int) -> str:
-    duty = str(chapter_duty or "").lower()
-    if any(marker in duty for marker in ("关系", "感情", "信任", "和解", "背叛", "relationship")):
-        return "relationship_turn"
-    if any(marker in duty for marker in ("揭露", "真相", "线索", "发现", "reveal", "clue")):
-        return "revelation"
-    if any(marker in duty for marker in ("余波", "代价", "恢复", "aftermath", "recovery")):
-        return "aftermath"
-    if any(marker in duty for marker in ("探索", "调查", "世界", "explore", "investigate")):
-        return "exploration"
-    if any(marker in duty for marker in ("兑现", "胜利", "突破", "payoff", "victory")):
-        return "payoff"
-    return "opening_contract" if chapter_number == 1 else "conflict_escalation"
-
-
-def apply_chapter_topology(
-    beats: list[dict[str, Any]],
-    *,
-    topology_id: str,
-    card: dict[str, Any],
-) -> list[dict[str, Any]]:
-    selections = {
-        "opening_contract": (0, 1, 2, 3, 4),
-        "conflict_escalation": (0, 1, 2, 3, 4),
-        "relationship_turn": (0, 2, 3, 4),
-        "revelation": (0, 1, 3, 4),
-        "aftermath": (0, 2, 4),
-        "exploration": (0, 1, 3, 4),
-        "payoff": (1, 2, 3, 4),
-    }
-    selected = [dict(beats[index]) for index in selections.get(topology_id, selections["conflict_escalation"])]
-    labels = {
-        "opening_contract": ("Immediate promise", "First irreversible pressure"),
-        "relationship_turn": ("Relationship baseline", "Changed relationship state"),
-        "revelation": ("Question under pressure", "Meaning-changing evidence"),
-        "aftermath": ("Visible consequence", "Cost-bearing choice"),
-        "exploration": ("Unknown made concrete", "Discovery with a price"),
-        "payoff": ("Promised pressure", "Earned local payoff"),
-        "conflict_escalation": ("Current pressure", "Changed problem"),
-    }
-    start_label, end_label = labels.get(topology_id, labels["conflict_escalation"])
-    selected[0]["name"] = start_label
-    selected[-1]["name"] = end_label
-    selected[-1]["reader_gain"] = card.get("reader_gain")
-    for order, beat in enumerate(selected, start=1):
-        beat["order"] = order
-        beat["topology_id"] = topology_id
-        beat["chapter_cost"] = card.get("cost")
-    return selected
-
-
-def requires_milestone_semantic_review(
-    config: ConfigDocument,
-    chapter_number: int,
-    volume: int,
-    planned_chapter: dict[str, Any],
-) -> bool:
-    quality = config.data.get("quality", {}) if isinstance(config.data.get("quality"), dict) else {}
-    milestones = {
-        int(item)
-        for item in quality.get("semantic_review_milestones") or []
-        if isinstance(item, int) and not isinstance(item, bool) and item > 0
-    }
-    volumes = normalize_records(load_json(resolve_project_root(config) / "20_outline" / "volumes.json", default=[]))
-    volume_boundaries = {
-        int(item.get(field))
-        for item in volumes if isinstance(item, dict) and int(item.get("number") or 0) == volume
-        for field in ("from_chapter", "to_chapter")
-        if isinstance(item.get(field), int)
-    }
-    explicit = bool(
-        planned_chapter.get("requires_semantic_review")
-        or planned_chapter.get("major_reveal")
-        or planned_chapter.get("relationship_turn")
-    )
-    milestone_boundaries = bool(quality.get("semantic_review_boundaries", True))
-    return (
-        explicit
-        or str(config.data.get("creation", {}).get("mode") or "original") == "fanfiction"
-        or (
-            milestone_boundaries
-            and (chapter_number in milestones or chapter_number in volume_boundaries)
-        )
     )
 
 
@@ -915,7 +384,6 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
         semantic=semantic_enabled(config),
     )
     chapter_contract_file = root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
-    chapter_card_file = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
     plot_node_file = root / "20_outline" / "plot_nodes" / f"ch{chapter_number:03d}.json"
     writing_mode = str(config.data.get("writing", {}).get("mode", "agent_skill"))
 
@@ -925,7 +393,6 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
             chapter_number=chapter_number,
             context_file=Path(context.context_file),
             chapter_contract_file=chapter_contract_file,
-            chapter_card_file=chapter_card_file,
             beat_sheet_file=plot_node_file,
             overwrite=overwrite,
         )
@@ -965,7 +432,6 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
                 "context": context.context_file,
                 "tcs": tcs.tcs_file,
                 "chapter_contract": str(chapter_contract_file),
-                "chapter_card": str(chapter_card_file),
                 "plot_node_table": str(plot_node_file),
                 "writing_task_json": task["task_json"],
                 "writing_task_markdown": task["task_markdown"],
@@ -978,7 +444,7 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
         return ContinueWriteResult(
             chapter_number=chapter_number,
             context_file=context.context_file,
-            chapter_card=str(chapter_card_file),
+            chapter_contract=str(chapter_contract_file),
             beat_sheet=str(plot_node_file),
             draft_file="",
             writing_task_json=task["task_json"],
@@ -1037,7 +503,7 @@ def continue_write(config: ConfigDocument, *, chapter_number: int | None = None,
     return ContinueWriteResult(
         chapter_number=chapter_number,
         context_file=context.context_file,
-        chapter_card=str(chapter_contract_file),
+        chapter_contract=str(chapter_contract_file),
         beat_sheet=str(plot_node_file),
         draft_file=str(draft_path),
         writing_task_json="",
@@ -1683,7 +1149,7 @@ def finalize_chapter(
                 "title": extract_title(final_text, chapter_number),
                 "path": relative_path(root, final_path),
                 "summary": "",
-                "volume": infer_volume(config, chapter_number),
+                "volume": load_chapter_planning_context(root, chapter_number).skeleton["order"],
                 "status": "final",
                 "content_character_count": current_content,
                 "display_character_count": current_display,
@@ -1695,16 +1161,14 @@ def finalize_chapter(
             },
         )
 
-        record_finalized_event_usage(config, root, chapter_number)
-        card = load_json(
-            root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
-            default={},
-        )
+        # Only final semantic realization can establish event types.
+        record_event_usage(config, chapter_number=chapter_number, event_types=[], tier="medium")
+        planning = load_chapter_planning_context(root, chapter_number)
         quality_history = record_quality_history(
             root,
             chapter_number=chapter_number,
             final_text=final_text,
-            card=card if isinstance(card, dict) else {},
+            chapter_contract=planning.contract,
             review=payoff_review if isinstance(payoff_review, dict) else None,
         )
         state = load_json(state_path, default={})
@@ -1866,7 +1330,6 @@ def write_writing_task(
     chapter_number: int,
     context_file: Path,
     chapter_contract_file: Path,
-    chapter_card_file: Path,
     beat_sheet_file: Path,
     overwrite: bool,
 ) -> dict[str, str]:
@@ -1902,15 +1365,8 @@ def write_writing_task(
     fact_inventory_file = task_dir / f"ch{chapter_number:03d}.fact_inventory.json"
     manifest_file = task_dir / f"ch{chapter_number:03d}.agent_task.json"
     recommended_draft = draft_dir / f"ch{chapter_number:03d}.{default_agent}.md"
-    card = load_json(chapter_card_file, default={})
+    planning = load_chapter_planning_context(root, chapter_number)
     beat = load_json(beat_sheet_file, default={})
-    if (
-        not isinstance(card, dict)
-        or int(card.get("chapter_number") or 0) != chapter_number
-    ):
-        raise WorkflowError(
-            "chapter writing requires the current formal chapter card for the requested chapter"
-        )
     persisted_contract = load_json(chapter_contract_file, default={})
     if not isinstance(persisted_contract, dict) or persisted_contract != {
         **chapter_contract,
@@ -1931,19 +1387,7 @@ def write_writing_task(
             for claim in (canon.get("claims") or [] if isinstance(canon, dict) else [])
             if isinstance(claim, dict) and claim.get("claim_id")
         }
-        explicit_refs = dedupe_strings(
-            [
-                str(ref)
-                for field in (
-                    "featured_character_ids",
-                    "canon_refs",
-                    "voice_refs",
-                    "world_rule_refs",
-                    "ability_refs",
-                )
-                for ref in card.get(field) or []
-            ]
-        )
+        explicit_refs = list(chapter_contract["fanfiction_claim_refs"]["all_claim_refs"])
         unknown_by_source: dict[str, list[str]] = {}
         for ref in explicit_refs:
             prefix = ref.split(":", 1)[0]
@@ -1987,7 +1431,7 @@ def write_writing_task(
     style_context = load_style_context(
         root,
         chapter_number=chapter_number,
-        card=card if isinstance(card, dict) else {},
+        expression_focus=human_intent["expression_focus"],
     )
     tcs_path = root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json"
     tcs_payload = load_json(tcs_path, default={})
@@ -1996,7 +1440,8 @@ def write_writing_task(
     character_expression_packet = build_character_expression_packet(
         root,
         chapter_number=chapter_number,
-        card=card if isinstance(card, dict) else {},
+        character_ids=planning.character_ids,
+        expression_focus=human_intent["expression_focus"],
         tcs=tcs_payload,
     )
     fanfiction_contract = load_fanfiction_writing_contract(
@@ -2004,16 +1449,15 @@ def write_writing_task(
         root,
         chapter_number=chapter_number,
         chapter_contract=chapter_contract,
-        card=card if isinstance(card, dict) else {},
         character_packet=character_expression_packet,
     )
-    graph_constraints = card.get("graph_constraints") if isinstance(card.get("graph_constraints"), dict) else {}
-    outline_anchor = card.get("outline_anchor") if isinstance(card.get("outline_anchor"), dict) else {}
-    event_recommendation = card.get("event_recommendation") if isinstance(card.get("event_recommendation"), dict) else {}
+    graph_constraints = summarize_graph_constraints(root, chapter_number)
+    outline_anchor = {"forbidden_reveals": list(chapter_contract["prohibited_drift"]), "protected_invariants": list(chapter_contract["protected_invariants"])}
+    event_recommendation = {}
     craft_brief = writer_craft_brief(
         config,
         chapter_number=chapter_number,
-        card=card if isinstance(card, dict) else {},
+        planning=planning,
         beat=beat if isinstance(beat, dict) else {},
         tcs=tcs_payload,
         style_context=style_context,
@@ -2022,7 +1466,7 @@ def write_writing_task(
         config,
         root,
         chapter_number=chapter_number,
-        card=card if isinstance(card, dict) else {},
+        planning=planning,
         beat=beat if isinstance(beat, dict) else {},
         tcs=tcs_payload,
         outline_anchor=outline_anchor,
@@ -2043,12 +1487,12 @@ def write_writing_task(
         outline_anchor=outline_anchor,
         event_recommendation=event_recommendation,
         style_context=style_context,
-        card=card if isinstance(card, dict) else {},
+        planning=planning,
         canon_research=canon_research,
     )
     core_context_coverage = build_writing_core_context_coverage(
         root,
-        card=card if isinstance(card, dict) else {},
+        planning=planning,
         tcs=tcs_payload,
         character_packet=character_expression_packet,
         constraint_packet=constraint_packet,
@@ -2061,7 +1505,6 @@ def write_writing_task(
         root,
         chapter_contract=chapter_contract,
         chapter_contract_file=chapter_contract_file,
-        chapter_card_file=chapter_card_file,
         character_packet=character_expression_packet,
         constraint_packet=constraint_packet,
         writing_brief=writing_brief,
@@ -2075,7 +1518,7 @@ def write_writing_task(
     story_brief = build_chapter_story_brief(
         root,
         chapter_number=chapter_number,
-        card=card if isinstance(card, dict) else {},
+        planning=planning,
         beat=beat if isinstance(beat, dict) else {},
         writing_brief=writing_brief,
         character_expression_packet=character_expression_packet,
@@ -2090,7 +1533,7 @@ def write_writing_task(
     source_paths = [
         context_file,
         chapter_contract_file,
-        chapter_card_file,
+        *(root / item["path"] for item in planning.source_files),
         beat_sheet_file,
         rolling_window_file,
         obligation_file,
@@ -2132,6 +1575,7 @@ def write_writing_task(
         },
         character_voice_projection=story_brief.get("character_guidance") or [],
         author_voice_projection=story_brief.get("author_voice_examples") or [],
+        author_voice_bank_sha256=source_hash(root, "10_bible/style_profiles/author_voice_edit_pairs.json"),
         structure_history_projection={
             "recent_structure_fingerprints": story_brief.get("recent_structure_fingerprints") or [],
             "repetition_risk": story_brief.get("repetition_risk") or {},
@@ -2190,7 +1634,6 @@ def write_writing_task(
             task_markdown,
             context_file,
             chapter_contract_file,
-            chapter_card_file,
             beat_sheet_file,
         ),
         "created_at": utc_now(),
@@ -2202,6 +1645,11 @@ def write_writing_task(
     payload["context_plan"]["estimated_units"] = estimate_text_units(markdown, contract.estimator)
     payload["context_plan"]["budget_profile"] = contract.profile
     payload["context_plan"]["capacity_units"] = contract.capacity_units
+    if payload["context_plan"]["estimated_units"] > contract.input_hard_units:
+        raise WorkflowError(
+            "prompt_budget_exceeded: required chapter Story Brief cannot fit the current context profile; "
+            "revise the approved chapter scope or select a larger context profile before rebuilding"
+        )
     payload["context_plan"]["budget_status"] = (
         "advisory" if payload["context_plan"]["estimated_units"] > contract.input_soft_units
         else "within_soft_target"
@@ -2340,14 +1788,12 @@ def chapter_write_context_plan(
     task_markdown: Path,
     context_file: Path,
     chapter_contract_file: Path,
-    chapter_card_file: Path,
     beat_sheet_file: Path,
 ) -> dict[str, Any]:
     policy = chapter_write_context_policy(task_json, task_markdown)
     source_reasons = {
         context_file: "bounded RAG evidence embedded into the compiled brief",
         chapter_contract_file: "verified chapter_contract_v5 embedded into the compiled brief",
-        chapter_card_file: "formal chapter plan/card embedded into the compiled brief",
         beat_sheet_file: "scene-entry method compiled into the brief; chapter contract remains authoritative",
     }
     return {
@@ -2395,7 +1841,6 @@ def chapter_write_context_plan(
             relative_path(root, chapter_contract_file): len(
                 safe_read_text(chapter_contract_file)
             ),
-            relative_path(root, chapter_card_file): len(safe_read_text(chapter_card_file)),
             relative_path(root, beat_sheet_file): len(safe_read_text(beat_sheet_file)),
         },
         "truncations": [
@@ -3258,7 +2703,7 @@ def build_writable_brief(
     root: Path,
     *,
     chapter_number: int,
-    card: dict[str, Any],
+    planning: ChapterPlanningContext,
     beat: dict[str, Any],
     tcs: dict[str, Any],
     outline_anchor: dict[str, Any],
@@ -3266,57 +2711,18 @@ def build_writable_brief(
     style_context: dict[str, Any],
     craft_brief: dict[str, Any],
 ) -> dict[str, Any]:
-    stage = chapter_stage(config, chapter_number)
-    beats = beat.get("beats") if isinstance(beat.get("beats"), list) else []
-    first_beat = next((item for item in beats if isinstance(item, dict)), {})
-    reverse_brake = build_reverse_brake_contract(config, chapter_number, outline_anchor, card=card)
-    forbidden_reveals = dedupe_strings(as_list(card.get("forbidden_reveals")) + as_list(outline_anchor.get("forbidden_reveals")) + as_list(reverse_brake.get("forbidden_reveals")))
-    resolution_markers = dedupe_strings(as_list(reverse_brake.get("do_not_resolve")) + as_list(outline_anchor.get("resolution_markers")) + as_list(card.get("resolution_markers")))
-    ending_intent = str(card.get("ending_intent") or "close on the changed condition caused by this chapter")
-    scene_entry = {
-        "mode": "in_scene",
-        "entry_point": first_beat.get("scene_goal") or first_beat.get("scene_purpose") or "open on concrete pressure, not recap",
-        "location_hint": ", ".join(str(item) for item in as_list(tcs.get("locations"))) or "use the latest TCS location if known",
-        "character_hint": ", ".join(str(item) for item in as_list(tcs.get("current_characters"))) or "use the current POV cast from TCS/graph",
-        "sensory_anchor": first_beat.get("sensory_anchor") or "one concrete sensory or body-cost detail",
-    }
+    contract = planning.contract
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "chapter_number": chapter_number,
-        "stage": stage,
-        "chapter_duty": card.get("chapter_duty") or "advance one clear longform promise",
-        "local_freedom": "Within the protected outcomes and prohibited drift, choose concrete action, friction, detail, and subtext freely.",
-        "pacing_tier": infer_task_pacing_tier(config, event_recommendation),
-        "scene_entry": scene_entry,
-        "ending_intent": ending_intent,
-        "ending_mode": str(card.get("ending_mode") or "changed_condition"),
-        "forbidden_reveals": forbidden_reveals,
-        "do_not_resolve": resolution_markers or forbidden_reveals,
-        "must_preserve_suspense": dedupe_strings(
-            as_list(reverse_brake.get("must_preserve_suspense"))
-            + as_list(outline_anchor.get("must_preserve_suspense"))
-        ),
-        "this_chapter_must_not_solve": as_list(reverse_brake.get("this_chapter_must_not_solve")),
-        "must_keep_suspense": as_list(reverse_brake.get("must_keep_suspense")),
-        "reverse_brake": reverse_brake,
-        "quality_contract": compact_effective_quality_contract(
-            card.get("effective_quality_contract")
-            if isinstance(card.get("effective_quality_contract"), dict)
-            else compile_effective_quality_contract(config, chapter_number=chapter_number)
-        ),
-        "beat_expansion_policy": {
-            "expand_by_scene_material": True,
-            "minimum_function_per_beat": "each beat must change pressure, knowledge, relationship, or risk",
-            "no_padding": "do not add static exposition only to reach word count",
-            "style_source": style_context.get("source", ""),
-            "scene_contract": {
-                "opposing_wants": as_list(card.get("opposing_wants")),
-                "hidden_agenda": as_list(card.get("hidden_agenda")),
-                "irreversible_choice": str(card.get("irreversible_choice") or ""),
-                "emotional_aftereffect": str(card.get("emotional_aftereffect") or ""),
-                "summary_scene_policy": str(card.get("summary_scene_policy") or ""),
-            },
-        },
+        "stage": contract["topology"],
+        "chapter_duty": contract["chapter_duty"],
+        "local_freedom": "Within protected outcomes and prohibited drift, choose concrete action, friction, detail and subtext freely.",
+        "scene_entry": {"approved_nodes": [node.get("action_or_exchange", "") for node in planning.nodes]},
+        "ending_intent": contract["observable_change"],
+        "forbidden_reveals": list(contract["prohibited_drift"]),
+        "do_not_resolve": list(contract["protected_invariants"]),
+        "quality_contract": compact_effective_quality_contract(compile_effective_quality_contract(config, chapter_number=chapter_number)),
         "next_safe_action": "write only the Agent draft, then run draft submit",
     }
 
@@ -3335,17 +2741,17 @@ def build_constraint_packet(
     outline_anchor: dict[str, Any],
     event_recommendation: dict[str, Any],
     style_context: dict[str, Any],
-    card: dict[str, Any],
+    planning: ChapterPlanningContext,
     canon_research: list[dict[str, str]],
 ) -> dict[str, Any]:
     required_abilities = select_required_abilities(
         root,
-        card=card,
+        planning=planning,
         tcs_payload=tcs_payload,
         graph_constraints=graph_constraints,
     )
     active_foreshadows = dedupe_strings(
-        as_list(card.get("promise_refs")) + as_list(tcs_payload.get("open_foreshadows"))
+        as_list(tcs_payload.get("open_foreshadows"))
     )
     return {
         "rag": {
@@ -3372,14 +2778,8 @@ def build_constraint_packet(
         "required_abilities": required_abilities,
         "active_foreshadows": active_foreshadows,
         "outline_anchor": outline_anchor,
-        "reverse_brake": card.get("reverse_brake") if isinstance(card.get("reverse_brake"), dict) else {
-            "forbidden_reveals": as_list(card.get("forbidden_reveals")) + as_list(outline_anchor.get("forbidden_reveals")),
-            "do_not_resolve": as_list(card.get("resolution_markers")) + as_list(outline_anchor.get("resolution_markers")),
-            "must_preserve_suspense": as_list(card.get("must_preserve_suspense")) + as_list(outline_anchor.get("must_preserve_suspense")),
-            "allowed_reveal_level": outline_anchor.get("allowed_reveal_level") or card.get("allowed_reveal_level") or "hint",
-            "requires_tail_suspense": bool(outline_anchor.get("requires_tail_suspense") or card.get("requires_tail_suspense")),
-            "instruction": "do not resolve core conflicts or reveal forbidden secrets before closure is explicitly allowed",
-        },
+        "protected_invariants": list(planning.contract["protected_invariants"]),
+        "prohibited_drift": list(planning.contract["prohibited_drift"]),
         "event_matrix": {
             "source": event_recommendation.get("source_file", "30_state/event_matrix.json"),
             "recommended": as_list(event_recommendation.get("recommended")),
@@ -3389,13 +2789,13 @@ def build_constraint_packet(
             "recent_summary": as_list(event_recommendation.get("recent_summary")),
             "fast_quota": event_recommendation.get("fast_quota") if isinstance(event_recommendation.get("fast_quota"), dict) else {},
             "event_types": as_list(event_recommendation.get("event_types")),
-            "instruction": "prefer recommended event types and avoid blocked cooldown types unless the chapter card explicitly overrides them",
+            "instruction": "prefer recommended event types and avoid blocked cooldown types subject to the approved chapter contract",
         },
         "style_profile": style_context,
         "research_canon": canon_research,
         "forbidden": {
-            "general": as_list(card.get("forbidden")),
-            "reveals": as_list(card.get("forbidden_reveals")),
+            "general": list(planning.contract["prohibited_drift"]),
+            "reveals": list(planning.contract["protected_invariants"]),
         },
     }
 
@@ -3403,7 +2803,7 @@ def build_constraint_packet(
 def select_required_abilities(
     root: Path,
     *,
-    card: dict[str, Any],
+    planning: ChapterPlanningContext,
     tcs_payload: dict[str, Any],
     graph_constraints: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -3412,17 +2812,17 @@ def select_required_abilities(
     abilities = load_json(root / "10_bible" / "abilities.json", default=[])
     records = [item for item in abilities if isinstance(item, dict)] if isinstance(abilities, list) else []
     by_id = {str(item.get("id")): item for item in records if str(item.get("id") or "").strip()}
-    explicit = dedupe_strings(as_list(card.get("ability_refs")))
+    explicit = dedupe_strings([ref for obligation in planning.obligations for ref in obligation.get("dependency_refs") or [] if str(ref).startswith("ability:")])
     unresolved = [item for item in explicit if item not in by_id]
     if unresolved:
         raise WorkflowError(
             "Writing context references unknown abilities: "
             + ", ".join(unresolved)
-            + "; repair the chapter card or ability Bible before regenerating."
+            + "; repair the approved obligation or ability Bible before regenerating."
         )
     searchable = json.dumps(
         {
-            "card": card,
+            "nodes": planning.nodes, "obligations": planning.obligations,
             "active_constraints": tcs_payload.get("active_constraints") or [],
             "graph_constraints": graph_constraints,
         },
@@ -3455,7 +2855,7 @@ def select_required_abilities(
 def build_writing_core_context_coverage(
     root: Path,
     *,
-    card: dict[str, Any],
+    planning: ChapterPlanningContext,
     tcs: dict[str, Any],
     character_packet: dict[str, Any],
     constraint_packet: dict[str, Any],
@@ -3463,8 +2863,7 @@ def build_writing_core_context_coverage(
     """Prove that core character, relationship, ability, and foreshadow facts were not cut."""
 
     required_characters = dedupe_strings(
-        [card.get("pov_character_id")]
-        + as_list(card.get("featured_character_ids"))
+        list(planning.character_ids) + as_list(character_packet.get("pov_character_ids"))
     )
     represented_characters = dedupe_strings(
         as_list(character_packet.get("featured_character_ids"))
@@ -3498,7 +2897,7 @@ def build_writing_core_context_coverage(
     ]
     active_foreshadows = dedupe_strings(constraint_packet.get("active_foreshadows") or [])
     declared_foreshadows = dedupe_strings(
-        as_list(card.get("promise_refs")) + as_list(tcs.get("open_foreshadows"))
+        as_list(tcs.get("open_foreshadows"))
     )
     missing_foreshadows = sorted(set(declared_foreshadows) - set(active_foreshadows))
     if missing_characters or missing_relationships or missing_foreshadows:
@@ -3512,13 +2911,13 @@ def build_writing_core_context_coverage(
         raise WorkflowError(
             "Writing core context coverage is incomplete ("
             + "; ".join(details)
-            + "); revise the chapter card/context before regenerating."
+            + "); revise the current planning/context before regenerating."
         )
     source_paths = (
         root / "10_bible" / "characters.json",
         root / "10_bible" / "relationships.json",
         root / "10_bible" / "abilities.json",
-        root / "30_state" / "tcs" / f"ch{int(card.get('chapter_number') or 0):03d}.json",
+        root / "30_state" / "tcs" / f"ch{planning.chapter_number:03d}.json",
     )
     return {
         "schema": "writing_core_context_coverage_v1",
@@ -3547,7 +2946,6 @@ def build_chapter_fact_inventory(
     *,
     chapter_contract: dict[str, Any],
     chapter_contract_file: Path,
-    chapter_card_file: Path,
     character_packet: dict[str, Any],
     constraint_packet: dict[str, Any],
     writing_brief: dict[str, Any],
@@ -3596,8 +2994,6 @@ def build_chapter_fact_inventory(
             }
         )
 
-    card_relative = relative_path(root, chapter_card_file)
-    card_hash = sha256_bytes(chapter_card_file.read_bytes())
     contract_relative = relative_path(root, chapter_contract_file)
     contract_hash = sha256_bytes(chapter_contract_file.read_bytes())
     factual_contract = {
@@ -3624,8 +3020,8 @@ def build_chapter_fact_inventory(
             "do_not_resolve": writing_brief.get("do_not_resolve"),
             "must_preserve_suspense": writing_brief.get("must_preserve_suspense"),
         },
-        source=card_relative,
-        source_hash=card_hash,
+        source=contract_relative,
+        source_hash=contract_hash,
         priority="required",
         reason="current story phase and reveal boundary",
     )
@@ -3633,7 +3029,7 @@ def build_chapter_fact_inventory(
         "cast.performance",
         "cast",
         {
-            "pov_character_id": character_packet.get("pov_character_id"),
+            "pov_character_ids": character_packet.get("pov_character_ids"),
             "featured_character_ids": character_packet.get("featured_character_ids"),
             "narrative_expression_profile": character_packet.get("narrative_expression_profile"),
             "contracts": character_packet.get("contracts"),
@@ -3690,6 +3086,7 @@ def build_chapter_fact_inventory(
                     "relationship_stage",
                     "event_dispositions",
                     "ability_and_crossover_rules",
+                    "cross_volume_consequences",
                     "canon_character_agency",
                     "original_contribution",
                     "protected_reveals",
@@ -3931,7 +3328,7 @@ def build_chapter_story_brief(
     root: Path,
     *,
     chapter_number: int,
-    card: dict[str, Any],
+    planning: ChapterPlanningContext,
     beat: dict[str, Any],
     writing_brief: dict[str, Any],
     character_expression_packet: dict[str, Any],
@@ -3952,16 +3349,16 @@ def build_chapter_story_brief(
             continue
         decision = scene.get("human_decision") if isinstance(scene.get("human_decision"), dict) else {}
         changes = author_fact_strings(scene.get("expected_changes"))
-        choice = card.get("choice") if isinstance(card.get("choice"), dict) else {}
-        cost = card.get("cost") if isinstance(card.get("cost"), dict) else {}
+        choice = chapter_contract["choice"]
+        cost = chapter_contract["cost"]
         scenes.append(
             {
                 "order": index,
                 "carrier": str(scene.get("dramatic_function") or "剧情推进"),
                 "action": str(scene.get("action_or_exchange") or ""),
                 "reaction": "；".join(changes) or "让这一行动产生可感知的状态变化。",
-                "choice": str(choice.get("description") or "由人物在当前压力下作出真实选择。"),
-                "cost": str(cost.get("description") or "代价依本章拓扑落地。"),
+                "choice": author_applicability_text(choice),
+                "cost": author_applicability_text(cost),
                 "exit_state": "；".join(changes),
                 "approved_adjustment": str(decision.get("adjustment") or ""),
             }
@@ -3984,7 +3381,7 @@ def build_chapter_story_brief(
         if isinstance(item, dict)
     ]
     carriers = [str(item.get("primary_scene_carrier") or "") for item in recent_structure_fingerprints]
-    primary_carrier = str(scenes[0].get("carrier") if scenes else card.get("topology") or "")
+    primary_carrier = str(scenes[0].get("carrier") if scenes else chapter_contract.get("topology") or "")
     repetition_count = carriers[-4:].count(primary_carrier) + (1 if primary_carrier else 0)
     promise_gains = [
         str(item.get("intended_reader_gain") or "")
@@ -4089,7 +3486,7 @@ def author_character_guidance(packet: dict[str, Any]) -> list[dict[str, Any]]:
         }
         if item["name"]:
             guidance.append(item)
-    return guidance[:6]
+    return guidance
 
 
 def author_voice_guidance(style_context: dict[str, Any]) -> list[dict[str, str]]:
@@ -4301,7 +3698,8 @@ def render_chapter_story_brief_markdown(payload: dict[str, Any]) -> str:
                 + readable(fanfiction.get("ability_and_crossover_rules")),
                 "- 原著人物独立目标与可拒绝范围："
                 + readable(fanfiction.get("canon_character_agency")),
-                "- 本章原创贡献：" + readable(fanfiction.get("original_contribution")),
+                "- 跨卷后果与当前事实：" + readable(fanfiction.get("cross_volume_consequences")),
+                "- 本章新增阅读价值：" + readable(fanfiction.get("original_contribution")),
                 "- 不能提前揭露：" + readable(fanfiction.get("protected_reveals")),
                 "- 可自由发挥范围：" + str(fanfiction.get("free_play") or ""),
                 "- 章末应形成的新状态：" + str(fanfiction.get("ending_state") or ""),
@@ -4426,7 +3824,6 @@ def load_fanfiction_writing_contract(
     *,
     chapter_number: int,
     chapter_contract: dict[str, Any],
-    card: dict[str, Any] | None = None,
     character_packet: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if str(config.data.get("creation", {}).get("mode") or "original") != "fanfiction":
@@ -4436,7 +3833,6 @@ def load_fanfiction_writing_contract(
             config,
             chapter_number=chapter_number,
             chapter_contract=chapter_contract,
-            chapter_card=card if isinstance(card, dict) else {},
             character_packet=(
                 character_packet if isinstance(character_packet, dict) else {}
             ),
@@ -4468,6 +3864,7 @@ def load_fanfiction_writing_contract(
         "event_dispositions": projection.get("event_dispositions") or [],
         "ability_and_crossover_rules": projection.get("ability_and_crossover_rules") or [],
         "canon_character_agency": projection.get("canon_character_agency") or [],
+        "cross_volume_consequences": projection.get("cross_volume_consequences") or [],
         "original_contribution": projection.get("original_contribution") or [],
         "protected_reveals": projection.get("protected_reveals") or [],
         "source_identity_notes": projection.get("source_identity_notes") or [],
@@ -4531,7 +3928,7 @@ def load_style_context(
     root: Path,
     *,
     chapter_number: int = 0,
-    card: dict[str, Any] | None = None,
+    expression_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     context: dict[str, Any] = {}
     active_profile = root / "10_bible" / "style_profiles" / "current_style_profile.json"
@@ -4577,12 +3974,11 @@ def load_style_context(
     if chapter_number > 1:
         from longform_engine.author_voice import relevant_author_voice_examples
 
-        card = card if isinstance(card, dict) else {}
-        scene_carriers = card.get("scene_carriers") if isinstance(card.get("scene_carriers"), list) else []
+        focus = expression_focus or {"pov_character_ids": [], "scene_kind": ""}
         context["approved_human_edit_examples"] = relevant_author_voice_examples(
             root,
-            pov_character_id=str(card.get("pov_character_id") or card.get("pov") or ""),
-            scene_kind=str(card.get("primary_scene_carrier") or (scene_carriers[0] if scene_carriers else "")),
+            pov_character_ids=focus["pov_character_ids"],
+            scene_kind=focus["scene_kind"],
             limit=2,
         )
     else:
@@ -4632,27 +4028,13 @@ def verify_stale_indexes(root: Path, chapter_number: int) -> None:
         raise WorkflowError(f"Stale outline/RAG artifacts block continuation from ch{from_chapter:03d}; run {next_command}.")
 
 
-def record_finalized_event_usage(config: ConfigDocument, root: Path, chapter_number: int) -> None:
-    card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
-    event_recommendation = card.get("event_recommendation") if isinstance(card, dict) else {}
-    event_types = event_recommendation.get("recommended", []) if isinstance(event_recommendation, dict) else []
-    gate = load_json(root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json", default={})
-    tier = event_tier_for_types(tuple(event_types[:2]), "medium")
-    if isinstance(gate, dict):
-        for warning in gate.get("warnings", []):
-            if isinstance(warning, str) and "fast" in warning.lower():
-                tier = "fast"
-                break
-    record_event_usage(config, chapter_number=chapter_number, event_types=event_types[:2], tier=tier)
-
-
 def write_draft(config: ConfigDocument, *, chapter_number: int, overwrite: bool) -> Path:
     root = resolve_project_root(config)
     draft_path = manuscript_chapter_path(root, chapter_number, lane="draft")
     if draft_path.exists() and not overwrite:
         return draft_path
-    card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
-    title = card.get("title") or f"第{chapter_number}章 待定章节"
+    load_chapter_planning_context(root, chapter_number)
+    title = f"第{chapter_number}章 待定章节"
     text = "\n".join(
         [
             f"# {title}",
@@ -4740,178 +4122,6 @@ def resolve_confirmations(config: ConfigDocument, provided: dict[str, Any]) -> d
     if not resolved["core_forbidden_zone"]:
         raise WorkflowError("open-book missing required confirmations: core_forbidden_zone")
     return resolved
-
-
-def infer_volume(config: ConfigDocument, chapter_number: int) -> int:
-    root = resolve_project_root(config)
-    plan = load_json(root / "20_outline" / "chapter_plan.json", default=[])
-    row = next(
-        (
-            item for item in plan
-            if isinstance(plan, list) and isinstance(item, dict)
-            and int(item.get("chapter_number") or 0) == chapter_number
-        ),
-        {},
-    )
-    volume_id = str(row.get("volume_id") or "") if isinstance(row, dict) else ""
-    volumes = load_json(root / "20_outline" / "volumes.json", default=[])
-    for index, volume in enumerate(volumes if isinstance(volumes, list) else [], start=1):
-        if isinstance(volume, dict) and str(volume.get("id") or "") == volume_id:
-            return int(volume.get("number") or index)
-    length = config.data["length"]
-    per_volume = max(
-        1,
-        round(int(length["volume"]["target_characters"]) / int(length["chapter"]["target_characters"])),
-    )
-    return ((chapter_number - 1) // per_volume) + 1
-
-
-def chapter_book_goal(root: Path) -> str:
-    brief = load_json(root / "10_bible" / "creative_brief.json", default={})
-    if isinstance(brief, dict):
-        decisions = brief.get("design_decisions")
-        if isinstance(decisions, dict):
-            for key in ("long_conflict", "core_hook", "ending_boundary"):
-                value = str(decisions.get(key) or "").strip()
-                if value:
-                    return value
-        reader_contract = brief.get("reader_contract")
-        if isinstance(reader_contract, dict):
-            value = str(reader_contract.get("core_promise") or "").strip()
-            if value:
-                return value
-    return "推进已批准的全书核心冲突，并保护结局边界。"
-
-
-def chapter_volume_goal(root: Path, volume_number: int) -> str:
-    volumes = normalize_records(load_json(root / "20_outline" / "volumes.json", default=[]))
-    for index, volume in enumerate(volumes, start=1):
-        if not isinstance(volume, dict):
-            continue
-        number = int(volume.get("number") or index)
-        if number != volume_number:
-            continue
-        for key in ("goal", "promise", "conflict_escalation", "title"):
-            value = str(volume.get(key) or "").strip()
-            if value:
-                return value
-    return f"推进第 {volume_number} 卷已批准的冲突与承诺。"
-
-
-def chapter_protagonist_goal(root: Path, protagonist_id: str) -> str:
-    characters = normalize_records(load_json(root / "10_bible" / "characters.json", default=[]))
-    for character in characters:
-        if not isinstance(character, dict):
-            continue
-        if protagonist_id and str(character.get("id") or "") != protagonist_id:
-            continue
-        value = str(character.get("goal") or character.get("desire") or "").strip()
-        if value:
-            return value
-    return "在本章压力下作出会改变后续条件的主动选择。"
-
-
-def write_chapter_card_artifacts(root: Path, card: dict[str, Any]) -> None:
-    """Write the synchronized JSON and Markdown views of one CLI-owned chapter card."""
-
-    chapter_number = int(card["chapter_number"])
-    direction = card.get("direction_selection")
-    if isinstance(direction, dict) and direction.get("status") == "applied":
-        card.pop("chapter_contract_status", None)
-    else:
-        card.pop("chapter_contract_hash", None)
-        card["chapter_contract_status"] = "pending_direction"
-    card_dir = root / "20_outline" / "chapter_cards"
-    write_json(card_dir / f"ch{chapter_number:03d}.json", card)
-    anchor = card.get("outline_anchor") if isinstance(card.get("outline_anchor"), dict) else {}
-    event = card.get("event_recommendation") if isinstance(card.get("event_recommendation"), dict) else {}
-    reverse = card.get("reverse_brake") if isinstance(card.get("reverse_brake"), dict) else {}
-    direction = card.get("direction_selection") if isinstance(card.get("direction_selection"), dict) else {}
-    atomic_write_text(
-        card_dir / f"ch{chapter_number:03d}.md",
-        "\n".join(
-            [
-                f"# {card.get('title') or f'第{chapter_number}章'}",
-                "",
-                f"- Chapter: {chapter_number}",
-                f"- Volume: {card.get('volume')}",
-                f"- Duty: {card.get('chapter_duty')}",
-                f"- Conflict: {card.get('conflict')}",
-                f"- Chapter turn: {card.get('chapter_turn')}",
-                f"- Ending intent: {card.get('ending_intent')}",
-                f"- Outline anchor: {json.dumps(anchor, ensure_ascii=False)}",
-                f"- Event recommendation: {', '.join(as_list(event.get('recommended'))) or 'none'}",
-                f"- Event blocked: {', '.join(as_list(event.get('blocked'))) or 'none'}",
-                f"- Event constraints: {', '.join(as_list(event.get('constraints'))) or 'none'}",
-                f"- Soft event required: {bool(event.get('soft_event_required'))}",
-                f"- Reverse brake allowed reveal level: {reverse.get('allowed_reveal_level', '')}",
-                f"- Do not resolve: {', '.join(as_list(reverse.get('do_not_resolve'))) or 'none'}",
-                f"- Must preserve suspense: {', '.join(as_list(reverse.get('must_preserve_suspense'))) or 'none'}",
-                f"- Reader gain: {card.get('reader_gain')}",
-                f"- Cost: {card.get('cost')}",
-                f"- Platform promise: {card.get('platform_promise')}",
-                f"- Topology: {card.get('topology_id')}",
-                f"- Ending mode: {card.get('ending_mode') or ''}",
-                f"- Direction selection: {direction.get('direction_id') or 'not required'}",
-                f"- POV character: {card.get('pov_character_id') or 'not declared'}",
-                f"- Featured characters: {', '.join(as_list(card.get('featured_character_ids'))) or 'none declared'}",
-                f"- Characterization focus: {', '.join(as_list(card.get('characterization_focus'))) or 'derive from scene pressure'}",
-                f"- Opposing wants: {', '.join(as_list(card.get('opposing_wants'))) or 'not declared'}",
-                f"- Hidden agenda: {', '.join(as_list(card.get('hidden_agenda'))) or 'not declared'}",
-                f"- Relationship move: {card.get('relationship_move') or 'preserve current stage'}",
-                f"- Irreversible choice: {card.get('irreversible_choice') or 'not declared'}",
-                f"- Emotional aftereffect: {card.get('emotional_aftereffect') or 'not declared'}",
-                f"- Summary/scene policy: {card.get('summary_scene_policy') or ''}",
-                f"- Semantic review required: {bool(card.get('requires_semantic_review'))}",
-                "",
-                "## Forbidden",
-                "",
-                *[f"- {item}" for item in as_list(card.get("forbidden"))],
-                "",
-            ]
-        ),
-    )
-
-
-def upsert_chapter_plan(root: Path, card: dict[str, Any]) -> None:
-    path = root / "20_outline" / "chapter_plan.json"
-    payload = load_json(path, default=[])
-    if not isinstance(payload, list):
-        payload = []
-    updated = False
-    for index, item in enumerate(payload):
-        if isinstance(item, dict) and item.get("chapter_number") == card["chapter_number"]:
-            payload[index] = {
-                **item,
-                "chapter_number": card["chapter_number"],
-                "title": card["title"],
-                "status": card["status"],
-                "chapter_duty": card["chapter_duty"],
-                "conflict": card.get("conflict") or "",
-                "chapter_turn": card.get("chapter_turn") or "",
-                "ending_intent": card.get("ending_intent") or "",
-                "reader_gain": card.get("reader_gain") or "",
-                "cost": card.get("cost") or "",
-                "ending_mode": card.get("ending_mode") or "",
-            }
-            updated = True
-            break
-    if not updated:
-        payload.append(
-            {
-                "chapter_number": card["chapter_number"],
-                "title": card["title"],
-                "status": card["status"],
-                "chapter_duty": card["chapter_duty"],
-                "conflict": card.get("conflict") or "",
-                "chapter_turn": card.get("chapter_turn") or "",
-                "ending_intent": card.get("ending_intent") or "",
-                "reader_gain": card.get("reader_gain") or "",
-                "cost": card.get("cost") or "",
-            }
-        )
-    payload.sort(key=lambda item: item.get("chapter_number", 0) if isinstance(item, dict) else 0)
-    write_json(path, payload)
 
 
 def load_json(path: Path, *, default: Any) -> Any:

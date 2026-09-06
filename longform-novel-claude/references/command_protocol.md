@@ -2,7 +2,7 @@
 
 中文斜杠指令只用于 Codex App、Codex CLI 和 ClaudeCode 的交互层。所有正式执行必须落到 `longform-engine ...` CLI；Agent 只能写入 `50_workbench/agent_drafts/`，不能直接写 final、RAG、story graph、memory、TCS 或 SQLite。
 
-当前运行时合同固定为 34 个角色、45 类任务、5 类 Agent 输出协议和单进程顺序执行。
+当前运行时合同固定为 32 个角色、42 类任务、5 类 Agent 输出协议和单进程顺序执行。
 
 ## 使用规则
 
@@ -40,9 +40,7 @@
 | `/工程推进` | `longform-engine production loop project.yaml --no-apply` | `project.yaml` | 确定性流程产物；不自动 apply/finalize | 推进确定性步骤，遇到 Agent 输出、人工确认或 canonical apply/finalize 时暂停。 |
 | `/工程创意工单` | `longform-engine intelligence task project.yaml --task-type book_ideation` | `project.yaml` | workbench 候选 | 每轮只处理一个创意维度，Agent 给 2-3 个带取舍的选项；必须记录用户明确选择。 |
 | `/工程因果模拟` | `longform-engine intelligence task project.yaml --task-type arc_simulation --from-chapter A --to-chapter B` | 滚动窗口、当前故事引擎/承诺/角色/宏观纲要 basis | 人工批准的规划约束 | 为窗口逐章声明人物目标、场外行动、碰撞和因果义务；basis 变化后必须重做。 |
-| `/工程滚动扩纲` | `longform-engine intelligence task project.yaml --task-type outline_extension --from-chapter A --to-chapter B` | 已批准且完整覆盖同一范围的因果模拟 | workbench 候选 | 直接 CLI 与 `production next` 都会拒绝缺失、过期或不覆盖的模拟；扩纲上下文实际携带其因果义务。 |
-| `/工程章节改向` | `longform-engine intelligence task project.yaml --task-type chapter_direction --chapter N` | 人工深审已明确 redirect 的章节 | workbench 候选 | 只用于 redirect，生成 2–3 个带稳定 option ID、因果不同且有代价的改向方案；普通新章节不经过此任务。 |
-| `/工程选择改向` | `longform-engine intelligence direction-select project.yaml --chapter N --option OPTION_ID` | redirect 章节、option ID；可选人工调整 | `50_workbench/intelligence_selections/` | 写入绑定 Markdown hash 的 `chapter_direction_selection_v1`，供改向后的规划编译使用。 |
+| `/工程章节改向` | `longform-engine production next project.yaml` | 已人工批准 redirect 的当前章节 | 按当前规划任务创建候选 | 重建 firm 规划、独立语义审查与逐节点人工决定；旧章节合同、意图和工作单失效后重新批准。 |
 | `/工程章节意图任务` | `longform-engine chapter human-intent-task project.yaml --chapter N` | `--chapter N` | `50_workbench/human_chapter_intents/` | 生成空白表单；前端和 CLI 不代填故事意图、关键选择、情绪真相、POV 声音或保护项。 |
 | `/工程章节意图应用` | `longform-engine chapter human-intent-validate ...` / `human-intent-apply ... --approved-by human` | 当前表单与人工确认 | `20_outline/chapter_intents/` | 事务绑定当前 firm 合同和 Plot Node 审批；缺失或漂移时禁止写作。 |
 | `/工程共编会话` | `longform-engine chapter coedit-start project.yaml --chapter N` | 当前候选 | `50_workbench/chapter_coedit/` | non-canonical 会话；advisor 每轮给 2–3 个方案及影响。人工选择后才能创建完整改写任务。 |
@@ -101,15 +99,15 @@
 | `/工程同人Canon任务` | `longform-engine fanfiction canon-task project.yaml` | 每部来源 identity/design_core 门禁通过 | `50_workbench/intelligence_tasks/`、候选路径 | 自动声明固定资料输入，生成项目原著基线 `semantic_document_v1` 工作单。 |
 | `/工程同人Canon校验` | `longform-engine fanfiction canon-validate project.yaml --file ...` | `--file` | 校验报告 | 校验来源 hash/span、命名空间和原文复现，不写 Bible。 |
 | `/工程同人Canon应用` | `longform-engine fanfiction canon-apply project.yaml --file ... --approved-by human` | `--file`、人工确认 | `10_bible/fanfiction/source_canon.json` | 事务写入转述 canon；不保存连续来源正文。 |
-| `/工程同人故事发动机` | `longform-engine fanfiction story-engine-task project.yaml` / `story-engine-validate` / `story-engine-apply --approved-by human` | 已批准项目原著基线 | `10_bible/fanfiction/story_engine.json` | 建立唯一初始变量、独立长期目标、持续阻力、原著人物自主性和原作事件结束后的故事来源；缺项时不能设计正式路线。 |
-| `/工程同人设计任务` | `longform-engine fanfiction design-task project.yaml` | `project.yaml` | `50_workbench/intelligence_tasks/`、候选路径 | 生成声音合同、分歧点、原创主线、蝴蝶效应和 crossover 规则工作单。 |
+| `/工程同人故事发动机` | `longform-engine fanfiction story-engine-task project.yaml` / `story-engine-validate` / `story-engine-apply --approved-by human` | 已批准项目原著基线 | `10_bible/fanfiction/story_engine.json` | 按六种连续性模式和三种叙事责任路线建立人物自主性、新增阅读价值和持续叙事动力；必需主张由当前创作合同编译。 |
+| `/工程同人设计任务` | `longform-engine fanfiction design-task project.yaml` | `project.yaml` | `50_workbench/intelligence_tasks/`、候选路径 | 生成适用于当前连续性模式的路线、事件处置、人物声音和跨界规则工作单。 |
 | `/工程同人设计校验` | `longform-engine fanfiction design-validate project.yaml --file ...` | `--file` | 校验报告 | 校验角色引用、分歧因果、原创贡献和跨来源规则。 |
 | `/工程同人路线复核` | `longform-engine fanfiction design-review-task project.yaml --file ROUTE` / `design-review-validate` | 已校验路线候选；隔离审阅会话 | 非 Canon `同人路线独立复核` | 双轴复核基线/分歧因果、未来知识退化、人物职责、原著事件命运、长期发动机与跨界规则；不能自批或改路线。 |
 | `/工程同人设计应用` | `longform-engine fanfiction design-apply project.yaml --file ROUTE --review REVIEW --approved-by human` | 当前路线、当前独立复核、人工确认 | `10_bible/fanfiction/` 与受控 Bible | 只有复核 verdict=pass 且 Canon/发动机/路线 hash 当前时事务应用，不修改来源文件。 |
 | `/查看原著事件命运` | `longform-engine fanfiction event-disposition-status project.yaml --json` | `project.yaml` | 只读 | 显示保留、提前、延迟、结果改变、换人承担、取消、转化或待决定，以及稳定依赖。 |
 | `/查看人物知识边界` | `longform-engine fanfiction context-status project.yaml --chapter N --json` | 当前章 | 只读 | 核对资料范围、项目截止点、切入点、人物知识与未来知识可靠性是否进入当前语义投影。 |
 | `/查看跨界规则` | `longform-engine fanfiction context-status project.yaml --chapter N --json` | crossover 当前章 | 只读 | 显示当前章实际纳入的宿主世界适配器、跨界宪法、能力条件/代价/反制和冲突诊断。 |
-| `/查看同人章节上下文` | `longform-engine fanfiction context-status project.yaml --chapter N --json` | 当前章 | 只读 | 检查 `fanfiction_context_bundle_v2` 的显式必要项、依赖闭包、结构化分区、命名冲突、预算、省略和 stale；作者稿不会暴露 claim ID、hash 或检索分数。 |
+| `/查看同人章节上下文` | `longform-engine fanfiction context-status project.yaml --chapter N --json` | 当前章 | 只读 | 检查 `fanfiction_context_bundle_v3` 的显式必要项、依赖闭包、结构化分区、命名冲突、预算、省略和 stale；作者稿不会暴露 claim ID、hash 或检索分数。 |
 | `/工程同人状态` | `longform-engine fanfiction status project.yaml` | `project.yaml` | 只读 | 查看 canon/design 状态与非阻断权利提示。 |
 | `/查看原著资料升级` | `longform-engine fanfiction upgrade-status project.yaml --json` | 固定项目绑定 | 只读 | 比较全局新版本，但不改变项目。 |
 | `/申请原著资料升级` | `longform-engine fanfiction upgrade-propose project.yaml --source-id SOURCE --target-item-id ITEM --created-by human` | 人工选择升级 | `资料升级提案/` | 用稳定事实 ID 和显式引用生成影响，不应用。 |
@@ -132,9 +130,8 @@
 
 | 中文指令 | CLI 命令 | 必填参数 | 写入边界 | 说明 |
 | --- | --- | --- | --- | --- |
-| `/工程章节卡` | `longform-engine plan-chapter project.yaml --chapter N` | `--chapter N` | `20_outline/chapter_cards/` | 生成或刷新章节卡。 |
 | `/工程分镜` | `longform-engine beat project.yaml --chapter N` | `--chapter N` | `50_workbench/beats/` | 生成 Beat Sheet。 |
-| `/工程续章` | `longform-engine continue-write project.yaml --chapter N` | `--chapter N` | `50_workbench/writing_tasks/` | 从 firm `chapter_contract_v5` 生成 `chapter_story_brief_basis_v3`、`chapter_story_brief_v5` 与 `chapter_writing_task_v7`；可读拓扑、义务、批准节点、人物选择和读者价值进入作者 Markdown，内部 ID、hash 与原始控制包不进入。 |
+| `/工程续章` | `longform-engine continue-write project.yaml --chapter N` | `--chapter N` | `50_workbench/writing_tasks/` | 从 firm `chapter_contract_v5` 生成 `chapter_story_brief_basis_v4`、`chapter_story_brief_v5` 与 `chapter_writing_task_v8`；可读拓扑、义务、批准节点、人物选择和读者价值进入作者 Markdown，内部 ID、hash 与原始控制包不进入。 |
 | `/工程批量续章` | `longform-engine batch-write project.yaml --chapters N --stop-on-gate-failure` | `--chapters N` | `50_workbench/writing_tasks/`、run reports | 安全调度多章任务，遇到门禁失败停止。 |
 
 ## 草稿与门禁
@@ -230,7 +227,7 @@
 | `/工程重写分支` | `longform-engine revision branch project.yaml --chapter N` | `--chapter N` | `40_manuscript/rewrite/` | 创建章节重写候选分支。 |
 | `/工程回滚` | `longform-engine revision rollback project.yaml --to-chapter N` | `--to-chapter N` | `40_manuscript/detached/`、stale 标记 | 回滚到指定章节并保留脱离稿。 |
 | `/工程快照` | `longform-engine revision snapshot project.yaml --label label` | `--label` | `70_runtime/snapshots/` | 创建轻量项目快照。 |
-| `/工程改纲` | `longform-engine intelligence task project.yaml --task-type outline_revision --from-chapter N --to-chapter M` | 起止章节、人工批准的改纲文档及 compile delta；延期时在 `replacements.reader_promise_deferrals` 给出 promise ID、严格后移的最迟章与理由 | 通过 transaction v3 更新纲要/承诺，截断受影响编辑模式，并同步失效因果模拟、章节卡、作者工作单、Agent 任务与 SQLite 投影 | 已定稿章节必须先 rollback；承诺延期只接受人工批准且必须延长原边界；候选校验、compile/apply 均完成后才生效。 |
+| `/工程改纲` | `longform-engine planning task project.yaml` | 当前规划范围与人工提出的变更 | workbench 规划候选，经独立审查和人工批准后事务 apply | 未来变化走当前规划协议；已定稿范围使用历史修订分支及原有批准流程。 |
 
 ## 创作与审稿
 
@@ -297,3 +294,8 @@ Editorial review contract:
 7. `/工程定稿` -> `chapter finalize --approved-by human` 写入正式正文、收益和结构观察；失败则修章、改向、改纲或回滚。
 8. `/工程章节语义任务` -> Agent 对 final 做一次证据化统一抽取，CLI validate 后由用户显式 `/工程章节语义应用`。
 9. `/工程关闭章节` -> 验证图谱、角色当前状态、伏笔、TCS、派生索引、批准事件终态和承诺精确 span 后关闭并推进滚动窗口；关闭前不得续写下一章。
+
+## 本地质量评测
+
+质量评测使用 `literary create/status/reviewer-add/review/save/submit/import-review/report/resolve/export-pack/effort-record`。
+样本来自已关闭章节，控制面核对正文、原著基线和审稿证据；任何绑定变化使结果 stale。网页提供相同的创建、独立评分、分歧处理和报告流程。三人独立人类评审及真实 3／10／20 章试写不能由测试夹具或自动批准代替。未完成时明确显示未验证。

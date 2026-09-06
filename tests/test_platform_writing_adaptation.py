@@ -144,7 +144,7 @@ def test_platform_contract_config_rejects_invalid_values(profile_override, messa
         )
 
 
-def test_chapter_card_writer_brief_and_prose_naturalness_share_one_bounded_contract(tmp_path):
+def test_current_contract_writer_brief_and_prose_naturalness_share_one_bounded_contract(tmp_path):
     template = load_project_config(template="qidian-longform")
     project = init_project(template, output=tmp_path / "novel")
     config = load_project_config(project.project_config)
@@ -154,7 +154,6 @@ def test_chapter_card_writer_brief_and_prose_naturalness_share_one_bounded_contr
 
     continue_write(config, chapter_number=1)
 
-    card = json.loads((root / "20_outline" / "chapter_cards" / "ch001.json").read_text(encoding="utf-8"))
     contract = json.loads(
         (root / "20_outline" / "chapter_contracts" / "ch001.json").read_text(encoding="utf-8")
     )
@@ -162,12 +161,11 @@ def test_chapter_card_writer_brief_and_prose_naturalness_share_one_bounded_contr
     task_markdown = (root / "50_workbench" / "writing_tasks" / "ch001.md").read_text(encoding="utf-8")
     manifest = load_manifest(root, "chapter_write:ch001:v5")
 
-    assert card["platform_promise"] == card["effective_quality_contract"]["contract"]["platform_promise"]
-    assert card["chapter_duty"]
-    assert card["reader_gain"]
-    assert card["cost"]
-    assert "relationship_move" in card
-    assert task["chapter_contract_hash"] == card["chapter_contract_hash"]
+    assert "effective_quality_contract" not in contract
+    assert contract["chapter_duty"]
+    assert contract["reader_value"]
+    assert contract["cost"]["applicability"]
+    assert task["chapter_contract_hash"] == contract["chapter_contract_hash"]
     assert task["story_brief"]["reader_value"] == contract["reader_value"]
     assert "reader_payoff" not in task["writer_craft_brief"]
     assert task["fact_inventory_summary"]["categories"]["methods"] >= 2

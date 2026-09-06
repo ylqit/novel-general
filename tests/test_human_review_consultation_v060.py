@@ -31,7 +31,7 @@ def test_consultation_uses_existing_design_protocol_and_cannot_write_canonical(t
     text = draft.read_text(encoding="utf-8")
     before = {
         "draft": draft.read_bytes(),
-        "card": (root / "20_outline" / "chapter_cards" / "ch001.json").read_bytes(),
+        "card": (root / "20_outline" / "chapter_contracts" / "ch001.json").read_bytes(),
     }
 
     task = create_human_review_consult_task(
@@ -66,7 +66,7 @@ def test_consultation_uses_existing_design_protocol_and_cannot_write_canonical(t
     assert record["canonical_write_performed"] is False
     assert record["suggestion_conversion_required"] is True
     assert draft.read_bytes() == before["draft"]
-    assert (root / "20_outline" / "chapter_cards" / "ch001.json").read_bytes() == before["card"]
+    assert (root / "20_outline" / "chapter_contracts" / "ch001.json").read_bytes() == before["card"]
     assert not (root / "40_manuscript" / "final" / "ch001.md").exists()
 
 

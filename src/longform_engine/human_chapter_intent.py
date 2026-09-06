@@ -11,14 +11,14 @@ from typing import Any
 
 from longform_engine.agent_tasks import mark_tasks_for_chapter_type
 from longform_engine.chapter_contract import (
-    load_verified_chapter_contract,
     plot_node_approval_is_current,
 )
 from longform_engine.config import ConfigDocument
+from longform_engine.planning.context import load_chapter_planning_context
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 
 
-SCHEMA = "human_chapter_intent_v2"
+SCHEMA = "human_chapter_intent_v3"
 VALIDATION_SCHEMA = "human_chapter_intent_validation_v1"
 INTENT_FIELDS = (
     "story_intent",
@@ -81,7 +81,7 @@ def create_human_chapter_intent_task(
     if chapter_number <= 0:
         raise HumanChapterIntentError("chapter_number must be positive")
     root = resolve_project_root(config)
-    _contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
+    contract_hash = load_chapter_planning_context(root, chapter_number).contract_sha256
     node_approval = current_plot_node_approval_binding(root, chapter_number)
     paths = human_chapter_intent_paths(root, chapter_number)
     candidate = {
@@ -93,6 +93,7 @@ def create_human_chapter_intent_task(
         "key_character_choice": "",
         "emotional_truth": "",
         "pov_voice_intent": "",
+        "expression_focus": {"pov_character_ids": [], "scene_kind": ""},
         "protected_items": [],
         "completed_by": "",
         "status": "draft",
@@ -243,7 +244,11 @@ def apply_human_chapter_intent(
         mark_tasks_for_chapter_type(
             root,
             chapter_number=chapter_number,
-            task_types=("chapter_write", "chapter_coedit_rewrite", "human_review_consult"),
+            task_types=(
+                "chapter_write", "chapter_coedit_rewrite", "human_review_consult", "editorial_review",
+                "reader_payoff_review", "pacing_review", "semantic_review", "prose_naturalness",
+                "prose_revision_semantic_review", "repair", "repair_plan_synthesis", "content_expand",
+            ),
             to_status="superseded",
             command="chapter human-intent-apply",
             artifact=paths["canonical"],
@@ -264,7 +269,7 @@ def require_current_human_chapter_intent(root: Path, chapter_number: int) -> dic
     errors = human_chapter_intent_errors(root, chapter_number, payload, expect_status="approved")
     if errors:
         raise HumanChapterIntentError(
-            "current human_chapter_intent_v2 is missing or stale: " + "; ".join(errors)
+            "current human_chapter_intent_v3 is missing or stale: " + "; ".join(errors)
         )
     return {
         "payload": payload,
@@ -293,7 +298,7 @@ def human_chapter_intent_status(root: Path, chapter_number: int) -> dict[str, An
 
 
 def current_plot_node_approval_binding(root: Path, chapter_number: int) -> dict[str, str]:
-    load_verified_chapter_contract(root, chapter_number)
+    load_chapter_planning_context(root, chapter_number)
     path = root / "20_outline" / "plot_nodes" / f"ch{chapter_number:03d}.json"
     payload = load_json(path)
     if (
@@ -323,6 +328,7 @@ def human_chapter_intent_errors(
         "chapter_contract_sha256",
         "plot_node_approval_sha256",
         *INTENT_FIELDS,
+        "expression_focus",
         "protected_items",
         "completed_by",
         "status",
@@ -330,14 +336,14 @@ def human_chapter_intent_errors(
         "approved_at",
     }
     if not isinstance(payload, dict) or set(payload) != fields:
-        return ["intent must contain exactly the human_chapter_intent_v2 fields"]
+        return ["intent must contain exactly the human_chapter_intent_v3 fields"]
     errors: list[str] = []
     if payload.get("schema") != SCHEMA:
         errors.append(f"schema must be {SCHEMA}; v0.8 human workflow records are not accepted")
     if payload.get("chapter_number") != chapter_number:
         errors.append("chapter_number does not match")
     try:
-        _contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
+        contract_hash = load_chapter_planning_context(root, chapter_number).contract_sha256
         node_approval = current_plot_node_approval_binding(root, chapter_number)
     except ValueError as exc:
         errors.append(str(exc))
@@ -351,6 +357,22 @@ def human_chapter_intent_errors(
         value = payload.get(field)
         if not isinstance(value, str) or len(value.strip()) < 8:
             errors.append(f"{field} must contain a specific human-authored statement")
+    focus = payload.get("expression_focus")
+    if not isinstance(focus, dict) or set(focus) != {"pov_character_ids", "scene_kind"}:
+        errors.append("expression_focus must contain pov_character_ids and scene_kind")
+    else:
+        povs = focus.get("pov_character_ids")
+        if not isinstance(povs, list) or any(not isinstance(item, str) or not item.strip() for item in povs):
+            errors.append("expression_focus.pov_character_ids must be a string list")
+        elif len(povs) != len(set(povs)):
+            errors.append("expression_focus.pov_character_ids must be unique")
+        else:
+            characters = load_json(root / "10_bible" / "characters.json")
+            known = {str(item.get("id")) for item in characters or [] if isinstance(item, dict)}
+            if set(povs) - known:
+                errors.append("expression_focus references unknown POV characters: " + ",".join(sorted(set(povs) - known)))
+        if not isinstance(focus.get("scene_kind"), str):
+            errors.append("expression_focus.scene_kind must be text, or empty when unclassified")
     protected = payload.get("protected_items")
     if (
         not isinstance(protected, list)

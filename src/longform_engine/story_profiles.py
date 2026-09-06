@@ -187,22 +187,15 @@ def project_active_facet_adapters(
     if not isinstance(profile, dict):
         return []
     chapter_requested = list(requested or [])
-    if chapter_number > 0 and not chapter_requested:
-        plan_file = root / "20_outline" / "chapter_plan.json"
-        try:
-            plan = json.loads(plan_file.read_text(encoding="utf-8")) if plan_file.is_file() else []
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            plan = []
-        rows = plan if isinstance(plan, list) else plan.get("chapters", []) if isinstance(plan, dict) else []
-        row = next(
-            (
-                item for item in rows
-                if isinstance(item, dict) and int(item.get("chapter_number") or 0) == chapter_number
-            ),
-            None,
-        )
-        if isinstance(row, dict):
-            chapter_requested = [str(item) for item in row.get("active_facets") or []]
+    if (chapter_number > 0 and not chapter_requested
+            and (root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json").is_file()):
+        from longform_engine.planning.context import load_chapter_planning_context
+
+        planning = load_chapter_planning_context(root, chapter_number)
+        chapter_requested = list(dict.fromkeys(
+            str(item) for arc in planning.volume.get("character_arcs") or []
+            if arc.get("id") in planning.arc_ids for item in arc.get("active_facets") or []
+        ))
     try:
         compiled = compile_story_profile(profile, market_ids=set(BUILTIN_MARKET_IDS))
     except StoryProfileError:

@@ -35,7 +35,9 @@ from longform_engine.storage import init_project, resolve_project_root
 from tests.project_fixtures import (
     approve_story_candidate,
     checked_review_coverage,
+    compile_chapter_brief_fixture,
     complete_editorial_reviews,
+    complete_required_quality_reviews,
     mark_project_ready,
 )
 
@@ -238,6 +240,8 @@ def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_cand
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text("# Chapter 1\n\n药水必须接触瓶口并耗时饮用，随后药瓶破碎却直接恢复生命。\n", encoding="utf-8")
     write_blocking_gate(root, draft, chapter_number=1)
+    compile_chapter_brief_fixture(root, config)
+    complete_required_quality_reviews(root, config)
     complete_editorial_reviews(root, config)
     first = create_repair_synthesis_task(config, chapter_number=1)
     first_bundle = json.loads((root / first["review_bundle"]).read_text(encoding="utf-8"))
@@ -280,6 +284,7 @@ def test_repair_coordinator_uses_immutable_rounds_and_counts_only_submitted_cand
 
     draft.write_text(first_candidate.read_text(encoding="utf-8") + "仍有一处确认的规则冲突。\n", encoding="utf-8")
     write_blocking_gate(root, draft, chapter_number=1)
+    complete_required_quality_reviews(root, config)
     complete_editorial_reviews(root, config)
     second = create_repair_synthesis_task(config, chapter_number=1)
     second_bundle = json.loads((root / second["review_bundle"]).read_text(encoding="utf-8"))
@@ -317,6 +322,7 @@ def test_editorial_submit_review_aggregates_need_human_without_canon_pollution(t
         "# Chapter 1\n\nAri enters the gate, but logic break remains unresolved.\n",
         encoding="utf-8",
     )
+    compile_chapter_brief_fixture(root, config)
     review = editorial_review(config, chapter_number=1)
     result_file = write_editorial_role_result(
         root / "50_workbench" / "editorial_reviews" / "results",
@@ -369,6 +375,7 @@ def test_editorial_aggregate_reports_missing_duplicate_invalid_repeated_and_life
         "# Chapter 1\n\nAri keeps the gate clue alive, but the editor wants more scene pressure.\n",
         encoding="utf-8",
     )
+    compile_chapter_brief_fixture(root, config)
     editorial_review(config, chapter_number=1)
     result_dir = root / "50_workbench" / "editorial_reviews" / "results"
 
@@ -448,7 +455,7 @@ def test_editorial_aggregate_reports_missing_duplicate_invalid_repeated_and_life
     assert "Invalid Role Results" in markdown
     assert summary["by_status"]["applied"] == 2
     assert summary["by_status"]["invalid"] == 1
-    assert summary["by_status"].get("awaiting_agent", 0) == 2
+    assert summary["by_status"].get("awaiting_agent", 0) == 3  # Includes the current author task.
 
 
 def test_editorial_unresolved_p1_blocks_chapter_finalize(tmp_path):
@@ -462,6 +469,7 @@ def test_editorial_unresolved_p1_blocks_chapter_finalize(tmp_path):
     submitted = submit_agent_draft(config, chapter_number=1, file_path=draft_path, agent="codex")
     assert submitted.passed is True
 
+    complete_required_quality_reviews(root, config)
     config.data.setdefault("editorial", {})["review_roles"] = ["planning_chief_editor"]
     editorial_review(config, chapter_number=1)
     result_file = write_editorial_role_result(
@@ -498,6 +506,7 @@ def test_semantic_pacing_apply_updates_gate_only_and_blocks_on_p1(tmp_path, monk
     mark_project_ready(root, config)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_text("PACING_AGENT"), encoding="utf-8")
     gate_check(config, chapter_number=1)
+    compile_chapter_brief_fixture(root, config)
     task = semantic_pacing_task(config, chapter_number=1)
     task_payload = json.loads(Path(task.task_json).read_text(encoding="utf-8"))
     manifest = load_manifest(root, task.manifest_file)
@@ -552,6 +561,7 @@ def test_semantic_pacing_invalid_validate_updates_lifecycle_without_gate_polluti
     mark_project_ready(root, config)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_text("PACING_INVALID"), encoding="utf-8")
     gate_check(config, chapter_number=1)
+    compile_chapter_brief_fixture(root, config)
     task = semantic_pacing_task(config, chapter_number=1)
     result_file = root / "50_workbench" / "gate_artifacts" / "ch001" / "semantic_pacing_result.json"
     gate_before = json.loads((root / "50_workbench" / "gate_artifacts" / "ch001" / "gate_result.json").read_text(encoding="utf-8"))
@@ -602,6 +612,7 @@ def test_required_semantic_pacing_blocks_finalize_until_current_v2_result_is_app
     submitted = submit_agent_draft(config, chapter_number=1, file_path=draft_path, agent="codex")
     assert submitted.passed is True
 
+    complete_required_quality_reviews(root, config, include_pacing=False)
     action = production_next(config)
     assert action["status"] == "ready_for_pacing_review"
     assert action["next_command"] == "longform-engine pacing semantic-task project.yaml --chapter 1"
@@ -637,6 +648,7 @@ def test_semantic_pacing_domain_validation_requires_current_control_plane_bindin
     draft = root / "40_manuscript" / "draft" / "ch001.md"
     draft.write_text(passing_text("PACING_CONTROL_PLANE"), encoding="utf-8")
     gate_check(config, chapter_number=1)
+    compile_chapter_brief_fixture(root, config)
     task = semantic_pacing_task(config, chapter_number=1)
     manifest = load_manifest(root, task.manifest_file)
     result_file = Path(task.output_file)

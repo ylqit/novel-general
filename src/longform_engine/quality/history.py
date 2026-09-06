@@ -20,7 +20,7 @@ def build_structure_observation(
     *,
     chapter_number: int,
     text: str,
-    card: dict[str, Any],
+    chapter_contract: dict[str, Any],
     review: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Build a prose-free structure fingerprint for one chapter."""
@@ -40,45 +40,45 @@ def build_structure_observation(
         "schema": "structure_observation_v3",
         "chapter_number": chapter_number,
         "source_hash": sha256_text(text),
-        "chapter_duty": str(card.get("chapter_duty") or ""),
+        "chapter_duty": str(chapter_contract.get("chapter_duty") or ""),
         "opening_mode": str(craft.get("opening_mode") or infer_opening_mode(text)),
         "opening_carrier": str(
             craft.get("opening_carrier")
-            or card.get("opening_carrier")
+            or chapter_contract.get("opening_carrier")
             or infer_opening_mode(text)
         ),
-        "scene_function_chain": infer_scene_function_chain(craft, card),
+        "scene_function_chain": infer_scene_function_chain(craft, chapter_contract),
         "character_reaction_mode": str(
             craft.get("character_reaction_mode")
-            or card.get("character_reaction_mode")
+            or chapter_contract.get("character_reaction_mode")
             or infer_character_reaction_mode(text)
         ),
-        "topology_id": str(craft.get("topology_id") or card.get("topology_id") or "unknown"),
+        "topology_id": str(craft.get("topology_id") or chapter_contract.get("topology") or "unknown"),
         "ending_mode": str(craft.get("ending_mode") or infer_ending_mode(text)),
         "ending_function": str(
             craft.get("ending_function")
-            or card.get("ending_function")
+            or chapter_contract.get("ending_function")
             or ending_function(infer_ending_mode(text))
         ),
         "scene_count": int(craft.get("scene_count") or max(1, text.count("\n---\n") + 1)),
         "dominant_scene_type": str(craft.get("dominant_scene_type") or "unreviewed"),
         "primary_story_engine": str(
-            craft.get("primary_story_engine") or card.get("primary_story_engine") or "unreviewed"
+            craft.get("primary_story_engine") or chapter_contract.get("primary_story_engine") or "unreviewed"
         ),
         "primary_scene_carrier": str(
             craft.get("primary_scene_carrier")
-            or ((card.get("scene_carriers") or [""])[0] if isinstance(card.get("scene_carriers"), list) else "")
+            or ((chapter_contract.get("scene_carriers") or [""])[0] if isinstance(chapter_contract.get("scene_carriers"), list) else "")
             or craft.get("dominant_scene_type")
             or "unreviewed"
         ),
         "state_change_kind": str(
-            craft.get("state_change_kind") or card.get("state_change_kind") or "unreviewed"
+            craft.get("state_change_kind") or chapter_contract.get("state_change_kind") or "unreviewed"
         ),
         "dramatic_method": str(
-            craft.get("dramatic_method") or card.get("dramatic_method") or "unreviewed"
+            craft.get("dramatic_method") or chapter_contract.get("dramatic_method") or "unreviewed"
         ),
         "exposition_carrier": str(
-            craft.get("exposition_carrier") or card.get("exposition_carrier") or "unreviewed"
+            craft.get("exposition_carrier") or chapter_contract.get("exposition_carrier") or "unreviewed"
         ),
         "reader_gain_position": str(craft.get("reader_gain_position") or "unreviewed"),
         "dialogue_acts": clean_strings(craft.get("dialogue_acts")),
@@ -110,7 +110,7 @@ def record_quality_history(
     *,
     chapter_number: int,
     final_text: str,
-    card: dict[str, Any],
+    chapter_contract: dict[str, Any],
     review: dict[str, Any] | None,
 ) -> dict[str, str]:
     """Upsert reward v2 and structure history after an explicit chapter finalize."""
@@ -120,16 +120,16 @@ def record_quality_history(
     reward = {
         "schema": "reader_reward_entry_v2",
         "chapter_number": chapter_number,
-        "chapter_duty": str(card.get("chapter_duty") or ""),
-        "planned_gain": str(card.get("reader_gain") or ""),
+        "chapter_duty": str(chapter_contract.get("chapter_duty") or ""),
+        "planned_gain": str(chapter_contract.get("reader_value") or ""),
         "observed_gain": str(observed.get("reader_gain") or ""),
         "duty_fulfilled": bool(observed.get("reader_gain")) if review else None,
-        "planned_cost": str(card.get("cost") or ""),
+        "planned_cost": str((chapter_contract.get("cost") or {}).get("description") or ""),
         "observed_cost": str(observed.get("cost") or ""),
         "promise_progress": [],
         "evidence_source_hash": sha256_text(final_text),
         "evidence_spans": sanitize_evidence_spans(evidence),
-        "topology_id": str(card.get("topology_id") or ""),
+        "topology_id": str(chapter_contract.get("topology") or ""),
         "ending_mode": infer_ending_mode(final_text),
         "observation_status": "semantic_reviewed" if review else "not_required",
         "finalized": True,
@@ -138,7 +138,7 @@ def record_quality_history(
     observation = build_structure_observation(
         chapter_number=chapter_number,
         text=final_text,
-        card=card,
+        chapter_contract=chapter_contract,
         review=review,
     )
     upsert_jsonl(root / REWARD_LEDGER, reward, chapter_number=chapter_number)
@@ -217,19 +217,19 @@ def count_patterns(text: str, patterns: tuple[str, ...]) -> int:
 
 
 def infer_scene_function_chain(
-    craft: dict[str, Any], card: dict[str, Any]
+    craft: dict[str, Any], chapter_contract: dict[str, Any]
 ) -> list[str]:
     for value in (
         craft.get("scene_function_chain"),
-        card.get("scene_function_chain"),
-        card.get("scene_functions"),
+        chapter_contract.get("scene_function_chain"),
+        chapter_contract.get("scene_functions"),
     ):
         items = clean_strings(value)
         if items:
             return items[:6]
     values = [
-        str(card.get("chapter_duty") or "").strip(),
-        str(card.get("state_change_kind") or "").strip(),
+        str(chapter_contract.get("chapter_duty") or "").strip(),
+        str(chapter_contract.get("state_change_kind") or "").strip(),
     ]
     return [value for value in values if value][:6] or ["unreviewed"]
 

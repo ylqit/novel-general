@@ -56,10 +56,10 @@ LONGFORM_SOURCE_LIBRARY=D:/author-data/原著资料库
 
 ```text
 chapter_contract_v5
-human_chapter_intent_v2
-chapter_story_brief_basis_v3
+human_chapter_intent_v3
+chapter_story_brief_basis_v4
 chapter_story_brief_v5
-chapter_writing_task_v7
+chapter_writing_task_v8
 ```
 
 `chapter_coedit_session_v2`、`human_author_revision_v4`、`human_story_review_v7` 均无跳过开关。semantic apply 后的事件实现和 reader-promise 精确 span 也无跳过开关。

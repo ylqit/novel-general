@@ -23,6 +23,7 @@ from longform_engine.chapter_coedit import (
     validate_chapter_coedit_response,
 )
 from longform_engine.cli_recovery import register_recovery_commands
+from longform_engine.cli_literary import register_literary_commands
 
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_tasks import (
@@ -176,7 +177,6 @@ from longform_engine.intelligence import (
     create_design_compile_task,
     create_intelligence_task,
     fanfiction_status,
-    record_chapter_direction_selection,
     validate_intelligence_candidate,
     validate_design_compile_delta,
 )
@@ -221,9 +221,7 @@ from longform_engine.orchestration import (
     batch_write,
     continue_write,
     finalize_chapter,
-    generate_beat_sheet,
     open_book,
-    plan_chapter,
     submit_agent_draft,
 )
 from longform_engine.planning import (
@@ -564,23 +562,6 @@ def build_parser() -> argparse.ArgumentParser:
     intelligence_validate.add_argument("--file", required=True, help="Candidate JSON under 50_workbench/intelligence_candidates/.")
     intelligence_validate.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     intelligence_validate.set_defaults(func=cmd_intelligence_validate)
-
-    intelligence_direction_select = intelligence_subparsers.add_parser(
-        "direction-select",
-        help="Record a human chapter-direction option in chapter_direction_selection_v1.",
-    )
-    intelligence_direction_select.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    intelligence_direction_select.add_argument("--document", required=True, help="Validated chapter_direction Markdown.")
-    intelligence_direction_select.add_argument("--option-id", required=True, help="Stable option ID declared by the Markdown.")
-    intelligence_direction_select.add_argument(
-        "--adjustments-json",
-        default="{}",
-        help="JSON object of human field adjustments; defaults to an empty object.",
-    )
-    intelligence_direction_select.add_argument("--repetition-reason", default="", help="Human reason for an intentional repeated carrier.")
-    intelligence_direction_select.add_argument("--selected-by", required=True, choices=["human"])
-    intelligence_direction_select.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    intelligence_direction_select.set_defaults(func=cmd_intelligence_direction_select)
 
     intelligence_approve = intelligence_subparsers.add_parser(
         "approve",
@@ -1798,25 +1779,10 @@ def build_parser() -> argparse.ArgumentParser:
     open_book_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     open_book_cmd.set_defaults(func=cmd_open_book)
 
-    plan = subparsers.add_parser("plan-chapter", help="Generate a chapter card.")
-    plan.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    plan.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
-    plan.add_argument("--overwrite", action="store_true", help="Overwrite existing chapter card.")
-    plan.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    plan.set_defaults(func=cmd_plan_chapter)
-
-    beat = subparsers.add_parser("beat", help="Generate a beat sheet from a chapter card.")
-    beat.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
-    beat.add_argument("--chapter", type=int, required=True, help="Target chapter number.")
-    beat.add_argument("--overwrite", action="store_true", help="Overwrite existing beat sheet.")
-    beat.add_argument("--auto-plan", action="store_true", help="Create the chapter card if missing.")
-    beat.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    beat.set_defaults(func=cmd_beat)
-
     continue_cmd = subparsers.add_parser("continue-write", help="Generate the next chapter writing task and draft workflow artifacts.")
     continue_cmd.add_argument("config", nargs="?", default="project.yaml", help="Path to project.yaml.")
     continue_cmd.add_argument("--chapter", type=int, help="Target chapter number. Defaults to next chapter.")
-    continue_cmd.add_argument("--overwrite", action="store_true", help="Overwrite generated draft/card/beat artifacts.")
+    continue_cmd.add_argument("--overwrite", action="store_true", help="Rebuild the current chapter workbench artifacts.")
     continue_cmd.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     continue_cmd.set_defaults(func=cmd_continue_write)
 
@@ -1878,7 +1844,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     chapter_human_intent_task = chapter_subparsers.add_parser(
         "human-intent-task",
-        help="Create the blank human_chapter_intent_v2 form required before prose generation.",
+        help="Create the blank human_chapter_intent_v3 form required before prose generation.",
     )
     chapter_human_intent_task.add_argument("config", nargs="?", default="project.yaml")
     chapter_human_intent_task.add_argument("--chapter", type=positive_int_arg, required=True)
@@ -2095,6 +2061,7 @@ def build_parser() -> argparse.ArgumentParser:
     chapter_close_cmd.set_defaults(func=cmd_chapter_close)
 
     register_recovery_commands(subparsers)
+    register_literary_commands(subparsers)
 
     artifacts = subparsers.add_parser("artifacts", help="Inspect, compact, verify, and restore chapter audit artifacts.")
     artifacts_subparsers = artifacts.add_subparsers(dest="artifacts_command", required=True)
@@ -2623,8 +2590,6 @@ def build_parser() -> argparse.ArgumentParser:
         character_check_cmd,
         tcs_transition_cmd,
         open_book_cmd,
-        plan,
-        beat,
         continue_cmd,
         batch,
         auto_plan,
@@ -2704,7 +2669,6 @@ def build_parser() -> argparse.ArgumentParser:
         agent_result_validate,
         intelligence_task,
         intelligence_validate,
-        intelligence_direction_select,
         intelligence_approve,
         intelligence_compile_task,
         intelligence_compile_validate,
@@ -3534,31 +3498,6 @@ def cmd_intelligence_validate(args: argparse.Namespace) -> int:
     return 0 if result.ok else 1
 
 
-def cmd_intelligence_direction_select(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    try:
-        adjustments = json.loads(args.adjustments_json)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"--adjustments-json must be a JSON object: {exc}") from exc
-    if not isinstance(adjustments, dict):
-        raise ValueError("--adjustments-json must decode to a JSON object.")
-    result = record_chapter_direction_selection(
-        config,
-        document_path=args.document,
-        selected_option_id=args.option_id,
-        user_adjustments=adjustments,
-        repetition_reason=args.repetition_reason,
-        selected_by=args.selected_by,
-    )
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: chapter direction selection recorded")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"Option: {result.selected_option_id}")
-        print(f"Selection: {result.selection_file}")
-        print(f"Next command: {result.next_command}")
-    return 0
 
 
 def cmd_intelligence_approve(args: argparse.Namespace) -> int:
@@ -5313,37 +5252,6 @@ def cmd_open_book(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_plan_chapter(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = plan_chapter(config, chapter_number=args.chapter, overwrite=args.overwrite)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: chapter card ready")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"JSON: {result.json_file}")
-        print(f"Markdown: {result.markdown_file}")
-    return 0
-
-
-def cmd_beat(args: argparse.Namespace) -> int:
-    config = load_project_config(Path(args.config).expanduser().resolve())
-    result = generate_beat_sheet(
-        config,
-        chapter_number=args.chapter,
-        overwrite=args.overwrite,
-        auto_plan=args.auto_plan,
-    )
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: beat sheet ready")
-        print(f"Chapter: {result.chapter_number}")
-        print(f"JSON: {result.json_file}")
-        print(f"Markdown: {result.markdown_file}")
-    return 0
-
-
 def cmd_continue_write(args: argparse.Namespace) -> int:
     config = load_project_config(Path(args.config).expanduser().resolve())
     result = continue_write(config, chapter_number=args.chapter, overwrite=args.overwrite)
@@ -5357,7 +5265,7 @@ def cmd_continue_write(args: argparse.Namespace) -> int:
         print(f"Chapter: {result.chapter_number}")
         print(f"Status: {result.status}")
         print(f"Context: {result.context_file}")
-        print(f"Chapter card: {result.chapter_card}")
+        print(f"Chapter contract: {result.chapter_contract}")
         print(f"Beat sheet: {result.beat_sheet}")
         if result.writing_task_markdown:
             print(f"Writing task: {result.writing_task_markdown}")
@@ -6901,6 +6809,7 @@ def _command_label(args: argparse.Namespace) -> str:
         "draft_command",
         "chapter_command",
         "recovery_command",
+        "literary_command",
         "artifacts_command",
         "research_command",
         "revision_command",

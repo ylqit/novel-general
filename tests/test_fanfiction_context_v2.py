@@ -152,8 +152,9 @@ def _persist_inputs(
         "arc_id": "arc001",
     }
     root = project["root"]
-    write_document(root / "20_outline/chapter_contracts/ch001.json", contract)
-    write_document(root / "20_outline/chapter_cards/ch001.json", chapter_card)
+    from tests.project_fixtures import persist_current_planning_fixture
+
+    persist_current_planning_fixture(root, contract, scope=chapter_card)
     return contract, chapter_card
 
 
@@ -163,7 +164,6 @@ def _compile(project: dict, *, explicit: list[str] | None = None, card: dict | N
         project["config"],
         chapter_number=1,
         chapter_contract=contract,
-        chapter_card=chapter_card,
         character_packet={},
     )
 
@@ -215,14 +215,7 @@ def _materialize_divergences(
             },
         },
     )
-    plot = {
-        "schema": "plot_node_table_v1",
-        "chapter_number": 1,
-        "nodes": [],
-        "approval_sha256": "a" * 64,
-    }
     plot_path = root / "20_outline/plot_nodes/ch001.json"
-    write_document(plot_path, plot)
     events = [
         {
             "schema": "narrative_event_v1",
@@ -298,8 +291,8 @@ def test_context_v2_exposes_precedence_closure_partitions_and_exact_review_evide
 
     bundle = _compile(project, explicit=["route:event", "classic:canon"])
 
-    assert FANFICTION_CONTEXT_BUNDLE_SCHEMA == "fanfiction_context_bundle_v2"
-    assert bundle["schema"] == "fanfiction_context_bundle_v2"
+    assert FANFICTION_CONTEXT_BUNDLE_SCHEMA == "fanfiction_context_bundle_v3"
+    assert bundle["schema"] == "fanfiction_context_bundle_v3"
     assert bundle["diagnostics"]["selection_precedence"] == [
         "global_non_negotiable",
         "chapter_explicit_refs",
@@ -351,7 +344,7 @@ def test_legacy_v1_bundle_is_rejected_and_reported_missing(current_contract_proj
 
     assert status["status"] == "missing"
     assert status["found_schema"] == "fanfiction_context_bundle_v1"
-    assert status["required_schema"] == "fanfiction_context_bundle_v2"
+    assert status["required_schema"] == "fanfiction_context_bundle_v3"
 
 
 def test_malformed_v2_bundle_is_invalid_and_writer_refuses_it(current_contract_project):
@@ -537,6 +530,19 @@ def test_multi_source_collisions_force_source_labels_in_author_projection(
             )
     _add_route_claims(project, identity_claims)
 
+    from longform_engine.fanfiction_contracts import crossover_required_topics
+    route_path = project["root"] / "10_bible/fanfiction/fanfiction_bible.json"
+    route = json.loads(route_path.read_text(encoding="utf-8"))
+    payloads = ["ability", "character", "organization"]
+    route["extensions"]["crossover"]["transfers"][0]["payload_kinds"] = payloads
+    for claim in route["claims"]:
+        if claim["extensions"].get("semantic_type") == "主世界适配器":
+            claim["extensions"]["payload_kinds"] = payloads
+            claim["extensions"]["depends_on_claims"] = ["route:constitution"]
+            explicit.append(claim["claim_id"])
+        elif claim["claim_id"] == "route:constitution":
+            claim["extensions"]["topics"] = sorted(crossover_required_topics(route["extensions"]["crossover"]))
+    _rebind_route(project, route)
     bundle = _compile(project, explicit=explicit)
 
     kinds = {item["kind"] for item in bundle["namespace_collisions"]}
@@ -549,6 +555,15 @@ def test_multi_source_collisions_force_source_labels_in_author_projection(
 def test_canon_reviewer_uses_only_v2_review_projection_even_when_canon_is_large(
     current_contract_project, monkeypatch
 ):
+    # This unit test isolates bounded Canon projection; current-basis validation is
+    # exercised by the production loop and test_review_tasks_expire_when_author_design_changes.
+    for module in ("longform_engine.editorial.pipeline", "longform_engine.gates.pipeline"):
+        monkeypatch.setattr(module + ".load_current_story_brief_binding", lambda root, chapter: {
+            "schema": "chapter_story_brief_binding_v3", "story_brief_basis_sha256": "e" * 64,
+        })
+        monkeypatch.setattr(module + ".require_current_human_chapter_intent", lambda root, chapter: {
+            "payload": {"schema": "human_chapter_intent_v3", "story_intent": "核对原著边界。"},
+        })
     project = current_contract_project
     route, _path = install_route(project)
     canon_path = project["canon_path"]
@@ -570,15 +585,6 @@ def test_canon_reviewer_uses_only_v2_review_projection_even_when_canon_is_large(
     chapter = project["root"] / "40_manuscript/draft/ch001.md"
     chapter.parent.mkdir(parents=True)
     chapter.write_text("# 第一章\n\n角色依据已批准边界作出选择。\n", encoding="utf-8")
-    monkeypatch.setattr(
-        "longform_engine.editorial.pipeline.load_verified_chapter_contract",
-        lambda _root, _chapter: ({"chapter_number": 1, "featured_character_ids": []}, "a" * 64),
-    )
-    monkeypatch.setattr(
-        "longform_engine.gates.pipeline.load_verified_chapter_contract",
-        lambda _root, _chapter: ({"chapter_number": 1, "featured_character_ids": []}, "a" * 64),
-    )
-
     inputs = editorial_role_source_inputs(
         project["root"],
         {"chapter_number": 1, "source_path": "40_manuscript/draft/ch001.md"},
@@ -875,7 +881,7 @@ def _legacy_chapter_close_rollback_fixture_superseded_by_real_owner_chain_e2e(
         (ledger_file, "{}"),
         (event_file, json.dumps({"events": []})),
         (promise_file, "{}"),
-        (context_file, json.dumps({"schema": "fanfiction_context_bundle_v2"})),
+        (context_file, json.dumps({"schema": "fanfiction_context_bundle_v3"})),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
@@ -1000,3 +1006,69 @@ def _legacy_chapter_close_rollback_fixture_superseded_by_real_owner_chain_e2e(
     assert not agent_task_events_file(root).exists()
     assert state_file.read_bytes() == state_before
     assert cursor_file.read_bytes() == cursor_before
+
+
+@pytest.mark.parametrize("topology", ["fixed_host", "fusion_world", "sequential_worlds"])
+@pytest.mark.parametrize("fault", [None, "future_rule", "wrong_host", "missing_dependency", "missing_limit", "future_adapter"])
+def test_chapter_transfer_requires_current_dependent_rules(topology, fault):
+    from longform_engine.fanfiction_context import _claim_record, _dependency_closure, _validate_current_crossover_rules
+    from tests.test_fanfiction_contracts import crossover_route
+
+    route = crossover_route(topology=topology, default_host_source_id="host" if topology == "fixed_host" else None)
+    adapter = route["claims"][0]
+    rule = next(item for item in route["claims"] if item["claim_id"] == "route:constitution")
+    adapter["extensions"]["depends_on_claims"] = ["route:constitution"]
+    if topology == "fusion_world":
+        adapter["extensions"]["depends_on_claims"].append("route:world_priority")
+    if fault == "future_rule":
+        rule["extensions"]["from_chapter"] = 2
+    elif fault == "wrong_host":
+        adapter["extensions"]["host_source_id"] = "wrong"
+    elif fault == "missing_dependency":
+        adapter["extensions"]["depends_on_claims"] = []
+    elif fault == "missing_limit":
+        rule["extensions"]["topics"].remove("限制")
+    elif fault == "future_adapter":
+        adapter["extensions"]["from_chapter"] = 2
+    claims = {item["claim_id"]: _claim_record("route_design", item, route) for item in route["claims"]}
+    explicit = {adapter["claim_id"]}
+    closure, _ = _dependency_closure(explicit, claims)
+    def validate():
+        _validate_current_crossover_rules(route, claims, explicit, closure, chapter_number=1,
+                                          planning_scope={"volume_id": "vol001"}, current_scope={"volume": {"vol001"}})
+    if fault:
+        with pytest.raises(FanfictionContextError, match="context_evidence_incomplete"):
+            validate()
+    else:
+        validate()
+
+
+@pytest.mark.parametrize("states,expected", [([], None), (["伤势尚未恢复"], "伤势尚未恢复"),
+                                          (["伤势尚未恢复", "伤势已恢复，行动限制解除"], "伤势已恢复，行动限制解除")])
+def test_cross_volume_facts_follow_final_evidence_and_latest_state(tmp_path, states, expected):
+    from longform_engine.fanfiction_context import _claim_record, _cross_volume_continuity
+    from tests.test_fanfiction_contracts import asymmetric_sequential_route
+
+    route = asymmetric_sequential_route()
+    claims = {item["claim_id"]: _claim_record("route_design", item, route) for item in route["claims"]}
+    for chapter in (1, 2):
+        value = states[chapter - 1] if len(states) >= chapter else "本章没有伤势变化。"
+        final = manuscript_chapter_path(tmp_path, chapter, lane="final")
+        final.parent.mkdir(parents=True, exist_ok=True)
+        final.write_text(value, encoding="utf-8")
+        write_document(tmp_path / f"30_state/semantic_ledger/ch{chapter:03d}.json", {
+            "schema": "chapter_semantic_bundle_v1", "chapter_number": chapter, "canonical": True,
+            "source": {"path": final.relative_to(tmp_path).as_posix(), "sha256": sha256(final.read_bytes()).hexdigest()},
+            "world_deltas": ([{"fact_id": "route:carryover", "value": value,
+                              "evidence": {"start": 0, "end": len(value), "excerpt": value}}] if len(states) >= chapter else []),
+        })
+    def compile_state():
+        return _cross_volume_continuity(tmp_path, route, claims, {"route:carryover"}, chapter_number=3,
+                                        planning_scope={"volume_id": "vol002"}, current_scope={"volume": {"vol002"}})
+    result = compile_state()
+    actual = result["items"][0]["actual"]
+    assert (actual["value"] if actual else None) == expected
+    assert len(result["source_files"]) == 4
+    manuscript_chapter_path(tmp_path, 1, lane="final").write_text("正文已修改", encoding="utf-8")
+    with pytest.raises(FanfictionContextError, match="not bound to current final"):
+        compile_state()

@@ -25,8 +25,10 @@ from longform_engine.agent_tasks import (
     validate_current_task_result,
     write_manifest,
 )
-from longform_engine.character_expression import character_expression_diagnostics
-from longform_engine.chapter_contract import ChapterContractError, load_verified_chapter_contract
+from longform_engine.character_expression import build_character_expression_packet, character_expression_diagnostics
+from longform_engine.human_chapter_intent import require_current_human_chapter_intent
+from longform_engine.story_brief import load_current_story_brief_binding
+from longform_engine.planning.context import load_chapter_planning_context
 from longform_engine.config import ConfigDocument
 from longform_engine.fanfiction_context import (
     FANFICTION_CONTEXT_BUNDLE_SCHEMA,
@@ -39,6 +41,7 @@ from longform_engine.quality import (
     refresh_editorial_pattern_registry,
 )
 from longform_engine.roles import load_role_registry
+from longform_engine.prompting import estimate_text_units, resolve_context_budget_contract
 from longform_engine.storage import atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import existing_manuscript_chapter_path
 from longform_engine.text_metrics import content_character_count
@@ -73,7 +76,7 @@ DEFAULT_EDITORIAL_TEAM: tuple[dict[str, str], ...] = (
     {
         "id": "canon_fidelity_reviewer",
         "display_name": "同人一致性与创造性编辑",
-        "focus": "source fidelity, character knowledge, divergence causality, agency, crossover rules, fanfiction originality",
+        "focus": "approved baseline, character knowledge, agency, new reading value; divergence and crossover rules when the creative contract applies",
     },
 )
 
@@ -531,11 +534,10 @@ def editorial_aggregate(config: ConfigDocument, *, chapter_number: int) -> Edito
                 if str(item).strip()
             ]
             expected_hash = str(context.get("context_digest_hash") or "")
-            current_hash = (
-                context_digest_hash(root, provenance_paths)
-                if provenance_paths and all(item.is_file() for item in provenance_paths)
-                else ""
-            )
+            try:
+                current_hash = context_digest_hash(root, provenance_paths, chapter_number=chapter_number)
+            except (OSError, ValueError):
+                current_hash = ""
             if (
                 not context
                 or str(payload.get("context_digest_hash") or "") != expected_hash
@@ -1070,39 +1072,34 @@ def editorial_role_source_inputs(
 ) -> list[Path]:
     chapter_number = int(payload["chapter_number"])
     chapter = root / str(payload.get("source_path") or "")
-    card = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    contract_path = root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
     candidates_by_role = {
         "planning_chief_editor": [
             chapter,
-            card,
-            root / "20_outline" / "book_outline.md",
+            contract_path,
             root / "00_governance" / "reader_contract.md",
             root / "30_state" / "reward_ledger.jsonl",
         ],
         "scene_prose_editor": [
             chapter,
-            card,
-            root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json",
+            contract_path,
             root / "10_bible" / "creative_brief.json",
         ],
         "character_editor": [
             chapter,
-            card,
-            root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json",
+            contract_path,
             root / "10_bible" / "character_expression.json",
             root / "10_bible" / "characters.json",
         ],
         "anti_template_editor": [
             chapter,
             root / "50_workbench" / "prose_naturalness_tasks" / f"ch{chapter_number:03d}.prose_naturalness_check.json",
-            card,
-            root / "50_workbench" / "character_packets" / f"ch{chapter_number:03d}.json",
+            contract_path,
         ],
         "reader_experience_editor": [
             chapter,
-            card,
+            contract_path,
             root / "00_governance" / "reader_contract.md",
-            root / "50_workbench" / "quality_reviews" / f"ch{chapter_number:03d}.reader_payoff.validation.json",
             root / "30_state" / "reward_ledger.jsonl",
         ],
         "canon_fidelity_reviewer": [
@@ -1112,9 +1109,13 @@ def editorial_role_source_inputs(
     }
     candidates = candidates_by_role.get(
         role_id,
-        [chapter, card, root / "00_governance" / "reader_contract.md"],
+        [chapter, contract_path, root / "00_governance" / "reader_contract.md"],
     )
-    return dedupe_paths(path for path in candidates if path.exists())[:5]
+    if role_id in {"character_editor", "scene_prose_editor", "anti_template_editor"}:
+        candidates.extend(root / "10_bible" / name for name in (
+            "characters.json", "character_expression.json", "relationships.json",
+        ))
+    return dedupe_paths(path for path in candidates if path.is_file())
 
 
 def build_editorial_context_payload(
@@ -1126,20 +1127,24 @@ def build_editorial_context_payload(
 ) -> dict[str, Any]:
     chapter_number = int(payload["chapter_number"])
     review_round = int(payload.get("review_round") or 1)
-    context_hash = context_digest_hash(root, source_inputs)
+    context_hash = context_digest_hash(root, source_inputs, chapter_number=chapter_number)
     chapter_source = root / str(payload.get("source_path") or "")
-    try:
-        chapter_contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
-    except ChapterContractError as exc:
-        raise ValueError(str(exc)) from exc
+    planning = load_chapter_planning_context(root, chapter_number)
+    chapter_contract, contract_hash = planning.contract, planning.contract_sha256
+    brief_binding = load_current_story_brief_binding(root, chapter_number)
+    intent = require_current_human_chapter_intent(root, chapter_number)["payload"]
     projections: dict[str, Any] = {}
+    if role_id in {"character_editor", "scene_prose_editor", "anti_template_editor"}:
+        projections["character_expression_packet"] = build_character_expression_packet(
+            root, chapter_number=chapter_number, character_ids=planning.character_ids,
+            expression_focus=intent["expression_focus"], tcs={},
+        )
     for path in source_inputs:
         if path.resolve() == chapter_source.resolve():
             continue
         relative = relative_path(root, path)
-        if relative == f"20_outline/chapter_cards/ch{chapter_number:03d}.json":
-            projections[relative] = chapter_contract
-            continue
+        if relative == f"20_outline/chapter_contracts/ch{chapter_number:03d}.json":
+            continue  # The complete verified contract is already present in the packet.
         if (
             role_id == "canon_fidelity_reviewer"
             and relative == f"50_workbench/fanfiction_context/ch{chapter_number:03d}.json"
@@ -1153,16 +1158,14 @@ def build_editorial_context_payload(
                 raise ValueError(f"context_evidence_incomplete:{relative}")
             projections[relative] = bundle["review_projection"]
             continue
-        projection = editorial_source_projection(
-            path,
-            max_chars=1_200,
-            match_terms=[
-                *chapter_contract.get("featured_character_ids", []),
-                *chapter_contract.get("canon_refs", []),
-                *chapter_contract.get("world_rule_refs", []),
-            ],
+        if relative in {
+            "10_bible/characters.json", "10_bible/character_expression.json", "10_bible/relationships.json",
+        } and "character_expression_packet" in projections:
+            continue  # The packet contains the selected complete character evidence once.
+        projections[relative] = (
+            json.loads(path.read_text(encoding="utf-8"))
+            if path.suffix.lower() == ".json" else path.read_text(encoding="utf-8")
         )
-        projections[relative] = projection
     fanfiction_bundle_provenance: dict[str, Any] = {}
     if role_id == "canon_fidelity_reviewer":
         bundle_path = root / "50_workbench" / "fanfiction_context" / f"ch{chapter_number:03d}.json"
@@ -1186,8 +1189,8 @@ def build_editorial_context_payload(
             else []
         )
     ]
-    return {
-        "schema": "editorial_context_isolation_v1",
+    packet = {
+        "schema": "editorial_context_isolation_v2",
         "chapter_number": chapter_number,
         "role_id": role_id,
         "review_round": review_round,
@@ -1197,6 +1200,10 @@ def build_editorial_context_payload(
         "context_digest_hash": context_hash,
         "chapter_contract": chapter_contract,
         "chapter_contract_hash": contract_hash,
+        "planning_source_files": list(planning.source_files),
+        "approved_planning": planning.review_projection(),
+        "human_chapter_intent": intent,
+        "story_brief_binding": brief_binding,
         "independence_mode": "same_host_isolated_context",
         "declared_source_files": [relative_path(root, chapter_source)] if chapter_source.is_file() else [],
         "provenance_source_files": [relative_path(root, path) for path in source_inputs],
@@ -1223,51 +1230,25 @@ def build_editorial_context_payload(
         "created_at": utc_now(),
     }
 
-
-def editorial_source_projection(
-    path: Path,
-    *,
-    max_chars: int,
-    match_terms: list[str] | None = None,
-) -> Any:
-    if path.suffix.lower() == ".json":
-        try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            value = path.read_text(encoding="utf-8", errors="replace")
-        if match_terms:
-            records = matching_json_records(value, match_terms)
-            value = records if records else value
-        rendered = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    else:
-        rendered = path.read_text(encoding="utf-8", errors="replace")
-    if len(rendered) <= max_chars:
-        return rendered
-    return "[context-evidence-incomplete]"
+    budget = resolve_context_budget_contract(root)
+    required_text = json.dumps(packet, ensure_ascii=False, indent=2) + chapter_source.read_text(encoding="utf-8")
+    if estimate_text_units(required_text, budget.estimator) > budget.input_hard_units:
+        raise ValueError("prompt_budget_exceeded: required editorial evidence cannot fit the current context profile")
+    return packet
 
 
-def matching_json_records(value: Any, terms: list[str]) -> list[dict[str, Any]]:
-    lowered = [str(term).casefold() for term in terms if str(term).strip()]
-    records: list[dict[str, Any]] = []
-
-    def visit(node: Any) -> None:
-        if isinstance(node, dict):
-            rendered = json.dumps(node, ensure_ascii=False, separators=(",", ":")).casefold()
-            if lowered and any(term in rendered for term in lowered):
-                records.append(node)
-                return
-            for child in node.values():
-                visit(child)
-        elif isinstance(node, list):
-            for child in node:
-                visit(child)
-
-    visit(value)
-    return records[:20]
-
-
-def context_digest_hash(root: Path, paths: list[Path]) -> str:
-    digest = hashlib.sha256()
+def context_digest_hash(root: Path, paths: list[Path], *, chapter_number: int) -> str:
+    """Bind the isolated evidence to verified planning and the approved author brief."""
+    planning = load_chapter_planning_context(root, chapter_number)
+    binding = load_current_story_brief_binding(root, chapter_number)
+    digest = hashlib.sha256(json.dumps(
+        {
+            "planning": list(planning.source_files), "story_brief": binding,
+            "approved_planning": planning.review_projection(),
+            "human_chapter_intent": require_current_human_chapter_intent(root, chapter_number)["payload"],
+        },
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8"))
     for path in sorted(paths, key=lambda item: relative_path(root, item)):
         relative = relative_path(root, path)
         digest.update(relative.encode("utf-8"))
@@ -1275,6 +1256,41 @@ def context_digest_hash(root: Path, paths: list[Path]) -> str:
         digest.update(hashlib.sha256(path.read_bytes()).digest())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def editorial_aggregate_is_current(root: Path, chapter_number: int, aggregate: dict[str, Any]) -> bool:
+    """Validate every accepted role's evidence and author basis before reusing an aggregate."""
+    if aggregate.get("schema_version") != 3 or aggregate.get("chapter_number") != chapter_number:
+        return False
+    accepted = aggregate.get("accepted_results")
+    if not isinstance(accepted, list) or not accepted or aggregate.get("result_count") != len(accepted):
+        return False
+    try:
+        roles = aggregate.get("accepted_roles", [])
+        if len(set(roles)) != len(accepted):
+            return False
+        for role_id in roles:
+            validation = load_json(editorial_validation_file(root, chapter_number, role_id), default={})
+            provenance = validation.get("provenance", {})
+            result = provenance.get("normalized", {})
+            if (validation.get("ok") is not True or provenance.get("accepted") is not True
+                    or result.get("source_result_file") not in accepted
+                    or hashlib.sha256((root / result["source_result_file"]).read_bytes()).hexdigest() != result.get("source_result_sha256")):
+                return False
+            context = load_editorial_context(root, chapter_number=chapter_number, role_id=role_id)
+            paths = [root / item for item in context.get("provenance_source_files", [])]
+            if (
+                not paths or not context.get("context_digest_hash")
+                or result.get("context_digest_hash") != context["context_digest_hash"]
+                or context_digest_hash(root, paths, chapter_number=chapter_number) != context["context_digest_hash"]
+            ):
+                return False
+        chapter = existing_manuscript_chapter_path(root, chapter_number, lane="final")
+        if chapter is None:
+            chapter = existing_manuscript_chapter_path(root, chapter_number, lane="draft")
+        return chapter is not None and hashlib.sha256(chapter.read_bytes()).hexdigest() == aggregate.get("source_sha256")
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def format_role_task(
@@ -1366,7 +1382,7 @@ def role_instruction(role_id: str) -> str:
         ),
         "canon_fidelity_reviewer": (
             "按 source_fidelity 与 fanfiction_originality 两轴独立检查。前者核对人物价值排序、知识、关系阶段、"
-            "声音、能力代价、世界规则、组织反应和已批准分歧；后者核对新选择、分歧后果、原创主线、原著人物"
+            "声音、能力代价、世界规则、组织反应和已批准分歧；后者按连续性合同核对新增阅读价值、适用的分歧后果、原著人物"
             "主体性和新的关系/债务/资源/组织后果。有因果支撑的 AU 或分歧不算 OOC。只有违反批准基线/分歧/"
             "跨界规则、未来知识越界、无依据剥夺人物主体性、绕过能力成本，或违反明确原创义务并机械复演时，"
             "同人创造性才可 P1；一般原创度不足只能 P2。"
@@ -1686,8 +1702,13 @@ def validate_editorial_result_payload(
         ]
         if any(not path.exists() for path in provenance_paths):
             errors.append("one or more declared editorial context files no longer exist.")
-        elif context_digest_hash(root, provenance_paths) != str(context.get("context_digest_hash") or ""):
-            errors.append("editorial context changed after task creation; regenerate the role task.")
+        else:
+            try:
+                current_hash = context_digest_hash(root, provenance_paths, chapter_number=chapter_number)
+            except (OSError, ValueError):
+                current_hash = ""
+            if current_hash != str(context.get("context_digest_hash") or "") or not current_hash:
+                errors.append("editorial context changed after task creation; regenerate the role task.")
     normalized = {
         "schema_version": 3,
         "chapter_number": chapter_number,
@@ -1711,6 +1732,7 @@ def validate_editorial_result_payload(
         "coverage_status": coverage_status,
         "evidence_grade": "exact_current_source_spans",
         "source_result_file": relative_path(root, result_file),
+        "source_result_sha256": hashlib.sha256(result_file.read_bytes()).hexdigest(),
         "validated_at": utc_now(),
     }
     return errors, warnings, normalized
@@ -1737,7 +1759,7 @@ def load_editorial_context(root: Path, *, chapter_number: int, role_id: str) -> 
         / f"{role_id}.context.json"
     )
     payload = load_json(path, default={})
-    if not isinstance(payload, dict) or payload.get("schema") != "editorial_context_isolation_v1":
+    if not isinstance(payload, dict) or payload.get("schema") != "editorial_context_isolation_v2":
         return {}
     return payload
 
@@ -2100,40 +2122,18 @@ def editorial_risk_signals(
     if severities & {"P0", "P1"}:
         signals.append("blocking_P0_P1_risk")
 
-    card = load_json(
-        root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
-        default={},
-    )
-    if isinstance(card, dict):
-        duty_text = " ".join(
-            str(card.get(key) or "")
-            for key in ("chapter_duty", "reader_gain", "ending_mode")
-        ).lower()
-        if any(
-            token in duty_text
-            for token in (
-                "揭露",
-                "兑现",
-                "真相",
-                "闭环",
-                "阶段性结案",
-                "调查权限",
-                "账册入口",
-                "payoff",
-                "reveal",
-                "关系转折",
-            )
-        ):
-            signals.append("major_payoff_or_reveal")
-        if bool(card.get("volume_boundary")) or str(card.get("event_tier") or "").upper() == "A":
-            signals.append("volume_boundary")
-        if any(
-            bool(card.get(key))
-            for key in ("first_character_appearance", "pov_switch", "relationship_turn")
-        ):
-            signals.append("character_expression_risk")
-        carriers = card.get("scene_carriers") if isinstance(card.get("scene_carriers"), list) else []
-        primary_carrier = str(carriers[0] if carriers else "")
+    planning = load_chapter_planning_context(root, chapter_number)
+    if planning.contract["topology"] in {"revelation", "payoff"}:
+        signals.append("major_payoff_or_reveal")
+    if planning.is_volume_start or planning.is_volume_end:
+        signals.append("volume_boundary")
+    if any(item["domain"] in {"character", "relationship"} for item in planning.obligations):
+        signals.append("character_expression_risk")
+    from longform_engine.human_chapter_intent import require_current_human_chapter_intent
+
+    intent = require_current_human_chapter_intent(root, chapter_number)["payload"]
+    primary_carrier = intent["expression_focus"]["scene_kind"]
+    if primary_carrier:
         structure_path = root / "30_state" / "quality" / "structure_history.jsonl"
         if primary_carrier and structure_path.is_file():
             previous = []

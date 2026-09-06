@@ -94,7 +94,6 @@ BASE_DIRECTORIES = [
 
 SUBDIRECTORIES = [
     "10_bible/fanfiction",
-    "20_outline/chapter_cards",
     "20_outline/chapter_contracts",
     "20_outline/chapter_forecasts",
     "20_outline/plot_nodes",
@@ -227,7 +226,6 @@ INITIAL_JSON_FILES = {
     "10_bible/locations.json": [],
     "20_outline/volumes.json": [],
     "20_outline/story_arcs.json": [],
-    "20_outline/chapter_plan.json": [],
     "20_outline/planning_window.json": {},
     "20_outline/outline_anchors.json": [],
     "20_outline/foreshadowing_ledger.json": [],

@@ -1,5 +1,4 @@
 import json
-from hashlib import sha256
 
 from longform_engine.agent_protocols import PROSE_MARKDOWN_SCHEMA
 from longform_engine.agent_tasks import build_manifest, list_manifests, write_manifest
@@ -14,9 +13,7 @@ from longform_engine.orchestration import (
     auto_write_run,
     continue_write,
     finalize_chapter,
-    generate_beat_sheet,
     open_book as engine_open_book,
-    plan_chapter,
     submit_agent_draft,
 )
 from longform_engine.db import query_table
@@ -27,8 +24,8 @@ from tests.project_fixtures import (
     approve_story_candidate,
     complete_unified_semantic_lifecycle,
     mark_project_ready,
+    compile_chapter_brief_fixture,
     prepare_unified_semantic_bundle,
-    write_arc_simulation_fixture,
 )
 
 
@@ -55,27 +52,13 @@ def test_open_book_writes_five_confirmations(tmp_path):
     assert result.reader_contract.endswith("reader_contract.md")
 
 
-def test_plan_chapter_and_beat_sheet(tmp_path):
-    project_config = seed_project(tmp_path)
+def test_retired_card_generation_commands_are_not_registered():
+    from longform_engine.cli import build_parser
+    import pytest
 
-    card = plan_chapter(project_config, chapter_number=12)
-    beat = generate_beat_sheet(project_config, chapter_number=12)
-
-    card_payload = json.loads((tmp_path / "novel" / "20_outline" / "chapter_cards" / "ch012.json").read_text(encoding="utf-8"))
-    beat_payload = json.loads((tmp_path / "novel" / "50_workbench" / "beats" / "ch012.json").read_text(encoding="utf-8"))
-
-    assert card.chapter_number == 12
-    assert card_payload["chapter_duty"]
-    assert card_payload["conflict"]
-    assert card_payload["chapter_turn"]
-    assert not {"duty", "information", "reader_payoff", "hook"} & set(card_payload)
-    assert card_payload["ending_intent"]
-    assert beat.chapter_number == 12
-    assert len(beat_payload["beats"]) == 5
-    assert all(item["chapter_duty"] == card_payload["chapter_duty"] for item in beat_payload["beats"])
-    assert all(item["reader_gain"] == card_payload["reader_gain"] for item in beat_payload["beats"])
-    assert all(item["chapter_turn"] for item in beat_payload["beats"])
-    assert all(not {"duty", "information", "reader_payoff", "hook"} & set(item) for item in beat_payload["beats"])
+    for command in ("plan-chapter", "beat"):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args([command, "project.yaml", "--chapter", "12"])
 
 
 def test_plan_chapter_event_matrix_requires_soft_event_after_fast_gap(tmp_path):
@@ -96,11 +79,12 @@ def test_plan_chapter_event_matrix_requires_soft_event_after_fast_gap(tmp_path):
         encoding="utf-8",
     )
 
-    plan_chapter(project_config, chapter_number=6)
+    from dataclasses import asdict
+    from longform_engine.planning import recommend_event_types
 
-    card = json.loads((root / "20_outline" / "chapter_cards" / "ch006.json").read_text(encoding="utf-8"))
+    open_book(project_config)
+    recommendation = asdict(recommend_event_types(project_config, chapter_number=6))
     matrix = json.loads((root / "30_state" / "event_matrix.json").read_text(encoding="utf-8"))
-    recommendation = card["event_recommendation"]
 
     assert recommendation["soft_event_required"] is True
     assert recommendation["recommended"][0] in {"bond_deepening", "faction_building", "world_painting"}
@@ -117,7 +101,8 @@ def test_continue_write_creates_agent_writing_task_by_default(tmp_path):
 
     root = tmp_path / "novel"
     assert result.status == "task_ready"
-    assert (root / "20_outline" / "chapter_cards" / "ch001.json").exists()
+    assert not (root / "20_outline" / "chapter_cards").exists()
+    assert not (root / "20_outline" / "chapter_plan.json").exists()
     assert (root / "50_workbench" / "writing_tasks" / "ch001.json").exists()
     assert (root / "50_workbench" / "writing_tasks" / "ch001.md").exists()
     assert not (root / "40_manuscript" / "draft" / "ch001.md").exists()
@@ -143,12 +128,12 @@ def test_continue_write_creates_agent_writing_task_by_default(tmp_path):
     assert "## 逐场行动" in task_md
     assert "## 演出边界" in task_md
     assert report["artifacts"]["writing_task_markdown"].endswith("ch001.md")
-    assert result.chapter_card.endswith("20_outline\\chapter_cards\\ch001.json") or result.chapter_card.endswith(
-        "20_outline/chapter_cards/ch001.json"
+    assert result.chapter_contract.endswith("20_outline\\chapter_contracts\\ch001.json") or result.chapter_contract.endswith(
+        "20_outline/chapter_contracts/ch001.json"
     )
     catalog_paths = {item["path"] for item in task["context_plan"]["source_catalog"]}
     assert "20_outline/chapter_contracts/ch001.json" in catalog_paths
-    assert "20_outline/chapter_cards/ch001.json" in catalog_paths
+    assert "20_outline/chapter_contracts/ch001.json" in catalog_paths
     contract_fact = next(
         item for item in inventory["facts"] if item["id"] == "chapter.contract"
     )
@@ -251,6 +236,8 @@ def test_auto_write_resume_after_finalize_uses_next_firm_contract(tmp_path):
     assert state["current_chapter"] == 2
     assert "draft submit" in state["next_command"]
     assert (root / "50_workbench" / "writing_tasks" / "ch002.md").exists()
+    assert not (root / "20_outline" / "chapter_plan.json").exists()
+    assert not (root / "20_outline" / "chapter_cards").exists()
 
 
 def test_auto_write_pauses_on_gate_failure(tmp_path):
@@ -304,7 +291,10 @@ def test_auto_write_recognizes_repair_semantic_and_editorial_agent_waits(tmp_pat
     semantic_config = seed_project(tmp_path / "semantic")
     semantic_root = tmp_path / "semantic" / "novel"
     mark_project_ready(semantic_root, semantic_config)
-    (semantic_root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_draft_text(), encoding="utf-8")
+    compile_chapter_brief_fixture(semantic_root, semantic_config)
+    semantic_candidate = semantic_root / "50_workbench/agent_drafts/ch001.codex.md"
+    semantic_candidate.write_text(passing_draft_text(), encoding="utf-8")
+    submit_agent_draft(semantic_config, chapter_number=1, file_path=semantic_candidate, agent="codex")
     semantic_pacing_task(semantic_config, chapter_number=1)
     auto_write_plan(semantic_config)
     semantic = auto_write_run(semantic_config)
@@ -313,7 +303,10 @@ def test_auto_write_recognizes_repair_semantic_and_editorial_agent_waits(tmp_pat
     editorial_config = seed_project(tmp_path / "editorial")
     editorial_root = tmp_path / "editorial" / "novel"
     mark_project_ready(editorial_root, editorial_config)
-    (editorial_root / "40_manuscript" / "draft" / "ch001.md").write_text(passing_draft_text(), encoding="utf-8")
+    compile_chapter_brief_fixture(editorial_root, editorial_config)
+    editorial_candidate = editorial_root / "50_workbench/agent_drafts/ch001.codex.md"
+    editorial_candidate.write_text(passing_draft_text(), encoding="utf-8")
+    submit_agent_draft(editorial_config, chapter_number=1, file_path=editorial_candidate, agent="codex")
     editorial_review(editorial_config, chapter_number=1)
     auto_write_plan(editorial_config)
     editorial = auto_write_run(editorial_config)
@@ -506,8 +499,8 @@ def test_finalize_chapter_requires_gate_and_refreshes_memory(tmp_path):
     assert reward_entries[-1]["chapter_number"] == 1
     assert reward_entries[-1]["chapter_duty"]
     assert reward_entries[-1]["planned_gain"]
-    assert reward_entries[-1]["observed_gain"] == ""
-    assert reward_entries[-1]["observation_status"] == "not_required"
+    assert reward_entries[-1]["observed_gain"]
+    assert reward_entries[-1]["observation_status"] == "semantic_reviewed"
     assert len([item for item in reward_entries if item["chapter_number"] == 1]) == 1
     transaction_reports = list((root / "70_runtime" / "transactions").glob("*chapter_finalize_ch001*.json"))
     assert transaction_reports
@@ -653,20 +646,6 @@ def test_continue_write_does_not_leak_previous_editorial_findings_to_author(tmp_
     )
 
     complete_unified_semantic_lifecycle(root, project_config, 1)
-    simulation_path = write_arc_simulation_fixture(root, from_chapter=1, to_chapter=20)
-    chapter_two_card_path = root / "20_outline" / "chapter_cards" / "ch002.json"
-    chapter_two_card = json.loads(chapter_two_card_path.read_text(encoding="utf-8"))
-    chapter_two_card["arc_simulation_ref"] = {
-        "path": simulation_path.relative_to(root).as_posix(),
-        "sha256": sha256(simulation_path.read_bytes()).hexdigest(),
-        "from_chapter": 1,
-        "to_chapter": 20,
-    }
-    chapter_two_card_path.write_text(
-        json.dumps(chapter_two_card, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
     result = continue_write(project_config, chapter_number=2)
 
     assert result.status == "task_ready"

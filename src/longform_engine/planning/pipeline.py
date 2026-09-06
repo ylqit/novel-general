@@ -12,7 +12,6 @@ import shutil
 
 from longform_engine.config import ConfigDocument
 from longform_engine.graph import cascade_graph
-from longform_engine.lengths import compile_length_forecast
 from longform_engine.memory import mark_memory_stale
 from longform_engine.storage import atomic_write_text, resolve_project_root
 
@@ -379,43 +378,22 @@ def build_outline_anchors(
     from_chapter: int,
     change_description: str,
 ) -> list[dict[str, Any]]:
-    chapter_plan = load_json(root / "20_outline" / "chapter_plan.json", default=[])
-    records = normalize_records(chapter_plan)
-    if not records:
-        forecast = compile_length_forecast(config.data["length"])
-        total = max(forecast.estimated_chapters, from_chapter)
-        step = max(1, total // forecast.estimated_volumes)
-        records = [
-            {
-                "chapter_number": chapter,
-                "title": f"Anchor ch{chapter:03d}",
-                "duty": "major arc checkpoint",
-            }
-            for chapter in range(1, total + 1, step)
-        ]
+    from .context import load_chapter_planning_context
+
     anchors: list[dict[str, Any]] = []
-    for item in records:
-        if not isinstance(item, dict):
-            continue
-        chapter = as_int(item.get("chapter_number") or item.get("chapter"))
-        if not chapter:
-            continue
-        anchors.append(
-            {
-                "chapter_number": chapter,
-                "title": item.get("title") or f"Anchor ch{chapter:03d}",
-                "duty": item.get("chapter_duty") or item.get("goal") or "maintain longform promise",
-                "status": "stale_pending_review" if chapter >= from_chapter else "locked",
-                "forbidden_reveals": list(event_values(item.get("forbidden_reveals"))),
-                "resolution_markers": list(event_values(item.get("resolution_markers"))) or ["core longform mystery", "main volume conflict"],
-                "requires_tail_suspense": bool(item.get("requires_tail_suspense")),
-                "allowed_reveal_level": str(item.get("allowed_reveal_level") or "hint"),
-                "must_preserve_suspense": list(event_values(item.get("must_preserve_suspense"))) or ["core longform mystery", "main volume conflict"],
-                "change_description": change_description if chapter >= from_chapter else "",
-                "updated_at": utc_now(),
-            }
-        )
-    anchors.sort(key=lambda item: item["chapter_number"])
+    for path in sorted((root / "20_outline" / "chapter_contracts").glob("ch*.json")):
+        chapter = int(path.stem[2:])
+        planning = load_chapter_planning_context(root, chapter)
+        anchors.append({
+            "chapter_number": chapter,
+            "title": f"第{chapter}章",
+            "duty": planning.contract["chapter_duty"],
+            "status": "stale_pending_review" if chapter >= from_chapter else "locked",
+            "protected_invariants": planning.contract["protected_invariants"],
+            "prohibited_drift": planning.contract["prohibited_drift"],
+            "change_description": change_description if chapter >= from_chapter else "",
+            "updated_at": utc_now(),
+        })
     return anchors
 
 
@@ -716,11 +694,11 @@ def consecutive_fast_before(history: list[dict[str, Any]], chapter_number: int) 
 
 def fast_quota_status(config: ConfigDocument, history: list[dict[str, Any]], chapter_number: int) -> dict[str, Any]:
     limit = as_int(config.data.get("pacing", {}).get("fast_chapter_quota_per_volume")) or 9999
-    volume = infer_volume(config, chapter_number)
+    volume = resolve_planned_volume_order(config, chapter_number)
     used = 0
     for item in history:
         chapter = as_int(item.get("chapter_number") or item.get("chapter"))
-        if chapter and infer_volume(config, chapter) == volume:
+        if chapter and resolve_planned_volume_order(config, chapter) == volume:
             if str(item.get("tier") or "") == "fast" or any(event_type in FAST_EVENT_TYPES for event_type in normalize_event_types(event_values(item.get("event_types")))):
                 used += 1
     return {"volume": volume, "used": used, "limit": limit, "blocked": used >= limit}
@@ -731,41 +709,26 @@ def volume_fast_usage(config: ConfigDocument, history: list[dict[str, Any]]) -> 
     for item in history:
         chapter = as_int(item.get("chapter_number") or item.get("chapter"))
         if chapter and (str(item.get("tier") or "") == "fast" or any(event_type in FAST_EVENT_TYPES for event_type in normalize_event_types(event_values(item.get("event_types"))))):
-            key = str(infer_volume(config, chapter))
+            key = str(resolve_planned_volume_order(config, chapter))
             usage[key] = usage.get(key, 0) + 1
     return usage
 
 
-def infer_volume(config: ConfigDocument, chapter_number: int) -> int:
-    distribution = config.data.get("pacing", {}).get("volume_distribution")
-    if isinstance(distribution, list) and distribution:
-        cursor = 0
-        for index, count in enumerate(distribution, start=1):
-            cursor += as_int(count)
-            if chapter_number <= cursor:
-                return index
-        return len(distribution)
+def resolve_planned_volume_order(config: ConfigDocument, chapter_number: int) -> int:
+    """Resolve historical/current chapter membership from approved volume ranges."""
+    from .contracts import validate_volume_skeletons
+
     root = resolve_project_root(config)
-    plan = load_json(root / "20_outline" / "chapter_plan.json", default=[])
-    row = next(
-        (
-            item for item in plan
-            if isinstance(plan, list) and isinstance(item, dict)
-            and as_int(item.get("chapter_number")) == chapter_number
-        ),
-        {},
-    )
-    volume_id = str(row.get("volume_id") or "") if isinstance(row, dict) else ""
-    volumes = load_json(root / "20_outline" / "volumes.json", default=[])
-    for index, volume in enumerate(volumes if isinstance(volumes, list) else [], start=1):
-        if isinstance(volume, dict) and str(volume.get("id") or "") == volume_id:
-            return as_int(volume.get("number")) or index
-    length = config.data["length"]
-    size = max(
-        1,
-        round(int(length["volume"]["target_characters"]) / int(length["chapter"]["target_characters"])),
-    )
-    return ((chapter_number - 1) // size) + 1
+    skeletons = load_json(root / "20_outline" / "volume_skeletons.json", default={})
+    errors: list[str] = []
+    validate_volume_skeletons(skeletons, errors)
+    if errors:
+        raise ValueError("approved volume ranges are missing or invalid: " + ";".join(errors))
+    matching = [row for row in skeletons["items"]
+                if row["chapter_range"][0] <= chapter_number <= row["chapter_range"][1]]
+    if len(matching) != 1:
+        raise ValueError("chapter must belong to exactly one approved volume range")
+    return int(matching[0]["order"])
 
 
 def event_cooldown_config(config: ConfigDocument) -> dict[str, int]:

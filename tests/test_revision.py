@@ -51,14 +51,16 @@ def test_revision_rollback_detaches_future_files_marks_stale_and_reports(tmp_pat
     assert any("ch002.md" in item for item in result.detached_files)
     assert any("ch004.md" in item for item in result.detached_files)
 
-    card = json.loads((root / "20_outline" / "chapter_cards" / "ch002.json").read_text(encoding="utf-8"))
+    card = json.loads((root / "20_outline" / "chapter_contracts" / "ch002.json").read_text(encoding="utf-8"))
     state = json.loads((root / "30_state" / "novel_state.json").read_text(encoding="utf-8"))
     rag_stale = json.loads((root / "60_rag" / "stale.json").read_text(encoding="utf-8"))
     graph_stale = json.loads((root / "30_state" / "story_graph_stale.json").read_text(encoding="utf-8"))
     task_stale = json.loads((root / "50_workbench" / "writing_tasks" / "stale.json").read_text(encoding="utf-8"))
     task = json.loads((root / "50_workbench" / "writing_tasks" / "ch004.json").read_text(encoding="utf-8"))
 
-    assert card["status"] == "stale"
+    assert "status" not in card
+    registry = json.loads((root / "30_state/stale_artifacts.json").read_text(encoding="utf-8"))
+    assert "20_outline/chapter_contracts/ch002.json" in json.dumps(registry)
     assert task["status"] == "stale"
     assert state["current_chapter"] == 1
     assert state["last_finalized_chapter"] == 1
@@ -124,7 +126,7 @@ def test_revision_rollback_late_failure_restores_files_vector_and_sqlite(tmp_pat
         for path in (
             root / "40_manuscript" / "final" / "ch002.md",
             root / "40_manuscript" / "draft" / "ch004.md",
-            root / "20_outline" / "chapter_cards" / "ch002.json",
+            root / "20_outline" / "chapter_contracts" / "ch002.json",
             root / "30_state" / "novel_state.json",
             root / "30_state" / "reader_promise_ledger.json",
             root / "50_workbench" / "editorial_patterns" / "registry.jsonl",
@@ -160,6 +162,14 @@ def seed_revision_project(tmp_path):
     config = load_project_config(template="qidian-longform")
     project = init_project(config, output=tmp_path / "novel")
     root = project.root
+    from tests.project_fixtures import persist_current_planning_fixture
+    from tests.test_v010_planning import planning_bundle
+    base = planning_bundle()["chapter_contracts"][0]
+    for chapter in range(1, 5):
+        contract = json.loads(json.dumps(base))
+        contract.update(chapter_number=chapter, contract_id=f"contract:ch{chapter:03d}", reader_promise_actions=[])
+        persist_current_planning_fixture(root, contract)
+
     (root / "20_outline" / "planning_window.json").write_text(
         json.dumps(
             {
@@ -287,17 +297,8 @@ def seed_revision_project(tmp_path):
             f"ch{number:03d} 摘要：林迟推进云门主线。\n",
             encoding="utf-8",
         )
-        (root / "20_outline" / "chapter_cards" / f"ch{number:03d}.json").write_text(
-            json.dumps({"chapter_number": number, "status": "planned", "title": f"第{number}章"}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-
     (root / "40_manuscript" / "draft" / "ch004.md").write_text(
         "# 第4章\n\n林迟开始草拟新的商路冲突。\n",
-        encoding="utf-8",
-    )
-    (root / "20_outline" / "chapter_cards" / "ch004.json").write_text(
-        json.dumps({"chapter_number": 4, "status": "planned", "title": "第4章"}, ensure_ascii=False),
         encoding="utf-8",
     )
     (root / "50_workbench" / "writing_tasks" / "ch004.json").write_text(

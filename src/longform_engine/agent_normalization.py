@@ -297,7 +297,12 @@ def normalize_and_validate_agent_result(
     warnings.extend(context_warnings)
 
     chapter_number = manifest_chapter_number(normalized_manifest)
-    planned_facts = load_planned_facts(root, chapter_number)
+    planned_facts: dict[str, Any] = {"source_path": "", "source_hash": "", "values": {}}
+    if chapter_number > 0 and (root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json").is_file():
+        try:
+            planned_facts = load_planned_facts(root, chapter_number)
+        except ValueError as exc:
+            errors.append(str(exc))
     allowed_refs = allowed_canonical_refs(registry)
     source_schema = role.output_mode
     adapter = "four_protocols_v1"
@@ -890,34 +895,13 @@ def agent_control_plane_errors(
 def load_planned_facts(root: Path, chapter_number: int) -> dict[str, Any]:
     if chapter_number <= 0:
         return {"source_path": "", "source_hash": "", "values": {}}
-    path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-    if not path.is_file():
-        return {"source_path": "", "source_hash": "", "values": {}}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return {"source_path": relative_path(root, path), "source_hash": file_hash(path), "values": {}}
-    if not isinstance(payload, dict):
-        payload = {}
-    aliases = {
-        "chapter_duty": ("chapter_duty",),
-        "reader_gain": ("reader_gain",),
-        "cost": ("cost",),
-        "promise_refs": ("promise_refs",),
-        "platform_promise": ("platform_promise",),
-        "relationship_move": ("relationship_move", "relationship_impact"),
-        "canon_refs": ("canon_refs",),
-    }
-    values: dict[str, Any] = {}
-    for target, candidates in aliases.items():
-        for candidate in candidates:
-            if candidate in payload:
-                values[target] = payload[candidate]
-                break
+    from longform_engine.planning.context import load_chapter_planning_context
+
+    planning = load_chapter_planning_context(root, chapter_number)
     return {
-        "source_path": relative_path(root, path),
-        "source_hash": file_hash(path),
-        "values": values,
+        "source_path": f"20_outline/chapter_contracts/ch{chapter_number:03d}.json",
+        "source_hash": planning.contract_sha256,
+        "values": dict(planning.contract),
     }
 
 
@@ -1022,8 +1006,8 @@ def conventional_aliases(relative: str) -> set[str]:
         aliases.update({"draft", "current_draft", "current_chapter"})
     if normalized.startswith("40_manuscript/final/"):
         aliases.update({"final", "current_final", "current_chapter"})
-    if "/chapter_cards/" in normalized:
-        aliases.add("chapter_card")
+    if "/chapter_contracts/" in normalized:
+        aliases.add("chapter_contract")
     if "gate" in normalized.lower():
         aliases.add("gate_result")
     if "context" in normalized.lower():

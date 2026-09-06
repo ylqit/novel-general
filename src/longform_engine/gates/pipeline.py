@@ -18,7 +18,10 @@ from longform_engine.agent_protocols import (
     validate_evidence_review,
     validate_review_evidence_for_source,
 )
-from longform_engine.chapter_contract import ChapterContractError, load_verified_chapter_contract
+from longform_engine.planning.context import load_chapter_planning_context
+from longform_engine.story_brief import load_current_story_brief_binding
+from longform_engine.human_chapter_intent import require_current_human_chapter_intent
+from longform_engine.chapter_contract import ChapterContractError
 from longform_engine.agent_tasks import (
     AgentTaskContractError,
     build_manifest,
@@ -170,17 +173,11 @@ def build_semantic_review_context(
     """Compile bounded canonical evidence without exposing full project state to the Agent."""
 
     payloads = {relative_path(root, path): load_json(path, default={}) for path in canonical_inputs}
-    chapter_ref = f"20_outline/chapter_cards/ch{chapter_number:03d}.json"
-    chapter_card = payloads.get(chapter_ref, {})
-    if not isinstance(chapter_card, dict):
-        chapter_card = {}
+    planning = load_chapter_planning_context(root, chapter_number)
     character_payload = payloads.get("10_bible/characters.json", {})
     graph_payload = payloads.get("30_state/story_graph.json", {})
     tcs_payload = payloads.get(f"30_state/tcs/ch{chapter_number:03d}.json", {})
-    try:
-        verified_contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
-    except ChapterContractError as exc:
-        raise GateError(str(exc)) from exc
+    verified_contract, contract_hash = planning.contract, planning.contract_sha256
     bundle_ref = f"50_workbench/fanfiction_context/ch{chapter_number:03d}.json"
     fanfiction_bundle = payloads.get(bundle_ref, {})
     review_projection = (
@@ -195,11 +192,11 @@ def build_semantic_review_context(
     ):
         raise GateError(f"context_evidence_incomplete:{bundle_ref}")
     participant_ids = semantic_review_participant_ids(
-        chapter_card,
+        list(planning.character_ids),
         source_text=source_text,
         identity_sources=(character_payload, review_projection or {}),
     )
-    canon_refs = dedupe_strings(normalize_strings(chapter_card.get("canon_refs")))
+    canon_refs = list(verified_contract["fanfiction_claim_refs"]["all_claim_refs"])
     match_terms = dedupe_strings([*participant_ids, *canon_refs])
 
     raw_sections = {
@@ -265,7 +262,11 @@ def build_semantic_review_context(
         for path in payloads
     ]
     packet = {
-        "schema": "semantic_review_context_v1",
+        "schema": "semantic_review_context_v2",
+        "planning_source_files": list(planning.source_files),
+        "approved_planning": planning.review_projection(),
+        "human_chapter_intent": require_current_human_chapter_intent(root, chapter_number)["payload"],
+        "story_brief_binding": load_current_story_brief_binding(root, chapter_number),
         "chapter_number": chapter_number,
         "chapter_contract_hash": contract_hash,
         "source_path": relative_path(root, source_path),
@@ -292,7 +293,7 @@ def build_semantic_review_context(
             "sections": section_selection,
             "notes": [
                 "The packet is a bounded review aid; canonical files remain the facts verified by the CLI.",
-                "Only the verified chapter contract, participants, declared canon references, and current state are projected.",
+                "The packet includes approved chapter planning and human intent, participants, declared canon references, and current state.",
             ],
         },
     }
@@ -301,20 +302,21 @@ def build_semantic_review_context(
     packet["selection"]["estimated_units"] = estimate_text_units(serialized, budget_contract.estimator)
     packet["selection"]["budget_profile"] = budget_contract.profile
     packet["selection"]["capacity_units"] = budget_contract.capacity_units
-    if packet["selection"]["estimated_units"] > budget_contract.input_hard_units:
+    packet["selection"]["estimated_total_input_units"] = (
+        packet["selection"]["estimated_units"] + estimate_text_units(source_text, budget_contract.estimator)
+    )
+    if packet["selection"]["estimated_total_input_units"] > budget_contract.input_hard_units:
         raise GateError("context_evidence_incomplete:prompt_budget_exceeded")
     return packet
 
 
 def semantic_review_participant_ids(
-    chapter_card: dict[str, Any],
+    character_ids: list[str],
     *,
     source_text: str = "",
     identity_sources: tuple[Any, ...] = (),
 ) -> list[str]:
-    values = [str(chapter_card.get("pov_character_id") or "")]
-    for key in ("featured_character_ids", "voice_refs", "characterization_focus"):
-        values.extend(normalize_strings(chapter_card.get(key)))
+    values = list(character_ids)
     lowered_source = source_text.casefold()
     for source in identity_sources:
         for record in semantic_review_all_records(source):
@@ -466,7 +468,7 @@ def bound_semantic_context_value(
 
 
 def semantic_review_selection_reason(path: str, *, fanfiction: bool) -> str:
-    if "/chapter_cards/" in path:
+    if "/chapter_contracts/" in path:
         return "chapter contract"
     if path.startswith("30_state/tcs/"):
         return "current chapter state"
@@ -532,7 +534,7 @@ def gate_check(
     warnings: list[str] = []
     failures.extend(check_meta_pollution(config, text))
     failures.extend(check_content_character_count(config, text))
-    failures.extend(check_chapter_card(root, chapter_number, text))
+    failures.extend(check_chapter_contract(root, chapter_number, text))
     consistency_issues, consistency_warnings = run_consistency_check(config)
     failures.extend(consistency_issues)
     warnings.extend(consistency_warnings)
@@ -668,7 +670,7 @@ def semantic_review_task(
     canonical_inputs = [
         root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json",
         root / "30_state" / "story_graph.json",
-        root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
+        root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json",
         root / "10_bible" / "characters.json",
     ]
     if current_fanfiction_bundle is not None:
@@ -694,8 +696,9 @@ def semantic_review_task(
                 "## Objective",
                 "",
                 "Judge motivation, location, ability boundaries, relationship changes, foreshadowing leakage, and causal continuity.",
-                "For fanfiction, also judge canon voice, relationship phase, source-world rules, divergence causality, "
-                "canon character agency, and original contribution. Declared AU/divergence is not itself an OOC error.",
+                "For fanfiction, follow the compiled continuity and route requirements: canon voice, relationship phase, source-world rules, "
+                "character agency and new reading value. Require divergence causality only when the approved contract applies. "
+                "Canon-compliant and prequel stories may preserve existing outcomes. Declared AU/divergence is not itself an OOC error.",
                 "Flag skin-only characterization, collective irrationality, canon characters used only as props, "
                 "or retained setting names whose declared rules no longer operate without causal support.",
                 "Every finding must cite an exact chapter character span and declared canonical references.",
@@ -791,6 +794,8 @@ def semantic_review_validate(
         allowed_statuses=("submitted", "validated"),
     )
     errors.extend(control_errors)
+    if not gate_review_context_is_current(root, chapter_number, task_type="semantic_review"):
+        errors.append("semantic review context is stale; rebuild from current planning and human intent.")
     if not isinstance(payload, dict):
         payload = {}
         errors.append("semantic review result must be a JSON object.")
@@ -879,6 +884,30 @@ def semantic_review_apply(
 ) -> SemanticReviewApplyResult:
     """Apply a validated review to gate artifacts and rerun all semantic gates."""
 
+    root = resolve_project_root(config)
+    artifact_dir = gate_artifact_dir(root, chapter_number)
+    path = resolve_semantic_review_result_path(root, artifact_dir, file_path)
+    prior_task, prior_errors = validate_current_task_result(
+        root, chapter_number=chapter_number, task_type="semantic_review", output_path=path,
+        allowed_statuses=("submitted", "validated", "applied"),
+    )
+    if not prior_errors and prior_task is not None and prior_task.get("status") == "applied":
+        application = load_json(artifact_dir / "semantic_review_application.json", default={})
+        gate_path = artifact_dir / "gate_result.json"
+        if (
+            not gate_review_context_is_current(root, chapter_number, task_type="semantic_review")
+            or application.get("schema") != "semantic_review_application_v2"
+            or application.get("context_sha256") != sha256_text(safe_read_text(artifact_dir / "semantic_review_context.json"))
+            or application.get("result_sha256") != sha256_text(safe_read_text(path))
+            or not gate_path.is_file()
+        ):
+            raise GateError("applied semantic review evidence is stale; regenerate the semantic task.")
+        return SemanticReviewApplyResult(
+            chapter_number=chapter_number, applied=True,
+            application_file=str(artifact_dir / "semantic_review_application.json"), gate_result=str(gate_path),
+            blocking_findings=sum(item.get("severity") in {"P0", "P1"} for item in application["payload"].get("findings", [])),
+            next_command="longform-engine production next project.yaml",
+        )
     validation = semantic_review_validate(config, chapter_number=chapter_number, file_path=file_path)
     if not validation.ok:
         raise GateError("semantic review result did not validate; no gate artifact was applied.")
@@ -898,7 +927,7 @@ def semantic_review_apply(
         raise GateError(f"semantic review control-plane binding is invalid: {detail}")
     application_file = artifact_dir / "semantic_review_application.json"
     payload = load_json(path, default={})
-    candidate_task = semantic_review_candidate_task(root, chapter_number)
+    candidate_task = semantic_review_candidate_binding(config, root, chapter_number)
     candidate_task_id = str(candidate_task.get("task_id") or "")
     submission_path = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.submission.json"
     candidate_manifest_paths = [
@@ -929,7 +958,9 @@ def semantic_review_apply(
         write_json(
             application_file,
             {
-                "schema": "semantic_review_application_v1",
+                "schema": "semantic_review_application_v2",
+                "context_sha256": sha256_text(safe_read_text(artifact_dir / "semantic_review_context.json")),
+                "result_sha256": sha256_text(safe_read_text(path)),
                 "chapter_number": chapter_number,
                 "result_file": relative_path(root, path),
                 "source_hash": sha256_text(safe_read_text(source)) if source is not None else "",
@@ -947,21 +978,22 @@ def semantic_review_apply(
             result=application_file,
             from_statuses=("validated",),
         )
-        update_task_status(
-            root,
-            candidate_task_id,
-            to_status="submitted",
-            command="gate semantic-apply",
-            artifact=path,
-            result=gate_result.gate_result,
-        )
-        supersede_other_candidate_tasks(
-            root,
-            chapter_number=chapter_number,
-            current_task_id=candidate_task_id,
-            command="gate semantic-apply",
-            artifact=path,
-        )
+        if candidate_task["task_type"] != "human_author_revision":
+            update_task_status(
+                root,
+                candidate_task_id,
+                to_status="submitted",
+                command="gate semantic-apply",
+                artifact=path,
+                result=gate_result.gate_result,
+            )
+            supersede_other_candidate_tasks(
+                root,
+                chapter_number=chapter_number,
+                current_task_id=candidate_task_id,
+                command="gate semantic-apply",
+                artifact=path,
+            )
         update_semantic_review_stage_projection(
             root,
             chapter_number=chapter_number,
@@ -979,7 +1011,7 @@ def semantic_review_apply(
     )
 
 
-def semantic_review_candidate_task(root: Path, chapter_number: int) -> dict[str, Any]:
+def semantic_review_candidate_binding(config: ConfigDocument, root: Path, chapter_number: int) -> dict[str, Any]:
     submission_path = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.submission.json"
     submission = load_json(submission_path, default={})
     if not isinstance(submission, dict):
@@ -987,6 +1019,21 @@ def semantic_review_candidate_task(root: Path, chapter_number: int) -> dict[str,
     source_path = str(submission.get("candidate_source_path") or submission.get("source_file") or "")
     if not source_path:
         raise GateError("Chapter submission does not identify its candidate source path.")
+    if submission.get("candidate_task_type") == "human_author_revision":
+        from longform_engine.human_author_revision import (
+            HumanAuthorRevisionError, require_current_human_author_revision,
+        )
+
+        try:
+            binding = require_current_human_author_revision(config, chapter_number=chapter_number)
+        except HumanAuthorRevisionError as exc:
+            raise GateError(str(exc)) from exc
+        identity = f"human_author_revision:ch{chapter_number:03d}:{binding['validation_sha256'][:12]}"
+        if submission.get("candidate_task_id") != identity:
+            raise GateError("Human candidate identity does not bind the current revision validation.")
+        # Human revisions have their own validated record and final lock; they
+        # must not be registered or transitioned as an AgentTaskManifest.
+        return {"task_id": identity, "task_type": "human_author_revision"}
     try:
         task = resolve_candidate_task(
             root,
@@ -1096,8 +1143,11 @@ def pacing_review(
     issues: list[str] = []
     warnings: list[str] = []
     pacing_config = config.data.get("pacing", {})
-    card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
-    event_recommendation = card.get("event_recommendation") if isinstance(card, dict) and isinstance(card.get("event_recommendation"), dict) else {}
+    load_chapter_planning_context(root, chapter_number)
+    event_matrix = load_json(root / "30_state" / "event_matrix.json", default={})
+    event_recommendation = (event_matrix.get("latest_recommendation") or {}) if isinstance(event_matrix, dict) else {}
+    if event_recommendation.get("chapter_number") != chapter_number:
+        event_recommendation = {}
     detected_event_types = infer_event_types_from_text(text)
     recommended_event_types = normalize_strings(event_recommendation.get("recommended")) if event_recommendation else []
     blocked_event_types = normalize_strings(event_recommendation.get("blocked")) if event_recommendation else []
@@ -1221,32 +1271,30 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
     task_json = artifact_dir / "semantic_pacing_task.json"
     task_md = artifact_dir / "semantic_pacing_task.md"
     manifest_file = artifact_dir / "semantic_pacing_task.agent_task.json"
-    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    card_path = root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
     event_matrix_path = root / "30_state" / "event_matrix.json"
     pacing_history_path = root / "30_state" / "pacing_history.json"
-    chapter_card = load_json(card_path, default={})
-    try:
-        verified_contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
-    except ChapterContractError as exc:
-        raise GateError(str(exc)) from exc
+    planning = load_chapter_planning_context(root, chapter_number)
+    verified_contract, contract_hash = planning.contract, planning.contract_sha256
     event_matrix = load_json(event_matrix_path, default={})
     pacing_history = load_json(pacing_history_path, default=[])
-    if not isinstance(chapter_card, dict):
-        chapter_card = {}
     if not isinstance(event_matrix, dict):
         event_matrix = {}
     if not isinstance(pacing_history, list):
         pacing_history = []
     task_payload = {
-        "schema_version": 2,
+        "schema_version": 3,
+        "planning_source_files": list(planning.source_files),
+        "approved_planning": planning.review_projection(),
+        "human_chapter_intent": require_current_human_chapter_intent(root, chapter_number)["payload"],
+        "story_brief_binding": load_current_story_brief_binding(root, chapter_number),
         "chapter_number": chapter_number,
         "source_path": relative_path(root, chapter_path),
         "source_sha256": sha256_text(safe_read_text(chapter_path)),
         "planning_context": {
             "chapter_contract": verified_contract,
             "chapter_contract_hash": contract_hash,
-            "event_recommendation": chapter_card.get("event_recommendation")
-            or event_matrix.get("latest_recommendation")
+            "event_recommendation": event_matrix.get("latest_recommendation")
             or {},
             "recent_pacing": pacing_history[-5:],
             "source_catalog": [
@@ -1280,6 +1328,12 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
         ],
         "created_at": utc_now(),
     }
+    budget = resolve_context_budget_contract(root)
+    input_units = estimate_text_units(
+        json.dumps(task_payload, ensure_ascii=False) + safe_read_text(chapter_path), budget.estimator
+    )
+    if input_units > budget.input_hard_units:
+        raise GateError("context_evidence_incomplete:prompt_budget_exceeded")
     write_json(task_json, task_payload)
     atomic_write_text(
         task_md,
@@ -1358,6 +1412,8 @@ def semantic_pacing_validate(
         allowed_statuses=("submitted", "validated"),
     )
     errors.extend(control_errors)
+    if not gate_review_context_is_current(root, chapter_number, task_type="pacing_review"):
+        errors.append("semantic pacing context is stale; rebuild from current planning and human intent.")
     payload = load_json(path, default={})
     if not isinstance(payload, dict):
         payload = {}
@@ -1462,6 +1518,8 @@ def semantic_pacing_apply(
     if control_errors:
         raise GateError("semantic pacing result has not passed the required control-plane lifecycle: " + "; ".join(control_errors))
     assert task is not None
+    if not gate_review_context_is_current(root, chapter_number, task_type="pacing_review"):
+        raise GateError("semantic pacing context is stale; regenerate the pacing task.")
     if str(task.get("status") or "") == "applied":
         gate_path = artifact_dir / "gate_result.json"
         pacing_path = artifact_dir / "pacing_review.md"
@@ -1471,6 +1529,7 @@ def semantic_pacing_apply(
         if (
             not isinstance(pacing, dict)
             or str(pacing.get("result_sha256") or "") != current_hash
+            or pacing.get("context_sha256") != sha256_text(safe_read_text(artifact_dir / "semantic_pacing_task.json"))
             or not pacing_path.is_file()
         ):
             raise GateError("applied semantic pacing evidence is stale or incomplete; regenerate the pacing task.")
@@ -1545,6 +1604,7 @@ def semantic_pacing_apply(
                     "coverage": payload.get("coverage", []),
                     "source_path": current_source_path,
                     "source_sha256": current_source_hash,
+                    "context_sha256": sha256_text(safe_read_text(artifact_dir / "semantic_pacing_task.json")),
                     "result_sha256": sha256_text(safe_read_text(path)),
                     "findings": payload.get("findings", []),
                 },
@@ -1679,12 +1739,9 @@ def check_content_character_count(config: ConfigDocument, text: str) -> list[dic
     return failures
 
 
-def check_chapter_card(root: Path, chapter_number: int, text: str) -> list[dict[str, Any]]:
-    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-    if not card_path.exists():
-        return [{"code": "chapter_card", "severity": "P1", "message": "章节卡缺失。"}]
+def check_chapter_contract(root: Path, chapter_number: int, text: str) -> list[dict[str, Any]]:
     try:
-        load_verified_chapter_contract(root, chapter_number)
+        load_chapter_planning_context(root, chapter_number)
     except ChapterContractError as exc:
         return [
             {
@@ -2550,12 +2607,12 @@ def semantic_pacing_review_status(
     quality = config.data.get("quality", {}) if isinstance(config.data.get("quality"), dict) else {}
     pacing_config = quality.get("semantic_pacing") if isinstance(quality.get("semantic_pacing"), dict) else {}
     mode = str(pacing_config.get("review_mode") or "off").strip().lower()
-    card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
+    planning = load_chapter_planning_context(root, chapter_number)
     required = mode == "required" or (
         mode == "risk_based"
         and (
             str((quality.get("profile") or {}).get("strictness") or "balanced") == "strict"
-            or bool(card.get("requires_semantic_pacing_review"))
+            or planning.is_volume_end
         )
     )
     if not required:
@@ -2569,11 +2626,13 @@ def semantic_pacing_review_status(
     applied = gate.get("semantic_pacing") if isinstance(gate, dict) else None
     complete = bool(
         draft_hash
+        and gate_review_context_is_current(root, chapter_number, task_type="pacing_review")
         and isinstance(payload, dict)
         and payload.get("schema") == EVIDENCE_REVIEW_SCHEMA
         and isinstance(applied, dict)
         and str(applied.get("source_path") or "") == relative_path(root, draft)
         and str(applied.get("source_sha256") or "") == draft_hash
+        and applied.get("context_sha256") == sha256_text(safe_read_text(gate_artifact_dir(root, chapter_number) / "semantic_pacing_task.json"))
         and str(applied.get("result_sha256") or "") == sha256_text(safe_read_text(result))
     )
     passed = complete and str(applied.get("verdict") or "") == "pass"
@@ -2593,17 +2652,42 @@ def semantic_pacing_task_is_current(root: Path, chapter_number: int, task: dict[
 
     if str(task.get("task_type") or "") != "pacing_review":
         return False
-    draft = manuscript_chapter_path(root, chapter_number, lane="draft")
-    task_json = root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "semantic_pacing_task.json"
-    if not draft.is_file() or not task_json.is_file():
+    return gate_review_context_is_current(root, chapter_number, task_type="pacing_review")
+
+
+def gate_review_context_is_current(root: Path, chapter_number: int, *, task_type: str) -> bool:
+    """Validate a captured review against current approved planning, intent and source bytes."""
+    if task_type not in {"semantic_review", "pacing_review"}:
         return False
-    payload = load_json(task_json, default={})
-    return bool(
-        isinstance(payload, dict)
-        and int(payload.get("schema_version") or 0) == 2
-        and str(payload.get("source_path") or "") == relative_path(root, draft)
-        and str(payload.get("source_sha256") or "") == sha256_text(safe_read_text(draft))
-    )
+    name = "semantic_review_context.json" if task_type == "semantic_review" else "semantic_pacing_task.json"
+    try:
+        context = load_json(gate_artifact_dir(root, chapter_number) / name, default={})
+        if not isinstance(context, dict):
+            return False
+        if task_type == "semantic_review":
+            if context.get("schema") != "semantic_review_context_v2":
+                return False
+            source_hash = context.get("source_hash")
+        else:
+            if context.get("schema_version") != 3:
+                return False
+            source_hash = context.get("source_sha256")
+        planning = load_chapter_planning_context(root, chapter_number)
+        source = resolve_under_root(root, str(context.get("source_path") or ""))
+        return bool(
+            context.get("chapter_number") == chapter_number
+            and context.get("planning_source_files") == list(planning.source_files)
+            and context.get("approved_planning") == planning.review_projection()
+            and context.get("human_chapter_intent") == require_current_human_chapter_intent(root, chapter_number)["payload"]
+            and context.get("story_brief_binding") == load_current_story_brief_binding(root, chapter_number)
+            and source.is_file() and sha256_text(safe_read_text(source)) == source_hash
+            and all(
+                sha256_text(safe_read_text(root / item["path"])) == item["sha256"]
+                for item in context.get("provenance", [])
+            )
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def semantic_review_source_for_task(
@@ -2636,7 +2720,7 @@ def semantic_review_gate_items(
 ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
     root = resolve_project_root(config)
     artifact_dir = gate_artifact_dir(root, chapter_number)
-    card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
+    planning = load_chapter_planning_context(root, chapter_number)
     quality = config.data.get("quality") if isinstance(config.data.get("quality"), dict) else {}
     milestones = {
         int(item)
@@ -2644,8 +2728,8 @@ def semantic_review_gate_items(
         if isinstance(item, int) and not isinstance(item, bool) and item > 0
     }
     explicit = (
-        (isinstance(card, dict) and bool(card.get("requires_semantic_review")))
-        or chapter_number in milestones
+        chapter_number in milestones
+        or (bool(quality.get("semantic_review_boundaries", True)) and (planning.is_volume_start or planning.is_volume_end))
     )
     deterministic_risk = any(
         str(item.get("severity") or "").upper() in {"P0", "P1"}
@@ -2658,7 +2742,10 @@ def semantic_review_gate_items(
     source_hash = sha256_text(safe_read_text(source_path))
     current = (
         isinstance(application, dict)
-        and application.get("schema") == "semantic_review_application_v1"
+        and application.get("schema") == "semantic_review_application_v2"
+        and gate_review_context_is_current(root, chapter_number, task_type="semantic_review")
+        and application.get("context_sha256") == sha256_text(safe_read_text(artifact_dir / "semantic_review_context.json"))
+        and application.get("result_sha256") == sha256_text(safe_read_text(artifact_dir / "semantic_review_result.json"))
         and str(application.get("source_hash") or "") == source_hash
         and isinstance(application.get("payload"), dict)
     )

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterable
 import json
 
+from longform_engine.planning.context import load_chapter_planning_context
 from longform_engine.agent_protocols import (
     CANONICAL_DELTA_SCHEMA,
     AgentProtocolError,
@@ -145,7 +146,7 @@ def semantic_task(config: ConfigDocument, *, chapter_number: int) -> SemanticTas
     source = manuscript_chapter_path(root, chapter_number, lane="final")
     if not source.exists():
         raise ValueError(f"Unified semantic extraction requires finalized ch{chapter_number:03d}.")
-    _require_current_fanfiction_bundle_for_semantics(config, root, chapter_number)
+    fanfiction_bundle = _require_current_fanfiction_bundle_for_semantics(config, root, chapter_number)
 
     task_dir = root / "50_workbench" / "semantic_tasks"
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -188,6 +189,14 @@ def semantic_task(config: ConfigDocument, *, chapter_number: int) -> SemanticTas
     ]
     atomic_write_text(task_file, "\n".join(lines))
     context = compile_semantic_context(root, source, chapter_number)
+    if fanfiction_bundle is not None:
+        bundle_path, bundle = fanfiction_bundle
+        context["cross_volume_continuity"] = bundle["cross_volume_continuity"]
+        context["provenance"].append({"path": relative_path(root, bundle_path), "sha256": sha256(bundle_path.read_bytes()).hexdigest(), "selection_reason": "approved consequence IDs and prior actual state"})
+        context["selection"]["notes"].append(
+            "跨卷延续后果的 claim_id 同时作为 world_deltas.fact_id。只在当前 final 明确发生、改变或解除后果时，"
+            "才用自然语言 value 和精确证据记录当前状态；计划未发生不能写成事实。伤势、关系债务、敌对关系、知识失效与总目标均可依此追踪。"
+        )
     atomic_write_text(context_file, json.dumps(context, ensure_ascii=False, indent=2) + "\n")
     inputs = [task_file, source, context_file]
 
@@ -242,7 +251,7 @@ def compile_semantic_context(
 ) -> dict[str, Any]:
     """Project canonical facts into one bounded routing packet for semantic extraction."""
 
-    chapter_card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    planning = load_chapter_planning_context(root, chapter_number)
     characters_path = root / "10_bible" / "characters.json"
     relationships_path = root / "10_bible" / "relationships.json"
     graph_path = root / "30_state" / "story_graph.json"
@@ -252,25 +261,20 @@ def compile_semantic_context(
     previous_ledger_path = root / "30_state" / "semantic_ledger" / f"ch{chapter_number - 1:03d}.json"
 
     text = source.read_text(encoding="utf-8")
-    card = read_json(chapter_card_path, {})
-    card = card if isinstance(card, dict) else {}
     characters = objects(read_json(characters_path, []))
     graph = read_json(graph_path, {})
     graph = graph if isinstance(graph, dict) else {}
 
-    declared_ids = dedupe(
-        [
-            str(card.get("pov_character_id") or ""),
-            *strings(card.get("featured_character_ids")),
-        ]
-    )
+    declared_ids = list(planning.character_ids)
     mentioned_ids = [
         str(item.get("id"))
         for item in characters
         if str(item.get("id") or "")
         and any(alias and alias in text for alias in character_aliases(item))
     ]
-    participant_ids = dedupe([*declared_ids, *mentioned_ids])[:12]
+    participant_ids = dedupe([*declared_ids, *mentioned_ids])
+    if len(participant_ids) > 12:
+        raise ValueError("prompt_budget_exceeded: semantic participants exceed context capacity")
     participant_set = set(participant_ids)
 
     character_projection = [
@@ -363,7 +367,8 @@ def compile_semantic_context(
             }
             previous_source = previous_ledger_path
 
-    provenance_paths = [characters_path, graph_path, planned_path, actual_path, chapter_card_path, tcs_path]
+    provenance_paths = [characters_path, graph_path, planned_path, actual_path, tcs_path,
+                        *(root / item["path"] for item in planning.source_files)]
     if relationship_source == relationships_path:
         provenance_paths.append(relationships_path)
     if previous_source is not None:
@@ -384,21 +389,12 @@ def compile_semantic_context(
             "path": relative_path(root, source),
             "sha256": sha256(source.read_bytes()).hexdigest(),
         },
-        "chapter_contract": compact_fields(
-            card,
-            (
-                "title",
-                "chapter_duty",
-                "conflict",
-                "chapter_turn",
-                "reveal_boundary",
-                "reader_gain",
-                "cost",
-                "relationship_move",
-                "canon_refs",
-                "protected_reveals",
-            ),
-        ),
+        "chapter_contract": compact_fields(planning.contract, (
+            "chapter_duty", "observable_change", "reader_value", "cost",
+            "protected_invariants", "prohibited_drift", "fanfiction_claim_refs",
+        )),
+        "approved_nodes": list(planning.nodes),
+        "semantic_obligations": list(planning.obligations),
         "required_coverage": {
             "featured_character_ids": participant_ids,
             "active_thread_ids": active_ids,
@@ -1467,7 +1463,7 @@ def _require_current_fanfiction_bundle_for_semantics(
     config: ConfigDocument,
     root: Path,
     chapter_number: int,
-) -> None:
+) -> tuple[Path, dict[str, Any]] | None:
     if str(config.data.get("creation", {}).get("mode") or "original") != "fanfiction":
         return
     from longform_engine.fanfiction_context import (
@@ -1476,7 +1472,7 @@ def _require_current_fanfiction_bundle_for_semantics(
     )
 
     try:
-        require_current_fanfiction_context_bundle(config, chapter_number=chapter_number)
+        return require_current_fanfiction_context_bundle(config, chapter_number=chapter_number)
     except FanfictionContextError as exc:
         raise ValueError(
             f"fanfiction semantic context is missing or stale before canonical write: {exc}"
@@ -2700,7 +2696,7 @@ def dedupe_paths(values: Iterable[Path]) -> list[Path]:
 
 def semantic_context_selection_reason(path: Path) -> str:
     name = path.name
-    if name.startswith("ch") and "chapter_cards" in path.as_posix():
+    if name.startswith("ch") and "chapter_contracts" in path.as_posix():
         return "current chapter contract"
     if name.startswith("ch") and "semantic_ledger" in path.as_posix():
         return "immediately previous evidence-bound state delta"

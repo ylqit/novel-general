@@ -49,11 +49,7 @@ DESIGN_TASK_TYPES = frozenset(
         "book_ideation",
         "book_design",
         "character_expression_design",
-        "outline_design",
         "arc_simulation",
-        "outline_extension",
-        "chapter_direction",
-        "outline_revision",
         "repair_plan_synthesis",
         "style_analysis",
         "adaptation_analysis",
@@ -108,7 +104,7 @@ DESIGN_REQUIRED_HEADINGS: dict[str, tuple[str, ...]] = {
     "book_design": (
         "读者承诺",
         "核心卖点",
-        "主角目标阶梯",
+        "人物目标与持续叙事问题",
         "长期冲突",
         "世界与能力边界",
         "人物与关系",
@@ -123,15 +119,6 @@ DESIGN_REQUIRED_HEADINGS: dict[str, tuple[str, ...]] = {
         "关系压力",
         "漂移禁区",
     ),
-    "outline_design": (
-        "全书故事弧",
-        "卷级目标与字数预算",
-        "滚动规划窗口",
-        "章节职责",
-        "人物弧",
-        "伏笔窗口",
-        "结局闭环",
-    ),
     "arc_simulation": (
         "模拟范围与依据",
         "角色私人目标与拒绝点",
@@ -140,23 +127,6 @@ DESIGN_REQUIRED_HEADINGS: dict[str, tuple[str, ...]] = {
         "碰撞点与因果义务",
         "人工批准",
     ),
-    "outline_extension": (
-        "承接状态",
-        "本轮故事弧",
-        "章节职责",
-        "人物与关系变化",
-        "伏笔窗口",
-        "字数与规划窗口",
-    ),
-    "chapter_direction": (
-        "本章目标",
-        "方向选项",
-        "场景链",
-        "人物选择与代价",
-        "主线与伏笔",
-        "人工选择",
-    ),
-    "outline_revision": ("修改目标", "影响分析", "保留项", "替换内容", "伏笔与人物弧影响"),
     "repair_plan_synthesis": (
         "候选 hash 与修复轮次",
         "完整 blocking finding 清单",
@@ -288,28 +258,7 @@ def parse_design_document(text: str, *, expected_type: str) -> DesignDocument:
         sections=parsed,
         markdown=normalized,
     )
-    if expected_type == "chapter_direction":
-        chapter_direction_option_ids(document)
     return document
-
-
-def chapter_direction_option_ids(document: DesignDocument) -> tuple[str, ...]:
-    """Return the two or three stable option IDs declared by a direction document."""
-
-    if document.document_type != "chapter_direction":
-        raise AgentProtocolError("stable direction options apply only to chapter_direction documents")
-    section = document.sections.get("方向选项", "")
-    matches = re.findall(
-        r"(?m)^#{3,6}\s+option:([a-z][a-z0-9_-]{2,63})\s+(?:[-—:：]\s*)?\S.*$",
-        section,
-    )
-    if not 2 <= len(matches) <= 3:
-        raise AgentProtocolError(
-            "chapter_direction 方向选项 must declare two or three `### option:<stable_id> — 标题` headings"
-        )
-    if len(set(matches)) != len(matches):
-        raise AgentProtocolError("chapter_direction option IDs must be unique")
-    return tuple(matches)
 
 
 def _markdown_sections(markdown: str) -> dict[str, str]:

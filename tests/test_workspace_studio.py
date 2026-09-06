@@ -66,8 +66,8 @@ def _create_payload(*, mode: str = "original") -> dict:
     }
 
 
-def _request(server, method: str, path: str, *, headers=None, payload=None):
-    connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=10)
+def _request(server, method: str, path: str, *, headers=None, payload=None, timeout=10):
+    connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=timeout)
     body = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     actual_headers = {"Host": f"127.0.0.1:{server.port}", **(headers or {})}
     if body is not None:
@@ -557,8 +557,10 @@ def test_workspace_chapter_route_mounts_the_existing_review_desk_on_the_same_ser
         assert status == 303
         cookie = headers["Set-Cookie"].split(";", 1)[0]
         chapter_path = f"/projects/{project_id}/chapters/1"
+        # Full evidence verification is deliberately uncached. This is a routing
+        # contract test, so allow coverage tracing overhead without a 10-second SLA.
         status, _headers, body = _request(
-            server, "GET", chapter_path, headers={"Cookie": cookie}
+            server, "GET", chapter_path, headers={"Cookie": cookie}, timeout=60
         )
         assert status == 200
         page = body.decode("utf-8")
@@ -567,7 +569,7 @@ def test_workspace_chapter_route_mounts_the_existing_review_desk_on_the_same_ser
 
         review_api = f"/api/projects/{project_id}/chapters/1/review"
         status, _headers, body = _request(
-            server, "GET", f"{review_api}/state", headers={"Cookie": cookie}
+            server, "GET", f"{review_api}/state", headers={"Cookie": cookie}, timeout=60
         )
         assert status == 200
         review_state = json.loads(body)
@@ -582,6 +584,7 @@ def test_workspace_chapter_route_mounts_the_existing_review_desk_on_the_same_ser
             "POST",
             f"{review_api}/human-review/prepare",
             headers=valid,
+            timeout=60,
             payload={
                 "expected_candidate_sha256": review_state["draft"]["sha256"]
             },
@@ -592,3 +595,46 @@ def test_workspace_chapter_route_mounts_the_existing_review_desk_on_the_same_ser
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_chapter_intent_web_uses_named_characters_and_rejects_stale_edits(tmp_path):
+    from tests.test_current_planning_context import approved_project
+    from longform_engine.human_chapter_intent import require_current_human_chapter_intent
+
+    _config, root = approved_project(tmp_path)
+    (root / "10_bible/characters.json").write_text(json.dumps([
+        {"id": "character:ari", "name": "阿黎"}, {"id": "character:mira", "name": "米拉"}
+    ], ensure_ascii=False), encoding="utf-8")
+    service = WorkspaceStudioService(tmp_path)
+    project_id = service._project_id(root / "project.yaml")
+    before = service.chapter_intent_state(project_id, 1)
+    assert before["candidate"] is None
+    assert before["characters"][0]["name"] == "阿黎"
+    state = service.chapter_intent_action(project_id, 1, "create", {})
+    assert state["candidate"]["expression_focus"] == {"pov_character_ids": [], "scene_kind": ""}
+    fields = {
+        "story_intent": "让对方拿到路线选择权后主动拒绝近路。",
+        "key_character_choice": "米拉选择多走一段路来核实来人的身份。",
+        "emotional_truth": "信任增加之后仍然保留不愿说出口的担心。",
+        "pov_voice_intent": "两名视角人物关注不同线索，避免互相解释已知事实。",
+        "expression_focus": {"pov_character_ids": ["character:ari", "character:mira"], "scene_kind": "对峙"},
+        "protected_items": ["不得提前知道近路的出口"],
+    }
+    saved = service.chapter_intent_action(project_id, 1, "save", {
+        "expected_sha256": state["candidate_sha256"], "fields": fields,
+    })
+    assert saved["validation"]["ok"] is True
+    with pytest.raises(WorkspaceStudioError, match="已变化"):
+        service.chapter_intent_action(project_id, 1, "save", {
+            "expected_sha256": state["candidate_sha256"], "fields": fields,
+        })
+    with pytest.raises(WorkspaceStudioError, match="明确确认"):
+        service.chapter_intent_action(project_id, 1, "apply", {
+            "expected_sha256": saved["candidate_sha256"], "acknowledge_human_decision": False,
+        })
+    service.chapter_intent_action(project_id, 1, "apply", {
+        "expected_sha256": saved["candidate_sha256"], "acknowledge_human_decision": True,
+    })
+    assert require_current_human_chapter_intent(root, 1)["payload"]["expression_focus"] == fields["expression_focus"]
+    with pytest.raises(WorkspaceStudioError, match="项目不存在"):
+        service.chapter_intent_state("project_" + "0" * 20, 1)

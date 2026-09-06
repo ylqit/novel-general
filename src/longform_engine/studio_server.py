@@ -774,7 +774,7 @@ longform-engine source-library evidence-review-apply --item-id ITEM --file REVIE
 <section data-panel="项目绑定"><h2>项目绑定</h2><pre>longform-engine fanfiction item-bind project.yaml --source-id SOURCE --item-id ITEM --approved-by human</pre></section>
 <section data-panel="动态覆盖"><h2>动态覆盖</h2><p>默认只门禁身份、设计核心和当前章节依赖；“全作到截止点”仅在人工显式选择后成为门禁。</p><pre id="coverage"></pre></section>
 <section data-panel="Canon审批"><h2>Canon审批</h2><div class="card">控制台不会直接批准 Canon。先由 Host Agent 生成任务，再执行独立校验和人工 apply。<pre id="canonCommand"></pre></div></section>
-<section data-panel="同人故事发动机"><h2>同人故事发动机</h2><p>原著基线批准后，先明确唯一初始变量、独立长期目标、可持续阻力、原著人物自主性和原作结束后的故事来源。</p><pre>longform-engine fanfiction story-engine-task project.yaml</pre></section>
+<section data-panel="同人故事发动机"><h2>同人故事发动机</h2><p>原著基线批准后，按遵循原著、分歧、架空、续作、前传或跨作品模式明确本作新增阅读价值、持续叙事动力与人物自主性。补写关系、视角和前史也是新增价值。</p><pre>longform-engine fanfiction story-engine-task project.yaml</pre></section>
 <section data-panel="原著时间与知识范围"><h2>原著时间与知识范围</h2><p>资料证据范围、项目采用截止点、故事切入点和人物知识范围彼此独立。重大分歧后的未来知识必须重新评估。</p><pre>longform-engine fanfiction status project.yaml --json</pre></section>
 <section data-panel="原著事件命运"><h2>原著事件命运</h2><p>重大原著事件使用保留、提前、延迟、结果改变、换人承担、取消、转化或待决定；修改只传播到显式依赖。</p><pre>longform-engine fanfiction event-disposition-status project.yaml --json</pre></section>
 <section data-panel="原著人物职责"><h2>原著人物职责</h2><p>路线必须保留原著人物的独立目标、拒绝权、场外行动和不能被原创主角无因果接管的职责。</p><pre>longform-engine fanfiction design-task project.yaml</pre></section>
@@ -789,7 +789,7 @@ longform-engine intelligence task project.yaml --task-type outline_design</pre><
 <section data-panel="情节节点"><h2>情节节点</h2><p>卷级、长期目标、关系阶段、分歧、死亡、背叛和能力突破需逐节点人工决定；微观动作与普通对话不逐项审批。</p><pre>longform-engine planning task project.yaml</pre></section>
 <section data-panel="滚动章节"><h2>滚动章节</h2><p>全书保留方向、当前卷保留因果、最近三章 firm、当前章形成场景级 Story Brief。</p><pre>longform-engine production next project.yaml</pre></section>
 <section data-panel="章节审阅"><h2>章节审阅</h2><pre id="reviewCommand"></pre></section>
-<section data-panel="原著一致性与同人创造性双轴审查"><h2>原著一致性与同人创造性双轴审查</h2><p>原著一致性核对知识、价值排序、关系阶段与规则；同人创造性核对新选择、分歧后果、原创主线与原著人物主体性。一般“新意不够”只作 P2 建议。</p><pre>longform-engine editorial review project.yaml --chapter N</pre></section>
+<section data-panel="原著一致性与同人创造性双轴审查"><h2>原著一致性与同人创造性双轴审查</h2><p>原著一致性核对知识、价值排序、关系阶段与规则；同人创造性按连续性模式核对新增阅读价值、适用的分歧因果与原著人物主体性。一般“新意不够”只作 P2 建议。</p><pre>longform-engine editorial review project.yaml --chapter N</pre></section>
 <section data-panel="读者反馈"><h2>读者反馈</h2><p>反馈先形成假设与人工决定，只能转成规划或 Canon 变更提案，不能直接改正文。</p><pre>longform-engine intelligence task project.yaml --task-type reader_feedback_analysis --input FEEDBACK.md</pre></section>
 <section data-panel="影响与回溯"><h2>影响与回溯</h2><div class="card">资料升级只生成影响提案；触及定稿章节时进入 revision_branch_v2，不自动替换全文。</div></section>
 <section data-panel="平台发布前确认"><h2>平台发布前确认</h2><p>分别显示起点男频与番茄免费档的政策快照、人工权利决定、陈旧原因和导出门禁。这里不自动登录、投稿或回传平台状态。</p><pre id="publicationStatus"></pre><pre id="rightsDecisionCommand"></pre></section>

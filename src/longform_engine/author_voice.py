@@ -154,27 +154,9 @@ def author_voice_requirement_reason(root: Path, chapter_number: int) -> str:
         return "opening_chapter"
     if chapter_number > 3 and chapter_number % 10 == 0:
         return "ten_closed_chapter_refresh"
-    plan = load_json(root / "20_outline" / "chapter_plan.json")
-    if isinstance(plan, list):
-        rows = {
-            int(item.get("chapter_number") or 0): item
-            for item in plan
-            if isinstance(item, dict) and int(item.get("chapter_number") or 0) > 0
-        }
-        current = rows.get(chapter_number, {})
-        next_row = rows.get(chapter_number + 1, {})
-        current_volume = str(current.get("volume_id") or "")
-        next_volume = str(next_row.get("volume_id") or "")
-        if current_volume and next_row and next_volume != current_volume:
-            return "volume_boundary"
-    card = load_json(
-        root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-    )
-    if isinstance(card, dict) and str(card.get("ending_mode") or "") in {
-        "volume_close",
-        "volume_climax",
-        "arc_close",
-    }:
+    from longform_engine.planning.context import load_chapter_planning_context
+
+    if load_chapter_planning_context(root, chapter_number).is_volume_end:
         return "volume_boundary"
     return ""
 
@@ -182,7 +164,7 @@ def author_voice_requirement_reason(root: Path, chapter_number: int) -> str:
 def relevant_author_voice_examples(
     root: Path,
     *,
-    pov_character_id: str = "",
+    pov_character_ids: tuple[str, ...] | list[str] = (),
     scene_kind: str = "",
     limit: int = 2,
 ) -> list[dict[str, Any]]:
@@ -195,11 +177,13 @@ def relevant_author_voice_examples(
         score = 0
         item_pov = str(item.get("pov_character_id") or "")
         item_scene = str(item.get("scene_kind") or "")
-        if pov_character_id and item_pov == pov_character_id:
+        if pov_character_ids and item_pov in pov_character_ids:
             score += 2
         if scene_kind and item_scene == scene_kind:
             score += 1
-        if (pov_character_id or scene_kind) and score == 0:
+        if pov_character_ids and item_pov not in pov_character_ids:
+            continue
+        if scene_kind and item_scene != scene_kind:
             continue
         scored.append((score, str(item.get("approved_at") or ""), item))
     scored.sort(key=lambda value: (value[0], value[1]), reverse=True)

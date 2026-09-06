@@ -377,12 +377,16 @@ def validate_human_story_review(
     errors = human_story_review_errors(config, chapter_number, payload)
     from longform_engine.repair_coordination import review_barrier_status
 
-    barrier = review_barrier_status(config, chapter_number=chapter_number)
-    if barrier.get("status") != "awaiting_human_story_review":
-        errors.append(
-            "human story review is only valid after every independent review is current; "
-            f"current review state is {barrier.get('status') or 'unknown'}"
-        )
+    try:
+        barrier = review_barrier_status(config, chapter_number=chapter_number)
+    except (OSError, ValueError) as exc:
+        errors.append(f"independent review evidence is missing or stale: {exc}")
+    else:
+        if barrier.get("status") != "awaiting_human_story_review":
+            errors.append(
+                "human story review is only valid after every independent review is current; "
+                f"current review state is {barrier.get('status') or 'unknown'}"
+            )
     decision = str(payload.get("decision") or "") if isinstance(payload, dict) else ""
     report_path = path.with_suffix(".validation.json")
     report = {
@@ -529,8 +533,6 @@ def apply_human_story_review(
         next_command = f"longform-engine chapter finalize project.yaml --chapter {chapter_number} --approved-by human"
     elif decision == "repair":
         next_command = f"longform-engine repair synthesis-task project.yaml --chapter {chapter_number}"
-    elif payload["redirect_scope"] == "outline_revision":
-        next_command = "longform-engine production next project.yaml"
     else:
         next_command = "longform-engine production next project.yaml"
     return HumanStoryReviewApplyResult(

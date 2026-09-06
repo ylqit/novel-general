@@ -149,6 +149,8 @@ REPOSITORY_SCAN_DIRECTORIES = (
 )
 REPOSITORY_SCAN_FILES = ("AGENTS.md", "README.md", "pyproject.toml", "resource-manifest.json")
 
+RUNTIME_EVIDENCE_CONSUMERS = {"src/longform_engine/fanfiction_literary_trial.py"}
+
 PUBLIC_CONTENT_FILES = (
     "README.md",
     "docs/ARCHITECTURE.md",
@@ -165,6 +167,7 @@ PUBLIC_CONTENT_FILES = (
     "docs/SQLITE_MODEL.md",
     "docs/STORAGE_MODEL.md",
     "docs/WEB_STUDIO.md",
+    "docs/LITERARY_TRIALS.md",
     "longform-novel-codex/SKILL.md",
     "longform-novel-claude/SKILL.md",
     "src/longform_engine/review_server.py",
@@ -263,7 +266,7 @@ RETIRED_SCHEMA_SOURCE_ALLOWLIST = {
 
 REQUIRED_RELEASE_CONTRACT_MARKERS = (('docs/OPERATOR_GUIDE.md',
   ('production next',
-   'human_chapter_intent_v2',
+   'human_chapter_intent_v3',
    'chapter_coedit_session_v2',
    'human_author_revision_v4',
    'human_story_review_v7',
@@ -289,9 +292,9 @@ REQUIRED_RELEASE_CONTRACT_MARKERS = (('docs/OPERATOR_GUIDE.md',
    'render_chapter_story_brief_markdown',
    'require_human_story_accept')),
  ('src/longform_engine/story_brief.py',
-  ('BASIS_SCHEMA = "chapter_story_brief_basis_v3"',
+  ('BASIS_SCHEMA = "chapter_story_brief_basis_v4"',
    'STORY_BRIEF_SCHEMA = "chapter_story_brief_v5"',
-   'WRITING_TASK_SCHEMA = "chapter_writing_task_v7"',
+   'WRITING_TASK_SCHEMA = "chapter_writing_task_v8"',
    'RENDERER_VERSION = "chapter_story_brief_renderer_v5"',
    'load_current_story_brief_binding',
    'story_brief_status')),
@@ -557,6 +560,7 @@ def main() -> int:
         if (
             rel not in ALLOW_FINAL_WRITES
             and rel not in READ_ONLY_CANONICAL_VALIDATORS
+            and rel not in RUNTIME_EVIDENCE_CONSUMERS
             and re.search(r"40_manuscript[\"'/\\ ]+[/\\]?final|40_manuscript/final", text)
         ):
             failures.append(f"final manuscript path referenced outside allowed modules: {rel}")
@@ -567,11 +571,14 @@ def main() -> int:
         if (
             rel not in ALLOW_AGENT_TO_CANON
             and rel not in READ_ONLY_CANONICAL_VALIDATORS
+            and rel not in RUNTIME_EVIDENCE_CONSUMERS
             and re.search(r"agent_drafts|repair_candidates|editorial_reviews/results|semantic_pacing_result", text)
         ):
             has_write_call = re.search(r"atomic_write_text|write_json|shutil\.copy|sync_database|INSERT\s+INTO", text)
             if has_write_call and re.search(r"40_manuscript[/\\]final|60_rag|story_graph\.json|70_runtime[/\\]db", text):
                 failures.append(f"agent output path and canonical path are coupled outside apply/finalize modules: {rel}")
+        if rel in RUNTIME_EVIDENCE_CONSUMERS:
+            failures.extend(check_runtime_evidence_consumer(rel, text))
         if rel in READ_ONLY_CANONICAL_VALIDATORS:
             failures.extend(check_read_only_canonical_validator(rel, text))
     failures.extend(check_experience_layer_guards())
@@ -646,6 +653,12 @@ def check_public_content_guards() -> list[str]:
             if marker in text:
                 failures.append(f"deleted phase document `{marker}` is referenced by {relpath(path)}")
         for pattern, label in FORBIDDEN_PUBLIC_CONTENT_PATTERNS:
+            # Immutable release notes may describe removal of historical interfaces.
+            # They remain subject to unsupported result/comparison claim guards.
+            if path.parent == ROOT / "docs" / "releases" and label in {
+                "public Benchmark reference", "public market-comparison option", "literary evaluation claim",
+            }:
+                continue
             if pattern.search(text):
                 failures.append(f"{label} appears in {relpath(path)}")
     return failures
@@ -989,6 +1002,20 @@ def check_public_distribution_guards() -> list[str]:
     status_text = (SRC / "quality" / "status.py").read_text(encoding="utf-8", errors="ignore")
     if "literary_evidence" in status_text:
         failures.append("quality status must not project internal literary-evaluation state")
+    return failures
+
+
+def check_runtime_evidence_consumer(relative: str, text: str) -> list[str]:
+    """Trial evidence is read-only; evaluation artifacts belong to a fixed runtime lane."""
+    failures: list[str] = []
+    collector = function_body(text, "collect_literary_sample")
+    if not collector or re.search("|".join(DIRECT_WRITER_PATTERNS), collector):
+        failures.append(f"literary canonical evidence collector must be read-only: {relative}")
+    if 'TRIAL_DIRECTORY = "70_runtime/literary_trials"' not in text:
+        failures.append(f"literary trials require their fixed runtime directory: {relative}")
+    for forbidden in ("apply_transaction", "sync_database", "update_task_status", "shutil.copy", "shutil.move"):
+        if forbidden in text:
+            failures.append(f"literary evaluation cannot call canonical mutation `{forbidden}`: {relative}")
     return failures
 
 

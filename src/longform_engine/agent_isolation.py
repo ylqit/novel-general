@@ -57,7 +57,7 @@ TASK_OBJECTIVES: dict[str, str] = {
     "arc_simulation": "在滚动窗口内模拟人物目标、拒绝、场外行动与逐章因果义务，不代写正文。",
     "book_design": "建立可执行的读者承诺、稳定人物、世界规则、长期矛盾与结局边界。",
     "book_ideation": "只解决一个明确创作决定，并呈现每个可行选择的真实代价。",
-    "chapter_direction": "提供因果上真正不同的章节方向与代价，不代写正文。",
+
     "chapter_semantic_planning": "把当前章节状态、人物欲望、阻力、选择和读者价值整理成可读语义规划。",
     "chapter_semantic": "只记录有正文证据的人物、关系、承诺、世界和时间线增量。",
     "chapter_write": "以场景、选择和反应写出完整章节，兑现本章职责。",
@@ -71,11 +71,11 @@ TASK_OBJECTIVES: dict[str, str] = {
     "editorial_review": "只从声明的专业编辑视角审稿，并引用可观察证据。",
     "fanfiction_canon": "转述 canon 事实、时间线、人物声音和来源证据，不复制连续原文。",
     "fanfiction_story_engine": (
-        "选择主角中心、原著角色中心或混合路线，建立唯一初始变量、长期目标、持续阻力、"
-        "主角与原著关系、读者识别承诺和原作结束后的原创主线承诺。"
+        "选择主角中心、原著角色中心或混合路线，按当前连续性合同建立新增阅读价值、持续叙事动力、"
+        "主角与原著关系、读者识别承诺和叙事责任分配。"
     ),
     "fanfiction_design": (
-        "设计分歧链、原著事件处置、责任承担、一二阶后果、原创新问题和人物还原边界。"
+        "按连续性合同设计保留边界、新增阅读价值、事件处置适用性和人物责任；分歧模式说明因果后果。"
     ),
     "fanfiction_design_review": "在隔离会话中复核原著基线、分歧因果、人物自主性、长期发动机与动态跨界规则，不修改路线。",
     "fanfiction_future_knowledge_reassessment": (
@@ -86,9 +86,9 @@ TASK_OBJECTIVES: dict[str, str] = {
     "prose_revision_review": "按单一修订目标检查场景具体性、声音、信息释放、节奏、重复或文句。",
     "prose_revision_semantic_review": "核验任意双稿修订前后的事实、合同、结果和人物知识是否保持一致。",
     "human_review_consult": "协作期提供二至三个可选方案，终稿期只读回答；从不直接执行修改。",
-    "outline_design": "分配全书故事弧与卷预算，只细化当前滚动章节窗口。",
-    "outline_extension": "只延伸一个受控滚动窗口，不重写已批准历史。",
-    "outline_revision": "只修改声明范围，并指出具体的后续连贯性影响。",
+
+
+
     "pacing_review": "根据正文判断压力、释放、转折、停顿和余波，不套固定配额。",
     "reader_payoff_review": "判断正文实际交付的收益、代价、承诺推进和结尾功能。",
     "reader_feedback_analysis": "把非 Canon 读者反馈整理成假设与修改提案，不直接改变正文。",

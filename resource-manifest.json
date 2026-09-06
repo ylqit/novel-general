@@ -7,8 +7,8 @@
     },
     {
       "path": "config/agent_protocol_acceptance_fixtures.yaml",
-      "sha256": "45b41c36d14c91d7d3908dda2315fb2f55fd44a1a12cadd9af9f3b3731700e23",
-      "size": 34538
+      "sha256": "8bcb6f5f87988f67c2da1dfda69b96c06a230d65999bb444f50630aa53a2747b",
+      "size": 35087
     },
     {
       "path": "config/agent_roles/playbooks/anti_template_expression.md",
@@ -32,8 +32,8 @@
     },
     {
       "path": "config/agent_roles/playbooks/fanfiction_canon.md",
-      "sha256": "928b2ae33fdb18dbf7ef53188d3900b53fada1652df6ff462b985b852cafbb83",
-      "size": 3950
+      "sha256": "19978ea0dcad5e6cbe646fd66b11c379702232e8933496a571bf01fec8ef71f0",
+      "size": 4001
     },
     {
       "path": "config/agent_roles/playbooks/foreshadow_and_mystery.md",
@@ -47,8 +47,8 @@
     },
     {
       "path": "config/agent_roles/playbooks/opening_and_mainline.md",
-      "sha256": "697950e4976e920aea4c09238fb559592b1a40c849e868a81a14808acea4187c",
-      "size": 3350
+      "sha256": "755bba56b8a9b3b2ca5d2eb68ed245bd7ae0a1c576cc658212c2105f83d7b732",
+      "size": 3515
     },
     {
       "path": "config/agent_roles/playbooks/relationship_dynamics.md",
@@ -77,18 +77,18 @@
     },
     {
       "path": "config/agent_roles/prompts/anti_template_editor.md",
-      "sha256": "c1b2aa3d07d5446f8055b602984ddf2b989b6985b1a208717fb05e45283fc672",
-      "size": 4425
+      "sha256": "e22498115e73ede17ffa5f93b80e59dd84515a411f1a8a73ff4624d7aa816478",
+      "size": 5182
     },
     {
       "path": "config/agent_roles/prompts/book_architect.md",
-      "sha256": "50be763ae08f0881f79838b1bf5ec8e92ae399373fa116fb4ff134d27069b091",
-      "size": 4766
+      "sha256": "59ade191e4dff35a483982e1cfd77e7d41a5bdf7489e998146ba336183febd57",
+      "size": 5174
     },
     {
       "path": "config/agent_roles/prompts/canon_fidelity_reviewer.md",
-      "sha256": "fc962e3b2cbc2bad5ab6069143073c1787fb2a30e74d126547a48bebeab58f09",
-      "size": 6704
+      "sha256": "592f51712629b735deae67d581c1c7ac1050d0111547b2901760c0ed62b8371d",
+      "size": 7510
     },
     {
       "path": "config/agent_roles/prompts/canonical_semantic_archivist.md",
@@ -101,14 +101,9 @@
       "size": 4950
     },
     {
-      "path": "config/agent_roles/prompts/chapter_story_editor.md",
-      "sha256": "b5bf8b0a6b8a9c5cb77b51a86f16a09c251d378aa039399cb782ad6a1a3ab8be",
-      "size": 4442
-    },
-    {
       "path": "config/agent_roles/prompts/character_editor.md",
-      "sha256": "9ebaf8f84094743043a7fc02b21c5d4dde68c9d76e91a3e3c528e8e7eb15b4db",
-      "size": 4268
+      "sha256": "dd77190657bb71e3d39ed89097297c5a1feee7e512faabf0d4fd1a4eb7fe3369",
+      "size": 4884
     },
     {
       "path": "config/agent_roles/prompts/character_performance_architect.md",
@@ -119,11 +114,6 @@
       "path": "config/agent_roles/prompts/character_performance_reviewer.md",
       "sha256": "17e7de4bf6ad26baabc968754898a335ae5678ea05111e20027627680c668490",
       "size": 4212
-    },
-    {
-      "path": "config/agent_roles/prompts/continuity_outline_editor.md",
-      "sha256": "13c04140fb9ad3e9e6dfd9500894ab41d17ecfdb92a70adde525f167c66fc2f8",
-      "size": 4058
     },
     {
       "path": "config/agent_roles/prompts/creative_facilitator.md",
@@ -137,8 +127,8 @@
     },
     {
       "path": "config/agent_roles/prompts/fanfiction_architect.md",
-      "sha256": "5eec14ca28fe497369e32196b11c525436e1fc033d2e628acb25e4e746f5dc8b",
-      "size": 8087
+      "sha256": "76098b3d446755c2520576d207ba8950bfcd14d2af7c406c8969c1b98b96624d",
+      "size": 8956
     },
     {
       "path": "config/agent_roles/prompts/fanfiction_canon_archivist.md",
@@ -147,8 +137,8 @@
     },
     {
       "path": "config/agent_roles/prompts/fanfiction_route_reviewer.md",
-      "sha256": "558d205a1b7e472429d686206aac9bc1f2a24f00816aaace00d973ff6a3cdc22",
-      "size": 5883
+      "sha256": "d3434136122121e8bca377e1182b7b6c1c5e8c50e1b7850a8216fd6d1b6e8c90",
+      "size": 6683
     },
     {
       "path": "config/agent_roles/prompts/human_author_advisor.md",
@@ -157,8 +147,8 @@
     },
     {
       "path": "config/agent_roles/prompts/longform_outline_architect.md",
-      "sha256": "bb04563d15699a5701e739852899415505e4d064cafe83b00237bda11f1feb6a",
-      "size": 5219
+      "sha256": "bf2b487304ab1918e7898e68aea2921884c407b5dbb3d73793808f5640d57b1a",
+      "size": 5518
     },
     {
       "path": "config/agent_roles/prompts/planning_chief_editor.md",
@@ -167,8 +157,8 @@
     },
     {
       "path": "config/agent_roles/prompts/prose_naturalness_editor.md",
-      "sha256": "b3d9de767fcc109fcf7e9726cf076c86622a69b0ff542820c72a7bf2110bd1f9",
-      "size": 4109
+      "sha256": "243b1b9b8c42a2bce511b18246a4a07c823c879c73513a4304d5db24fd407977",
+      "size": 5085
     },
     {
       "path": "config/agent_roles/prompts/prose_revision_semantic_reviewer.md",
@@ -202,8 +192,8 @@
     },
     {
       "path": "config/agent_roles/prompts/scene_prose_editor.md",
-      "sha256": "4142145ba7bc6cda6c9c7d097c8dfd462f5c13945af84cf4f3e4daa25048a2bb",
-      "size": 5488
+      "sha256": "6424b4ef81a1b3956d8dde925969271ff091132b0e18a2b977a49bcf3343a926",
+      "size": 6191
     },
     {
       "path": "config/agent_roles/prompts/semantic_continuity_reviewer.md",
@@ -242,8 +232,8 @@
     },
     {
       "path": "config/agent_roles/registry.json",
-      "sha256": "c74629b1ae144f9cfc869ecf9ce4a83c89622860f29cf6fdfc61a8a39adf65a5",
-      "size": 43739
+      "sha256": "b1ac2b34936fd2dbe24212ddc0063934f4dba628ce6bee86db84ef89b78b18ba",
+      "size": 41243
     },
     {
       "path": "config/default.engine.yaml",
@@ -282,8 +272,8 @@
     },
     {
       "path": "config/quality_profiles/overlays/cn_longform_fanfiction.yaml",
-      "sha256": "a781ce5d1dcdaa5c8f79d973579905beb01ab093a006dde3c5336689724edb61",
-      "size": 1405
+      "sha256": "287fc233d6f3922bc0ce5adb6844896ca39238c0494543650beff59c8731d377",
+      "size": 1462
     },
     {
       "path": "config/quality_profiles/overlays/fanqie_free_fanfiction.yaml",
@@ -372,28 +362,28 @@
     },
     {
       "path": "longform-novel-claude/references/command_protocol.md",
-      "sha256": "fa589d36cdb1819e5a850e1ce46e626eae0e4fa54c27e8e7b6bdbd7cc4d5347b",
-      "size": 50220
+      "sha256": "1c3d6583ae9149f8820aa7b17535dc4218531b379fd1895e27b86ad148010d92",
+      "size": 49526
     },
     {
       "path": "longform-novel-claude/references/creative_operator_protocol.md",
-      "sha256": "82e3af7e5a79873d54e655dd1240209d8282acf9a6adf24ec2ef07385168220b",
-      "size": 12829
+      "sha256": "13bf182c6f6bac1d780bed23692768a942d20201dda75bd402690a5609bfcb3c",
+      "size": 12801
     },
     {
       "path": "longform-novel-claude/references/iron_laws.md",
-      "sha256": "e087082c23a007a3558f052b59464fb8777140c8128b55ff8f82167af85dfb3a",
-      "size": 15463
+      "sha256": "a5be38b60b0c11fa1c5e60879a4f8e16b32a8d5cbcdbc8b47b30a5295454f075",
+      "size": 15424
     },
     {
       "path": "longform-novel-claude/references/workflow_mapping.md",
-      "sha256": "9b0bbbca9777e925d3910baab48d4e1e39c0c8e53b2650d9e7d81b0739393ca2",
-      "size": 11598
+      "sha256": "e23b1314b7be96e9a41fbc67307c0b14342c05ca36ea9b7999591937d4bcca29",
+      "size": 11771
     },
     {
       "path": "longform-novel-claude/SKILL.md",
-      "sha256": "79ed95f8a6328c8182dc256c6f870a55c10bf952a5bbeab0283ed8ecf9318ecf",
-      "size": 10799
+      "sha256": "384312257d4f01596460cf769b9cc59cc480ec46152cb133add77e38fa615a4d",
+      "size": 10798
     },
     {
       "path": "longform-novel-codex/agents/openai.yaml",
@@ -407,28 +397,28 @@
     },
     {
       "path": "longform-novel-codex/references/command_protocol.md",
-      "sha256": "fa589d36cdb1819e5a850e1ce46e626eae0e4fa54c27e8e7b6bdbd7cc4d5347b",
-      "size": 50220
+      "sha256": "1c3d6583ae9149f8820aa7b17535dc4218531b379fd1895e27b86ad148010d92",
+      "size": 49526
     },
     {
       "path": "longform-novel-codex/references/creative_operator_protocol.md",
-      "sha256": "82e3af7e5a79873d54e655dd1240209d8282acf9a6adf24ec2ef07385168220b",
-      "size": 12829
+      "sha256": "13bf182c6f6bac1d780bed23692768a942d20201dda75bd402690a5609bfcb3c",
+      "size": 12801
     },
     {
       "path": "longform-novel-codex/references/iron_laws.md",
-      "sha256": "e087082c23a007a3558f052b59464fb8777140c8128b55ff8f82167af85dfb3a",
-      "size": 15463
+      "sha256": "a5be38b60b0c11fa1c5e60879a4f8e16b32a8d5cbcdbc8b47b30a5295454f075",
+      "size": 15424
     },
     {
       "path": "longform-novel-codex/references/workflow_mapping.md",
-      "sha256": "9b0bbbca9777e925d3910baab48d4e1e39c0c8e53b2650d9e7d81b0739393ca2",
-      "size": 11598
+      "sha256": "e23b1314b7be96e9a41fbc67307c0b14342c05ca36ea9b7999591937d4bcca29",
+      "size": 11771
     },
     {
       "path": "longform-novel-codex/SKILL.md",
-      "sha256": "89d54a63e96b629826f22085dc60280415b01113fe8166068a28853fa9557a2a",
-      "size": 11293
+      "sha256": "11532871280c499f1311f803f9d299c48ceb2ebbd44d1f8b7afd4d66ce8c1ded",
+      "size": 11292
     },
     {
       "path": "pyproject.toml",
@@ -442,23 +432,23 @@
     },
     {
       "path": "shared/command_protocol.md",
-      "sha256": "fa589d36cdb1819e5a850e1ce46e626eae0e4fa54c27e8e7b6bdbd7cc4d5347b",
-      "size": 50220
+      "sha256": "1c3d6583ae9149f8820aa7b17535dc4218531b379fd1895e27b86ad148010d92",
+      "size": 49526
     },
     {
       "path": "shared/creative_operator_protocol.md",
-      "sha256": "82e3af7e5a79873d54e655dd1240209d8282acf9a6adf24ec2ef07385168220b",
-      "size": 12829
+      "sha256": "13bf182c6f6bac1d780bed23692768a942d20201dda75bd402690a5609bfcb3c",
+      "size": 12801
     },
     {
       "path": "shared/iron_laws.md",
-      "sha256": "e087082c23a007a3558f052b59464fb8777140c8128b55ff8f82167af85dfb3a",
-      "size": 15463
+      "sha256": "a5be38b60b0c11fa1c5e60879a4f8e16b32a8d5cbcdbc8b47b30a5295454f075",
+      "size": 15424
     },
     {
       "path": "shared/workflow_mapping.md",
-      "sha256": "9b0bbbca9777e925d3910baab48d4e1e39c0c8e53b2650d9e7d81b0739393ca2",
-      "size": 11598
+      "sha256": "e23b1314b7be96e9a41fbc67307c0b14342c05ca36ea9b7999591937d4bcca29",
+      "size": 11771
     },
     {
       "path": "templates/qidian-longform/project.yaml",

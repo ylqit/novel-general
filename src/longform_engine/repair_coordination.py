@@ -41,58 +41,10 @@ REPAIR_PLAN_VALIDATION_SCHEMA = "validation_report_v1"
 BLOCKING_SEVERITIES = frozenset({"P0", "P1"})
 REVIEW_ORDER = ("semantic", "payoff", "pacing", "editorial", "human_story")
 FINDING_ID_PATTERN = re.compile(r"RF-[0-9a-f]{12}")
-REPAIR_CARD_FIELDS = (
-    "chapter_number",
-    "title",
-    "chapter_duty",
-    "immediate_desire",
-    "opposition_force",
-    "dramatic_question",
-    "conflict",
-    "key_failure",
-    "irreversible_choice",
-    "chapter_turn",
-    "reveal_boundary",
-    "must_dramatize",
-    "may_summarize",
-    "primary_story_engine",
-    "scene_carriers",
-    "protected_story_outcomes",
-    "prohibited_drift",
-    "state_change_kind",
-    "dramatic_method",
-    "exposition_carrier",
-    "ending_intent",
-    "ending_mode",
-    "reader_gain",
-    "cost",
-    "platform_promise",
-    "pov_character_id",
-    "featured_character_ids",
-    "scene_wants",
-    "opposing_wants",
-    "hidden_agenda",
-    "relationship_move",
-    "voice_state",
-    "embodiment_strategy",
-    "summary_scene_policy",
-    "emotional_aftereffect",
-    "must_preserve_suspense",
-    "resolution_markers",
-    "forbidden_reveals",
-    "canon_refs",
-    "divergence_effects",
-    "voice_refs",
-    "original_contribution",
-    "protected_reveals",
-    "scene_chain",
-    "dialogue_ownership",
-    "interiority_function",
-    "ending_mode",
-    "longline_impact",
-    "character_arc_move",
-    "foreshadow_impact",
-    "relationship_impact",
+REPAIR_CONTRACT_FIELDS = (
+    "chapter_number", "chapter_duty", "topology", "observable_change", "reader_value",
+    "failure", "choice", "cost", "aftermath", "protected_invariants", "prohibited_drift",
+    "semantic_obligation_refs", "reader_promise_actions", "fanfiction_claim_refs",
 )
 REPAIR_TCS_FIELDS = (
     "active_relationships",
@@ -1084,15 +1036,21 @@ def _semantic_stage(root: Path, chapter: int, candidate_hash: str, gate: dict[st
     required = bool(state.get("required"))
     if not required:
         return {"required": False, "complete": True, "need_human": False, "reason": "not_required"}
+    from longform_engine.gates.pipeline import gate_review_context_is_current, sha256_text
+    artifact_dir = root / "50_workbench" / "gate_artifacts" / f"ch{chapter:03d}"
     loaded_application = load_json(
-        root / "50_workbench" / "gate_artifacts" / f"ch{chapter:03d}" / "semantic_review_application.json",
+        artifact_dir / "semantic_review_application.json",
         default={},
     )
     application: dict[str, Any] = loaded_application if isinstance(loaded_application, dict) else {}
     payload = application.get("payload")
     complete = bool(
         isinstance(payload, dict)
-        and application.get("schema") == "semantic_review_application_v1"
+        and application.get("schema") == "semantic_review_application_v2"
+        and gate_review_context_is_current(root, chapter, task_type="semantic_review")
+        and (artifact_dir / "semantic_review_result.json").is_file()
+        and application.get("context_sha256") == sha256_text((artifact_dir / "semantic_review_context.json").read_text(encoding="utf-8"))
+        and application.get("result_sha256") == sha256_text((artifact_dir / "semantic_review_result.json").read_text(encoding="utf-8"))
         and str(application.get("source_hash") or "") == candidate_hash
     )
     verdict = str(payload.get("verdict") or "") if isinstance(payload, dict) else ""
@@ -1153,6 +1111,8 @@ def _pacing_stage(config: ConfigDocument, root: Path, chapter: int, candidate_ha
 
 
 def _editorial_stage(config: ConfigDocument, root: Path, chapter: int, candidate_hash: str) -> dict[str, Any]:
+    from longform_engine.editorial.pipeline import editorial_aggregate_is_current
+
     required = bool(editorial_review_required_reasons(config, chapter_number=chapter))
     if not required:
         return {"required": False, "complete": True, "need_human": False, "reason": "not_required"}
@@ -1163,6 +1123,7 @@ def _editorial_stage(config: ConfigDocument, root: Path, chapter: int, candidate
     ) if isinstance(aggregate, dict) else True
     complete = bool(
         isinstance(aggregate, dict)
+        and editorial_aggregate_is_current(root, chapter, aggregate)
         and str(aggregate.get("source_sha256") or "") == candidate_hash
         and int(aggregate.get("result_count") or 0) > 0
         and not structural
@@ -1278,10 +1239,13 @@ def _admit_finding(
 
 
 def _repair_context(root: Path, chapter: int, candidate_hash: str) -> dict[str, Any]:
+    from longform_engine.planning.context import load_chapter_planning_context
+
+    load_chapter_planning_context(root, chapter)
     sources = [
         (
-            root / "20_outline" / "chapter_cards" / f"ch{chapter:03d}.json",
-            REPAIR_CARD_FIELDS,
+            root / "20_outline" / "chapter_contracts" / f"ch{chapter:03d}.json",
+            REPAIR_CONTRACT_FIELDS,
             "chapter repair contract",
         ),
         (

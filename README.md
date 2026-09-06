@@ -99,7 +99,7 @@ longform-engine production next project.yaml
 → 同人故事发动机候选与人工批准
 → 同人路线候选、隔离复核与人工批准
 → 活动卷投影、原著事件命运、人物知识边界和跨界规则
-→ 当前章节 fanfiction_context_bundle_v2
+→ 当前章节 fanfiction_context_bundle_v3
 ```
 
 默认资料门禁只要求 `design_core` 和当前章节真实依赖的 `chapter_dependency`。截至截止点的全作覆盖只有在作者明确选择 `whole_to_cutoff` 后才成为门禁。每部原著独立保存身份、版本、截止点、证据和绑定；完整原件保留在用户资料库，项目只保存固定绑定、批准语义主张与必要短证据。
@@ -124,10 +124,10 @@ longform-engine production next project.yaml
 
 ```text
 chapter_contract_v5
-→ human_chapter_intent_v2
-→ chapter_story_brief_basis_v3
+→ human_chapter_intent_v3
+→ chapter_story_brief_basis_v4
 → chapter_story_brief_v5
-→ chapter_writing_task_v7
+→ chapter_writing_task_v8
 ```
 
 作者工作单只显示可读故事信息，不包含控制面 ID、hash、原始 RAG、Graph、SQLite、平台诊断或 Prompt 日志。每章写作使用新的作者会话；repair 可以继续本章会话；独立审稿和语义提取使用隔离会话。
@@ -196,3 +196,5 @@ longform-engine production next project.yaml
 ## License
 
 See [LICENSE](LICENSE).
+
+本地质量评测的创建、匿名评分、证据绑定和分阶段试写流程见[质量评测与试写指南](docs/LITERARY_TRIALS.md)。生产协议可用、人工终稿验收、试写证据与平台预检分别显示，未完成真实试写时不宣称文学质量已合格。

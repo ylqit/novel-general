@@ -18,7 +18,7 @@
 | `20_outline/chapter_forecasts/chNNN.json` | 逐章滚动预测 |
 | `20_outline/chapter_contracts/chNNN.json` | 唯一 `chapter_contract_v5` |
 | `20_outline/plot_nodes/chNNN.json` | 逐节点人工审批表 |
-| `20_outline/chapter_intents/chNNN.json` | `human_chapter_intent_v2` |
+| `20_outline/chapter_intents/chNNN.json` | `human_chapter_intent_v3` |
 | `30_state/semantic_obligations.json` | 语义义务账本 |
 | `30_state/narrative_events/chNNN.json` | 获批事件与实现证据 |
 | `30_state/reader_promise_ledger.json` | `reader_promise_ledger_v2` |
@@ -34,7 +34,7 @@
 | `50_workbench/同人原著资料/<作品名>/` | 项目级中文资料包、覆盖计划、固定绑定、批准提取和短证据；不含完整原件 |
 | `10_bible/fanfiction/story_engine.json` | 人工批准的同人故事发动机语义文档 |
 | `10_bible/fanfiction/fanfiction_bible.json` | 绑定独立复核 hash 的正式同人连续性与路线语义文档 |
-| `50_workbench/fanfiction_context/chNNN.json` | 可重建且仅接受当前版本的内部 `fanfiction_context_bundle_v2`；包含显式必需 claim、带理由依赖闭包、结构化分区、作者/审阅双投影、命名冲突和预算，不是作者稿 |
+| `50_workbench/fanfiction_context/chNNN.json` | 可重建且仅接受当前版本的内部 `fanfiction_context_bundle_v3`；包含显式必需 claim、带理由依赖闭包、结构化分区、作者/审阅双投影、命名冲突和预算，不是作者稿 |
 | `50_workbench/fanfiction_knowledge_impacts/chNNN.<trigger-digest>.workflow.json` | 每项经人工确认的重大分歧各自对应的未来知识可靠性待审工作流；按触发身份幂等，不自动改变 Canon 或路线 |
 | `50_workbench/publication/rights_decisions/<target>.decision.json` | `fanfiction_publication_rights_decision_v1`；仅保存人工 `proceed/hold`、风险说明及配置/Canon/逐来源权利声明/目标政策快照 hash，不保存原著、Prompt 或正文 |
 | `50_workbench/创作沙盒/` | 可自由试验的非 Canon `semantic_document_v1` |
@@ -52,9 +52,9 @@
 
 `50_workbench/writing_tasks/` 保存：
 
-- `chNNN.json`：`chapter_writing_task_v7`；
+- `chNNN.json`：`chapter_writing_task_v8`；
 - `chNNN.md`：作者唯一可读的 `chapter_story_brief_v5`；
-- `chNNN.basis.json`：`chapter_story_brief_basis_v3`；
+- `chNNN.basis.json`：`chapter_story_brief_basis_v4`；
 - `chNNN.agent_task.json`：活动 Agent manifest；
 - `chNNN.fact_inventory.json`：控制面事实投影。
 

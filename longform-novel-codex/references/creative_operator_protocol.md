@@ -26,18 +26,18 @@ Canonical state changes must go through CLI commands: `draft submit`, `chapter f
 
 - After `open-book`, follow `production next` through `book_ideation`. Each work order asks one core question and offers two or three options with tradeoffs. Do not infer a selection from silence.
 - Write only `book_ideation_candidate_v1`; the CLI saves one explicitly selected/provided answer through `intelligence apply --approved-by human`.
-- A normal chapter proceeds from the approved firm contract, Plot Node decisions and human chapter intent. Only an explicit human-review redirect creates `chapter_direction`; in that redirect task, offer two or three causally distinct options with stable IDs and costs, then record the user's selection in `chapter_direction_selection_v1`. Do not write chapter prose in a redirect task.
-- After Plot Node approval, the human completes the blank `human_chapter_intent_v2` form. Do not prefill story intent, key choice, emotional truth, POV voice intent, or protected items; writing cannot start until the record binds the current approval and contract.
-- Read the `effective_quality_contract_v1` embedded in the chapter card/writing brief. It combines market, genre, phase, approved baseline, and project overrides, but is not a universal sentence-length, dialogue-density, pace, or cliffhanger template.
+- A normal chapter proceeds from the approved firm contract, Plot Node decisions and human chapter intent. An explicit human-review redirect returns to the current planning, independent review and human approval flow; do not write replacement prose before that flow completes.
+- After Plot Node approval, the human completes the blank `human_chapter_intent_v3` form. Do not prefill story intent, key choice, emotional truth, POV voice intent, or protected items; writing cannot start until the record binds the current approval and contract.
+- The author follows the readable quality requirements in the Story Brief. The CLI owns `effective_quality_contract_v1`; it combines market, genre, phase, approved baseline and project overrides without imposing a sentence-length, dialogue-density or cliffhanger template.
 - Never add a finalized chapter to the approved style baseline automatically. Only the explicit `quality baseline-approve` CLI command may add its prose-free craft fingerprint.
 
 ## `/工程续章` Pre-Write Guide
 
 Use this guide before writing any new chapter draft. `/工程续章` is the primary Chinese engineering entry for continuing a chapter; it maps to `longform-engine continue-write project.yaml --chapter N`.
 
-Before prose is written, the author Agent reads only `50_workbench/writing_tasks/chNNN.md`, the rendered `chapter_story_brief_v5`. The paired JSON, `chapter_story_brief_basis_v3`, fact inventory, reader-promise ledger, rolling-plan basis, plot-node table, semantic-obligation ledger, editorial-pattern registry and raw retrieval/control-plane packets are CLI/editor inputs, not author inputs. The Markdown already contains readable topology, approved nodes, obligations, character choices, reader value, bounded character voice and relevant facts.
+Before prose is written, the author Agent reads only `50_workbench/writing_tasks/chNNN.md`, the rendered `chapter_story_brief_v5`. The paired JSON, `chapter_story_brief_basis_v4`, fact inventory, reader-promise ledger, rolling-plan basis, plot-node table, semantic-obligation ledger, editorial-pattern registry and raw retrieval/control-plane packets are CLI/editor inputs, not author inputs. The Markdown already contains readable topology, approved nodes, obligations, character choices, reader value, bounded character voice and relevant facts.
 
-- Story pressure: confirm what is happening, what the protagonist wants, who or what refuses, the earliest failure, irreversible choice and visible cost.
+- Story pressure: confirm the approved observable change and reader value; dramatize failure, choice and cost only as required by this chapter’s explicit applicability.
 - Scene execution: follow each declared action, reaction, choice, cost and exit state; fully dramatize the required turns and compress only the allowed connective process.
 - Story boundaries: preserve protected outcomes, obey prohibited drift, deliver the declared reader gain, emotional aftereffect and relationship change.
 - Carrier variation: use the recent-five-chapter carrier warning to change pressure, character ownership or dramatic method when needed; an approved repetition reason is authority, not a quota exemption invented by the author.
@@ -102,7 +102,7 @@ Use `editorial review` or `editorial batch-review` for formal review artifacts. 
 - reader_experience_editor / 读者体验编辑,
 - canon_fidelity_reviewer / 同人还原编辑（仅同人项目）.
 
-Fanfiction adds `canon_fidelity_reviewer / 同人还原审查员`, which checks voice, relationship stage, ability and world rules, declared divergence causality, canon-character agency, original contribution, collective irrationality, and character-skin-only writing. AU or canon divergence is not an error when the declared change and its consequences support it.
+Fanfiction adds `canon_fidelity_reviewer / 同人还原审查员`, which checks voice, relationship stage, ability and world rules, canon-character agency, new reading value, and divergence causality only when the approved creative contract requires it, collective irrationality, and character-skin-only writing. AU or canon divergence is not an error when the declared change and its consequences support it.
 
 `scene_prose_editor` and `anti_template_editor` are selected independently for every chapter. Other roles remain additive: continuity risk adds planning, opening chapters/major payoff/volume boundaries/carrier repetition add reader experience or planning, and fanfiction adds canon fidelity.
 

@@ -15,7 +15,7 @@ from longform_engine.creative import (
 from longform_engine.orchestration import WorkflowError, submit_agent_draft
 from longform_engine.production import production_loop, production_next
 from longform_engine.storage import init_project
-from tests.project_fixtures import checked_review_coverage, mark_project_ready
+from tests.project_fixtures import compile_chapter_brief_fixture, checked_review_coverage, mark_project_ready
 
 
 SOURCE_TEXT = "# 第一章\n\nAri在城门前核对旧档，Mira守住门口。钟声停下时，他把缺页夹回册中。\n"
@@ -238,6 +238,7 @@ def seed_prose_naturalness_project(tmp_path, *, milestones):
     config.data["quality"]["semantic_review_boundaries"] = False
     source = root / "40_manuscript" / "draft" / "ch001.md"
     source.write_text(SOURCE_TEXT, encoding="utf-8")
+    compile_chapter_brief_fixture(root, config)
     prose_naturalness_task(config, chapter_number=1, source="draft")
     candidate = root / "50_workbench" / "repair_candidates" / "ch001.prose_naturalness_candidate.md"
     candidate.write_text(CANDIDATE_TEXT, encoding="utf-8")

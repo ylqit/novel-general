@@ -4,7 +4,7 @@ from pathlib import Path
 from longform_engine.config import load_project_config
 from longform_engine.gates import GateError, gate_check, pacing_review, record_waiver
 from longform_engine.gates.pipeline import complete_core_reveal_detected, has_tail_suspense
-from longform_engine.orchestration import continue_write, open_book, plan_chapter
+from longform_engine.orchestration import continue_write, open_book
 from longform_engine.planning import infer_event_types_from_text
 from longform_engine.storage import init_project
 from tests.project_fixtures import mark_project_ready
@@ -13,7 +13,7 @@ from tests.project_fixtures import mark_project_ready
 def test_gate_check_writes_failed_schema_for_meta_pollution(tmp_path):
     project_config = seed_gate_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(project_config, chapter_number=1)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(
         "# 第一章\n\nTODO 写作说明：这里需要补剧情。\n",
         encoding="utf-8",
@@ -65,7 +65,7 @@ def test_gate_check_passes_reasonable_draft(tmp_path):
 def test_pacing_review_and_failed_gate_wait_for_review_barrier(tmp_path):
     project_config = seed_gate_project(tmp_path)
     root = tmp_path / "novel"
-    plan_chapter(project_config, chapter_number=1)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     text = "# 第一章\n\n" + "秘密 真相 决战 爆发 核心矛盾 全部 揭露。" * 20
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(text, encoding="utf-8")
 
@@ -73,7 +73,7 @@ def test_pacing_review_and_failed_gate_wait_for_review_barrier(tmp_path):
     gate = gate_check(project_config, chapter_number=1)
     gate_payload = json.loads(Path(gate.gate_result).read_text(encoding="utf-8"))
 
-    assert pacing.tier == "fast"
+    assert pacing.tier == "medium"  # Lexical markers cannot establish a planned event.
     assert gate.passed is False
     assert gate_payload["next_command"] == "longform-engine production next project.yaml"
     assert (root / "50_workbench" / "gate_artifacts" / "ch001" / "pacing_review.md").exists()
@@ -93,7 +93,7 @@ def test_lexical_event_hints_cannot_create_cooldown_or_fast_quota_failures(tmp_p
         ),
         encoding="utf-8",
     )
-    plan_chapter(project_config, chapter_number=2)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     draft = "# Chapter 2\n\n" + ("Ari enters the battle as the secret trap tightens. " * 30)
     (root / "40_manuscript" / "draft" / "ch002.md").write_text(draft, encoding="utf-8")
 
@@ -117,7 +117,7 @@ def test_gate_does_not_treat_one_event_word_as_a_blocking_event(tmp_path):
         ),
         encoding="utf-8",
     )
-    plan_chapter(project_config, chapter_number=2)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     draft = (
         "# Chapter 2\n\nAri writes down one battle retreat password. "
         + ("He checks ordinary supply prices and copies the route into a notebook. " * 8)
@@ -149,14 +149,14 @@ def test_pacing_review_keeps_soft_event_requirement_at_plan_level(tmp_path):
         ),
         encoding="utf-8",
     )
-    plan_chapter(project_config, chapter_number=6)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     draft = "# Chapter 6\n\n" + ("The battle pressure rises while the secret trap tightens. " * 12)
     (root / "40_manuscript" / "draft" / "ch006.md").write_text(draft, encoding="utf-8")
 
     result = pacing_review(project_config, chapter_number=6)
 
     assert any("soft event required" in warning for warning in result.warnings)
-    assert not any("soft event gap persists" in warning for warning in result.warnings)
+    assert any("soft event gap persists" in warning for warning in result.warnings)
     assert any("require semantic review" in warning for warning in result.warnings)
 
 
@@ -164,7 +164,7 @@ def test_reverse_brake_blocks_complete_core_secret_reveal(tmp_path):
     project_config = seed_gate_project(tmp_path)
     project_config.data["length"]["chapter"]["hard_min"] = 20
     root = tmp_path / "novel"
-    plan_chapter(project_config, chapter_number=1)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     draft = "# Chapter 1\n\n" + ("Ari states the final truth and the ultimate secret is revealed. " * 24)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(draft, encoding="utf-8")
 
@@ -217,7 +217,7 @@ def test_reverse_brake_requires_tail_hook_when_anchor_demands_it(tmp_path):
         ),
         encoding="utf-8",
     )
-    plan_chapter(project_config, chapter_number=1)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     draft = "# Chapter 1\n\n" + ("Ari guards the gate and pays a small cost. The scene settles into quiet certainty. " * 20)
     (root / "40_manuscript" / "draft" / "ch001.md").write_text(draft, encoding="utf-8")
 
@@ -233,7 +233,7 @@ def test_multiple_plot_terms_do_not_create_a_keyword_quota_blocker(tmp_path):
     project_config = seed_gate_project(tmp_path)
     project_config.data["length"]["chapter"]["hard_min"] = 20
     root = tmp_path / "novel"
-    plan_chapter(project_config, chapter_number=1)
+    mark_project_ready(project_config.path.parent, project_config, preserve_existing_characters=True)
     developments = [
         f"At step {index}, the mainline shifts because the relationship exposes a different secret and forces a new choice."
         for index in range(1, 19)

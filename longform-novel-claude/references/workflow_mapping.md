@@ -20,19 +20,19 @@ open-book
 -> book_ideation one question / two or three options / explicit human selection
 -> book_design_candidate_v2 with story_engine_contract_v1 and character expression contracts
 -> character_expression_design when the current book design requests expression enrichment
--> outline_design
+-> planning task / current planning bundle
 -> explicit reader_promise_ledger_v2 expectation windows
 -> planning task renders planning_generation_task_v1 with exact original/fanfiction claim-channel ownership
 -> planning_bundle_v1 establishes active volume and a three-chapter firm rolling window
 -> independent planning semantic review
 -> human decisions for every state-changing plot node; micro dialogue/action/transition beats remain inside the chapter contract
 -> agent-task brief when an Agent task exists
--> blank human_chapter_intent_v2 / validate / human apply binds approved nodes and contract
+-> blank human_chapter_intent_v3 / validate / human apply binds approved nodes and contract
 -> continue-write
--> unique firm chapter_contract_v5 and chapter_story_brief_basis_v3
+-> unique firm chapter_contract_v5 and chapter_story_brief_basis_v4
 -> chapter_story_brief_v5 author work order; readable topology, obligations, approved nodes, character choices, reader value and bounded facts are compiled while raw packets remain separated
 -> /工程续章 pre-write guide:
-   current desire, opposition, earliest failure, irreversible choice, visible cost, scene chain, protected outcomes, repetition risk
+   approved topology, observable change, reader value, applicable failure/choice/cost, scene exchanges, protected outcomes and meaningful repetition risk
 -> CLI compiles canonical constraints and retrieval evidence into the internal fact inventory and author Story Brief
 -> author reads only chapter_story_brief_v5, never control-plane packets, basis JSON or the task JSON
 -> Agent writes 50_workbench/agent_drafts/chNNN.codex.md or chNNN.claude.md
@@ -86,7 +86,7 @@ creation.mode = fanfiction
 -> CLI hydrates the project baseline semantic document with pinned bindings and exact short evidence
 -> canon-apply --approved-by human
 -> fanfiction story-engine-task
--> Agent establishes one initial variable, independent long-term goal, sustainable resistance, canon-character agency and post-canon story source
+-> Agent follows the compiled continuity-mode and route-family requirements: character agency, canon relationship, recognition, new reading value, sustained narrative drive and ownership of choices; initial divergence is required only when applicable
 -> story-engine-validate
 -> story-engine-apply --approved-by human
 -> book_ideation rounds with explicit human selection
@@ -96,12 +96,12 @@ creation.mode = fanfiction
 -> fanfiction design-review-task in a separate isolated session
 -> design-review-validate
 -> design-apply --review REVIEW --approved-by human
--> outline_design
+-> planning task / current planning bundle
 -> active volume projects canon range, character stage, event fates, original problem and crossover rules
 -> major state-changing nodes receive human decisions; dialogue, transitions and local beats do not become approval quotas
--> current chapter compiles fanfiction_context_bundle_v2 from explicit refs, reasoned dependencies, structured scope, namespaces and an explainable budget
+-> current chapter compiles fanfiction_context_bundle_v3 from explicit refs, reasoned dependencies, structured scope, namespaces and an explainable budget
 -> chapter_story_brief_v5 exposes only readable Chinese fanfiction context
--> chapter writing and dual-axis canon fidelity / fanfiction originality review
+-> chapter writing and approved-baseline fidelity / new reading value review
 ```
 
 Rights status and commercial intent are advisory only. Names, relationships, worlds, abilities, and timelines are allowed; continuous source prose and cross-field reconstruction are not. AU and canon-divergent work is reviewed against its declared divergence and causal consequences, not against literal canon sameness.
@@ -174,7 +174,7 @@ production next
 -> Agent writes character_expression_profile_v1
 -> design-validate
 -> design-apply --approved-by human
--> chapter work orders compile character_expression_packet_v1 within the existing seven-file budget
+-> chapter work orders compile character_expression_packet_v2 within the existing seven-file budget
 -> character_editor requires exact evidence for every featured character, including pass verdicts
 -> character audit-task --from-chapter A --to-chapter B for cross-chapter voice and scene review
 -> audit-validate / audit-apply archives only to workbench

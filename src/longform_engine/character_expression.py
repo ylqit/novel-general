@@ -188,9 +188,9 @@ def validate_character_expression_profile(
                 + ", ".join(sorted(EXPRESSION_PROFILE_FIELDS))
                 + "."
             )
-        for field, values in EXPRESSION_PROFILE_FIELDS.items():
-            if profile.get(field) not in values:
-                errors.append(f"narrative_expression_profile.{field} must be one of: {', '.join(sorted(values))}.")
+        for field, allowed_values in EXPRESSION_PROFILE_FIELDS.items():
+            if profile.get(field) not in allowed_values:
+                errors.append(f"narrative_expression_profile.{field} must be one of: {', '.join(sorted(allowed_values))}.")
 
     known_ids = {str(item) for item in character_ids if str(item).strip()}
     contracts = payload.get("character_expression_contracts")
@@ -280,7 +280,8 @@ def build_character_expression_packet(
     root: Path,
     *,
     chapter_number: int,
-    card: dict[str, Any],
+    character_ids: tuple[str, ...] | list[str],
+    expression_focus: dict[str, Any],
     tcs: dict[str, Any],
     persist: bool = False,
 ) -> dict[str, Any]:
@@ -291,23 +292,15 @@ def build_character_expression_packet(
     expression = read_json(root / "10_bible" / "character_expression.json", {})
     character_rows = [item for item in characters if isinstance(item, dict)] if isinstance(characters, list) else []
     by_id = {str(item.get("id")): item for item in character_rows if item.get("id")}
-    requested = [str(item) for item in card.get("featured_character_ids") or [] if str(item).strip()]
-    pov = str(card.get("pov_character_id") or "").strip()
-    if pov:
-        requested.insert(0, pov)
-    # TCS contains the current state of historical characters, not the cast contract
-    # for this chapter. Only the chapter card can promote a character into the
-    # full expression packet; background state remains available through RAG/TCS.
-    if not requested and character_rows:
-        requested.append(str(character_rows[0].get("id") or ""))
-    featured = dedupe(item for item in requested if item in by_id)
-    if len(featured) > 6:
-        raise ValueError(
-            "Character expression packet cannot fit all required featured characters: "
-            f"{', '.join(featured)}; split the scene or revise the chapter card before regenerating."
-        )
-    if not pov and featured:
-        pov = featured[0]
+    povs = list(expression_focus["pov_character_ids"])
+    requested = dedupe([*povs, *character_ids])
+    missing = set(requested) - set(by_id)
+    if missing:
+        raise ValueError("context_evidence_incomplete:unknown_chapter_characters:" + ",".join(sorted(missing)))
+    featured = requested
+    unnamed = [character_id for character_id in featured if not str(by_id[character_id].get("name") or "").strip()]
+    if unnamed:
+        raise ValueError("context_evidence_incomplete:missing_character_names:" + ",".join(unnamed))
 
     contracts = expression.get("character_expression_contracts") if isinstance(expression, dict) else []
     contract_by_id = {
@@ -315,8 +308,6 @@ def build_character_expression_packet(
         for item in contracts or []
         if isinstance(item, dict) and item.get("character_id")
     }
-    scene_wants = card.get("scene_wants") if isinstance(card.get("scene_wants"), dict) else {}
-    voice_state = card.get("voice_state") if isinstance(card.get("voice_state"), dict) else {}
     memory_rows = [
         payload
         for path in sorted((root / "60_rag" / "memory" / "characters").glob("*.json"))
@@ -346,14 +337,14 @@ def build_character_expression_packet(
             {
                 "character_id": character_id,
                 "name": character.get("name", ""),
-                "chapter_scene_want": str(scene_wants.get(character_id) or character.get("goal") or ""),
+                "chapter_scene_want": str(character.get("goal") or ""),
                 "private_pressure": str(
                     (memory_by_id.get(character_id) or {}).get("current_pressure")
                     or contract.get("private_wants")
                     or character.get("flaw")
                     or ""
                 ),
-                "voice_state": str(voice_state.get(character_id) or "baseline"),
+                "voice_state": str((memory_by_id.get(character_id) or {}).get("voice_state") or "baseline"),
                 "allowed_change": str((memory_by_id.get(character_id) or {}).get("allowed_voice_change") or "none unless caused in-scene"),
                 "perception_bias": contract.get("perception_bias", ""),
                 "decision_bias": contract.get("decision_bias", ""),
@@ -367,23 +358,16 @@ def build_character_expression_packet(
             }
         )
     packet = {
-        "schema": "character_expression_packet_v1",
+        "schema": "character_expression_packet_v2",
         "chapter_number": chapter_number,
-        "pov_character_id": pov,
+        "pov_character_ids": povs,
         "featured_character_ids": featured,
         "narrative_expression_profile": (
             expression.get("narrative_expression_profile", {}) if isinstance(expression, dict) else {}
         ),
-        "characterization_focus": list(card.get("characterization_focus") or []),
-        "relationship_move": str(card.get("relationship_move") or card.get("relationship_impact") or ""),
-        "embodiment_strategy": str(
-            card.get("embodiment_strategy")
-            or "Use selective action, perception, body response, or subtext; do not append a generic appearance paragraph."
-        ),
-        "summary_scene_policy": str(
-            card.get("summary_scene_policy")
-            or "Summarize transitions; dramatize irreversible choices, relationship changes, and paid costs."
-        ),
+        "scene_kind": expression_focus["scene_kind"],
+        "embodiment_strategy": "Use selective action, perception, body response or subtext according to this character's pressure.",
+        "summary_scene_policy": "Honor the chapter's explicit choice, cost and aftermath applicability; summary is valid when no critical turn is lost.",
         "contracts": selected_contracts,
         "approved_voice_samples": approved_samples,
         "avoid_repetition": dedupe(

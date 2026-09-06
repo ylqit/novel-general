@@ -13,7 +13,6 @@ from longform_engine.orchestration import (
     continue_write,
     finalize_chapter,
     open_book,
-    plan_chapter,
 )
 from longform_engine.production import production_loop, production_next
 from longform_engine.quality import (
@@ -61,8 +60,14 @@ def test_production_schedules_strict_bounded_reader_payoff_task(tmp_path):
     assert context["selection"]["previous_reward_limit"] == 1
     assert context["selection"]["related_promise_limit"] == 8
     assert Path(result.context_file).read_text(encoding="utf-8").strip()
-    assert context["schema"] == "reader_payoff_context_v2"
+    assert context["schema"] == "reader_payoff_context_v3"
+    source_ids = [item["source_id"] for item in context["source_catalog"]]
+    assert len(source_ids) == len(set(source_ids))
     assert context["chapter_contract"]["reader_value"]
+    assert {item["promise_id"] for item in context["reader_promise_state"]} == {
+        action["promise_id"] for action in context["chapter_contract"]["reader_promise_actions"]
+    }
+    assert context["chapter_contract"]["source_ref"] == "chapter_contract"
     assert context["quality_guidance"]["primary_market"] == "qidian_male"
     assert len(context["quality_guidance"]["compatibility_observations"]) <= 3
     assert all(
@@ -172,8 +177,8 @@ def test_payoff_finalize_records_observed_reward_and_structure_atomically(tmp_pa
     assert rewards[0]["duty_fulfilled"] is True
     assert rewards[0]["observation_status"] == "semantic_reviewed"
     assert rewards[0]["finalized"] is True
-    card = read_json(root / "20_outline" / "chapter_cards" / "ch001.json")
-    assert rewards[0]["planned_gain"] == card["reader_gain"]
+    card = read_json(root / "20_outline" / "chapter_contracts" / "ch001.json")
+    assert rewards[0]["planned_gain"] == card["reader_value"]
     assert rewards[0]["observed_cost"] == positive_diagnosis(current_payload, "COST_VISIBLE")
     assert rewards[0]["evidence_source_hash"] == hashlib.sha256(current_draft.read_bytes()).hexdigest()
     assert structures[0]["schema"] == "structure_observation_v3"
@@ -221,7 +226,7 @@ def test_combined_structure_language_and_payoff_repetition_is_p1(tmp_path):
     current = build_structure_observation(
         chapter_number=3,
         text=text,
-        card=read_json(root / "20_outline" / "chapter_cards" / "ch003.json"),
+        chapter_contract=read_json(root / "20_outline" / "chapter_contracts" / "ch003.json"),
         review=payload,
     )
     prior = []
@@ -354,9 +359,12 @@ def seed_payoff_project(tmp_path, *, chapter_number=1):
     config.data["quality"]["semantic_review_boundaries"] = False
     config.data.setdefault("editorial", {})["review_mode"] = "off"
     config.data["length"]["chapter"]["hard_min"] = 20
-    plan_chapter(config, chapter_number=chapter_number)
+    mark_project_ready(config.path.parent, config, preserve_existing_characters=True)
     if chapter_number == 1:
         continue_write(config, chapter_number=chapter_number)
+    else:
+        from tests.project_fixtures import compile_chapter_brief_fixture
+        compile_chapter_brief_fixture(root, config, chapter_number)
     text = (
         f"# 第{chapter_number}章 旧账的新缺口\n\n"
         "沈阙在封泥背面发现一道逆着指纹生长的裂纹。他没有宣布答案，只把军粮车的交接时辰重新排了一遍。\n\n"
@@ -386,12 +394,12 @@ def seed_payoff_project(tmp_path, *, chapter_number=1):
 
 def valid_review_payload(root: Path, *, chapter_number: int):
     draft = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
-    card = read_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json")
+    card = read_json(root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json")
     text = draft.read_text(encoding="utf-8")
     body_start = text.index("账页证明")
     body_end = text.index("。", body_start) + 1
     ending_start = text.index("他合上账册")
-    promises = [str(item) for item in card.get("promise_refs", [])]
+    promises = [str(item["promise_id"]) for item in card.get("reader_promise_actions", [])]
     evidence_id = f"ch{chapter_number:03d}.md@{body_start}:{body_end}"
     ending_id = f"ch{chapter_number:03d}.md@{ending_start}:{len(text)}"
     findings = [
@@ -437,7 +445,7 @@ def valid_review_payload(root: Path, *, chapter_number: int):
             draft,
             ("reader_gain", "cost", "promise_progress"),
             canonical_dimensions=("reader_gain", "cost", "promise_progress"),
-            canonical_ref=f"20_outline/chapter_cards/ch{chapter_number:03d}.json",
+            canonical_ref=f"20_outline/chapter_contracts/ch{chapter_number:03d}.json",
         ),
         "findings": findings,
     }

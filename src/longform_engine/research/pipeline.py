@@ -227,7 +227,7 @@ def impact_analyze(config: ConfigDocument, *, research_item: str) -> ImpactAnaly
         "chapters": match_chapters(root, keywords, text),
         "foreshadowing": match_outline_collection(root, keywords, text, "20_outline/foreshadowing_ledger.json"),
         "graph_nodes": match_graph_nodes(root, keywords, text),
-        "future_cards": match_future_cards(root, keywords, text),
+        "future_cards": match_future_contracts(root, keywords, text),
     }
 
     report_dir = root / str(config.data.get("research", {}).get("impact_report_dir", "50_workbench/impact_reports"))
@@ -381,14 +381,17 @@ def detect_knowledge_gaps(
     chapter_number: int | None = None,
     text: str | None = None,
 ) -> KnowledgeGapResult:
-    """Detect research gaps from cards, writing tasks, gate failures, and graph warnings."""
+    """Detect research gaps from approved planning, writing tasks, gate failures, and graph warnings."""
 
     root = resolve_project_root(config)
     sources: list[Path] = []
     if chapter_number is not None:
+        from longform_engine.planning.context import load_chapter_planning_context
+        planning = load_chapter_planning_context(root, chapter_number)
+        sources.extend(root / item["path"] for item in planning.source_files)
         sources.extend(
             [
-                root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json",
+                root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json",
                 root / "50_workbench" / "writing_tasks" / f"ch{chapter_number:03d}.md",
                 root / "50_workbench" / "gate_artifacts" / f"ch{chapter_number:03d}" / "gate_result.json",
             ]
@@ -781,10 +784,10 @@ def match_graph_nodes(root: Path, keywords: tuple[str, ...] | list[str], text: s
     return unique(matches)
 
 
-def match_future_cards(root: Path, keywords: tuple[str, ...] | list[str], text: str) -> list[str]:
+def match_future_contracts(root: Path, keywords: tuple[str, ...] | list[str], text: str) -> list[str]:
     current = current_chapter(root)
     matches = []
-    for path in sorted((root / "20_outline" / "chapter_cards").glob("*.json")):
+    for path in sorted((root / "20_outline" / "chapter_contracts").glob("*.json")):
         number = parse_chapter_number(path)
         if number is not None and number <= current:
             continue

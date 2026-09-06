@@ -1,917 +1,638 @@
-"""Hash-bound two-route, twenty-chapter fanfiction literary acceptance protocol."""
+"""Local, anonymous literary trials with closed-chapter evidence and independent ratings.
 
+This is an evaluation workflow. It never creates novels or approves canonical prose.
+"""
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
+import hmac
 import json
 from pathlib import Path
+import secrets
+import shutil
 from statistics import median
+import tempfile
 from typing import Any
+import zipfile
 
-from longform_engine.blind_review import (
-    chapter_merkle_root,
-    clean_identifier,
-    find_chapter_file,
-    payload_sha256,
-)
-from longform_engine.config import ConfigDocument
+from longform_engine import __version__
+from longform_engine.artifacts import read_chapter_audit_artifact
+from longform_engine.blind_review import clean_identifier, payload_sha256
+from longform_engine.config import ConfigDocument, load_project_config
 from longform_engine.storage import atomic_write_text, resolve_project_root
 
-
-TRIAL_SCHEMA = "fanfiction_literary_trial_v1"
-PRIVATE_MAPPING_SCHEMA = "fanfiction_literary_trial_private_mapping_v1"
-GATE_REPORT_SCHEMA = "fanfiction_literary_trial_gate_report_v1"
-REVIEW_SUBMISSION_SCHEMA = "fanfiction_literary_trial_review_v1"
-AGGREGATE_SCHEMA = "fanfiction_literary_trial_aggregate_v1"
-RESOLUTION_SCHEMA = "fanfiction_literary_trial_disagreement_resolution_v1"
-EVIDENCE_SCHEMA = "fanfiction_literary_evidence_manifest_v1"
-CHAPTER_COUNT = 20
-ROUTE_FAMILIES = ("oc_si_progression", "canon_character_centered")
-SCORE_METRICS = (
-    "canon_fidelity",
-    "character_agency",
-    "canon_recognition_payoff",
-    "original_mainline_ownership",
-    "divergence_causality",
-    "in_world_cost_and_countermeasure",
-    "chapter_reading_value",
-    "continued_reading_desire",
-)
-CORE_METRICS = (
-    "canon_fidelity",
-    "character_agency",
-    "original_mainline_ownership",
-    "continued_reading_desire",
-)
-FAILURE_CODES = (
-    "encyclopedic_exposition",
-    "mechanical_canon_recap",
-    "canon_character_duty_theft",
-    "template_event_loop",
-)
-DISQUALIFYING_CODES = (
-    "untraceable_canon_assertion",
-    "continuous_source_text_reproduction",
-    "fabricated_authorization_claim",
-)
+TRIAL_SCHEMA = "literary_trial_v2"
+REVIEW_SCHEMA = "literary_review_v2"
+TRIAL_DIRECTORY = "70_runtime/literary_trials"
+STAGES = {"opening": 3, "sustained": 10, "formal": 20, "crossover": None}
+METRICS = {
+    "prose_naturalness": "语言自然度",
+    "character_voice": "人物声音",
+    "character_agency": "人物自主性",
+    "scene_causality": "场景因果",
+    "chapter_reading_value": "章节阅读价值",
+    "continued_reading_desire": "追读意愿",
+    "canon_fidelity": "批准原著基线忠实度",
+    "canon_recognition": "人物与原著辨识度",
+    "new_reading_value": "本作新增阅读价值",
+    "divergence_causality": "分歧因果",
+    "in_world_cost_and_countermeasure": "跨体系代价与反制",
+}
+CORE_METRICS = {
+    "prose_naturalness", "character_agency", "continued_reading_desire",
+    "canon_fidelity", "new_reading_value",
+}
 
 
-@dataclass(frozen=True)
-class FanfictionLiteraryTrialResult:
-    trial_id: str
-    public_manifest: str
-    private_mapping: str
-    pack_hash: str
-    blind_ids: tuple[str, ...]
+def _read_object(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError(f"expected JSON object: {path.name}")
+    return value
 
 
-@dataclass(frozen=True)
-class FanfictionLiteraryAggregateResult:
-    trial_id: str
-    aggregate_file: str
-    aggregate_sha256: str
-    threshold_conclusion: str
-    material_disagreement_count: int
-    literary_evidence_ready: bool
+def _write_object(path: Path, payload: dict[str, Any]) -> None:
+    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
-def create_fanfiction_literary_trial(
-    config: ConfigDocument,
-    *,
-    trial_id: str,
-    oc_si_source_dir: str | Path,
-    oc_si_gate_report: str | Path,
-    canon_character_source_dir: str | Path,
-    canon_character_gate_report: str | Path,
-    seed: str,
-) -> FanfictionLiteraryTrialResult:
-    """Create one anonymous dual-route pack after verifying both hash-only gate reports."""
-
-    if str(config.data.get("creation", {}).get("mode") or "original") != "fanfiction":
-        raise ValueError("fanfiction literary trials require creation.mode=fanfiction")
-    normalized_id = clean_identifier(trial_id, field="trial_id")
-    if not str(seed or "").strip():
-        raise ValueError("seed must be non-empty")
+def collect_literary_sample(config: ConfigDocument, start: int, end: int) -> dict[str, Any]:
+    """Verify actual closure, final, human acceptance, reviews and provenance."""
+    if type(start) is not int or type(end) is not int or not 1 <= start <= end <= start + 99:
+        raise ValueError("sample range must contain 1–100 consecutive chapters")
     root = resolve_project_root(config)
-    trial_root = fanfiction_literary_trial_root(root, normalized_id)
-    if trial_root.exists() and any(trial_root.iterdir()):
-        raise ValueError(f"fanfiction literary trial already exists: {trial_root}")
+    if config.path is None:
+        raise ValueError("literary sample requires a persisted project config")
+    bindings: list[dict[str, Any]] = []
 
-    route_inputs = {
-        "oc_si_progression": (Path(oc_si_source_dir).expanduser().resolve(), Path(oc_si_gate_report).expanduser().resolve()),
-        "canon_character_centered": (
-            Path(canon_character_source_dir).expanduser().resolve(),
-            Path(canon_character_gate_report).expanduser().resolve(),
-        ),
-    }
-    source_records: dict[str, dict[str, Any]] = {}
-    for route_family, (source_dir, gate_file) in route_inputs.items():
-        chapters = source_chapter_records(source_dir)
-        gate_report = read_object(gate_file)
-        gate_errors = validate_gate_report(gate_report, route_family=route_family, chapters=chapters)
-        if gate_errors:
-            raise ValueError(f"{route_family} gate report is invalid: " + "; ".join(gate_errors))
-        source_records[route_family] = {
-            "route_family": route_family,
-            "source_dir": str(source_dir),
-            "source_merkle_root": chapter_merkle_root(chapters),
-            "chapters": chapters,
-            "gate_report_file": str(gate_file),
-            "gate_report_sha256": file_hash(gate_file),
+    def evidence(chapter: int, relative: str, expected: str | None = None, *,
+                 optional: bool = False, expected_text_sha256: str | None = None) -> dict[str, Any]:
+        try:
+            body = read_chapter_audit_artifact(root, chapter, relative)
+        except FileNotFoundError:
+            if optional:
+                return {}
+            raise
+        digest = sha256(body).hexdigest()
+        if expected is not None and digest != expected:
+            raise ValueError(f"stale literary evidence: {relative}")
+        if expected_text_sha256 is not None:
+            # Pacing's existing application contract hashes read_text() output.
+            # Preserve that contract while binding the actual archived bytes too.
+            normalized = body.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+            if sha256(normalized.encode("utf-8")).hexdigest() != expected_text_sha256:
+                raise ValueError(f"stale literary evidence: {relative}")
+        value = json.loads(body)
+        if not isinstance(value, dict):
+            raise ValueError(f"invalid literary evidence: {relative}")
+        bindings.append({"chapter_number": chapter, "path": relative, "sha256": digest})
+        return value
+
+    from longform_engine.chapter_contract import chapter_contract_hash
+    from longform_engine.planning.contracts import validate_volume_skeletons
+    skeletons = evidence(start, "20_outline/volume_skeletons.json")
+    skeleton_errors: list[str] = []
+    validate_volume_skeletons(skeletons, skeleton_errors)
+    if skeleton_errors:
+        raise ValueError("literary volume ranges invalid: " + ";".join(skeleton_errors))
+    chapters: list[dict[str, Any]] = []
+    for chapter in range(start, end + 1):
+        final_path = f"40_manuscript/final/ch{chapter:03d}.md"
+        body = (root / final_path).read_bytes()
+        digest = sha256(body).hexdigest()
+        closure = evidence(chapter, f"30_state/chapter_closures/ch{chapter:03d}.json")
+        if (closure.get("schema") != "chapter_closure_v2" or closure.get("chapter_number") != chapter
+                or closure.get("approved_by") != "human" or closure.get("final_sha256") != digest):
+            raise ValueError(f"chapter {chapter} has no current human-approved closure")
+        ledger = evidence(chapter, f"30_state/semantic_ledger/ch{chapter:03d}.json", closure.get("semantic_ledger_sha256", ""))
+        if (ledger.get("schema") != "chapter_semantic_bundle_v1" or ledger.get("canonical") is not True
+                or ledger.get("source", {}).get("sha256") != digest):
+            raise ValueError(f"chapter {chapter} semantic evidence does not bind final")
+        finalization = evidence(chapter, f"40_manuscript/final/ch{chapter:03d}.finalization.json")
+        if (finalization.get("final_sha256") != digest or finalization.get("approved_by") != "human"
+                or finalization.get("gate_passed") is not True or finalization.get("gate_waived") is True):
+            raise ValueError(f"chapter {chapter} needs a passed, unwaived production gate")
+        gate = evidence(chapter, str(finalization.get("gate_result") or ""))
+        if gate.get("passed") is not True or gate.get("source_sha256") != digest or gate.get("failures"):
+            raise ValueError(f"chapter {chapter} gate evidence is not current")
+        review = finalization.get("human_story_review", {})
+        revision = finalization.get("human_author_revision", {})
+        if (review.get("schema") != "human_story_review_finalization_binding_v4"
+                or revision.get("schema") != "human_author_revision_finalization_binding_v4"
+                or review.get("candidate_sha256") != digest or revision.get("revision_candidate_sha256") != digest):
+            raise ValueError(f"chapter {chapter} requires current human revision and acceptance")
+        decision = evidence(chapter, review.get("decision_file", ""), review.get("decision_sha256", ""))
+        if (decision.get("schema") != "human_story_review_v7" or decision.get("decision") != "accept"
+                or decision.get("approved_by") != "human" or decision.get("candidate_sha256") != digest):
+            raise ValueError(f"chapter {chapter} human acceptance is invalid")
+        evidence(chapter, f"20_outline/chapter_intents/ch{chapter:03d}.json", review.get("human_chapter_intent_sha256", ""))
+        evidence(chapter, f"20_outline/plot_nodes/ch{chapter:03d}.json", review.get("plot_node_table_sha256", ""))
+        basis = evidence(chapter, f"50_workbench/writing_tasks/ch{chapter:03d}.basis.json")
+        if (basis.get("schema") != "chapter_story_brief_basis_v4"
+                or basis.get("basis_sha256") != review.get("story_brief_basis_sha256")
+                or payload_sha256({k: v for k, v in basis.items() if k != "basis_sha256"}) != basis.get("basis_sha256")):
+            raise ValueError(f"chapter {chapter} author brief basis is stale")
+        for file_field, hash_field in (("record_file", "record_sha256"), ("validation_file", "validation_sha256"),
+                                      ("final_lock_file", "final_lock_sha256")):
+            evidence(chapter, revision.get(file_field, ""), revision.get(hash_field, ""))
+        bundle_hash = review.get("review_bundle_sha256", "")
+        bundle = evidence(chapter, "50_workbench/human_story_reviews/bundles/"
+                          f"ch{chapter:03d}.{digest[:12]}.{bundle_hash[:12]}.review_bundle.json", bundle_hash)
+        if (bundle.get("schema") != "human_review_bundle_v2" or bundle.get("candidate_sha256") != digest
+                or bundle.get("blocking_finding_ids")
+                or not set(bundle.get("required_reviews", [])) <= set(bundle.get("completed_reviews", []))):
+            raise ValueError(f"chapter {chapter} independent review barrier is incomplete")
+        contract = evidence(chapter, f"20_outline/chapter_contracts/ch{chapter:03d}.json")
+        contract_digest = chapter_contract_hash({k: v for k, v in contract.items() if k != "chapter_contract_hash"})
+        if contract.get("chapter_contract_hash") != contract_digest or review.get("chapter_contract_sha256") != contract_digest:
+            raise ValueError(f"chapter {chapter} reviewed contract is stale")
+        volumes = [v for v in skeletons["items"] if v["chapter_range"][0] <= chapter <= v["chapter_range"][1]]
+        if len(volumes) != 1:
+            raise ValueError(f"chapter {chapter} has no unique approved volume")
+        for name, stage in bundle.get("review_stages", {}).items():
+            if stage.get("required") and (not stage.get("complete") or stage.get("need_human")):
+                raise ValueError(f"chapter {chapter} required {name} review is incomplete")
+        for stage_name, prefix in (("semantic", "semantic_review"), ("pacing", "semantic_pacing")):
+            if not bundle.get("review_stages", {}).get(stage_name, {}).get("required"):
+                continue
+            directory = f"50_workbench/gate_artifacts/ch{chapter:03d}"
+            validation = evidence(chapter, f"{directory}/{prefix}_validation.json")
+            result_path = f"{directory}/{prefix}_result.json"
+            if stage_name == "semantic":
+                application = evidence(chapter, f"{directory}/semantic_review_application.json")
+                result = evidence(chapter, result_path, expected_text_sha256=application.get("result_sha256", ""))
+                review_context = evidence(chapter, f"{directory}/semantic_review_context.json",
+                                          expected_text_sha256=application.get("context_sha256", ""))
+                bound = (application.get("schema") == "semantic_review_application_v2"
+                         and application.get("source_hash") == digest
+                         and application.get("result_file") == result_path
+                         and application.get("payload") == result)
+            else:
+                applied = gate.get("semantic_pacing", {})
+                review_context = evidence(chapter, f"{directory}/semantic_pacing_task.json",
+                                          expected_text_sha256=applied.get("context_sha256", ""))
+                result = evidence(chapter, result_path, expected_text_sha256=applied.get("result_sha256", ""))
+                bound = (applied.get("source_sha256") == digest
+                         and validation.get("provenance", {}).get("source_sha256") == digest)
+            bound = bound and review_context.get("story_brief_binding", {}).get("story_brief_basis_sha256") == review.get("story_brief_basis_sha256")
+            if (not bound or validation.get("ok") is not True or validation.get("subject") != result_path
+                    or result.get("schema") != "evidence_review_v2"
+                    or result.get("verdict") not in {"pass", "conditional_pass"}
+                    or any(str(f.get("severity", "")).upper() in {"P0", "P1"} for f in result.get("findings", []))):
+                raise ValueError(f"chapter {chapter} {stage_name} review evidence is stale or invalid")
+        editorial = evidence(chapter, f"50_workbench/editorial_reviews/ch{chapter:03d}.aggregate.json")
+        if (editorial.get("source_sha256") != digest or editorial.get("need_human")
+                or not editorial.get("expected_roles")
+                or set(editorial["expected_roles"]) != set(editorial.get("accepted_roles", []))):
+            raise ValueError(f"chapter {chapter} editorial aggregate is incomplete or stale")
+        accepted_roles = []
+        for result_path in editorial.get("accepted_results", []):
+            validation = evidence(chapter, result_path.removesuffix(".json") + ".validation.json")
+            normalized = validation.get("provenance", {}).get("normalized", {})
+            result = evidence(chapter, result_path, normalized.get("source_result_sha256", ""))
+            if validation.get("ok") is not True or result.get("verdict") not in {"pass", "conditional_pass"}:
+                raise ValueError(f"chapter {chapter} independent review validation failed")
+            role = validation.get("provenance", {}).get("role_id", "")
+            context = evidence(chapter, f"50_workbench/editorial_reviews/agent_tasks/ch{chapter:03d}/{role}.context.json")
+            normalized = validation.get("provenance", {}).get("normalized", {})
+            if (context.get("chapter_contract_hash") != contract_digest
+                    or context.get("context_digest_hash") != normalized.get("context_digest_hash")
+                    or context.get("story_brief_binding", {}).get("story_brief_basis_sha256") != review.get("story_brief_basis_sha256")
+                    or context.get("role_id") != role or role in accepted_roles
+                    or any(str(f.get("severity", "")).upper() in {"P0", "P1"} for f in result.get("findings", []))):
+                raise ValueError(f"chapter {chapter} independent review context binding is invalid")
+            accepted_roles.append(role)
+        if set(accepted_roles) != set(editorial["expected_roles"]):
+            raise ValueError(f"chapter {chapter} independent review results are missing")
+        if bundle.get("review_stages", {}).get("payoff", {}).get("required"):
+            validation = evidence(chapter, f"50_workbench/quality_reviews/ch{chapter:03d}.reader_payoff.validation.json")
+            provenance = validation.get("provenance", {})
+            if validation.get("ok") is not True or provenance.get("source_hash") != digest or not provenance.get("passed"):
+                raise ValueError(f"chapter {chapter} reader-value review is stale")
+            evidence(chapter, str(validation.get("subject", "")), provenance.get("review_hash", ""))
+        writing = evidence(chapter, f"50_workbench/writing_tasks/ch{chapter:03d}.json", optional=True)
+        attempts = evidence(chapter, f"50_workbench/repair_plans/ch{chapter:03d}/attempts.json", optional=True)
+        if attempts and (attempts.get("schema") != "repair_attempts_v1" or not isinstance(attempts.get("submitted_rounds"), list)):
+            raise ValueError(f"chapter {chapter} repair effort evidence is invalid")
+        process = {
+            "context_estimated_units": writing.get("context_plan", {}).get("estimated_units"),
+            "repair_attempts": len(attempts["submitted_rounds"]) if attempts else None,
+            "blocking_findings_observed": None,
         }
+        reading_basis: dict[str, Any] = {}
+        if config.data.get("creation", {}).get("mode") == "fanfiction":
+            context = evidence(chapter, f"50_workbench/fanfiction_context/ch{chapter:03d}.json",
+                               closure.get("fanfiction_context_sha256", ""))
+            if context.get("schema") != "fanfiction_context_bundle_v3":
+                raise ValueError("literary sample requires the current fanfiction context protocol")
+            reading_basis = context.get("author_projection", {})
+        chapters.append({"chapter_number": chapter, "path": final_path, "sha256": digest,
+                         "character_count": len(body.decode("utf-8")), "volume_id": volumes[0]["volume_id"], "reading_basis": reading_basis, "process_observations": process})
 
-    ordered_routes = sorted(
-        ROUTE_FAMILIES,
-        key=lambda route: sha256(f"{seed}:{normalized_id}:{route}".encode("utf-8")).hexdigest(),
-    )
-    blind_map = {
-        f"entry-{chr(ord('a') + index)}": route
-        for index, route in enumerate(ordered_routes)
+    mode = config.data.get("creation", {}).get("mode", "original")
+    continuity = config.data.get("fanfiction", {}).get("continuity_mode")
+    route_family = None
+    topology = None
+    baseline: list[dict[str, Any]] = []
+    if mode == "fanfiction":
+        from longform_engine.fanfiction_contracts import load_current_fanfiction_documents
+        documents = load_current_fanfiction_documents(config, root)
+        route_family = documents.story_engine["extensions"]["route_family"]
+        continuity = documents.story_engine["extensions"]["continuity_mode"]
+        topology = documents.route.get("extensions", {}).get("crossover", {}).get("topology")
+        for path in documents.paths.values():
+            baseline.append({"path": path.relative_to(root).as_posix(), "sha256": sha256(path.read_bytes()).hexdigest()})
+    applicable = list(METRICS)[:6]
+    if mode == "fanfiction":
+        applicable += ["canon_fidelity", "canon_recognition", "new_reading_value"]
+        from longform_engine.fanfiction_creative_requirements import compile_fanfiction_creative_requirements
+        requirements = compile_fanfiction_creative_requirements(continuity, route_family)
+        if requirements["conditional_metrics"]["divergence_causality"]:
+            applicable.append("divergence_causality")
+        if requirements["conditional_metrics"]["cross_system_cost_and_counterplay"]:
+            applicable.append("in_world_cost_and_countermeasure")
+    return {
+        "config_path": str(config.path.resolve()), "project_root": str(root),
+        "config_sha256": payload_sha256(config.data),
+        "config_file_sha256": sha256(config.path.read_bytes()).hexdigest(),
+        "creation_mode": mode, "continuity_mode": continuity, "route_family": route_family,
+        "topology": topology, "chapter_start": start, "chapter_end": end, "chapters": chapters,
+        "baseline": baseline, "evidence": bindings, "applicable_metrics": applicable,
+        "workflow": {"writing_mode": config.data.get("writing", {}).get("mode"),
+                     "model": None, "model_provider": None, "human_review_minutes": None,
+                     "human_edit_minutes": None},
     }
-    public_root = trial_root / "public"
-    public_entries: list[dict[str, Any]] = []
-    for blind_id, route_family in blind_map.items():
-        target_dir = public_root / blind_id
-        public_chapters: list[dict[str, Any]] = []
-        for chapter in source_records[route_family]["chapters"]:
-            source = Path(chapter["source_path"])
-            body = source.read_text(encoding="utf-8")
-            target = target_dir / f"ch{int(chapter['chapter_number']):03d}.md"
-            atomic_write_text(target, body)
-            public_chapters.append(
-                {
-                    "chapter_number": int(chapter["chapter_number"]),
-                    "path": f"{blind_id}/{target.name}",
-                    "sha256": chapter["sha256"],
-                    "character_count": chapter["character_count"],
-                }
-            )
-        public_entries.append({"blind_id": blind_id, "chapters": public_chapters})
-
-    public_basis = {
-        "schema": TRIAL_SCHEMA,
-        "trial_id": normalized_id,
-        "chapter_count_per_route": CHAPTER_COUNT,
-        "blind_ids": sorted(blind_map),
-        "score_scale": {"min": 1, "max": 5, "higher_is_better": True},
-        "score_metrics": list(SCORE_METRICS),
-        "failure_codes": list(FAILURE_CODES),
-        "disqualifying_codes": list(DISQUALIFYING_CODES),
-        "entries": sorted(public_entries, key=lambda item: item["blind_id"]),
-        "reviewer_count_required": 3,
-        "instructions": [
-            "评审不得参与任一路线生成，也不得查看私有路线映射。",
-            "先独立阅读并评分，再提交失败模式与可取消资格的问题。",
-            "系统使用三人中位数，不选择对作品更有利的个别意见。",
-        ],
-        "stores_prompt": False,
-        "stores_source_canon": False,
-    }
-    public_payload = {**public_basis, "pack_hash": payload_sha256(public_basis)}
-    public_manifest = public_root / "manifest.json"
-    write_json(public_manifest, public_payload)
-    atomic_write_text(public_root / "REVIEW_INSTRUCTIONS.md", render_instructions(public_payload))
-
-    private_basis = {
-        "schema": PRIVATE_MAPPING_SCHEMA,
-        "trial_id": normalized_id,
-        "pack_hash": public_payload["pack_hash"],
-        "blind_route_mapping": blind_map,
-        "routes": source_records,
-        "stores_manuscript_body": False,
-        "created_at": utc_now(),
-    }
-    private_payload = {**private_basis, "mapping_sha256": payload_sha256(private_basis)}
-    private_mapping = trial_root / "private_mapping.json"
-    write_json(private_mapping, private_payload)
-    return FanfictionLiteraryTrialResult(
-        trial_id=normalized_id,
-        public_manifest=relative(root, public_manifest),
-        private_mapping=relative(root, private_mapping),
-        pack_hash=str(public_payload["pack_hash"]),
-        blind_ids=tuple(sorted(blind_map)),
-    )
 
 
-def create_fanfiction_literary_review_template(
-    config: ConfigDocument,
-    *,
-    trial_id: str,
-    reviewer_id: str,
-) -> str:
+def create_literary_trial(config: ConfigDocument, *, trial_id: str, stage: str,
+                          samples: list[dict[str, Any]]) -> dict[str, Any]:
+    trial_id = clean_identifier(trial_id, field="trial_id")
+    if ".." in trial_id:
+        raise ValueError("trial_id cannot contain consecutive dots")
+    if stage not in STAGES or not isinstance(samples, list) or not 1 <= len(samples) <= 12:
+        raise ValueError("choose a valid trial stage and 1–12 source projects")
     root = resolve_project_root(config)
-    normalized_id = clean_identifier(trial_id, field="trial_id")
-    normalized_reviewer = clean_identifier(reviewer_id, field="reviewer_id")
-    manifest = load_public_manifest(root, normalized_id)
-    payload = {
-        "schema": REVIEW_SUBMISSION_SCHEMA,
-        "trial_id": normalized_id,
-        "pack_hash": manifest["pack_hash"],
-        "reviewer": {
-            "reviewer_id": normalized_reviewer,
-            "instance_id": "FILL_UNIQUE_HUMAN_INSTANCE_ID",
-            "participated_in_generation": False,
-            "saw_private_mapping": False,
-            "conflict_of_interest": False,
-        },
-        "attestation_note": "FILL: explain reviewer independence and blind-review conditions",
-        "entries": [
-            {
-                "blind_id": blind_id,
-                "scores": {metric: None for metric in SCORE_METRICS},
-                "failure_findings": [],
-                "disqualifying_findings": [],
-                "notes": "",
-            }
-            for blind_id in manifest["blind_ids"]
-        ],
-        "submitted_at": "FILL_ISO_8601",
-    }
-    path = fanfiction_literary_trial_root(root, normalized_id) / "review_templates" / f"{normalized_reviewer}.json"
-    write_json(path, payload)
-    return relative(root, path)
-
-
-def submit_fanfiction_literary_review(
-    config: ConfigDocument,
-    *,
-    trial_id: str,
-    reviewer_id: str,
-    file_path: str | Path,
-) -> str:
-    root = resolve_project_root(config)
-    normalized_id = clean_identifier(trial_id, field="trial_id")
-    normalized_reviewer = clean_identifier(reviewer_id, field="reviewer_id")
-    manifest = load_public_manifest(root, normalized_id)
-    source = Path(file_path).expanduser().resolve()
-    payload = read_object(source)
-    errors = validate_review_submission(
-        payload,
-        manifest=manifest,
-        trial_id=normalized_id,
-        reviewer_id=normalized_reviewer,
-    )
-    if errors:
-        raise ValueError("fanfiction literary review is invalid: " + "; ".join(errors))
-    basis = dict(payload)
-    basis.pop("submission_sha256", None)
-    stored = {**basis, "submission_sha256": payload_sha256(basis)}
-    target = fanfiction_literary_trial_root(root, normalized_id) / "reviews" / f"{normalized_reviewer}.json"
+    target = root / TRIAL_DIRECTORY / trial_id
     if target.exists():
-        raise ValueError(f"reviewer already submitted: {normalized_reviewer}")
-    write_json(target, stored)
-    return relative(root, target)
-
-
-def literary_assessment_from_submissions(
-    mapping: dict[str, Any],
-    submissions: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """Recompute the fixed median assessment used by both aggregation and live evidence audit."""
-
-    by_route: dict[str, dict[str, list[float]]] = {
-        route: {metric: [] for metric in SCORE_METRICS} for route in ROUTE_FAMILIES
-    }
-    failure_findings: list[dict[str, Any]] = []
-    disqualifying_findings: list[dict[str, Any]] = []
-    disagreements: list[dict[str, Any]] = []
-    blind_map = mapping["blind_route_mapping"]
-    for submission in submissions:
-        reviewer_id = str(submission["reviewer"]["reviewer_id"])
-        for entry in submission["entries"]:
-            route = str(blind_map[entry["blind_id"]])
-            for metric in SCORE_METRICS:
-                by_route[route][metric].append(float(entry["scores"][metric]))
-            failure_findings.extend(
-                {**item, "route_family": route, "reviewer_id": reviewer_id}
-                for item in entry["failure_findings"]
-            )
-            disqualifying_findings.extend(
-                {**item, "route_family": route, "reviewer_id": reviewer_id}
-                for item in entry["disqualifying_findings"]
-            )
-    medians = {
-        route: {metric: round(float(median(scores)), 3) for metric, scores in metrics.items()}
-        for route, metrics in by_route.items()
-    }
-    for route, metrics in by_route.items():
-        for metric, scores in metrics.items():
-            threshold = 4.0 if metric in CORE_METRICS else 3.5
-            score_range = max(scores) - min(scores)
-            if len(set(scores)) > 1:
-                disagreements.append(
-                    {
-                        "disagreement_id": f"{route}:{metric}",
-                        "route_family": route,
-                        "metric": metric,
-                        "scores": scores,
-                        "median": medians[route][metric],
-                        "threshold": threshold,
-                        "material": score_range >= 2.0 or (min(scores) < threshold <= max(scores)),
-                        "resolution_status": "human_resolution_required",
-                    }
-                )
-    threshold_passed = all(
-        score >= (4.0 if metric in CORE_METRICS else 3.5)
-        for metrics in medians.values()
-        for metric, score in metrics.items()
-    )
-    material_ids = [
-        str(item["disagreement_id"]) for item in disagreements if item["material"]
-    ]
-    return {
-        "route_metric_medians": medians,
-        "failure_findings": failure_findings,
-        "disqualifying_findings": disqualifying_findings,
-        "disagreements": disagreements,
-        "material_disagreement_ids": material_ids,
-        "threshold_conclusion": (
-            "pass" if threshold_passed and not disqualifying_findings else "fail"
-        ),
-    }
-
-
-def aggregate_fanfiction_literary_trial(
-    config: ConfigDocument,
-    *,
-    trial_id: str,
-) -> FanfictionLiteraryAggregateResult:
-    root = resolve_project_root(config)
-    normalized_id = clean_identifier(trial_id, field="trial_id")
-    trial_root = fanfiction_literary_trial_root(root, normalized_id)
-    manifest = load_public_manifest(root, normalized_id)
-    mapping = load_private_mapping(root, normalized_id, manifest)
-    submissions = load_review_submissions(trial_root, manifest, normalized_id)
-    if len(submissions) != 3:
-        raise ValueError("fanfiction literary trial requires exactly three independent human reviewers")
-    reviewer_instances = [str(item["reviewer"]["instance_id"]) for item in submissions]
-    if len(set(reviewer_instances)) != 3:
-        raise ValueError("fanfiction literary reviewers must use three unique human instance IDs")
-
-    assessment = literary_assessment_from_submissions(mapping, submissions)
-    material = assessment["material_disagreement_ids"]
-    threshold_conclusion = assessment["threshold_conclusion"]
-    aggregate_basis = {
-        "schema": AGGREGATE_SCHEMA,
-        "trial_id": normalized_id,
-        "pack_hash": manifest["pack_hash"],
-        "mapping_sha256": mapping["mapping_sha256"],
-        "reviewer_ids": sorted(str(item["reviewer"]["reviewer_id"]) for item in submissions),
-        "reviewer_instances": sorted(reviewer_instances),
-        "submission_sha256": sorted(str(item["submission_sha256"]) for item in submissions),
-        "aggregation": "three-independent-reviewer median; no favorable-opinion selection",
-        "route_metric_medians": assessment["route_metric_medians"],
-        "failure_findings": assessment["failure_findings"],
-        "disqualifying_findings": assessment["disqualifying_findings"],
-        "disagreements": assessment["disagreements"],
-        "material_disagreement_ids": material,
-        "threshold_conclusion": threshold_conclusion,
-        "conclusion": "pending_human_resolution" if material else threshold_conclusion,
-        "stores_manuscript_body": False,
-    }
-    aggregate = {**aggregate_basis, "aggregate_sha256": payload_sha256(aggregate_basis)}
-    aggregate_file = trial_root / "aggregate.json"
-    write_json(aggregate_file, aggregate)
-    evidence_ready = False
-    if threshold_conclusion == "pass" and not material:
-        write_fanfiction_literary_evidence_manifest(root, normalized_id, manifest, mapping, aggregate, None)
-        evidence_ready = True
-    return FanfictionLiteraryAggregateResult(
-        trial_id=normalized_id,
-        aggregate_file=relative(root, aggregate_file),
-        aggregate_sha256=aggregate["aggregate_sha256"],
-        threshold_conclusion=threshold_conclusion,
-        material_disagreement_count=len(material),
-        literary_evidence_ready=evidence_ready,
-    )
-
-
-def resolve_fanfiction_literary_disagreements(
-    config: ConfigDocument,
-    *,
-    trial_id: str,
-    decided_by: str,
-    resolutions: list[dict[str, str]],
-) -> dict[str, Any]:
-    """Acknowledge every material panel disagreement without replacing any reviewer score."""
-
-    root = resolve_project_root(config)
-    normalized_id = clean_identifier(trial_id, field="trial_id")
-    human = str(decided_by or "").strip()
-    if not human:
-        raise ValueError("decided_by must identify the human resolving panel disagreement")
-    trial_root = fanfiction_literary_trial_root(root, normalized_id)
-    manifest = load_public_manifest(root, normalized_id)
-    mapping = load_private_mapping(root, normalized_id, manifest)
-    aggregate = read_object(trial_root / "aggregate.json")
-    validate_aggregate_hash(aggregate, trial_id=normalized_id)
-    required_ids = set(str(item) for item in aggregate.get("material_disagreement_ids") or [])
-    by_id = {
-        str(item.get("disagreement_id") or ""): item
-        for item in resolutions
-        if isinstance(item, dict)
-    }
-    if set(by_id) != required_ids or len(by_id) != len(resolutions):
-        raise ValueError("resolutions must cover every material disagreement exactly once")
-    for disagreement_id, item in by_id.items():
-        if (
-            item.get("decision") != "acknowledge_panel_median_without_score_override"
-            or not str(item.get("note") or "").strip()
-        ):
-            raise ValueError(f"resolution is invalid for {disagreement_id}")
-    basis = {
-        "schema": RESOLUTION_SCHEMA,
-        "trial_id": normalized_id,
-        "aggregate_sha256": aggregate["aggregate_sha256"],
-        "decided_by": human,
-        "decided_at": utc_now(),
-        "resolutions": [by_id[item] for item in sorted(by_id)],
-        "score_override_permitted": False,
-    }
-    resolution = {**basis, "resolution_sha256": payload_sha256(basis)}
-    resolution_file = trial_root / "disagreement_resolution.json"
-    write_json(resolution_file, resolution)
-    if aggregate.get("threshold_conclusion") == "pass":
-        write_fanfiction_literary_evidence_manifest(
-            root, normalized_id, manifest, mapping, aggregate, resolution
-        )
-    return resolution
-
-
-def fanfiction_literary_trial_status(config: ConfigDocument, *, trial_id: str) -> dict[str, Any]:
-    root = resolve_project_root(config)
-    normalized_id = clean_identifier(trial_id, field="trial_id")
-    trial_root = fanfiction_literary_trial_root(root, normalized_id)
-    aggregate = read_object(trial_root / "aggregate.json")
-    evidence = read_object(root / "70_runtime" / "literary_evidence" / "manifest.json")
-    evidence_errors = (
-        validate_fanfiction_literary_evidence(root, evidence)
-        if evidence.get("schema") == EVIDENCE_SCHEMA and evidence.get("trial_id") == normalized_id
-        else ["fanfiction_literary_evidence_manifest_missing"]
-    )
-    return {
-        "schema": "fanfiction_literary_trial_status_v1",
-        "trial_id": normalized_id,
-        "pack_exists": (trial_root / "public" / "manifest.json").is_file(),
-        "review_count": len(list((trial_root / "reviews").glob("*.json"))) if (trial_root / "reviews").is_dir() else 0,
-        "aggregate_conclusion": str(aggregate.get("conclusion") or "missing"),
-        "threshold_conclusion": str(aggregate.get("threshold_conclusion") or "missing"),
-        "material_disagreement_ids": list(aggregate.get("material_disagreement_ids") or []),
-        "literary_evidence_ready": not evidence_errors,
-        "literary_evidence_blockers": evidence_errors,
-    }
-
-
-def validate_fanfiction_literary_evidence(root: Path, manifest: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
-    expected = {
-        "schema", "protocol_version", "trial_id", "pack_hash", "mapping_sha256",
-        "aggregate_file", "aggregate_sha256", "resolution_file", "resolution_sha256",
-        "routes", "reviewer_count", "overall_conclusion", "stores_manuscript_body",
-        "manifest_sha256",
-    }
-    if set(manifest) != expected or manifest.get("schema") != EVIDENCE_SCHEMA:
-        return ["fanfiction_literary_evidence_manifest_fields_invalid"]
-    stored_hash = str(manifest.get("manifest_sha256") or "")
-    basis = dict(manifest)
-    basis.pop("manifest_sha256", None)
-    if not stored_hash or payload_sha256(basis) != stored_hash:
-        errors.append("fanfiction_literary_evidence_manifest_hash_invalid")
-    if (
-        manifest.get("protocol_version") != TRIAL_SCHEMA
-        or manifest.get("overall_conclusion") != "pass"
-        or manifest.get("stores_manuscript_body") is not False
-        or int(manifest.get("reviewer_count") or 0) != 3
-        or set(manifest.get("routes") or []) != set(ROUTE_FAMILIES)
-    ):
-        errors.append("fanfiction_literary_evidence_protocol_invalid")
-    trial_id = str(manifest.get("trial_id") or "")
+        raise ValueError("trial already exists; use a new trial ID")
+    records = []
+    for sample in samples:
+        if not isinstance(sample, dict) or set(sample) != {"config_path", "chapter_start", "chapter_end"}:
+            raise ValueError("sample fields must be config_path, chapter_start, chapter_end")
+        record = collect_literary_sample(load_project_config(Path(sample["config_path"]).resolve()),
+                                        sample["chapter_start"], sample["chapter_end"])
+        if STAGES[stage] and record["chapter_end"] - record["chapter_start"] + 1 != STAGES[stage]:
+            raise ValueError(f"{stage} requires {STAGES[stage]} chapters per sample")
+        if stage == "crossover" and record["topology"] == "sequential_worlds" and len({c["volume_id"] for c in record["chapters"]}) < 2:
+            raise ValueError("sequential-world diagnosis must span a volume transition")
+        if stage == "crossover" and not record["topology"]:
+            raise ValueError("crossover diagnosis requires a crossover contract")
+        records.append(record)
+    if len({(r["config_path"], r["chapter_start"], r["chapter_end"]) for r in records}) != len(records):
+        raise ValueError("duplicate trial samples are not independent samples")
+    if stage == "formal" and {r["route_family"] for r in records} != {"oc_si_progression", "canon_character_centered"}:
+        raise ValueError("formal acceptance requires both fanfiction protagonist routes")
+    secrets.SystemRandom().shuffle(records)
+    entries = []
+    mapping = {}
+    for index, record in enumerate(records):
+        blind_id = f"entry-{index + 1}"
+        mapping[blind_id] = record
+        entries.append({"blind_id": blind_id, "chapters": [
+            {**{key: value for key, value in c.items() if key not in {"process_observations", "volume_id"}},
+             "path": f"{blind_id}/ch{c['chapter_number']:03d}.md"} for c in record["chapters"]],
+            "applicable_metrics": record["applicable_metrics"],
+            "metric_applicability": {metric: {"applicable": metric in record["applicable_metrics"],
+                "reason": "通用阅读指标" if metric in list(METRICS)[:6] else
+                ("适用的创作合同要求" if metric in record["applicable_metrics"] else "本样本批准的创作合同不要求此项")}
+                for metric in METRICS}})
+    manifest = {"schema": TRIAL_SCHEMA, "trial_id": trial_id, "stage": stage, "entries": entries,
+                "metrics": METRICS, "reviewer_count_required": 3, "score_scale": [1, 5],
+                "thresholds": {m: 4 if m in CORE_METRICS else 3.5 for m in METRICS},
+                "scope_note": "仅评估此匿名样本；内部阈值不代表平台通过率或市场表现。"}
+    manifest["pack_hash"] = payload_sha256(manifest)
+    private = {"schema": "literary_trial_provenance_v2", "trial_id": trial_id,
+               "pack_hash": manifest["pack_hash"], "engine_version": __version__,
+               "engine_sha256": engine_fingerprint(), "entries": mapping,
+               "created_at": datetime.now(timezone.utc).isoformat()}
+    private["sha256"] = payload_sha256(private)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".creating-", dir=target.parent))
     try:
-        public = load_public_manifest(root, trial_id)
-        mapping = load_private_mapping(root, trial_id, public)
-        verify_trial_source_and_public_files(root, trial_id, public, mapping)
-    except (OSError, ValueError) as exc:
-        errors.append(f"fanfiction_literary_evidence_live_pack_invalid:{exc}")
-        return errors
-    if public.get("pack_hash") != manifest.get("pack_hash") or mapping.get("mapping_sha256") != manifest.get("mapping_sha256"):
-        errors.append("fanfiction_literary_evidence_pack_binding_invalid")
-    aggregate_path = project_artifact(root, str(manifest.get("aggregate_file") or ""))
-    aggregate = read_object(aggregate_path) if aggregate_path is not None else {}
+        for entry in entries:
+            source = mapping[entry["blind_id"]]
+            for chapter, original in zip(entry["chapters"], source["chapters"], strict=True):
+                content = (Path(source["project_root"]) / original["path"]).read_bytes()
+                if sha256(content).hexdigest() != original["sha256"]:
+                    raise ValueError("source changed while creating trial")
+                path = staging / "public" / chapter["path"]
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+        _write_object(staging / "public/manifest.json", manifest)
+        _write_object(staging / "private_mapping.json", private)
+        staging.rename(target)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    return {"trial_id": trial_id, "pack_hash": manifest["pack_hash"], "stage": stage,
+            "status": "awaiting_independent_reviews", "public_manifest": str(target / "public/manifest.json")}
+
+
+def engine_fingerprint() -> str:
+    package = Path(__file__).parent
+    from longform_engine.resources import resource_root, resource_integrity_bytes
+    resources = resource_root()
+    return payload_sha256({
+        "code": {p.relative_to(package).as_posix(): sha256(p.read_bytes()).hexdigest()
+                 for p in sorted(package.rglob("*.py"))},
+        "configuration": {p.relative_to(resources).as_posix(): sha256(resource_integrity_bytes(p)).hexdigest()
+                          for p in sorted((resources / "config").rglob("*")) if p.is_file()},
+    })
+
+
+def load_literary_trial(root: Path, trial_id: str, *, current: bool = True) -> tuple[Path, dict[str, Any]]:
+    trial = root / TRIAL_DIRECTORY / clean_identifier(trial_id, field="trial_id")
+    if not (trial / "public").resolve().is_relative_to(root.resolve()):
+        raise ValueError("literary trial must stay inside its project")
+    manifest = _read_object(trial / "public/manifest.json")
+    if (manifest.get("schema") != TRIAL_SCHEMA or manifest.get("trial_id") != trial_id
+            or manifest.get("pack_hash") != payload_sha256({k: v for k, v in manifest.items() if k != "pack_hash"})):
+        raise ValueError("literary pack protocol/hash invalid; rebuild trial")
+    for entry in manifest["entries"]:
+        for chapter in entry["chapters"]:
+            path = (trial / "public" / chapter["path"]).resolve()
+            if not path.is_relative_to((trial / "public").resolve()) or sha256(path.read_bytes()).hexdigest() != chapter["sha256"]:
+                raise ValueError("literary pack body hash invalid")
+    if current:
+        private = _read_object(trial / "private_mapping.json")
+        if (private.get("schema") != "literary_trial_provenance_v2" or private.get("pack_hash") != manifest["pack_hash"]
+                or private.get("sha256") != payload_sha256({k: v for k, v in private.items() if k != "sha256"})
+                or private.get("engine_version") != __version__ or private.get("engine_sha256") != engine_fingerprint()):
+            raise ValueError("stale literary provenance or engine binding")
+        for record in private["entries"].values():
+            fresh = collect_literary_sample(load_project_config(Path(record["config_path"])),
+                                            record["chapter_start"], record["chapter_end"])
+            if fresh != record:
+                raise ValueError("stale literary sample; source/config/baseline/evidence changed")
+    return trial, manifest
+
+
+def register_literary_reviewer(root: Path, trial_id: str, reviewer_id: str) -> dict[str, Any]:
+    trial, manifest = load_literary_trial(root, trial_id)
+    reviewer_id = clean_identifier(reviewer_id, field="reviewer_id")
+    if ".." in reviewer_id:
+        raise ValueError("reviewer_id cannot contain consecutive dots")
+    path = trial / "reviewers" / f"{reviewer_id}.json"
+    if path.exists():
+        raise ValueError("reviewer already registered")
+    if len(list((trial / "reviewers").glob("*.json"))) >= 3:
+        raise ValueError("a trial has exactly three independent reviewers")
+    token = secrets.token_urlsafe(32)
+    record = {"reviewer_id": reviewer_id, "token_sha256": sha256(token.encode()).hexdigest(),
+              "trial_id": trial_id, "pack_hash": manifest["pack_hash"]}
+    _write_object(path, record)
+    return {"reviewer_id": reviewer_id, "review_token": token, "trial_id": trial_id}
+
+
+def literary_reviewer_state(root: Path, trial_id: str, reviewer_id: str,
+                            *, token: str | None = None) -> dict[str, Any]:
+    reviewer_id = clean_identifier(reviewer_id, field="reviewer_id")
+    trial = root / TRIAL_DIRECTORY / clean_identifier(trial_id, field="trial_id")
     try:
-        validate_aggregate_hash(aggregate, trial_id=trial_id)
-    except ValueError as exc:
-        errors.append(f"fanfiction_literary_evidence_aggregate_invalid:{exc}")
-    if (
-        aggregate.get("aggregate_sha256") != manifest.get("aggregate_sha256")
-        or aggregate.get("pack_hash") != manifest.get("pack_hash")
-        or aggregate.get("mapping_sha256") != manifest.get("mapping_sha256")
-        or aggregate.get("threshold_conclusion") != "pass"
-        or aggregate.get("disqualifying_findings")
-        or len(aggregate.get("reviewer_ids") or []) != 3
-    ):
-        errors.append("fanfiction_literary_evidence_threshold_invalid")
+        record = _read_object(trial / "reviewers" / f"{reviewer_id}.json")
+        if record.get("reviewer_id") != reviewer_id or record.get("trial_id") != trial_id:
+            raise ValueError("invalid reviewer identity")
+        if token is not None and not hmac.compare_digest(record["token_sha256"], sha256(token.encode()).hexdigest()):
+            raise ValueError("invalid reviewer token")
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        raise ValueError("reviewer access denied") from exc
     try:
-        submissions = load_review_submissions(
-            fanfiction_literary_trial_root(root, trial_id), public, trial_id
-        )
-    except ValueError as exc:
-        errors.append(f"fanfiction_literary_evidence_reviews_invalid:{exc}")
-        submissions = []
-    if (
-        len(submissions) != 3
-        or sorted(str(item["submission_sha256"]) for item in submissions)
-        != aggregate.get("submission_sha256")
-        or sorted(str(item["reviewer"]["reviewer_id"]) for item in submissions)
-        != aggregate.get("reviewer_ids")
-    ):
-        errors.append("fanfiction_literary_evidence_review_binding_invalid")
-    elif {
-        key: aggregate.get(key)
-        for key in (
-            "route_metric_medians",
-            "failure_findings",
-            "disqualifying_findings",
-            "disagreements",
-            "material_disagreement_ids",
-            "threshold_conclusion",
-        )
-    } != literary_assessment_from_submissions(mapping, submissions):
-        errors.append("fanfiction_literary_evidence_assessment_recomputation_failed")
-    material_ids = set(str(item) for item in aggregate.get("material_disagreement_ids") or [])
-    resolution_file = str(manifest.get("resolution_file") or "")
-    if material_ids:
-        resolution_path = project_artifact(root, resolution_file)
-        resolution = read_object(resolution_path) if resolution_path is not None else {}
-        if not valid_resolution(resolution, aggregate=aggregate, required_ids=material_ids):
-            errors.append("fanfiction_literary_evidence_disagreement_resolution_invalid")
-        elif resolution.get("resolution_sha256") != manifest.get("resolution_sha256"):
-            errors.append("fanfiction_literary_evidence_resolution_binding_invalid")
-    elif resolution_file or manifest.get("resolution_sha256"):
-        errors.append("fanfiction_literary_evidence_unnecessary_resolution_binding")
-    return errors
+        trial, manifest = load_literary_trial(root, trial_id)
+        if record.get("pack_hash") != manifest["pack_hash"]:
+            raise ValueError("reviewer binding invalid")
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        raise ValueError("anonymous sample is stale or unavailable; contact the trial organizer") from exc
+    draft_path = trial / "drafts" / f"{reviewer_id}.json"
+    submitted_path = trial / "submissions" / f"{reviewer_id}.json"
+    draft = _read_object(draft_path) if draft_path.exists() else {
+        "schema": REVIEW_SCHEMA, "trial_id": trial_id, "pack_hash": manifest["pack_hash"],
+        "reviewer_id": reviewer_id, "human_instance_id": "", "independence_confirmed": False,
+        "attestation_note": "", "review_minutes": None,
+        "entries": [{"blind_id": e["blind_id"], "scores": {m: None for m in e["applicable_metrics"]},
+                     "findings": [], "notes": ""} for e in manifest["entries"]]}
+    return {"manifest": manifest, "reviewer_id": reviewer_id, "draft": draft,
+            "draft_sha256": payload_sha256(draft), "submitted": submitted_path.exists(),
+            "submission": _read_object(submitted_path) if submitted_path.exists() else None,
+            "chapters": [{"blind_id": e["blind_id"], **c,
+                          "body": (trial / "public" / c["path"]).read_text(encoding="utf-8")}
+                         for e in manifest["entries"] for c in e["chapters"]]}
 
 
-def write_fanfiction_literary_evidence_manifest(
-    root: Path,
-    trial_id: str,
-    public: dict[str, Any],
-    mapping: dict[str, Any],
-    aggregate: dict[str, Any],
-    resolution: dict[str, Any] | None,
-) -> None:
-    basis = {
-        "schema": EVIDENCE_SCHEMA,
-        "protocol_version": TRIAL_SCHEMA,
-        "trial_id": trial_id,
-        "pack_hash": public["pack_hash"],
-        "mapping_sha256": mapping["mapping_sha256"],
-        "aggregate_file": f"70_runtime/literary_evidence/fanfiction_trials/{trial_id}/aggregate.json",
-        "aggregate_sha256": aggregate["aggregate_sha256"],
-        "resolution_file": (
-            f"70_runtime/literary_evidence/fanfiction_trials/{trial_id}/disagreement_resolution.json"
-            if resolution is not None else ""
-        ),
-        "resolution_sha256": str((resolution or {}).get("resolution_sha256") or ""),
-        "routes": list(ROUTE_FAMILIES),
-        "reviewer_count": 3,
-        "overall_conclusion": "pass",
-        "stores_manuscript_body": False,
-    }
-    write_json(
-        root / "70_runtime" / "literary_evidence" / "manifest.json",
-        {**basis, "manifest_sha256": payload_sha256(basis)},
-    )
+def validate_literary_review(manifest: dict[str, Any], draft: dict[str, Any], *, complete: bool,
+                            public_root: Path) -> None:
+    fields = {"schema", "trial_id", "pack_hash", "reviewer_id", "human_instance_id", "independence_confirmed",
+              "attestation_note", "review_minutes", "entries"}
+    if not isinstance(draft, dict) or set(draft) != fields or draft["schema"] != REVIEW_SCHEMA or draft["pack_hash"] != manifest["pack_hash"] or draft["trial_id"] != manifest["trial_id"]:
+        raise ValueError("review protocol or pack binding invalid")
+    for field in ("reviewer_id", "human_instance_id", "attestation_note"):
+        if not isinstance(draft[field], str) or draft[field] != draft[field].strip():
+            raise ValueError(f"{field} must be text without surrounding whitespace")
+    if not isinstance(draft["independence_confirmed"], bool):
+        raise ValueError("independent-review attestation must be an explicit boolean")
+    if complete and (draft["independence_confirmed"] is not True or not str(draft["attestation_note"]).strip()
+                     or not str(draft["human_instance_id"]).strip()):
+        raise ValueError("human identity and independent-review attestation are required")
+    minutes = draft["review_minutes"]
+    if minutes is not None and (type(minutes) not in (int, float) or not 0 <= minutes <= 100000):
+        raise ValueError("review minutes must be non-negative or unknown")
+    entries = draft["entries"]
+    if not isinstance(entries, list) or len(entries) != len(manifest["entries"]) or any(not isinstance(e, dict) or not isinstance(e.get("blind_id"), str) for e in entries) or {e.get("blind_id") for e in entries} != {e["blind_id"] for e in manifest["entries"]}:
+        raise ValueError("review entries must match anonymous pack exactly")
+    for entry in entries:
+        expected = next(e for e in manifest["entries"] if e["blind_id"] == entry["blind_id"])
+        if set(entry) != {"blind_id", "scores", "findings", "notes"} or not isinstance(entry["scores"], dict) or set(entry["scores"]) != set(expected["applicable_metrics"]):
+            raise ValueError("scores must cover every applicable metric; core scores cannot be not applicable")
+        if not isinstance(entry["notes"], str):
+            raise ValueError("review notes must be text")
+        for score in entry["scores"].values():
+            if score is None and not complete:
+                continue
+            if type(score) not in (int, float) or not 1 <= score <= 5 or score * 2 != int(score * 2):
+                raise ValueError("scores must be 1–5 in half-point steps")
+        if not isinstance(entry["findings"], list):
+            raise ValueError("findings must be a list")
+        for finding in entry["findings"]:
+            if not isinstance(finding, dict) or set(finding) != {"chapter_number", "start", "end", "text", "metric", "severity", "note"}:
+                raise ValueError("finding requires an exact passage, metric, severity and explanation")
+            if (type(finding["chapter_number"]) is not int or any(
+                not isinstance(finding[key], str) for key in ("text", "metric", "severity", "note")
+            )):
+                raise ValueError("finding passage and explanation must have structured types")
+            chapters = [c for c in expected["chapters"] if c["chapter_number"] == finding["chapter_number"]]
+            if len(chapters) != 1 or finding["metric"] not in expected["applicable_metrics"] or finding["severity"] not in {"minor", "major", "critical"} or not str(finding["note"]).strip():
+                raise ValueError("finding scope or explanation invalid")
+            body = (public_root / chapters[0]["path"]).read_text(encoding="utf-8")
+            start, end = finding["start"], finding["end"]
+            if type(start) is not int or type(end) is not int or not 0 <= start < end <= len(body) or body[start:end] != finding["text"]:
+                raise ValueError("finding passage does not match the anonymous chapter")
 
 
-def source_chapter_records(source_dir: Path) -> list[dict[str, Any]]:
-    if not source_dir.is_dir():
-        raise ValueError(f"literary trial source directory does not exist: {source_dir}")
-    records: list[dict[str, Any]] = []
-    for chapter_number in range(1, CHAPTER_COUNT + 1):
-        path = find_chapter_file(source_dir, chapter_number)
-        body = path.read_text(encoding="utf-8")
-        if not body.strip():
-            raise ValueError(f"literary trial chapter is empty: {path}")
-        records.append(
-            {
-                "chapter_number": chapter_number,
-                "source_path": str(path),
-                "sha256": sha256(body.encode("utf-8")).hexdigest(),
-                "character_count": len(body),
-            }
-        )
-    return records
+def save_literary_review(root: Path, trial_id: str, reviewer_id: str, draft: dict[str, Any], *,
+                         expected_sha256: str, submit: bool = False, token: str | None = None) -> dict[str, Any]:
+    state = literary_reviewer_state(root, trial_id, reviewer_id, token=token)
+    trial = root / TRIAL_DIRECTORY / trial_id
+    if not isinstance(draft, dict) or draft.get("reviewer_id") != reviewer_id:
+        raise ValueError("cannot write another reviewer's record")
+    if state["submitted"]:
+        if submit and state["submission"]["review"] == draft:
+            return {"submitted": True, "idempotent": True}
+        raise ValueError("submitted independent scores are immutable")
+    if state["draft_sha256"] != expected_sha256:
+        raise ValueError("stale review draft; reload before saving")
+    validate_literary_review(state["manifest"], draft, complete=submit, public_root=trial / "public")
+    if submit:
+        for path in (trial / "submissions").glob("*.json"):
+            if _read_object(path)["review"]["human_instance_id"] == draft["human_instance_id"]:
+                raise ValueError("three distinct human reviewers are required")
+        record = {"review": draft, "review_sha256": payload_sha256(draft),
+                  "submitted_at": datetime.now(timezone.utc).isoformat()}
+        _write_object(trial / "submissions" / f"{reviewer_id}.json", record)
+    else:
+        _write_object(trial / "drafts" / f"{reviewer_id}.json", draft)
+    return {"submitted": submit, "draft_sha256": payload_sha256(draft)}
 
 
-def validate_gate_report(
-    payload: dict[str, Any],
-    *,
-    route_family: str,
-    chapters: list[dict[str, Any]],
-) -> list[str]:
-    expected = {
-        "schema", "route_family", "chapter_count", "chapter_hashes", "p1_blockers",
-        "untraceable_canon_assertions", "continuous_source_reproduction_findings",
-        "fabricated_authorization_findings", "generated_at",
-    }
-    errors: list[str] = []
-    if set(payload) != expected or payload.get("schema") != GATE_REPORT_SCHEMA:
-        return ["gate_report_fields_invalid"]
-    if payload.get("route_family") != route_family or payload.get("chapter_count") != CHAPTER_COUNT:
-        errors.append("gate_report_route_or_chapter_count_invalid")
-    expected_hashes = [
-        {"chapter_number": item["chapter_number"], "sha256": item["sha256"]}
-        for item in chapters
-    ]
-    if payload.get("chapter_hashes") != expected_hashes:
-        errors.append("gate_report_chapter_hashes_stale")
-    for field in (
-        "p1_blockers",
-        "untraceable_canon_assertions",
-        "continuous_source_reproduction_findings",
-        "fabricated_authorization_findings",
-    ):
-        if payload.get(field) != []:
-            errors.append(f"gate_report_{field}_must_be_empty")
-    return errors
+def aggregate_literary_trial(root: Path, trial_id: str) -> dict[str, Any]:
+    """Recompute every score and unresolved issue; saved reports are never authority."""
+    trial, manifest = load_literary_trial(root, trial_id)
+    submissions = []
+    for path in sorted((trial / "submissions").glob("*.json")):
+        record = _read_object(path)
+        review = record["review"]
+        if record["review_sha256"] != payload_sha256(review) or path.stem != review["reviewer_id"]:
+            raise ValueError("review submission hash/identity invalid")
+        if not (trial / "reviewers" / path.name).is_file():
+            raise ValueError("unregistered literary reviewer")
+        validate_literary_review(manifest, review, complete=True, public_root=trial / "public")
+        submissions.append(review)
+    if len({r["human_instance_id"] for r in submissions}) != len(submissions) or len(submissions) > 3:
+        raise ValueError("independent human reviewer identities are not unique")
+    missing = 3 - len(submissions)
+    entries = []
+    issues = []
+    for expected in manifest["entries"]:
+        reviews = [next(e for e in r["entries"] if e["blind_id"] == expected["blind_id"]) for r in submissions]
+        scores = {}
+        for metric in expected["applicable_metrics"]:
+            values = [r["scores"][metric] for r in reviews]
+            threshold = manifest["thresholds"][metric]
+            scores[metric] = {"scores": values, "median": median(values) if not missing else None,
+                              "threshold": threshold, "passed": not missing and median(values) >= threshold}
+            if not missing and (max(values) - min(values) >= 2 or min(values) < threshold <= max(values)):
+                issues.append({"id": f"{expected['blind_id']}:{metric}:disagreement", "kind": "disagreement",
+                               "blind_id": expected["blind_id"], "metric": metric, "scores": values})
+        for reviewer, review in zip(submissions, reviews, strict=True):
+            for index, finding in enumerate(review["findings"]):
+                if finding["severity"] in {"major", "critical"}:
+                    issues.append({"id": f"{expected['blind_id']}:{reviewer['reviewer_id']}:{index}",
+                                   "kind": "serious_finding", "blind_id": expected["blind_id"], "finding": finding})
+        entries.append({"blind_id": expected["blind_id"], "scores": scores,
+                        "review_notes": [{"reviewer_id": reviewer["reviewer_id"], "notes": r["notes"],
+                                          "findings": r["findings"]}
+                                         for reviewer, r in zip(submissions, reviews, strict=True)]})
+    evidence_hash = payload_sha256(submissions)
+    resolution_path = trial / "resolution.json"
+    resolution = _read_object(resolution_path) if resolution_path.exists() else {}
+    resolved = resolution.get("submission_sha256") == evidence_hash and resolution.get("pack_hash") == manifest["pack_hash"]
+    if resolved:
+        if resolution.get("schema") != "literary_resolution_v2":
+            raise ValueError("literary resolution protocol invalid")
+        validate_literary_resolution(issues, resolution.get("decisions"), resolution.get("decided_by"))
+    unresolved = [issue for issue in issues if not resolved or issue["id"] not in resolution.get("decisions", {})]
+    serious = [i for i in issues if i["kind"] == "serious_finding" and (
+        not resolved or resolution.get("decisions", {}).get(i["id"], {}).get("outcome") != "not_substantiated")]
+    passed = not missing and not unresolved and not serious and all(v["passed"] for e in entries for v in e["scores"].values())
+    private = _read_object(trial / "private_mapping.json")
+    effort = []
+    for blind_id, source in private["entries"].items():
+        for chapter in source["chapters"]:
+            path = Path(source["project_root"]) / "70_runtime/literary_effort" / f"ch{chapter['chapter_number']:03d}.json"
+            record = _read_object(path) if path.exists() else {}
+            current_effort = record.get("final_sha256") == chapter["sha256"]
+            effort.append({"blind_id": blind_id, "chapter_number": chapter["chapter_number"],
+                           "human_review_minutes": record.get("human_review_minutes") if current_effort else None,
+                           "human_edit_minutes": record.get("human_edit_minutes") if current_effort else None,
+                           **chapter["process_observations"]})
+    return {"schema": "literary_trial_report_v2", "trial_id": trial_id, "stage": manifest["stage"],
+            "pack_hash": manifest["pack_hash"], "submission_sha256": evidence_hash,
+            "status": "awaiting_reviews" if missing else "pending_resolution" if unresolved else "passed" if passed else "needs_revision",
+            "reviewers_submitted": [r["reviewer_id"] for r in submissions], "missing_reviewers": missing,
+            "entries": entries, "metrics": METRICS, "author_effort": effort, "issues": issues, "unresolved_issues": unresolved,
+            "resolution": resolution if resolved else None,
+            "human_review_minutes": [r["review_minutes"] for r in submissions],
+            "formal_acceptance": passed and manifest["stage"] == "formal",
+            "scope_note": manifest["scope_note"], "current": True}
 
 
-def validate_review_submission(
-    payload: dict[str, Any],
-    *,
-    manifest: dict[str, Any],
-    trial_id: str,
-    reviewer_id: str,
-) -> list[str]:
-    errors: list[str] = []
-    expected = {
-        "schema", "trial_id", "pack_hash", "reviewer", "attestation_note", "entries", "submitted_at",
-    }
-    if set(payload) != expected or payload.get("schema") != REVIEW_SUBMISSION_SCHEMA:
-        return ["review_submission_fields_invalid"]
-    if payload.get("trial_id") != trial_id or payload.get("pack_hash") != manifest.get("pack_hash"):
-        errors.append("review_submission_pack_binding_invalid")
-    reviewer = payload.get("reviewer")
-    if not isinstance(reviewer, dict) or set(reviewer) != {
-        "reviewer_id", "instance_id", "participated_in_generation", "saw_private_mapping", "conflict_of_interest",
-    }:
-        errors.append("reviewer_identity_invalid")
-    elif (
-        reviewer.get("reviewer_id") != reviewer_id
-        or not str(reviewer.get("instance_id") or "").strip()
-        or reviewer.get("participated_in_generation") is not False
-        or reviewer.get("saw_private_mapping") is not False
-        or reviewer.get("conflict_of_interest") is not False
-    ):
-        errors.append("reviewer_independence_invalid")
-    if not str(payload.get("attestation_note") or "").strip() or not str(payload.get("submitted_at") or "").strip():
-        errors.append("reviewer_attestation_invalid")
-    entries = payload.get("entries")
-    by_id = {
-        str(item.get("blind_id") or ""): item
-        for item in entries or []
-        if isinstance(item, dict)
-    }
-    if set(by_id) != set(manifest["blind_ids"]) or len(by_id) != len(entries or []):
-        errors.append("review_entries_incomplete")
-        return errors
-    for blind_id, entry in by_id.items():
-        if set(entry) != {"blind_id", "scores", "failure_findings", "disqualifying_findings", "notes"}:
-            errors.append(f"{blind_id}_review_entry_fields_invalid")
-            continue
-        scores = entry.get("scores")
-        if not isinstance(scores, dict) or set(scores) != set(SCORE_METRICS):
-            errors.append(f"{blind_id}_scores_invalid")
-        else:
-            for metric, score in scores.items():
-                if isinstance(score, bool) or not isinstance(score, (int, float)) or not 1 <= score <= 5:
-                    errors.append(f"{blind_id}_{metric}_score_invalid")
-        errors.extend(validate_findings(entry.get("failure_findings"), set(FAILURE_CODES), f"{blind_id}_failure"))
-        errors.extend(
-            validate_findings(entry.get("disqualifying_findings"), set(DISQUALIFYING_CODES), f"{blind_id}_disqualifying")
-        )
-        if not isinstance(entry.get("notes"), str) or len(entry["notes"]) > 4000:
-            errors.append(f"{blind_id}_notes_invalid")
-    return errors
+def validate_literary_resolution(issues: list[dict[str, Any]], decisions: Any, decided_by: Any) -> None:
+    """Validate every evidence-bound resolution without discarding any original score."""
+    if not isinstance(decided_by, str) or not decided_by.strip():
+        raise ValueError("resolution requires a human decision owner")
+    if not isinstance(decisions, dict) or set(decisions) != {i["id"] for i in issues}:
+        raise ValueError("every serious issue and disagreement must receive an explicit decision")
+    for issue in issues:
+        decision = decisions[issue["id"]]
+        outcomes = {"acknowledged"} if issue["kind"] == "disagreement" else {"needs_revision", "not_substantiated"}
+        if not isinstance(decision, dict) or set(decision) != {"outcome", "reason", "follow_up"} or not all(isinstance(decision[key], str) for key in decision) or decision["outcome"] not in outcomes or not str(decision["reason"]).strip() or not str(decision["follow_up"]).strip():
+            raise ValueError("decision needs a supported outcome, reason and follow-up; scores cannot be changed")
 
 
-def validate_findings(value: Any, codes: set[str], label: str) -> list[str]:
-    if not isinstance(value, list):
-        return [f"{label}_findings_must_be_list"]
-    errors: list[str] = []
-    for index, item in enumerate(value):
-        if (
-            not isinstance(item, dict)
-            or set(item) != {"code", "note"}
-            or item.get("code") not in codes
-            or not str(item.get("note") or "").strip()
-        ):
-            errors.append(f"{label}_finding_{index}_invalid")
-    return errors
+def resolve_literary_issues(root: Path, trial_id: str, *, submission_sha256: str,
+                           decisions: dict[str, Any], decided_by: str) -> dict[str, Any]:
+    report = aggregate_literary_trial(root, trial_id)
+    if report["missing_reviewers"] or submission_sha256 != report["submission_sha256"] or not isinstance(decided_by, str) or not decided_by.strip():
+        raise ValueError("resolve issues only after three submissions, against their exact hash")
+    validate_literary_resolution(report["issues"], decisions, decided_by)
+    _write_object(root / TRIAL_DIRECTORY / trial_id / "resolution.json", {
+        "schema": "literary_resolution_v2", "pack_hash": report["pack_hash"],
+        "submission_sha256": submission_sha256, "decisions": decisions, "decided_by": decided_by,
+        "decided_at": datetime.now(timezone.utc).isoformat()})
+    return aggregate_literary_trial(root, trial_id)
 
 
-def load_review_submissions(
-    trial_root: Path,
-    manifest: dict[str, Any],
-    trial_id: str,
-) -> list[dict[str, Any]]:
-    submissions: list[dict[str, Any]] = []
-    for path in sorted((trial_root / "reviews").glob("*.json")):
-        payload = read_object(path)
-        reviewer_id = str((payload.get("reviewer") or {}).get("reviewer_id") or "")
-        errors = validate_review_submission(
-            {key: value for key, value in payload.items() if key != "submission_sha256"},
-            manifest=manifest,
-            trial_id=trial_id,
-            reviewer_id=reviewer_id,
-        )
-        stored_hash = str(payload.get("submission_sha256") or "")
-        basis = dict(payload)
-        basis.pop("submission_sha256", None)
-        if errors or not stored_hash or payload_sha256(basis) != stored_hash:
-            raise ValueError(f"stored fanfiction literary review is invalid: {path}")
-        submissions.append(payload)
-    reviewer_ids = [str(item["reviewer"]["reviewer_id"]) for item in submissions]
-    if len(reviewer_ids) != len(set(reviewer_ids)):
-        raise ValueError("fanfiction literary reviewer IDs must be unique")
-    return submissions
+def export_literary_pack(root: Path, trial_id: str) -> bytes:
+    import io
+    trial, manifest = load_literary_trial(root, trial_id)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for relative in ["manifest.json", *(c["path"] for e in manifest["entries"] for c in e["chapters"])]:
+            archive.writestr(relative, (trial / "public" / relative).read_bytes())
+    return buffer.getvalue()
 
 
-def load_public_manifest(root: Path, trial_id: str) -> dict[str, Any]:
-    path = fanfiction_literary_trial_root(root, trial_id) / "public" / "manifest.json"
-    payload = read_object(path)
-    if payload.get("schema") != TRIAL_SCHEMA or payload.get("trial_id") != trial_id:
-        raise ValueError(f"fanfiction literary trial does not exist or is invalid: {trial_id}")
-    stored_hash = str(payload.get("pack_hash") or "")
-    basis = dict(payload)
-    basis.pop("pack_hash", None)
-    if not stored_hash or payload_sha256(basis) != stored_hash:
-        raise ValueError("fanfiction literary trial pack hash is invalid")
-    if payload.get("chapter_count_per_route") != CHAPTER_COUNT or set(payload.get("blind_ids") or []) != {"entry-a", "entry-b"}:
-        raise ValueError("fanfiction literary trial shape is invalid")
-    return payload
+def literary_trial_status(root: Path) -> dict[str, Any]:
+    trials = []
+    for path in sorted((root / TRIAL_DIRECTORY).glob("*/public/manifest.json")):
+        trial_id = path.parent.parent.name
+        try:
+            trials.append(aggregate_literary_trial(root, trial_id))
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            trials.append({"trial_id": trial_id, "status": "stale", "current": False, "reason": str(exc)})
+    return {"status": "unverified" if not trials else "available", "trials": trials,
+            "formal_acceptance": any(t.get("formal_acceptance") for t in trials),
+            "scope_note": "无真实样本或独立人工评审时为未验证；工程测试不构成文学验收。"}
 
 
-def load_private_mapping(root: Path, trial_id: str, manifest: dict[str, Any]) -> dict[str, Any]:
-    path = fanfiction_literary_trial_root(root, trial_id) / "private_mapping.json"
-    payload = read_object(path)
-    if (
-        payload.get("schema") != PRIVATE_MAPPING_SCHEMA
-        or payload.get("trial_id") != trial_id
-        or payload.get("pack_hash") != manifest.get("pack_hash")
-    ):
-        raise ValueError("fanfiction literary private mapping is invalid")
-    stored_hash = str(payload.get("mapping_sha256") or "")
-    basis = dict(payload)
-    basis.pop("mapping_sha256", None)
-    if not stored_hash or payload_sha256(basis) != stored_hash:
-        raise ValueError("fanfiction literary private mapping hash is invalid")
-    if set(payload.get("blind_route_mapping") or {}) != set(manifest["blind_ids"]):
-        raise ValueError("fanfiction literary blind mapping is incomplete")
-    if set((payload.get("blind_route_mapping") or {}).values()) != set(ROUTE_FAMILIES):
-        raise ValueError("fanfiction literary route mapping is invalid")
-    return payload
-
-
-def verify_trial_source_and_public_files(
-    root: Path,
-    trial_id: str,
-    manifest: dict[str, Any],
-    mapping: dict[str, Any],
-) -> None:
-    public_root = fanfiction_literary_trial_root(root, trial_id) / "public"
-    public_by_id = {str(item["blind_id"]): item for item in manifest["entries"]}
-    for blind_id, route in mapping["blind_route_mapping"].items():
-        route_record = mapping["routes"][route]
-        source_records = source_chapter_records(Path(route_record["source_dir"]))
-        if chapter_merkle_root(source_records) != route_record["source_merkle_root"]:
-            raise ValueError(f"source chapters changed for {route}")
-        gate_file = Path(route_record["gate_report_file"])
-        if file_hash(gate_file) != route_record["gate_report_sha256"]:
-            raise ValueError(f"gate report changed for {route}")
-        if validate_gate_report(read_object(gate_file), route_family=route, chapters=source_records):
-            raise ValueError(f"gate report is no longer current for {route}")
-        for expected, public in zip(source_records, public_by_id[blind_id]["chapters"], strict=True):
-            path = (public_root / public["path"]).resolve()
-            path.relative_to(public_root.resolve())
-            if not path.is_file() or sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest() != expected["sha256"]:
-                raise ValueError(f"public blind chapter changed for {blind_id}")
-
-
-def validate_aggregate_hash(payload: dict[str, Any], *, trial_id: str) -> None:
-    if payload.get("schema") != AGGREGATE_SCHEMA or payload.get("trial_id") != trial_id:
-        raise ValueError("fanfiction literary aggregate is missing or invalid")
-    stored_hash = str(payload.get("aggregate_sha256") or "")
-    basis = dict(payload)
-    basis.pop("aggregate_sha256", None)
-    if not stored_hash or payload_sha256(basis) != stored_hash:
-        raise ValueError("fanfiction literary aggregate hash is invalid")
-
-
-def valid_resolution(
-    payload: dict[str, Any],
-    *,
-    aggregate: dict[str, Any],
-    required_ids: set[str],
-) -> bool:
-    if payload.get("schema") != RESOLUTION_SCHEMA or payload.get("aggregate_sha256") != aggregate.get("aggregate_sha256"):
-        return False
-    stored_hash = str(payload.get("resolution_sha256") or "")
-    basis = dict(payload)
-    basis.pop("resolution_sha256", None)
-    resolutions = payload.get("resolutions")
-    by_id = {
-        str(item.get("disagreement_id") or ""): item
-        for item in resolutions or []
-        if isinstance(item, dict)
-    }
-    return bool(
-        stored_hash
-        and payload_sha256(basis) == stored_hash
-        and payload.get("score_override_permitted") is False
-        and set(by_id) == required_ids
-        and all(
-            item.get("decision") == "acknowledge_panel_median_without_score_override"
-            and str(item.get("note") or "").strip()
-            for item in by_id.values()
-        )
-    )
-
-
-def render_instructions(payload: dict[str, Any]) -> str:
-    return "\n".join(
-        [
-            "# 同人双路线 20 章文学盲审",
-            "",
-            f"- Trial: `{payload['trial_id']}`",
-            f"- Pack hash: `{payload['pack_hash']}`",
-            "- 每条匿名路线：20 章",
-            "- 评审人数：3 名互相独立且未参与生成的人类评审",
-            "",
-            "按 1–5 分评审：原著保真、角色声音/目标/自主性、原著辨识回报、原创主线所有权、",
-            "分歧一二阶因果、世界内代价与反制、章节阅读价值、持续阅读欲望。",
-            "同时记录百科说明、机械复述、原著职责掠夺、模板事件循环，以及不可追溯 Canon 断言、",
-            "连续原文复现或伪造授权声明。不要查看 private_mapping.json。",
-            "",
-        ]
-    )
-
-
-def fanfiction_literary_trial_root(root: Path, trial_id: str) -> Path:
-    return root / "70_runtime" / "literary_evidence" / "fanfiction_trials" / trial_id
-
-
-def project_artifact(root: Path, relative_path: str) -> Path | None:
-    if not relative_path:
-        return None
-    path = (root / relative_path).resolve()
-    try:
-        path.relative_to(root.resolve())
-    except ValueError:
-        return None
-    return path
-
-
-def read_object(path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def write_json(path: Path, payload: Any) -> None:
-    atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-
-
-def file_hash(path: Path) -> str:
-    return sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
-
-
-def relative(root: Path, path: Path) -> str:
-    return path.resolve().relative_to(root.resolve()).as_posix()
-
-
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-__all__ = [
-    "CHAPTER_COUNT",
-    "DISQUALIFYING_CODES",
-    "EVIDENCE_SCHEMA",
-    "FAILURE_CODES",
-    "FanfictionLiteraryAggregateResult",
-    "FanfictionLiteraryTrialResult",
-    "ROUTE_FAMILIES",
-    "SCORE_METRICS",
-    "aggregate_fanfiction_literary_trial",
-    "create_fanfiction_literary_review_template",
-    "create_fanfiction_literary_trial",
-    "fanfiction_literary_trial_status",
-    "resolve_fanfiction_literary_disagreements",
-    "submit_fanfiction_literary_review",
-    "validate_fanfiction_literary_evidence",
-]
+def record_literary_effort(config: ConfigDocument, *, chapter_number: int,
+                          human_review_minutes: float | None, human_edit_minutes: float | None) -> dict[str, Any]:
+    """Record voluntary human effort, bound to a closed final; missing means unknown."""
+    for value in (human_review_minutes, human_edit_minutes):
+        if value is not None and (type(value) not in (float, int) or not 0 <= value <= 100000):
+            raise ValueError("human effort minutes must be non-negative or unknown")
+    sample = collect_literary_sample(config, chapter_number, chapter_number)
+    record = {"schema": "literary_author_effort_v1", "chapter_number": chapter_number,
+              "final_sha256": sample["chapters"][0]["sha256"], "recorded_by": "human",
+              "human_review_minutes": human_review_minutes, "human_edit_minutes": human_edit_minutes,
+              "recorded_at": datetime.now(timezone.utc).isoformat()}
+    _write_object(resolve_project_root(config) / "70_runtime/literary_effort" / f"ch{chapter_number:03d}.json", record)
+    return record

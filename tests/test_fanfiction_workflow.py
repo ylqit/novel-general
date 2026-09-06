@@ -166,13 +166,9 @@ def formal_chapter_contract(
 
 
 def persist_chapter_inputs(root: Path, contract: dict, card: dict) -> None:
-    chapter = int(contract["chapter_number"])
-    for path, payload in (
-        (root / "20_outline" / "chapter_contracts" / f"ch{chapter:03d}.json", contract),
-        (root / "20_outline" / "chapter_cards" / f"ch{chapter:03d}.json", card),
-    ):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    from tests.project_fixtures import persist_current_planning_fixture
+
+    persist_current_planning_fixture(root, contract, scope=card)
 
 
 def assert_writing_boundaries_reject(config, root: Path, pattern: str) -> None:
@@ -184,7 +180,6 @@ def assert_writing_boundaries_reject(config, root: Path, pattern: str) -> None:
             config,
             chapter_number=1,
             chapter_contract=contract,
-            chapter_card=card,
             character_packet={},
         )
     with pytest.raises(WorkflowError, match=pattern):
@@ -193,7 +188,6 @@ def assert_writing_boundaries_reject(config, root: Path, pattern: str) -> None:
             root,
             chapter_number=1,
             chapter_contract=contract,
-            card=card,
         )
 
 
@@ -209,11 +203,11 @@ def write_story_engine_candidate(
     claims = [
         {
             "claim_id": "engine:initial_variable",
-            "statement": "林舟要求公开验证青铜门规则，成为唯一主要初始变量。",
+            "statement": "林舟要求公开验证青铜门规则，成为初始分歧之一。",
             "applicability": "全书",
             "evidence_refs": [],
             "uncertainty": "验证方法在分卷设计中具体化。",
-            "extensions": {"semantic_type": "唯一初始变量"},
+            "extensions": {"semantic_type": "初始分歧"},
         },
         {
             "claim_id": "engine:long_goal",
@@ -269,9 +263,22 @@ def write_story_engine_candidate(
             "applicability": "全书",
             "evidence_refs": [],
             "uncertainty": "具体案件由分卷路线决定。",
-            "extensions": {"semantic_type": "原创主线承诺"},
+            "extensions": {"semantic_type": "本作新增阅读价值"},
         },
     ]
+    from longform_engine.fanfiction_creative_requirements import compile_fanfiction_creative_requirements
+    requirements = compile_fanfiction_creative_requirements(
+        config.data["fanfiction"]["continuity_mode"],
+        route_family if isinstance(route_family, str) and route_family in {"hybrid", "canon_character_centered", "oc_si_progression"} else "hybrid",
+    )
+    existing = {claim["extensions"]["semantic_type"] for claim in claims}
+    for index, kind in enumerate(requirements["story_engine_claim_types"]):
+        if kind not in existing:
+            claims.append({
+                "claim_id": f"engine:required_{index}", "statement": f"{kind}：双方通过公开验证分担选择、风险和关系责任。",
+                "applicability": "全书", "evidence_refs": [], "uncertainty": "具体表现由本卷决定。",
+                "extensions": {"semantic_type": kind},
+            })
     claims = [
         claim
         for claim in claims
@@ -425,6 +432,20 @@ def apply_route_design(
         evidence_references=evidence,
         extensions={"future_knowledge_used": True},
     )
+    from longform_engine.fanfiction_creative_requirements import compile_fanfiction_creative_requirements
+    requirements = compile_fanfiction_creative_requirements(config.data["fanfiction"]["continuity_mode"], "hybrid")
+    existing = {claim["extensions"]["semantic_type"] for claim in document["claims"]}
+    for index, kind in enumerate(requirements["route_claim_types"]):
+        if kind not in existing:
+            document["claims"].append({
+                "claim_id": f"route:required_{index}", "statement": f"{kind}：公开规则的选择改变互信与组织追责。",
+                "applicability": "全书", "evidence_refs": [evidence_id], "uncertainty": "具体表现由本卷决定。",
+                "extensions": {"semantic_type": kind},
+            })
+    document["extensions"]["event_disposition_applicability"] = {
+        "status": "applicable", "reason": "路线涉及青铜门事件的处置。", "basis_claim_ids": ["route:entry_point"],
+    }
+    document = seal_semantic_document(document)
     candidate_file.write_text(
         json.dumps(document, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -458,7 +479,10 @@ def apply_route_design(
         body="原著基线、唯一分歧、知识退化、人物拒绝权、事件命运和长期故事来源均已形成可执行因果链。",
         claims=[],
         evidence_references=[],
-        extensions={"verdict": "pass"},
+        extensions={"verdict": "pass", "creative_coverage": {
+            focus: {"status": "checked", "reason": "协议测试：已核对路线中双方责任与因果引用。", "basis_claim_ids": ["route:entry_point"]}
+            for focus in requirements["independent_review_focus"]
+        }},
     )
     review_file.write_text(json.dumps(review, ensure_ascii=False, indent=2), encoding="utf-8")
     review_control = validate_production_agent_result(
@@ -532,7 +556,7 @@ def test_story_engine_rejects_missing_or_unknown_route_family(
 
 @pytest.mark.parametrize(
     "semantic_type",
-    ["主角与原著关系", "读者识别承诺", "原创主线承诺"],
+    ["主角与原著关系", "读者识别承诺", "本作新增阅读价值"],
 )
 def test_story_engine_requires_new_semantic_claims(
     tmp_path,
@@ -569,9 +593,10 @@ def test_story_engine_compiled_work_order_covers_both_routes(
     assert template["extensions"]["route_family"] == ""
     assert "oc_si_progression" in instruction
     assert "canon_character_centered" in instruction
-    assert "主角与原著关系" in instruction
-    assert "读者识别承诺" in instruction
-    assert "原创主线承诺" in instruction
+    context = json.loads((root / "50_workbench/intelligence_context/fanfiction_story_engine.project.context.json").read_text(encoding="utf-8"))
+    for requirements in context["creative_requirements_by_route"].values():
+        assert {"主角与原著关系", "读者识别承诺", "本作新增阅读价值"} <= set(requirements["story_engine_claim_types"])
+    assert "creative_requirements_by_route" in instruction
 
 
 def test_route_compiled_work_order_requires_event_chain_and_crossover_topology(
@@ -590,7 +615,6 @@ def test_route_compiled_work_order_requires_event_chain_and_crossover_topology(
             / "fanfiction_design.project.context.json"
         ).read_text(encoding="utf-8")
     )
-    causal_chain = "原著基线→变量→处置→职责→一阶→二阶→新问题"
     assert context["approved_story_engine"]["route_family"] == "hybrid"
     crossover_contract = context["crossover_contract"]
     assert crossover_contract["required"] is False
@@ -604,6 +628,7 @@ def test_route_compiled_work_order_requires_event_chain_and_crossover_topology(
         "能量关系",
         "能力作用对象",
         "激活与补充",
+        "限制",
         "代价",
         "当地反制",
     }
@@ -627,7 +652,7 @@ def test_route_compiled_work_order_requires_event_chain_and_crossover_topology(
     assert "actual source-volume-host interaction" in crossover_contract[
         "topology_rules"
     ]["sequential_worlds"]
-    assert causal_chain in instruction
+    assert "event_disposition_applicability" in instruction
     assert "fixed_host" in instruction
     assert "fusion_world" in instruction
     assert "sequential_worlds" in instruction
@@ -669,7 +694,7 @@ def test_route_review_compiled_prompt_checks_topology_and_actual_payloads(
     assert "不要求无关来源与卷的笛卡尔积" in instruction
 
 
-@pytest.mark.parametrize("gap", ["route_family", "原创主线承诺"])
+@pytest.mark.parametrize("gap", ["route_family", "本作新增阅读价值"])
 def test_design_task_rejects_legacy_approved_story_engine(
     tmp_path,
     monkeypatch,
@@ -699,7 +724,7 @@ def test_design_validator_rejects_legacy_approved_story_engine(
         )
     )
 
-    for gap in ("route_family", "原创主线承诺"):
+    for gap in ("route_family", "本作新增阅读价值"):
         legacy = legacy_approved_story_engine(current_engine, gap)
         engine_path = root / "10_bible" / "fanfiction" / "story_engine.json"
         engine_path.write_text(
@@ -848,7 +873,6 @@ def test_semantic_canon_compiles_to_readable_bounded_writing_context(tmp_path, m
         root,
         chapter_number=1,
         chapter_contract=chapter_contract,
-        card=card,
     )
 
     assert contract["enabled"] is True
@@ -960,7 +984,6 @@ def test_event_causal_targets_join_required_cross_namespace_dependency_closure(
         root,
         chapter_number=1,
         chapter_contract=chapter_contract,
-        card=card,
     )
 
     assert causal_targets <= set(contract["dependency_claim_ids"])
@@ -980,7 +1003,6 @@ def test_event_causal_dependency_outside_chapter_scope_blocks_context(tmp_path, 
             root,
             chapter_number=1,
             chapter_contract=chapter_contract,
-            card=card,
         )
 
 
@@ -998,7 +1020,6 @@ def test_names_do_not_select_optional_claims_and_unknown_explicit_refs_block(
         root,
         chapter_number=2,
         chapter_contract=chapter_contract,
-        card=card,
     )
 
     assert "route:lin_voice" not in contract["included_claim_ids"]
@@ -1014,7 +1035,6 @@ def test_names_do_not_select_optional_claims_and_unknown_explicit_refs_block(
             root,
             chapter_number=2,
             chapter_contract=unknown_contract,
-            card=unknown_card,
         )
 
 

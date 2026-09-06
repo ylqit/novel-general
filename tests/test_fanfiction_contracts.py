@@ -5,6 +5,9 @@ from pathlib import Path
 
 import pytest
 
+from longform_engine.fanfiction_creative_requirements import (
+    CREATIVE_CONTRACT_VERSION, compile_fanfiction_creative_requirements,
+)
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_tasks import load_manifest
 from longform_engine.config import ConfigDocument
@@ -29,7 +32,6 @@ from longform_engine.orchestration import (
     auto_write_run,
     batch_write,
     finalize_chapter,
-    generate_beat_sheet,
     submit_agent_draft,
 )
 from longform_engine.planning import (
@@ -162,8 +164,9 @@ def persist_current_context_inputs(
     }
     card = {"title": title, "volume_id": "vol001", "arc_id": "arc001"}
     root = project["root"]
-    write_document(root / "20_outline/chapter_contracts/ch001.json", contract)
-    write_document(root / "20_outline/chapter_cards/ch001.json", card)
+    from tests.project_fixtures import persist_current_planning_fixture
+
+    persist_current_planning_fixture(root, contract, scope=card)
     return contract, card
 
 
@@ -173,7 +176,6 @@ def compile_current_context(project: dict, *, title: str) -> dict:
         project["config"],
         chapter_number=1,
         chapter_contract=contract,
-        chapter_card=card,
         character_packet={},
     )
 
@@ -382,6 +384,10 @@ def asymmetric_sequential_route() -> dict:
                 },
             ),
             semantic_claim(
+                "route:carryover", "跨卷延续后果",
+                extensions={"volume_ids": ["vol001", "vol002"], "depends_on_claims": ["route:constitution"]},
+            ),
+            semantic_claim(
                 "route:vol001_host",
                 "卷宿主世界",
                 extensions={"volume_ids": ["vol001"], "host_source_id": "host"},
@@ -414,11 +420,11 @@ def validate_crossover(config: ConfigDocument, route: dict) -> list[str]:
         ),
         (
             "ability",
-            {"能量关系", "能力作用对象", "激活与补充", "代价", "当地反制"},
+            {"能量关系", "能力作用对象", "激活与补充", "代价", "限制", "当地反制"},
         ),
         (
             "item_or_contract",
-            {"装备召唤物契约", "激活与补充", "代价", "当地反制"},
+            {"装备召唤物契约", "激活与补充", "代价", "限制", "当地反制"},
         ),
         ("knowledge", {"来源时间点", "信息传播"}),
         ("organization", {"身份组织法律", "信息传播"}),
@@ -1177,17 +1183,8 @@ def configure_crossover_project(project: dict) -> None:
 
 
 def install_story_engine(project: dict) -> tuple[dict, str]:
-    semantic_types = (
-        "唯一初始变量",
-        "独立长期目标",
-        "可持续阻力",
-        "原著人物自主性",
-        "原作后续故事来源",
-        "主角与原著关系",
-        "读者识别承诺",
-        "原创主线承诺",
-    )
     continuity_mode = project["config"].data["fanfiction"]["continuity_mode"]
+    semantic_types = compile_fanfiction_creative_requirements(continuity_mode, "hybrid")["story_engine_claim_types"]
     engine = approve(
         build_semantic_document(
             document_id="sem:story_engine",
@@ -1204,6 +1201,7 @@ def install_story_engine(project: dict) -> tuple[dict, str]:
                 "task_type": "fanfiction_story_engine",
                 "continuity_mode": continuity_mode,
                 "route_family": "hybrid",
+                "creative_contract_version": CREATIVE_CONTRACT_VERSION,
                 "source_canon_sha256": project["canon_sha"],
             },
         )
@@ -1243,6 +1241,10 @@ def install_route(project: dict, *, variant: str = "") -> tuple[dict, Path]:
         )
         crossover_extensions = crossover["extensions"]
         claims.extend(crossover["claims"])
+    required = compile_fanfiction_creative_requirements(continuity_mode, "hybrid")["route_claim_types"]
+    existing_types = {claim["extensions"]["semantic_type"] for claim in claims}
+    claims.extend(semantic_claim(f"route:required_{index}", kind)
+                  for index, kind in enumerate(required) if kind not in existing_types)
     route_candidate = build_semantic_document(
         document_id="sem:route",
         document_type="同人路线设计候选",
@@ -1253,6 +1255,10 @@ def install_route(project: dict, *, variant: str = "") -> tuple[dict, Path]:
         claims=claims,
         extensions={
             "task_type": "fanfiction_design",
+            "creative_contract_version": CREATIVE_CONTRACT_VERSION,
+            "event_disposition_applicability": {
+                "status": "applicable", "reason": "本路线明确处置原著事件。", "basis_claim_ids": ["route:entry"]
+            },
             "continuity_mode": continuity_mode,
             "source_canon_sha256": project["canon_sha"],
             "story_engine_sha256": engine_sha,
@@ -1272,6 +1278,10 @@ def install_route(project: dict, *, variant: str = "") -> tuple[dict, Path]:
             body=f"独立复核通过。{variant}",
             extensions={
                 "task_type": "fanfiction_design_review",
+                "creative_coverage": {
+                    dimension: {"status": "checked", "reason": "独立核对本测试路线的适用范围与主张。", "basis_claim_ids": ["route:entry"]}
+                    for dimension in compile_fanfiction_creative_requirements(continuity_mode, "hybrid")["independent_review_focus"]
+                },
                 "verdict": "pass",
                 "review_target_path": target_path.relative_to(project["root"]).as_posix(),
                 "review_target_sha256": target_sha,
@@ -1735,7 +1745,7 @@ def test_fanfiction_design_apply_rejects_legacy_crossover_candidate(
         )
     )
     candidate["extensions"].pop("crossover")
-    for field in ("continuity_mode", "source_canon_sha256", "story_engine_sha256"):
+    for field in ("continuity_mode", "source_canon_sha256", "story_engine_sha256", "creative_contract_version"):
         candidate["extensions"].pop(field)
     write_document(candidate_path, seal_semantic_document(candidate))
     control = validate_production_agent_result(
@@ -2065,7 +2075,7 @@ def test_editorial_aggregate_rechecks_current_route_before_aggregate_or_applied_
 
 @pytest.mark.parametrize(
     "entrypoint",
-    ["generate_beat_sheet", "batch_write", "auto_write_plan", "auto_write_run", "auto_write_report"],
+    ["batch_write", "auto_write_plan", "auto_write_run", "auto_write_report"],
 )
 def test_related_production_lifecycle_entrypoints_reject_route_drift_before_write(
     current_contract_project,
@@ -2075,24 +2085,7 @@ def test_related_production_lifecycle_entrypoints_reject_route_drift_before_writ
     configure_crossover_project(project)
     corrupt_canonical_crossover_route(project)
     root = project["root"]
-    card = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card.parent.mkdir(parents=True, exist_ok=True)
-    card.write_text(
-        json.dumps(
-            {
-                "chapter_number": 1,
-                "title": "第一章",
-                "chapter_duty": "验证跨界代价。",
-                "event_recommendation": {"recommended": []},
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
     calls = {
-        "generate_beat_sheet": lambda: generate_beat_sheet(
-            project["config"], chapter_number=1
-        ),
         "batch_write": lambda: batch_write(project["config"], chapters=1),
         "auto_write_plan": lambda: auto_write_plan(project["config"]),
         "auto_write_run": lambda: auto_write_run(project["config"]),
@@ -2585,3 +2578,71 @@ def test_context_and_event_status_block_each_current_chain_drift(
     assert event_status["route_status"] == status
     assert event_status["events"] == []
     assert event_status["diagnostics"]
+
+
+@pytest.mark.parametrize("mode", ["canon_compliant", "canon_divergent", "alternate_universe", "continuation", "prequel", "crossover"])
+@pytest.mark.parametrize("family", ["oc_si_progression", "canon_character_centered", "hybrid"])
+def test_creative_requirements_respect_continuity_and_narrative_responsibility(mode, family):
+    from longform_engine.fanfiction_creative_requirements import compile_fanfiction_creative_requirements
+
+    result = compile_fanfiction_creative_requirements(mode, family)
+    required = result["story_engine_claim_types"]
+    assert "本作新增阅读价值" in required and "原著人物自主性" in required
+    assert "唯一初始变量" not in required and "原创主线承诺" not in required
+    assert ("初始分歧" in required) is (mode == "canon_divergent")
+    assert ("知识提前出现边界" in required) is (mode == "prequel")
+    assert ("既有结局保护" in required) is (mode == "continuation")
+    assert result["conditional_metrics"]["divergence_causality"] is (mode == "canon_divergent")
+    assert result["conditional_metrics"]["cross_system_cost_and_counterplay"] is (mode == "crossover")
+    assert ("原著人物拒绝权" in required) is (family == "oc_si_progression")
+
+
+@pytest.mark.parametrize("mode", ["canon_compliant", "prequel", "continuation"])
+def test_event_disposition_inapplicability_needs_current_route_basis(current_contract_project, mode):
+    project = current_contract_project
+    project["config"].data["fanfiction"]["continuity_mode"] = mode
+    canon = deepcopy(project["canon"])
+    canon["extensions"]["continuity_mode"] = mode
+    project["canon"] = reapprove(canon)
+    project["canon_sha"] = write_document(project["canon_path"], project["canon"])
+    route, _ = install_route(project)
+    required = compile_fanfiction_creative_requirements(mode, "hybrid")["route_claim_types"]
+    route["claims"] = [semantic_claim(f"route:scope_{index}", kind) for index, kind in enumerate(required)]
+    route["extensions"]["event_disposition_applicability"] = {
+        "status": "not_applicable", "reason": "只补写已批准时间范围中未展开的关系与前史，不处置原著重大事件。",
+        "basis_claim_ids": ["route:scope_0"],
+    }
+    route = seal_semantic_document(route)
+    errors = []
+    contracts.validate_fanfiction_route_contract(project["config"], project["root"], route, errors)
+    assert not errors, errors
+    assert "初始分歧" not in {claim["extensions"]["semantic_type"] for claim in route["claims"]}
+    route["extensions"]["event_disposition_applicability"]["basis_claim_ids"] = ["route:forged"]
+    errors = []
+    contracts.validate_fanfiction_route_contract(project["config"], project["root"], seal_semantic_document(route), errors)
+    assert any("basis_claim_ids" in error for error in errors)
+
+
+def test_divergent_engine_cannot_omit_causal_consequences(current_contract_project):
+    project = current_contract_project
+    engine, _ = install_story_engine(project)
+    engine["claims"] = [c for c in engine["claims"] if c["extensions"]["semantic_type"] != "分歧因果后果"]
+    errors = []
+    contracts.validate_fanfiction_story_engine(project["config"], project["root"], seal_semantic_document(engine), errors)
+    assert any("分歧因果后果" in error for error in errors)
+
+
+def test_creative_contract_version_is_fixed_by_task_input(tmp_path):
+    from longform_engine.intelligence.pipeline import bound_fanfiction_creative_version
+    from longform_engine.agent_protocols import AgentProtocolError
+
+    path = tmp_path / "50_workbench/engine.context.json"
+    write_document(path, {"schema": "fanfiction_story_engine_context_v1"})
+    manifest = {"io": {"inputs": [{"path": path.relative_to(tmp_path).as_posix(), "sha256": sha256(path.read_bytes()).hexdigest()}]}}
+    with pytest.raises(AgentProtocolError, match="missing or incompatible"):
+        bound_fanfiction_creative_version(tmp_path, manifest)
+    write_document(path, {"schema": "fanfiction_story_engine_context_v2", "creative_contract_version": CREATIVE_CONTRACT_VERSION})
+    with pytest.raises(AgentProtocolError, match="stale"):
+        bound_fanfiction_creative_version(tmp_path, manifest)
+    manifest["io"]["inputs"][0]["sha256"] = sha256(path.read_bytes()).hexdigest()
+    assert bound_fanfiction_creative_version(tmp_path, manifest) == CREATIVE_CONTRACT_VERSION

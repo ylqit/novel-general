@@ -76,10 +76,6 @@ def test_unified_semantic_bundle_materializes_evidence_bound_views(tmp_path):
             }
         ],
     )
-    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card = json.loads(card_path.read_text(encoding="utf-8"))
-    card["foreshadow_refs"] = ["thread_old_badge"]
-    write_json(card_path, card)
     refresh_arc_simulation_fixture(root)
     continue_write(config, chapter_number=1)
     candidate = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
@@ -313,6 +309,7 @@ def test_semantic_validation_rejects_hash_and_evidence_mismatch(tmp_path):
     template = load_project_config(template="qidian-longform")
     project = init_project(template, output=tmp_path / "novel")
     config = load_project_config(project.project_config)
+    mark_project_ready(project.root, config)
     final = project.root / "40_manuscript" / "final" / "ch001.md"
     final.write_text("# 第一章\n\n正文证据。\n", encoding="utf-8")
     task = semantic_task(config, chapter_number=1)

@@ -10,14 +10,17 @@ from typing import Any, Iterable, Mapping
 import unicodedata
 
 from longform_engine.config import ConfigDocument, load_project_config
+from longform_engine.planning.context import load_chapter_planning_context
 from longform_engine.chapter_contract import validate_chapter_contract
 from longform_engine.fanfiction_contracts import (
     CurrentFanfictionDocuments,
     EVENT_CAUSAL_REFERENCE_FIELDS,
+    CROSSOVER_ALWAYS_REQUIRED_TOPICS, CROSSOVER_TOPICS_BY_PAYLOAD_KIND,
     FanfictionContractError,
     load_current_fanfiction_documents,
     load_current_fanfiction_route,
 )
+from longform_engine.fanfiction_creative_requirements import compile_fanfiction_creative_requirements
 from longform_engine.fanfiction_divergence import realized_major_divergence_errors
 from longform_engine.future_knowledge_provenance import (
     FutureKnowledgeProvenanceError,
@@ -40,25 +43,12 @@ from longform_engine.storage import atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import manuscript_chapter_path
 
 
-FANFICTION_CONTEXT_BUNDLE_SCHEMA = "fanfiction_context_bundle_v2"
+FANFICTION_CONTEXT_BUNDLE_SCHEMA = "fanfiction_context_bundle_v3"
 
 
 class FanfictionContextError(ValueError):
     """The formal fanfiction context cannot be compiled without semantic loss."""
 
-
-MANDATORY_STORY_TYPES = frozenset(
-    {
-        "唯一初始变量",
-        "独立长期目标",
-        "可持续阻力",
-        "原著人物自主性",
-        "原作后续故事来源",
-        "主角与原著关系",
-        "读者识别承诺",
-        "原创主线承诺",
-    }
-)
 
 SEMANTIC_ELEMENT_ALIASES: dict[str, str] = {
     "人物": "characters",
@@ -85,11 +75,10 @@ def compile_fanfiction_context(
     *,
     chapter_number: int,
     chapter_contract: dict[str, Any],
-    chapter_card: dict[str, Any],
     character_packet: dict[str, Any],
     write_rag_cache: bool = True,
 ) -> dict[str, Any]:
-    """Compile one v2 chapter bundle by explicit semantic precedence.
+    """Compile one v3 chapter bundle by explicit semantic precedence.
 
     Selection is observable and fixed: global story promises/invariants, explicit
     chapter references, their recursive dependency closure, structured current
@@ -111,13 +100,9 @@ def compile_fanfiction_context(
     if chapter_contract.get("chapter_number") != chapter_number:
         raise FanfictionContextError("fanfiction_context_chapter_contract_mismatch")
     root = resolve_project_root(config)
-    chapter_contract_path, persisted_contract, chapter_card_path, persisted_card = (
-        _load_persisted_chapter_inputs(root, chapter_number)
-    )
+    chapter_contract_path, persisted_contract, planning_sources, planning_scope = _load_persisted_chapter_inputs(root, chapter_number)
     if persisted_contract != chapter_contract:
         raise FanfictionContextError("fanfiction_context_chapter_contract_stale")
-    if persisted_card != chapter_card:
-        raise FanfictionContextError("fanfiction_context_chapter_card_stale")
     try:
         current = load_current_fanfiction_documents(config, root)
     except FanfictionContractError as exc:
@@ -169,7 +154,7 @@ def compile_fanfiction_context(
             if not _claim_applies(
                 update_claim,
                 chapter_number=chapter_number,
-                chapter_card=chapter_card,
+                planning_scope=planning_scope,
             ):
                 continue
             knowledge_claim["dependency_edges"].append(
@@ -193,19 +178,23 @@ def compile_fanfiction_context(
         raise FanfictionContextError(
             "fanfiction_context_missing_claims: " + ", ".join(sorted(missing_explicit))
         )
+    creative_requirements = compile_fanfiction_creative_requirements(
+        str(config.data["fanfiction"]["continuity_mode"]),
+        str(current.story_engine["extensions"]["route_family"]),
+    )
     global_ids = {
         claim_id
         for claim_id, claim in all_claims.items()
         if (
             claim["namespace"] == "story_engine"
-            and str(claim.get("semantic_type") or "") in MANDATORY_STORY_TYPES
+            and str(claim.get("semantic_type") or "") in creative_requirements["context_required_claim_types"]
         )
         or claim.get("extensions", {}).get("global_invariant") is True
     }
     current_scope = _current_scope(
         config,
         chapter_contract=chapter_contract,
-        chapter_card=chapter_card,
+        planning_scope=planning_scope,
     )
     explicit_id_set = set(explicit_ids)
     out_of_scope = {
@@ -215,7 +204,7 @@ def compile_fanfiction_context(
         if not _claim_applies(
             all_claims[claim_id],
             chapter_number=chapter_number,
-            chapter_card=chapter_card,
+            planning_scope=planning_scope,
             current_scope=current_scope,
         )
     }
@@ -234,7 +223,7 @@ def compile_fanfiction_context(
         if not _claim_applies(
             all_claims[claim_id],
             chapter_number=chapter_number,
-            chapter_card=chapter_card,
+            planning_scope=planning_scope,
             current_scope=current_scope,
         )
     }
@@ -244,15 +233,26 @@ def compile_fanfiction_context(
             + ", ".join(sorted(dependency_out_of_scope))
         )
 
+    _validate_current_crossover_rules(
+        current.route, all_claims, explicit_id_set, closure_ids,
+        chapter_number=chapter_number, planning_scope=planning_scope, current_scope=current_scope,
+    )
+
+    continuity_state = _cross_volume_continuity(
+        root, current.route, all_claims, closure_ids,
+        chapter_number=chapter_number, planning_scope=planning_scope, current_scope=current_scope,
+    )
+
     relevant_ids = {
         claim_id
         for claim_id, claim in all_claims.items()
         if claim_id not in closure_ids
+        and claim.get("semantic_type") not in {"主世界适配器", "跨界宪法", "跨界兼容规则", "世界规则优先级", "跨卷延续后果"}
         and _has_structured_scope(claim)
         and _claim_applies(
             claim,
             chapter_number=chapter_number,
-            chapter_card=chapter_card,
+            planning_scope=planning_scope,
             current_scope=current_scope,
         )
     }
@@ -279,7 +279,8 @@ def compile_fanfiction_context(
         claim_id: _claim_units(all_claims[claim_id], budget.estimator)
         for claim_id in hard_ids
     }
-    hard_units = sum(units_by_claim.values())
+    continuity_units = estimate_text_units(json.dumps(continuity_state, ensure_ascii=False), budget.estimator)
+    hard_units = sum(units_by_claim.values()) + continuity_units
     if hard_units > bundle_budget:
         _raise_required_overflow(
             all_claims,
@@ -292,7 +293,7 @@ def compile_fanfiction_context(
         config,
         chapter_number=chapter_number,
         chapter_contract=chapter_contract,
-        chapter_card=chapter_card,
+        planning_scope=planning_scope,
         all_claims=all_claims,
         excluded_ids=hard_ids,
         token_budget=max(256, bundle_budget - hard_units),
@@ -353,6 +354,7 @@ def compile_fanfiction_context(
         "included_claim_ids": included_ids,
         "omitted_claims": omitted,
         "claims": included,
+        "cross_volume_continuity": continuity_state,
         "selection_reasons": {
             claim_id: _dedupe(reasons)
             for claim_id, reasons in sorted(selection_reasons.items())
@@ -364,23 +366,24 @@ def compile_fanfiction_context(
             "chapter_number": chapter_number,
             "chapter_contract_path": chapter_contract_path.relative_to(root).as_posix(),
             "chapter_contract_sha256": _canonical_json_hash(chapter_contract),
-            "chapter_card_path": chapter_card_path.relative_to(root).as_posix(),
-            "chapter_card_sha256": _canonical_json_hash(chapter_card),
+            "planning_sources": planning_sources,
+            "planning_scope_sha256": _canonical_json_hash(planning_scope),
         },
         "projection_inputs": {
             "show_source_labels": (
                 len(config.data.get("fanfiction", {}).get("sources") or []) > 1
                 or bool(collisions)
             ),
-            "chapter_card": {
-                "local_freedom": str(chapter_card.get("local_freedom") or ""),
-                "observable_change": str(chapter_card.get("observable_change") or ""),
+            "chapter_contract": {
+                "local_freedom": "",
+                "observable_change": str(chapter_contract.get("observable_change") or ""),
             },
             "chapter_claim_channel": dict(chapter_contract["fanfiction_claim_refs"]),
         },
         "author_projection": _author_projection(
             included,
-            chapter_card,
+            chapter_contract,
+            continuity_state=continuity_state,
             show_source_labels=(
                 len(config.data.get("fanfiction", {}).get("sources") or []) > 1
                 or bool(collisions)
@@ -426,6 +429,8 @@ def compile_fanfiction_context(
             "stale": stale,
         },
     }
+    bundle["review_projection"]["cross_volume_continuity"] = continuity_state
+    bundle["budget_usage"]["cross_volume_units"] = continuity_units
     bundle["bundle_sha256"] = _bundle_hash(bundle)
     return bundle
 
@@ -438,7 +443,7 @@ def write_fanfiction_context_bundle(root: Path, bundle: dict[str, Any]) -> Path:
     chapter_number = int(bundle.get("chapter_number") or 0)
     if chapter_number <= 0:
         raise FanfictionContextError("fanfiction context writer requires a positive chapter number")
-    bundle_errors = _validate_bundle_v2(bundle)
+    bundle_errors = _validate_bundle_v3(bundle)
     if bundle_errors:
         raise FanfictionContextError("fanfiction_context_invalid: " + "; ".join(bundle_errors))
     project_config = root / "project.yaml"
@@ -469,7 +474,7 @@ def fanfiction_context_status(
             "required_schema": FANFICTION_CONTEXT_BUNDLE_SCHEMA,
             "next_command": "longform-engine production next project.yaml",
         }
-    bundle_errors = _validate_bundle_v2(payload)
+    bundle_errors = _validate_bundle_v3(payload)
     if bundle_errors:
         return {
             "schema": "fanfiction_context_status_v1",
@@ -539,6 +544,11 @@ def fanfiction_context_status(
         set(stale_reasons)
         | set(_chapter_provenance_stale(root, payload, chapter_number=chapter_number))
     )
+    if not stale_reasons:
+        try:
+            _require_bundle_matches_persisted_inputs(config, payload)
+        except FanfictionContextError as exc:
+            stale_reasons.append(str(exc))
     status = "stale" if stale_reasons else "current"
     return {
         "schema": "fanfiction_context_status_v1",
@@ -599,6 +609,7 @@ def event_disposition_status(config: ConfigDocument) -> dict[str, Any]:
     return {
         "schema": "fanfiction_event_disposition_status_v1",
         "route_status": route_status,
+        "applicability": (route.get("extensions", {}).get("event_disposition_applicability") if route else None),
         "events": rows,
         "pending_count": sum(item["disposition"] == "待决定" for item in rows),
         "diagnostics": diagnostics,
@@ -609,7 +620,7 @@ def _contract_error_status(error: FanfictionContractError) -> str:
     return error.code if error.code in {"missing", "stale"} else "invalid"
 
 
-def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
+def _validate_bundle_v3(payload: Mapping[str, Any]) -> list[str]:
     errors: list[str] = []
     expected_fields = {
         "schema",
@@ -625,6 +636,7 @@ def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
         "included_claim_ids",
         "omitted_claims",
         "claims",
+        "cross_volume_continuity",
         "selection_reasons",
         "source_partitions",
         "namespace_collisions",
@@ -680,8 +692,8 @@ def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
         "chapter_number",
         "chapter_contract_path",
         "chapter_contract_sha256",
-        "chapter_card_path",
-        "chapter_card_sha256",
+        "planning_sources",
+        "planning_scope_sha256",
     }:
         errors.append("chapter_provenance fields are invalid")
     elif provenance.get("chapter_number") != chapter:
@@ -690,15 +702,25 @@ def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
         not _is_sha256(provenance.get(field))
         for field in (
             "chapter_contract_sha256",
-            "chapter_card_sha256",
+            "planning_scope_sha256",
         )
     ):
         errors.append("chapter_provenance hashes must be SHA-256")
     elif any(
         not isinstance(provenance.get(field), str)
-        for field in ("chapter_contract_path", "chapter_card_path")
+        for field in ("chapter_contract_path",)
     ):
         errors.append("chapter_provenance paths must be text")
+
+    continuity = payload.get("cross_volume_continuity")
+    if (not isinstance(continuity, dict) or set(continuity) != {"items", "source_files"}
+            or not isinstance(continuity.get("items"), list) or not isinstance(continuity.get("source_files"), list)):
+        return [*errors, "cross_volume_continuity fields are invalid"]
+    for item in continuity["items"]:
+        if (not isinstance(item, dict) or set(item) != {"claim_id", "plan", "actual"}
+                or not isinstance(item.get("claim_id"), str) or not isinstance(item.get("plan"), str)
+                or (item["actual"] is not None and (not isinstance(item["actual"], dict) or not isinstance(item["actual"].get("value"), str)))):
+            return [*errors, "cross_volume_continuity item is invalid"]
 
     id_fields = (
         "global_claim_ids",
@@ -803,13 +825,14 @@ def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
         dependency_edges=expected_edges,
         namespace_collisions=expected_collisions,
     )
+    expected_review["cross_volume_continuity"] = payload.get("cross_volume_continuity")
     if review != expected_review:
         errors.append("review_projection is not the exact selected claim/evidence projection")
 
     projection_inputs = payload.get("projection_inputs")
     if not isinstance(projection_inputs, dict) or set(projection_inputs) != {
         "show_source_labels",
-        "chapter_card",
+        "chapter_contract",
         "chapter_claim_channel",
     }:
         errors.append("projection_inputs fields are invalid")
@@ -855,18 +878,19 @@ def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
                 errors.append("projection_inputs.chapter_claim_channel union is invalid")
             if id_lists.get("required_claim_ids") != channel.get("all_claim_refs"):
                 errors.append("required_claim_ids must equal the formal chapter claim channel")
-        projection_card = projection_inputs.get("chapter_card")
-        if not isinstance(projection_card, dict) or set(projection_card) != {
+        projection_contract = projection_inputs.get("chapter_contract")
+        if not isinstance(projection_contract, dict) or set(projection_contract) != {
             "local_freedom",
             "observable_change",
         }:
-            errors.append("projection_inputs.chapter_card fields are invalid")
+            errors.append("projection_inputs.chapter_contract fields are invalid")
         elif not isinstance(projection_inputs.get("show_source_labels"), bool):
             errors.append("projection_inputs.show_source_labels must be boolean")
         else:
             expected_author = _author_projection(
                 claims,
-                projection_card,
+                projection_contract,
+                continuity_state=payload.get("cross_volume_continuity"),
                 show_source_labels=projection_inputs["show_source_labels"],
             )
             if payload.get("author_projection") != expected_author:
@@ -890,9 +914,10 @@ def _validate_bundle_v2(payload: Mapping[str, Any]) -> list[str]:
             relevant_ids=set(id_lists.get("relevant_claim_ids", ())),
             optional_ids=set(id_lists.get("optional_claim_ids", ())),
             budget_units=int(budget.get("budget_units") or 0),
-            used_units=sum(units_by_claim.values()),
+            used_units=sum(units_by_claim.values()) + estimate_text_units(json.dumps(payload.get("cross_volume_continuity"), ensure_ascii=False), estimator),
             estimator=estimator,
         )
+        expected_budget["cross_volume_units"] = estimate_text_units(json.dumps(payload.get("cross_volume_continuity"), ensure_ascii=False), estimator)
         if budget != expected_budget:
             errors.append("budget_usage totals, categories, or partitions are not exact")
     source_files = payload.get("source_files")
@@ -964,64 +989,39 @@ def _chapter_provenance_stale(
     provenance = payload.get("chapter_provenance")
     if not isinstance(provenance, dict):
         return ["chapter_provenance"]
-    stale: list[str] = []
+    try:
+        path, contract, sources, scope = _load_persisted_chapter_inputs(root, chapter_number)
+    except ValueError as exc:
+        return [str(exc)]
     expected = {
-        "chapter_contract": (
-            root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
-        ),
-        "chapter_card": (
-            root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-        ),
+        "chapter_number": chapter_number,
+        "chapter_contract_path": path.relative_to(root).as_posix(),
+        "chapter_contract_sha256": _canonical_json_hash(contract),
+        "planning_sources": sources,
+        "planning_scope_sha256": _canonical_json_hash(scope),
     }
-    for kind, path in expected.items():
-        declared_path = str(provenance.get(f"{kind}_path") or "")
-        expected_relative = path.relative_to(root).as_posix()
-        if path.is_file():
-            if declared_path != expected_relative:
-                stale.append(f"{kind}_path")
-                continue
-            current = _read_json(path)
-            if not isinstance(current, dict):
-                stale.append(kind)
-                continue
-            if kind == "chapter_contract":
-                current = {
-                    key: value
-                    for key, value in current.items()
-                    if key != "chapter_contract_hash"
-                }
-            if provenance.get(f"{kind}_sha256") != _canonical_json_hash(current):
-                stale.append(kind)
-        else:
-            stale.append(f"{kind}_path")
-    return stale
+    return [key for key in set(expected) | set(provenance) if expected.get(key) != provenance.get(key)]
 
 
 def _load_persisted_chapter_inputs(
     root: Path,
     chapter_number: int,
-) -> tuple[Path, dict[str, Any], Path, dict[str, Any]]:
-    contract_path = root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
-    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-    if not contract_path.is_file():
-        raise FanfictionContextError("fanfiction_context_chapter_contract_missing")
-    if not card_path.is_file():
-        raise FanfictionContextError("fanfiction_context_chapter_card_missing")
-    raw_contract = _read_json(contract_path)
-    card = _read_json(card_path)
-    if not isinstance(raw_contract, dict):
-        raise FanfictionContextError("fanfiction_context_chapter_contract_unreadable")
-    if not isinstance(card, dict):
-        raise FanfictionContextError("fanfiction_context_chapter_card_unreadable")
-    contract = {key: value for key, value in raw_contract.items() if key != "chapter_contract_hash"}
-    contract_errors = validate_chapter_contract(contract)
-    if contract_errors:
-        raise FanfictionContextError(
-            "fanfiction_context_chapter_contract_invalid: " + "; ".join(contract_errors)
-        )
-    if contract.get("chapter_number") != chapter_number:
-        raise FanfictionContextError("fanfiction_context_chapter_contract_mismatch")
-    return contract_path, contract, card_path, card
+) -> tuple[Path, dict[str, Any], list[dict[str, str]], dict[str, Any]]:
+    try:
+        planning = load_chapter_planning_context(root, chapter_number)
+    except ValueError as exc:
+        raise FanfictionContextError(str(exc)) from exc
+    scope = {
+        "volume_id": planning.volume_id,
+        "arc_ids": list(planning.arc_ids),
+        "character_ids": list(planning.character_ids),
+        "event_ids": list(planning.event_ids),
+        "source_ids": list(planning.source_ids),
+    }
+    return (
+        root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json",
+        planning.contract, list(planning.source_files), scope,
+    )
 
 
 def _require_bundle_matches_persisted_inputs(
@@ -1030,14 +1030,13 @@ def _require_bundle_matches_persisted_inputs(
 ) -> None:
     chapter_number = int(payload.get("chapter_number") or 0)
     root = resolve_project_root(config)
-    _contract_path, contract, _card_path, card = _load_persisted_chapter_inputs(
+    _contract_path, contract, _planning_sources, _scope = _load_persisted_chapter_inputs(
         root, chapter_number
     )
     expected = compile_fanfiction_context(
         config,
         chapter_number=chapter_number,
         chapter_contract=contract,
-        chapter_card=card,
         character_packet={},
         write_rag_cache=False,
     )
@@ -1083,7 +1082,7 @@ def require_current_fanfiction_context_bundle(
         )
     if payload.get("chapter_number") != chapter_number:
         raise FanfictionContextError("fanfiction_context_invalid: requested chapter mismatch")
-    bundle_errors = _validate_bundle_v2(payload)
+    bundle_errors = _validate_bundle_v3(payload)
     if bundle_errors:
         raise FanfictionContextError("fanfiction_context_invalid: " + "; ".join(bundle_errors))
     knowledge_documents, knowledge_paths, knowledge_sha256 = _current_future_knowledge_documents(
@@ -1435,11 +1434,157 @@ def _dependency_closure(
     )
 
 
+def _validate_current_crossover_rules(
+    route: Mapping[str, Any], claims: dict[str, dict[str, Any]], explicit_ids: set[str],
+    closure_ids: set[str], *, chapter_number: int, planning_scope: dict[str, Any],
+    current_scope: Mapping[str, set[str]],
+) -> None:
+    """Validate only actual chapter transfers and the rules reached by their adapters."""
+    crossover = route.get("extensions", {}).get("crossover")
+    if not isinstance(crossover, dict):
+        return
+    topology = crossover["topology"]
+    volume = str(planning_scope["volume_id"])
+    host = crossover["default_host_source_id"]
+    if topology == "sequential_worlds":
+        hosts = [claim["extensions"]["host_source_id"] for claim in claims.values()
+                 if claim["semantic_type"] == "卷宿主世界"
+                 and volume in (claim["extensions"].get("volume_ids") or [])
+                 and _claim_applies(claim, chapter_number=chapter_number,
+                                   planning_scope=planning_scope, current_scope=current_scope)]
+        if len(hosts) != 1:
+            raise FanfictionContextError("context_evidence_incomplete: chapter needs exactly one applicable volume host")
+        host = hosts[0]
+    interactions: dict[str, set[str]] = {}
+    for transfer in crossover["transfers"]:
+        if topology == "sequential_worlds" and volume not in transfer["volume_ids"]:
+            continue
+        interactions.setdefault(transfer["source_id"], set()).update(transfer["payload_kinds"])
+    adapters = {claim_id: claims[claim_id] for claim_id in closure_ids
+                if claims[claim_id]["semantic_type"] == "主世界适配器"}
+    used_adapters = set(adapters)
+    identity_kinds = {"character": "character", "ability": "ability", "organization": "organization", "energy": "ability"}
+    for claim_id in explicit_ids:
+        claim = claims[claim_id]
+        identity = claim.get("extensions", {}).get("identity") or {}
+        source = str(identity.get("source_id") or "")
+        kind = identity_kinds.get(str(identity.get("kind") or ""))
+        if not kind or not source:
+            continue
+        if topology != "fusion_world" and source == host:
+            continue
+        matching = [adapter_id for adapter_id, adapter in adapters.items()
+                    if adapter["extensions"].get("source_id") == source
+                    and kind in (adapter["extensions"].get("payload_kinds") or [])]
+        if len(matching) != 1:
+            raise FanfictionContextError(f"context_evidence_incomplete: {claim_id} needs one chapter-bound transfer adapter")
+        used_adapters.update(matching)
+    for adapter_id in sorted(used_adapters):
+        adapter = adapters[adapter_id]
+        extension = adapter["extensions"]
+        source = extension["source_id"]
+        payloads = set(extension["payload_kinds"])
+        if extension.get("host_source_id") != host or interactions.get(source) != payloads:
+            raise FanfictionContextError(f"context_evidence_incomplete: adapter {adapter_id} has wrong chapter host or payload")
+        if not _claim_applies(adapter, chapter_number=chapter_number,
+                              planning_scope=planning_scope, current_scope=current_scope):
+            raise FanfictionContextError(f"context_evidence_incomplete: adapter {adapter_id} is outside this chapter")
+        dependencies, _edges = _dependency_closure({adapter_id}, claims)
+        required = set(CROSSOVER_ALWAYS_REQUIRED_TOPICS)
+        for kind in payloads:
+            required.update(CROSSOVER_TOPICS_BY_PAYLOAD_KIND[kind])
+        if topology == "fusion_world":
+            required.add("世界规则优先级")
+        covered: set[str] = set()
+        for dependency_id in dependencies - {adapter_id}:
+            rule = claims[dependency_id]
+            if rule["semantic_type"] not in {"跨界宪法", "跨界兼容规则", "世界规则优先级"}:
+                continue
+            rule_extensions = rule["extensions"]
+            if not _claim_applies(rule, chapter_number=chapter_number,
+                                  planning_scope=planning_scope, current_scope=current_scope):
+                continue
+            if "host_source_id" in rule_extensions and rule_extensions["host_source_id"] != host:
+                continue
+            covered.update(rule_extensions.get("topics") or [])
+            if rule["semantic_type"] == "世界规则优先级":
+                covered.add("世界规则优先级")
+        if required - covered:
+            raise FanfictionContextError(
+                f"context_evidence_incomplete: adapter {adapter_id} lacks current dependent rules: "
+                + ",".join(sorted(required - covered))
+            )
+
+
+def _cross_volume_continuity(
+    root: Path, route: Mapping[str, Any], claims: dict[str, dict[str, Any]],
+    selected_ids: set[str], *, chapter_number: int, planning_scope: dict[str, Any],
+    current_scope: Mapping[str, set[str]],
+) -> dict[str, Any]:
+    """Project planned obligations separately from final-evidenced, latest semantic facts.
+
+    Consequences reuse world_deltas.fact_id = the approved consequence claim_id.
+    This reads the existing ledger; it neither infers realization nor creates state.
+    """
+    result: dict[str, Any] = {"items": [], "source_files": []}
+    crossover = route.get("extensions", {}).get("crossover") or {}
+    if crossover.get("topology") != "sequential_worlds":
+        return result
+    volume = planning_scope["volume_id"]
+    selected = {key: claims[key] for key in selected_ids
+                if claims[key]["semantic_type"] == "跨卷延续后果"
+                and _claim_applies(claims[key], chapter_number=chapter_number,
+                                  planning_scope=planning_scope, current_scope=current_scope)}
+    if volume != crossover["volume_ids"][0] and not selected:
+        raise FanfictionContextError("context_evidence_incomplete: sequential volume requires chapter-bound carryover claims")
+    if not selected:
+        return result
+    latest: dict[str, Any] = {}
+    from longform_engine.semantic.pipeline import validate_evidence
+
+    for chapter in range(1, chapter_number):
+        final_path = manuscript_chapter_path(root, chapter, lane="final")
+        ledger_path = root / "30_state/semantic_ledger" / f"ch{chapter:03d}.json"
+        try:
+            final_bytes = final_path.read_bytes()
+            ledger_bytes = ledger_path.read_bytes()
+            ledger = json.loads(ledger_bytes)
+            final_text = final_bytes.decode("utf-8")
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise FanfictionContextError(f"context_evidence_incomplete: carryover history ch{chapter:03d}: {exc}") from exc
+        source = ledger.get("source") or {}
+        if (ledger.get("schema") != "chapter_semantic_bundle_v1" or ledger.get("canonical") is not True
+                or ledger.get("chapter_number") != chapter
+                or source != {"path": final_path.relative_to(root).as_posix(), "sha256": sha256(final_bytes).hexdigest()}):
+            raise FanfictionContextError(f"context_evidence_incomplete: carryover ledger ch{chapter:03d} is not bound to current final")
+        result["source_files"].extend([
+            {"path": final_path.relative_to(root).as_posix(), "sha256": sha256(final_bytes).hexdigest()},
+            {"path": ledger_path.relative_to(root).as_posix(), "sha256": sha256(ledger_bytes).hexdigest()},
+        ])
+        seen: set[str] = set()
+        for fact in ledger.get("world_deltas") or []:
+            fact_id = fact.get("fact_id")
+            if fact_id not in selected:
+                continue
+            errors: list[str] = []
+            validate_evidence(fact.get("evidence"), str(fact_id), final_text, errors)
+            if errors or fact_id in seen or not isinstance(fact.get("value"), str) or not fact["value"].strip():
+                raise FanfictionContextError(f"context_evidence_incomplete: carryover fact {fact_id} requires unique, evidenced natural-language state")
+            seen.add(fact_id)
+            latest[fact_id] = {"value": fact["value"], "chapter_number": chapter,
+                               "evidence": fact["evidence"], "source": source,
+                               "semantic_ledger_path": ledger_path.relative_to(root).as_posix(),
+                               "semantic_ledger_sha256": sha256(ledger_bytes).hexdigest()}
+    result["items"] = [{"claim_id": key, "plan": claim["statement"], "actual": latest.get(key)}
+                       for key, claim in sorted(selected.items())]
+    return result
+
+
 def _claim_applies(
     claim: dict[str, Any],
     *,
     chapter_number: int,
-    chapter_card: dict[str, Any],
+    planning_scope: dict[str, Any],
     current_scope: Mapping[str, set[str]] | None = None,
 ) -> bool:
     extensions_value = claim.get("extensions")
@@ -1457,10 +1602,10 @@ def _claim_applies(
     if end and chapter_number > end:
         return False
     volume_ids = {str(item) for item in extensions.get("volume_ids") or []}
-    if volume_ids and str(chapter_card.get("volume_id") or "") not in volume_ids:
+    if volume_ids and str(planning_scope.get("volume_id") or "") not in volume_ids:
         return False
     arc_ids = {str(item) for item in extensions.get("arc_ids") or []}
-    if arc_ids and str(chapter_card.get("arc_id") or "") not in arc_ids:
+    if arc_ids and arc_ids.isdisjoint(set(planning_scope.get("arc_ids") or [])):
         return False
     if current_scope is not None:
         for field, scope_key in (
@@ -1481,11 +1626,11 @@ def _current_scope(
     config: ConfigDocument,
     *,
     chapter_contract: Mapping[str, Any],
-    chapter_card: Mapping[str, Any],
+    planning_scope: Mapping[str, Any],
 ) -> dict[str, set[str]]:
     # Character-expression packets are transient author aids and have no canonical
     # persisted owner.  They therefore cannot influence semantic claim selection.
-    values = (chapter_contract, chapter_card)
+    values = (chapter_contract, planning_scope)
 
     def collect(*fields: str) -> set[str]:
         result: set[str] = set()
@@ -1755,7 +1900,7 @@ def _optional_project_canon_claims(
     *,
     chapter_number: int,
     chapter_contract: dict[str, Any],
-    chapter_card: dict[str, Any],
+    planning_scope: dict[str, Any],
     all_claims: dict[str, dict[str, Any]],
     excluded_ids: set[str],
     token_budget: int,
@@ -1768,8 +1913,8 @@ def _optional_project_canon_claims(
             chapter_contract.get("chapter_duty"),
             chapter_contract.get("conflict"),
             chapter_contract.get("chapter_turn"),
-            chapter_card.get("reader_value"),
-            chapter_card.get("observable_change"),
+            planning_scope.get("reader_value"),
+            planning_scope.get("observable_change"),
         )
         if str(value or "").strip()
     )
@@ -1807,7 +1952,7 @@ def _optional_project_canon_claims(
             and _claim_applies(
                 claim,
                 chapter_number=chapter_number,
-                chapter_card=chapter_card,
+                planning_scope=planning_scope,
                 current_scope=current_scope,
             )
         ):
@@ -1824,9 +1969,10 @@ def _optional_project_canon_claims(
 
 def _author_projection(
     claims: list[dict[str, Any]],
-    chapter_card: dict[str, Any],
+    chapter_contract: dict[str, Any],
     *,
     show_source_labels: bool,
+    continuity_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     grouped: dict[str, list[tuple[str, str]]] = {}
     for claim in claims:
@@ -1865,6 +2011,10 @@ def _author_projection(
         and str(claim.get("statement") or "")
     )
     return {
+        "cross_volume_consequences": [
+            f"计划：{item['plan']}。当前正文事实：{item['actual']['value'] if item['actual'] else '尚无事实证据，不作为已发生的约束'}。以当前正文事实为准，后续解除或改变的后果不得照搬原计划。"
+            for item in (continuity_state or {}).get("items", [])
+        ],
         "current_canon_time_and_scene": collect("故事切入点", "时间线", "地点", "世界规则"),
         "approved_divergences": collect("初始分歧", "分歧后果", "蝴蝶效应"),
         "character_knowledge_boundaries": collect(
@@ -1876,14 +2026,14 @@ def _author_projection(
             "能力条件", "能力代价", "能力反制", "跨界宪法", "跨界兼容规则", "主世界适配器"
         ),
         "canon_character_agency": collect("原著人物职责", "原著人物自主性"),
-        "original_contribution": collect("本章原创贡献", "原创贡献", "独立长期目标", "原作后续故事来源"),
+        "original_contribution": collect("本章新增阅读价值", "本作新增阅读价值", "新增视角或未展开空间", "后续未决问题", "补写前史"),
         "protected_reveals": collect("保密信息", "禁止提前揭示", "保护揭示"),
         "source_identity_notes": identity_notes,
         "free_play": str(
-            chapter_card.get("local_freedom")
+            chapter_contract.get("local_freedom")
             or "在已批准分歧、人物知识、事件命运和能力边界内自由设计微观动作、对话与场景细节。"
         ),
-        "ending_state": str(chapter_card.get("observable_change") or ""),
+        "ending_state": str(chapter_contract.get("observable_change") or ""),
     }
 
 

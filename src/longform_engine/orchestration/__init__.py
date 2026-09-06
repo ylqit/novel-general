@@ -1,11 +1,9 @@
 """Workflow orchestration package."""
 
 from .pipeline import (
-    BeatSheetResult,
     AutoWriteResult,
     BatchWriteResult,
     ChapterFinalizeResult,
-    ChapterPlanResult,
     ContinueWriteResult,
     DraftSubmitResult,
     OpenBookResult,
@@ -17,18 +15,14 @@ from .pipeline import (
     batch_write,
     continue_write,
     finalize_chapter,
-    generate_beat_sheet,
     open_book,
-    plan_chapter,
     submit_agent_draft,
 )
 
 __all__ = [
-    "BeatSheetResult",
     "AutoWriteResult",
     "BatchWriteResult",
     "ChapterFinalizeResult",
-    "ChapterPlanResult",
     "ContinueWriteResult",
     "DraftSubmitResult",
     "OpenBookResult",
@@ -40,8 +34,6 @@ __all__ = [
     "batch_write",
     "continue_write",
     "finalize_chapter",
-    "generate_beat_sheet",
     "open_book",
-    "plan_chapter",
     "submit_agent_draft",
 ]

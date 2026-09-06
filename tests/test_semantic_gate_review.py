@@ -20,11 +20,8 @@ def seed_high_risk_chapter(tmp_path: Path):
     open_book(config)
     mark_project_ready(root, config)
     config.data["length"]["chapter"]["hard_min"] = 20
+    config.data["quality"]["semantic_review_milestones"] = [1]
     continue_write(config, chapter_number=1)
-    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card = json.loads(card_path.read_text(encoding="utf-8"))
-    card["requires_semantic_review"] = True
-    card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2), encoding="utf-8")
     agent_draft = root / "50_workbench" / "agent_drafts" / "ch001.codex.md"
     agent_draft.write_text(
         "# Chapter 1\n\n"
@@ -92,6 +89,11 @@ def test_semantic_review_validates_spans_and_applies_only_gate_artifacts(tmp_pat
     assert validation.ok, validation.errors
     assert gate["agent_semantic_review"]["status"] == "applied"
     assert not any(item["code"] == "semantic_review_required" for item in gate["failures"])
+    assert snapshot_protected(root) == protected
+    application_before = Path(applied.application_file).read_bytes()
+    repeated = semantic_review_apply(config, chapter_number=1, file_path=output)
+    assert repeated.applied
+    assert Path(applied.application_file).read_bytes() == application_before
     assert snapshot_protected(root) == protected
 
 

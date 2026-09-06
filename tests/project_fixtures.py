@@ -26,7 +26,6 @@ from longform_engine.reader_promises_v2 import (
     materialize_explicit_reader_promises,
     write_reader_promise_ledger,
 )
-from longform_engine.quality import compact_effective_quality_contract, compile_effective_quality_contract
 
 
 def story_engine_contract() -> dict:
@@ -190,28 +189,11 @@ def refresh_arc_simulation_fixture(root: Path) -> Path:
     )
     start = int(window["start_chapter"])
     end = int(window["end_chapter"])
-    simulation_path = write_arc_simulation_fixture(
+    return write_arc_simulation_fixture(
         root,
         from_chapter=start,
         to_chapter=end,
     )
-    simulation_ref = {
-        "path": simulation_path.relative_to(root).as_posix(),
-        "sha256": sha256(simulation_path.read_bytes()).hexdigest(),
-        "from_chapter": start,
-        "to_chapter": end,
-    }
-    for card_path in sorted((root / "20_outline" / "chapter_cards").glob("ch*.json")):
-        card = json.loads(card_path.read_text(encoding="utf-8"))
-        chapter_number = int(card.get("chapter_number") or 0)
-        selection = card.get("direction_selection")
-        if not start <= chapter_number <= end or not isinstance(selection, dict):
-            continue
-        if selection.get("status") != "applied":
-            continue
-        card["arc_simulation_ref"] = simulation_ref
-        write_json(card_path, card)
-    return simulation_path
 
 
 def update_chapter_contract_fixture(
@@ -227,11 +209,7 @@ def update_chapter_contract_fixture(
     contract.update(updates)
     stamped = stamp_chapter_contract(contract)
     write_json(contract_path, stamped)
-    card_path = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
-    if card_path.is_file():
-        card = json.loads(card_path.read_text(encoding="utf-8"))
-        card["chapter_contract_hash"] = stamped["chapter_contract_hash"]
-        write_json(card_path, card)
+    refresh_planning_fixture_basis(root)
     return stamped
 
 
@@ -433,12 +411,11 @@ def mark_project_ready(
     (root / "20_outline" / "book_outline.md").write_text("# Book Outline\n\nTen escalating evidence arcs.\n", encoding="utf-8")
     write_json(root / "20_outline" / "story_arcs.json", story_arcs)
     write_json(root / "20_outline" / "volumes.json", volumes)
-    write_json(root / "20_outline" / "chapter_plan.json", chapter_plan)
     write_json(root / "20_outline" / "planning_window.json", planning_window)
     write_json(
         root / "20_outline" / "rolling_window.json",
         {
-            "schema": "rolling_window_v1",
+            "schema": "rolling_window_plan_v2",
             "window_id": "window:fixture",
             "start_chapter": int(planning_window["start_chapter"]),
             "end_chapter": int(planning_window["end_chapter"]),
@@ -447,7 +424,7 @@ def mark_project_ready(
                 "directional": [int(planning_window["start_chapter"]) + 3, min(int(planning_window["start_chapter"]) + 9, int(planning_window["end_chapter"]))],
                 "horizon": None,
             },
-            "basis_refs": ["20_outline/chapter_plan.json"],
+            "basis_refs": ["20_outline/volume_skeletons.json"],
             "basis_sha256": "b" * 64,
         },
     )
@@ -484,130 +461,39 @@ def mark_project_ready(
     )
     horizon_start = int(planning_window["start_chapter"])
     horizon_end = int(planning_window["end_chapter"])
-    simulation_path = write_arc_simulation_fixture(
+    write_arc_simulation_fixture(
         root,
         from_chapter=horizon_start,
         to_chapter=horizon_end,
         characters=characters,
     )
-    simulation_ref = {
-        "path": simulation_path.relative_to(root).as_posix(),
-        "sha256": sha256(simulation_path.read_bytes()).hexdigest(),
-        "from_chapter": horizon_start,
-        "to_chapter": horizon_end,
-    }
+    skeleton_items = []
+    per_volume = max(1, int(config.data["length"]["volume"]["target_characters"]) // int(config.data["length"]["chapter"]["target_characters"]))
+    for number, volume in enumerate(volumes, start=1):
+        chapter_range = [(number - 1) * per_volume + 1, number * per_volume]
+        skeleton_items.append({
+            "volume_id": volume["id"], "order": number, "title": volume["title"],
+            "chapter_range": chapter_range, "volume_goal": volume["goal"],
+            "entry_state": "The investigation enters this bounded layer.", "exit_state": volume["ending_turn"],
+            "target_characters": volume["target_characters"], "status": "approved",
+        })
+        write_json(root / "20_outline" / "volumes" / f"vol{number:03d}.json", {
+            "schema": "volume_plan_v1", "volume_id": volume["id"], "chapter_range": chapter_range,
+            "entry_state": "The investigation enters this bounded layer.", "exit_state": volume["ending_turn"],
+            "event_graph": [], "character_arcs": [dict(arc, actor_refs=[item["id"] for item in characters]) for arc in story_arcs if arc["id"] in volume["arc_ids"]],
+            "promise_threads": [], "foreshadow_threads": [], "flex_zones": [],
+            "lifecycle": "active" if number == 1 else "approved", "approved_by": "human",
+        })
+    skeleton_path = root / "20_outline" / "volume_skeletons.json"
+    write_json(skeleton_path, {"schema": "volume_skeletons_v1", "items": skeleton_items})
+    write_json(root / "30_state" / "planning_basis.json", {
+        "schema": "planning_basis_v1", "rolling_window_basis_sha256": "b" * 64,
+        "source_files": [{"path": path.relative_to(root).as_posix(), "sha256": sha256(path.read_bytes()).hexdigest()} for path in [skeleton_path, *sorted((root / "20_outline" / "volumes").glob("vol*.json"))]],
+        "source_bundle_sha256": "c" * 64,
+    })
     if direction_applied:
         for row in chapter_plan:
             chapter_number = int(row["chapter_number"])
-            effective_quality_contract = compile_effective_quality_contract(
-                config,
-                chapter_number=chapter_number,
-            )
-            quality_body = effective_quality_contract.get("contract") or {}
-            card = {
-                **row,
-                "status": "planned",
-                "book_goal": "Resolve who controls collective memory.",
-                "volume_goal": "Resolve the current evidence escalation layer.",
-                "protagonist_goal": characters[0]["goal"],
-                "pov_character_id": row["featured_character_ids"][0],
-                "chapter_duty": row["chapter_duty"],
-                "immediate_desire": "Reach the witness before the archive gate closes.",
-                "opposition_force": row["conflict"],
-                "dramatic_question": "Can Ari secure the witness without surrendering the physical clue?",
-                "key_failure": "The direct pursuit is blocked when the damaged seal triggers the gate alarm.",
-                "irreversible_choice": "Ari gives Mira the only copy of the route and follows her plan.",
-                "chapter_turn": row["chapter_turn"],
-                "reveal_boundary": "Reveal the internal route but not the editor's identity.",
-                "emotional_aftereffect": "The shared risk leaves Ari wary but newly responsible for Mira.",
-                "ending_mode": row["ending_mode"],
-                "ending_intent": row["ending_intent"],
-                "must_preserve_suspense": list(row.get("must_preserve_suspense") or []),
-                "resolution_markers": list(row.get("resolution_markers") or []),
-                "reader_gain": row["reader_gain"],
-                "cost": "The chosen gain narrows the protagonist's next safe option.",
-                "must_dramatize": ["the failed pursuit", "Ari's trust choice", "the suspect gaining distance"],
-                "may_summarize": ["routine movement between archive levels"],
-                "primary_story_engine": row["primary_story_engine"],
-                "scene_carriers": [row["primary_scene_carrier"]],
-                "protected_story_outcomes": [row["chapter_turn"]],
-                "prohibited_drift": ["Do not replace the pursuit with a document-verification discussion."],
-                "state_change_kind": row["state_change_kind"],
-                "dramatic_method": row["dramatic_method"],
-                "exposition_carrier": "embedded_in_action",
-                "platform_promise": str(quality_body.get("platform_promise") or ""),
-                "effective_quality_contract": compact_effective_quality_contract(
-                    effective_quality_contract
-                ),
-                "scene_chain": [
-                    {
-                        "scene_id": f"ch{chapter_number:03d}:fixture",
-                        "location": "archive gate",
-                        "participants": row["featured_character_ids"],
-                        "carrier": row["primary_scene_carrier"],
-                        "desire_collision": "Verification competes with immediate pursuit.",
-                        "action": "Ari blocks the closing mechanism while Mira reaches for the witness route.",
-                        "reaction": "The alarm seals the lower stair and forces them to split the clue.",
-                        "choice": "Ari shares the clue and accepts the delay.",
-                        "cost": "The suspect gains distance.",
-                        "turn": "The evidence points to internal access.",
-                        "exit_state": row["chapter_turn"],
-                    }
-                ],
-                "canon_refs": [],
-                "world_rule_refs": ["10_bible/world.md", "10_bible/power_system.md"],
-                "foreshadow_refs": ["thread_false_treaty"],
-                "forbidden_reveals": list(row.get("forbidden_reveals") or []),
-                "reader_promise_actions": [
-                    {
-                        "promise_id": "story_engine:opening_three" if chapter_number <= 3 else "story_engine:early_serial",
-                        "action": (
-                            "setup" if chapter_number in {1, 4}
-                            else "payoff" if chapter_number == 3
-                            else "escalate"
-                        ),
-                        "stage_id": "payoff:opening-three" if chapter_number == 3 else None,
-                        "intended_reader_gain": row["reader_gain"],
-                        "evidence_requirement": "The final chapter must show a concrete changed condition.",
-                        "defer_reason": "",
-                    }
-                ],
-                "arc_simulation_ref": simulation_ref,
-                "direction_selection": {
-                    "status": "applied",
-                    "direction_id": "fixture_human_choice",
-                    "approved_by": "human",
-                },
-            }
-            selection_path = (
-                root
-                / "50_workbench"
-                / "intelligence_selections"
-                / f"ch{chapter_number:03d}.fixture.selection.json"
-            )
-            write_json(
-                selection_path,
-                {
-                    "schema": "chapter_direction_selection_v1",
-                    "task_id": f"fixture-direction-ch{chapter_number:03d}",
-                    "chapter_number": chapter_number,
-                    "document_path": f"50_workbench/intelligence_candidates/ch{chapter_number:03d}.fixture.md",
-                    "document_sha256": "a" * 64,
-                    "option_ids": ["OPTION-A", "OPTION-B"],
-                    "selected_option_id": "OPTION-A",
-                    "user_adjustments": {},
-                    "repetition_reason": "",
-                    "selected_by": "human",
-                    "selected_at": "fixture",
-                },
-            )
-            card["direction_selection"].update(
-                {
-                    "selection_file": selection_path.relative_to(root).as_posix(),
-                    "selection_sha256": sha256(selection_path.read_bytes()).hexdigest(),
-                    "document_sha256": "a" * 64,
-                }
-            )
             candidate_hash = sha256(
                 f"fixture-plot-nodes:{chapter_number}".encode("utf-8")
             ).hexdigest()
@@ -620,11 +506,11 @@ def mark_project_ready(
                     {
                         "node_id": f"node:ch{chapter_number:03d}:choice",
                         "node_kind": "state_change",
-                        "description": card["irreversible_choice"],
+                        "description": 'Ari gives Mira the only copy of the route and follows her plan.',
                         "preconditions": [],
                         "dependency_refs": ["obligation:trust-choice"],
-                        "expected_changes": [card["chapter_turn"]],
-                        "reader_effect": card["reader_gain"],
+                        "expected_changes": [row["chapter_turn"]],
+                        "reader_effect": row["reader_gain"],
                         "human_decision": {
                             "node_id": f"node:ch{chapter_number:03d}:choice",
                             "decision": "approve",
@@ -637,6 +523,10 @@ def mark_project_ready(
                 "approval_sha256": "d" * 64,
             }
             node_path = root / "20_outline" / "plot_nodes" / f"ch{chapter_number:03d}.json"
+            for node in node_table["nodes"]:
+                node["actors"] = list(row["featured_character_ids"])
+                node["scene_id"] = f"scene:ch{chapter_number:03d}"
+                node["action_or_exchange"] = node.get("description", "")
             write_json(node_path, node_table)
             write_json(
                 root / "30_state" / "narrative_events" / f"ch{chapter_number:03d}.json",
@@ -652,8 +542,8 @@ def mark_project_ready(
                             "preconditions": [],
                             "dependency_refs": ["obligation:trust-choice"],
                             "fanfiction_claim_refs": [],
-                            "expected_changes": [card["chapter_turn"]],
-                            "reader_effect": card["reader_gain"],
+                            "expected_changes": [row["chapter_turn"]],
+                            "reader_effect": row["reader_gain"],
                             "state": "planned_approved",
                             "realization_evidence": None,
                         }
@@ -669,27 +559,27 @@ def mark_project_ready(
                     "chapter_number": chapter_number,
                     "forecast_ref": f"forecast:ch{chapter_number:03d}",
                     "topology": "relationship",
-                    "chapter_duty": card["chapter_duty"],
-                    "observable_change": card["chapter_turn"],
-                    "reader_value": card["reader_gain"],
+                    "chapter_duty": row["chapter_duty"],
+                    "observable_change": row["chapter_turn"],
+                    "reader_value": row["reader_gain"],
                     "failure": {
                         "applicability": "required",
-                        "description": card["key_failure"],
+                        "description": 'The direct pursuit is blocked when the damaged seal triggers the gate alarm.',
                         "reason": "The failed direct route forces the approved choice.",
                     },
                     "choice": {
                         "applicability": "required",
-                        "description": card["irreversible_choice"],
+                        "description": 'Ari gives Mira the only copy of the route and follows her plan.',
                         "reason": "The choice owns the chapter's state change.",
                     },
                     "cost": {
                         "applicability": "required",
-                        "description": card["cost"],
+                        "description": "The chosen gain narrows the protagonist's next safe option.",
                         "reason": "The gain must narrow the next safe option.",
                     },
                     "aftermath": {
                         "applicability": "optional",
-                        "description": card["emotional_aftereffect"],
+                        "description": 'The shared risk leaves Ari wary but newly responsible for Mira.',
                         "reason": "The following chapter may carry further processing.",
                     },
                     "plot_node_table_ref": {
@@ -697,9 +587,16 @@ def mark_project_ready(
                         "candidate_sha256": candidate_hash,
                     },
                     "semantic_obligation_refs": ["obligation:trust-choice"],
-                    "reader_promise_actions": card["reader_promise_actions"],
+                    "reader_promise_actions": [{
+                        "promise_id": "story_engine:opening_three" if chapter_number <= 3 else "story_engine:early_serial",
+                        "action": "setup" if chapter_number in {1, 4} else "payoff" if chapter_number == 3 else "escalate",
+                        "stage_id": "payoff:opening-three" if chapter_number == 3 else None,
+                        "intended_reader_gain": row["reader_gain"],
+                        "evidence_requirement": "The final chapter must show a concrete changed condition.",
+                        "defer_reason": "",
+                    }],
                     "protected_invariants": ["The final editor identity remains concealed."],
-                    "prohibited_drift": card["prohibited_drift"],
+                    "prohibited_drift": ["Do not replace the pursuit with a document-verification discussion."],
                     "fanfiction_claim_refs": {
                         "schema": "fanfiction_chapter_claim_channel_v1",
                         "active_volume_claim_refs": [],
@@ -714,12 +611,10 @@ def mark_project_ready(
                 root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
             )
             write_json(contract_path, contract)
-            card["chapter_contract_hash"] = contract["chapter_contract_hash"]
-            write_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", card)
             write_json(
                 root / "20_outline" / "chapter_intents" / f"ch{chapter_number:03d}.json",
                 {
-                    "schema": "human_chapter_intent_v2",
+                    "schema": "human_chapter_intent_v3",
                     "chapter_number": chapter_number,
                     "chapter_contract_sha256": contract["chapter_contract_hash"],
                     "plot_node_approval_sha256": sha256(node_path.read_bytes()).hexdigest(),
@@ -727,6 +622,7 @@ def mark_project_ready(
                     "key_character_choice": "Ari entrusts the only route copy to Mira instead of controlling it alone.",
                     "emotional_truth": "Trust feels like losing control before it feels like alliance.",
                     "pov_voice_intent": "Ari notices concrete evidence first and admits fear only through shortened choices.",
+                    "expression_focus": {"pov_character_ids": [characters[0]["id"]], "scene_kind": "pursuit"},
                     "protected_items": ["The final editor identity remains concealed."],
                     "completed_by": "human",
                     "status": "approved",
@@ -734,20 +630,16 @@ def mark_project_ready(
                     "approved_at": "fixture",
                 },
             )
-            (root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.md").write_text(
-                f"# Chapter Card ch{chapter_number:03d}\n\nHuman-approved fixture direction.\n",
-                encoding="utf-8",
-            )
     state_path = root / "30_state" / "novel_state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state["status"] = "project_ready"
     state["project_intelligence"] = {
         "book_ideation": {"status": "applied", "candidate_hash": "test-ideation"},
         "book_design": {"status": "applied", "candidate_hash": "test-book"},
-        "outline_design": {"status": "applied", "candidate_hash": "test-outline"},
         "character_expression_design": {"status": "applied", "candidate_hash": "test-expression"},
     }
     write_json(state_path, state)
+    refresh_planning_fixture_basis(root)
 
 
 def checked_review_coverage(
@@ -756,7 +648,7 @@ def checked_review_coverage(
     dimensions,
     *,
     canonical_dimensions=(),
-    canonical_ref: str = "20_outline/chapter_cards/ch001.json",
+    canonical_ref: str = "20_outline/chapter_contracts/ch001.json",
 ) -> dict:
     text = source.read_text(encoding="utf-8")
     end = min(max(len(text), 1), 48)
@@ -806,7 +698,7 @@ def complete_editorial_reviews(root: Path, config, *, chapter_number: int = 1) -
                 if role_id == "canon_fidelity_reviewer"
                 and str(config.data.get("creation", {}).get("mode") or "original")
                 == "fanfiction"
-                else f"20_outline/chapter_cards/ch{chapter_number:03d}.json"
+                else f"20_outline/chapter_contracts/ch{chapter_number:03d}.json"
             )
             write_json(
                 result_path,
@@ -834,6 +726,138 @@ def complete_editorial_reviews(root: Path, config, *, chapter_number: int = 1) -
             )
 
 
+def complete_required_quality_reviews(root: Path, config, *, chapter_number: int = 1, include_pacing: bool = True) -> None:
+    """Supply protocol-only evidence for every currently required quality stage."""
+
+    from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
+    from longform_engine.gates import semantic_pacing_apply, semantic_pacing_task, semantic_pacing_validate
+    from longform_engine.quality import reader_payoff_task, reader_payoff_validate
+    from longform_engine.repair_coordination import independent_review_status
+
+    review_state = independent_review_status(config, chapter_number=chapter_number)
+    semantic = (review_state.get("stages") or {}).get("semantic") or {}
+    if semantic.get("required") and not semantic.get("complete"):
+        from longform_engine.gates import semantic_review_apply, semantic_review_task, semantic_review_validate
+
+        task = semantic_review_task(config, chapter_number=chapter_number)
+        output = Path(task.output_file)
+        source = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+        dimensions = ("canonical_fact", "motivation", "space_time_ability")
+        write_json(output, {
+            "schema": EVIDENCE_REVIEW_SCHEMA, "verdict": "pass", "findings": [],
+            "coverage": checked_review_coverage(root, source, dimensions, canonical_dimensions=dimensions),
+        })
+
+        manifest = load_manifest(root, task.manifest_file)
+        control = validate_production_agent_result(root, manifest, result_file=output)
+        if not control.ok:
+            raise AssertionError(control.normalization.errors)
+        validation = semantic_review_validate(config, chapter_number=chapter_number, file_path=output)
+        if not validation.ok:
+            raise AssertionError(validation.errors)
+        semantic_review_apply(config, chapter_number=chapter_number, file_path=output)
+    payoff = (review_state.get("stages") or {}).get("payoff") or {}
+    if payoff.get("required") and not payoff.get("complete"):
+        payoff_task = reader_payoff_task(config, chapter_number=chapter_number)
+        payoff_output = Path(payoff_task.output_file)
+        source = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+        source_text = source.read_text(encoding="utf-8")
+        evidence_end = min(max(len(source_text), 1), 48)
+        evidence_id = f"{source.relative_to(root).as_posix()}@0:{evidence_end}"
+        write_json(
+            payoff_output,
+            {
+                "schema": EVIDENCE_REVIEW_SCHEMA,
+                "verdict": "pass",
+                "coverage": checked_review_coverage(
+                    root,
+                    source,
+                    ("reader_gain", "cost", "promise_progress"),
+                    canonical_dimensions=("reader_gain", "cost", "promise_progress"),
+                    canonical_ref=f"20_outline/chapter_contracts/ch{chapter_number:03d}.json",
+                ),
+                "findings": [
+                    {
+                        "code": code,
+                        "severity": "P3",
+                        "certainty": "confirmed",
+                        "diagnosis": diagnosis,
+                        "evidence_ids": [evidence_id],
+                        "reader_impact": impact,
+                        "repair_target": "No repair is required for this fixture evidence.",
+                        "preserve": ["current human revision", "chapter contract"],
+                    }
+                    for code, diagnosis, impact in (
+                        (
+                            "PAYOFF_DELIVERED",
+                            "The current human revision gives the reader a concrete changed condition.",
+                            "The chapter advances through an observable result rather than a restated plan.",
+                        ),
+                        (
+                            "COST_VISIBLE",
+                            "The current human revision preserves a visible cost for the chosen action.",
+                            "The gain does not erase pressure or consequence.",
+                        ),
+                        (
+                            "PROMISE_ADVANCED",
+                            "The current human revision turns the active promise into a next action.",
+                            "The promise progresses without being prematurely closed.",
+                        ),
+                    )
+                ],
+            },
+        )
+        control = validate_production_agent_result(
+            root,
+            load_manifest(root, payoff_task.manifest_file),
+            result_file=payoff_output,
+        )
+        if not control.ok:
+            raise AssertionError(control.normalization.errors)
+        payoff_validation = reader_payoff_validate(
+            config,
+            chapter_number=chapter_number,
+            file_path=payoff_output,
+        )
+        if not payoff_validation.passed:
+            raise AssertionError(payoff_validation.errors)
+        review_state = independent_review_status(config, chapter_number=chapter_number)
+    pacing = (review_state.get("stages") or {}).get("pacing") or {}
+    if include_pacing and pacing.get("required") and not pacing.get("complete"):
+        pacing_task = semantic_pacing_task(config, chapter_number=chapter_number)
+        pacing_output = Path(pacing_task.output_file)
+        payload = json.loads(Path(pacing_task.task_json).read_text(encoding="utf-8"))["output_schema"]
+        source = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
+        payload.update(
+            {
+                "verdict": "pass",
+                "coverage": checked_review_coverage(
+                    root,
+                    source,
+                    ("pressure_release", "beat_change", "aftermath"),
+                    canonical_ref=f"20_outline/chapter_contracts/ch{chapter_number:03d}.json",
+                ),
+                "findings": [],
+            }
+        )
+        write_json(pacing_output, payload)
+        control = validate_production_agent_result(
+            root,
+            load_manifest(root, pacing_task.manifest_file),
+            result_file=pacing_output,
+        )
+        if not control.ok:
+            raise AssertionError(control.normalization.errors)
+        validation = semantic_pacing_validate(
+            config,
+            chapter_number=chapter_number,
+            file_path=pacing_output,
+        )
+        if not validation.ok:
+            raise AssertionError(validation.errors)
+        semantic_pacing_apply(config, chapter_number=chapter_number, file_path=pacing_output)
+
+
 def complete_human_author_revision(root: Path, config, *, chapter_number: int = 1) -> None:
     """Create a substantive human revision, validate its pair review, and resubmit it."""
 
@@ -847,6 +871,7 @@ def complete_human_author_revision(root: Path, config, *, chapter_number: int = 
     )
     from longform_engine.orchestration import submit_agent_draft
 
+    complete_required_quality_reviews(root, config, chapter_number=chapter_number)
     task = create_human_author_revision_task(config, chapter_number=chapter_number)
     source = root / task.source_file
     source_text = source.read_text(encoding="utf-8")
@@ -999,123 +1024,20 @@ def complete_human_author_revision(root: Path, config, *, chapter_number: int = 
     if not submitted.passed:
         raise AssertionError(submitted)
     complete_editorial_reviews(root, config, chapter_number=chapter_number)
+    complete_required_quality_reviews(root, config, chapter_number=chapter_number)
 
 
 def approve_story_candidate(root: Path, config, *, chapter_number: int = 1) -> None:
     """Complete mandatory independent editorial review and hash-bound human acceptance."""
 
-    from longform_engine.agent_protocols import EVIDENCE_REVIEW_SCHEMA
-    from longform_engine.gates import semantic_pacing_apply, semantic_pacing_task, semantic_pacing_validate
     from longform_engine.human_story_review import (
         apply_human_story_review,
         create_human_story_review_task,
     )
-    from longform_engine.quality import reader_payoff_task, reader_payoff_validate
-    from longform_engine.repair_coordination import independent_review_status
 
     complete_editorial_reviews(root, config, chapter_number=chapter_number)
     complete_human_author_revision(root, config, chapter_number=chapter_number)
-    review_state = independent_review_status(config, chapter_number=chapter_number)
-    payoff = (review_state.get("stages") or {}).get("payoff") or {}
-    if payoff.get("required") and not payoff.get("complete"):
-        payoff_task = reader_payoff_task(config, chapter_number=chapter_number)
-        payoff_output = Path(payoff_task.output_file)
-        source = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
-        source_text = source.read_text(encoding="utf-8")
-        evidence_end = min(max(len(source_text), 1), 48)
-        evidence_id = f"{source.relative_to(root).as_posix()}@0:{evidence_end}"
-        write_json(
-            payoff_output,
-            {
-                "schema": EVIDENCE_REVIEW_SCHEMA,
-                "verdict": "pass",
-                "coverage": checked_review_coverage(
-                    root,
-                    source,
-                    ("reader_gain", "cost", "promise_progress"),
-                    canonical_dimensions=("reader_gain", "cost", "promise_progress"),
-                    canonical_ref=f"20_outline/chapter_cards/ch{chapter_number:03d}.json",
-                ),
-                "findings": [
-                    {
-                        "code": code,
-                        "severity": "P3",
-                        "certainty": "confirmed",
-                        "diagnosis": diagnosis,
-                        "evidence_ids": [evidence_id],
-                        "reader_impact": impact,
-                        "repair_target": "No repair is required for this fixture evidence.",
-                        "preserve": ["current human revision", "chapter contract"],
-                    }
-                    for code, diagnosis, impact in (
-                        (
-                            "PAYOFF_DELIVERED",
-                            "The current human revision gives the reader a concrete changed condition.",
-                            "The chapter advances through an observable result rather than a restated plan.",
-                        ),
-                        (
-                            "COST_VISIBLE",
-                            "The current human revision preserves a visible cost for the chosen action.",
-                            "The gain does not erase pressure or consequence.",
-                        ),
-                        (
-                            "PROMISE_ADVANCED",
-                            "The current human revision turns the active promise into a next action.",
-                            "The promise progresses without being prematurely closed.",
-                        ),
-                    )
-                ],
-            },
-        )
-        control = validate_production_agent_result(
-            root,
-            load_manifest(root, payoff_task.manifest_file),
-            result_file=payoff_output,
-        )
-        if not control.ok:
-            raise AssertionError(control.normalization.errors)
-        payoff_validation = reader_payoff_validate(
-            config,
-            chapter_number=chapter_number,
-            file_path=payoff_output,
-        )
-        if not payoff_validation.passed:
-            raise AssertionError(payoff_validation.errors)
-        review_state = independent_review_status(config, chapter_number=chapter_number)
-    pacing = (review_state.get("stages") or {}).get("pacing") or {}
-    if pacing.get("required") and not pacing.get("complete"):
-        pacing_task = semantic_pacing_task(config, chapter_number=chapter_number)
-        pacing_output = Path(pacing_task.output_file)
-        payload = json.loads(Path(pacing_task.task_json).read_text(encoding="utf-8"))["output_schema"]
-        source = root / "40_manuscript" / "draft" / f"ch{chapter_number:03d}.md"
-        payload.update(
-            {
-                "verdict": "pass",
-                "coverage": checked_review_coverage(
-                    root,
-                    source,
-                    ("pressure_release", "beat_change", "aftermath"),
-                    canonical_ref=f"20_outline/chapter_cards/ch{chapter_number:03d}.json",
-                ),
-                "findings": [],
-            }
-        )
-        write_json(pacing_output, payload)
-        control = validate_production_agent_result(
-            root,
-            load_manifest(root, pacing_task.manifest_file),
-            result_file=pacing_output,
-        )
-        if not control.ok:
-            raise AssertionError(control.normalization.errors)
-        validation = semantic_pacing_validate(
-            config,
-            chapter_number=chapter_number,
-            file_path=pacing_output,
-        )
-        if not validation.ok:
-            raise AssertionError(validation.errors)
-        semantic_pacing_apply(config, chapter_number=chapter_number, file_path=pacing_output)
+    complete_required_quality_reviews(root, config, chapter_number=chapter_number)
     task = create_human_story_review_task(config, chapter_number=chapter_number)
     decision_path = root / task.template_file
     decision = json.loads(decision_path.read_text(encoding="utf-8"))
@@ -1277,32 +1199,6 @@ def build_outline_candidate(config, *, characters: list[dict] | None = None) -> 
                 "status": "planned",
             }
         ],
-    }
-
-
-def build_outline_extension_candidate(config, start: int, end: int) -> dict:
-    """Return one bounded rolling-outline window for integration tests."""
-
-    base = build_outline_candidate(config)["chapter_plan"][0]
-    return {
-        "schema": "outline_extension_candidate_v1",
-        "planning_window": {
-            "schema": "rolling_outline_window_v1",
-            "start_chapter": start,
-            "end_chapter": end,
-            "detailed_horizon": int(config.data["length"]["planning"]["detailed_horizon"]),
-            "refill_threshold": int(config.data["length"]["planning"]["refill_threshold"]),
-        },
-        "chapter_plan": [
-            {
-                **base,
-                "chapter_number": number,
-                "title": f"Rolling Evidence {number}",
-                "chapter_duty": f"Advance causal step {number} without rewriting prior plans.",
-            }
-            for number in range(start, end + 1)
-        ],
-        "foreshadowing_updates": [],
     }
 
 
@@ -1537,4 +1433,85 @@ def approve_author_voice_fixture(root: Path, config, *, chapter_number: int) -> 
         chapter_number=chapter_number,
         record_path=pair_file,
         approved_by="human",
+    )
+
+
+def persist_current_planning_fixture(root: Path, contract: dict, *, scope: dict | None = None) -> None:
+    """Materialize approved current-protocol dependencies for isolated context tests."""
+    from tests.test_v010_planning import planning_bundle
+
+    scope = scope or {}
+    chapter = contract["chapter_number"]
+    bundle = planning_bundle()
+    volume_id = scope.get("volume_id") or "vol001"
+    actors = scope.get("character_ids") or scope.get("featured_character_ids") or []
+    event_ids = scope.get("event_ids") or [f"node:ch{chapter:03d}"]
+    arc_ids = scope.get("arc_ids") or ([scope["arc_id"]] if scope.get("arc_id") else ["arc001"])
+    skeleton = dict(bundle["volume_skeletons"]["items"][0], volume_id=volume_id,
+                    chapter_range=[1, max(100, chapter)], order=1, status="approved")
+    volume = dict(bundle["active_volume_plan"], volume_id=volume_id, chapter_range=skeleton["chapter_range"],
+                  lifecycle="active", approved_by="human", event_graph=[],
+                  character_arcs=[{"id": arc_id, "node_refs": event_ids} for arc_id in arc_ids])
+    nodes = [{
+        "node_id": event, "node_kind": "state_change", "human_decision": {"decision": "approve"},
+        "actors": actors, "scene_id": "scene:fixture", "source_ids": scope.get("source_ids") or [],
+        "action_or_exchange": contract["observable_change"], "obligation_refs": contract["semantic_obligation_refs"],
+        "dependency_refs": [],
+    } for event in event_ids]
+    skeleton_path = root / "20_outline/volume_skeletons.json"
+    volume_path = root / "20_outline/volumes/vol001.json"
+    write_json(skeleton_path, {"schema": "volume_skeletons_v1", "items": [skeleton]})
+    write_json(volume_path, volume)
+    write_json(root / f"20_outline/plot_nodes/ch{chapter:03d}.json", {
+        "schema": "plot_node_table_v1", "chapter_number": chapter,
+        "table_id": contract["plot_node_table_ref"]["table_id"],
+        "candidate_sha256": contract["plot_node_table_ref"]["candidate_sha256"], "nodes": nodes,
+    })
+    write_json(root / "30_state/semantic_obligations.json", {
+        "schema": "semantic_obligation_ledger_v1", "items": [
+            dict(bundle["semantic_obligations"][0], obligation_id=ref,
+                 subject_refs=[], prior_state_refs=[], dependency_refs=[],
+                 scope={"chapter_numbers": [chapter]})
+            for ref in contract["semantic_obligation_refs"]
+        ],
+    })
+    promises = root / "30_state/reader_promise_ledger.json"
+    if not promises.is_file():
+        write_json(promises, {"schema": "reader_promise_ledger_v2", "items": []})
+    write_json(root / f"20_outline/chapter_contracts/ch{chapter:03d}.json", stamp_chapter_contract(contract))
+    write_json(root / "20_outline/rolling_window.json", bundle["rolling_window"])
+    write_json(root / "30_state/planning_basis.json", {
+        "schema": "planning_basis_v1", "source_files": [
+            {"path": path.relative_to(root).as_posix(), "sha256": sha256(path.read_bytes()).hexdigest()}
+            for path in (skeleton_path, volume_path)
+        ],
+    })
+    refresh_planning_fixture_basis(root)
+
+
+def refresh_planning_fixture_basis(root: Path) -> None:
+    """Test-only approval binder after an intentional fixture planning change."""
+    path = root / "30_state/planning_basis.json"
+    basis = json.loads(path.read_text(encoding="utf-8"))
+    source_paths = {item["path"] for item in basis["source_files"]}
+    source_paths.update(item.relative_to(root).as_posix()
+                        for directory in ("chapter_contracts", "plot_nodes")
+                        for item in (root / "20_outline" / directory).glob("ch*.json"))
+    source_paths.update({"20_outline/rolling_window.json", "30_state/semantic_obligations.json"})
+    basis["source_files"] = [{"path": relative, "sha256": sha256((root / relative).read_bytes()).hexdigest()}
+                             for relative in sorted(source_paths)]
+    write_json(path, basis)
+
+
+def compile_chapter_brief_fixture(root, config, chapter_number=1):
+    """Compile a real current author task for isolated review tests without RAG materialization."""
+    from longform_engine.orchestration.pipeline import write_writing_task
+
+    context = root / "50_workbench" / "fixture_context.md"
+    context.write_text("# Context\n\nUse the approved chapter contract and human intent.\n", encoding="utf-8")
+    return write_writing_task(
+        config, chapter_number=chapter_number, context_file=context,
+        chapter_contract_file=root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json",
+        beat_sheet_file=root / "20_outline" / "plot_nodes" / f"ch{chapter_number:03d}.json",
+        overwrite=True,
     )

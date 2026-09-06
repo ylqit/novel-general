@@ -56,7 +56,6 @@
     "arc_simulation": "longform_outline_architect",
     "book_design": "book_architect",
     "book_ideation": "creative_facilitator",
-    "chapter_direction": "chapter_story_editor",
     "chapter_semantic": "canonical_semantic_archivist",
     "design_semantic_compile": "canonical_semantic_archivist",
     "chapter_write": "chapter_author",
@@ -78,9 +77,6 @@
     "prose_naturalness": "prose_naturalness_editor",
     "prose_revision_semantic_review": "prose_revision_semantic_reviewer",
     "human_review_consult": "human_author_advisor",
-    "outline_design": "longform_outline_architect",
-    "outline_extension": "longform_outline_architect",
-    "outline_revision": "continuity_outline_editor",
     "pacing_review": "semantic_pacing_reviewer",
     "reader_payoff_review": "reader_payoff_reviewer",
     "repair": "repair_author",
@@ -113,11 +109,9 @@
     "canon_fidelity_reviewer": "isolated_review",
     "canonical_semantic_archivist": "isolated_archival",
     "chapter_author": "chapter_author",
-    "chapter_story_editor": "project_coordinator",
     "character_editor": "isolated_review",
     "character_performance_architect": "project_coordinator",
     "character_performance_reviewer": "isolated_review",
-    "continuity_outline_editor": "project_coordinator",
     "creative_facilitator": "project_coordinator",
     "expansion_writer": "isolated_revision",
     "fanfiction_architect": "project_coordinator",
@@ -383,45 +377,6 @@
       "finding_codes": []
     },
     {
-      "role_id": "chapter_story_editor",
-      "role_version": "3.0.0",
-      "prompt_path": "config/agent_roles/prompts/chapter_story_editor.md",
-      "output_mode": "design_document_v1",
-      "independence_mode": "author_context",
-      "allowed_overlay_fields": [
-        "genre_vocabulary",
-        "target_reader",
-        "platform_advisories",
-        "character_voice_contracts",
-        "content_exclusions"
-      ],
-      "role_family": "planning",
-      "always_sections": [
-        "core"
-      ],
-      "task_sections": [
-        "decision_model",
-        "workflow"
-      ],
-      "trigger_sections": {
-        "chapter_direction": "diagnostics",
-        "direction_causality_failure": "failure_modes"
-      },
-      "required_playbook_ids": [
-        "scene_causality",
-        "opening_and_mainline"
-      ],
-      "optional_playbook_ids": [
-        "character_agency",
-        "relationship_dynamics",
-        "foreshadow_and_mystery",
-        "serial_pacing"
-      ],
-      "max_active_playbooks": 3,
-      "review_dimensions": [],
-      "finding_codes": []
-    },
-    {
       "role_id": "character_editor",
       "role_version": "3.0.0",
       "prompt_path": "config/agent_roles/prompts/character_editor.md",
@@ -546,42 +501,6 @@
         "VOICE_COLLAPSE",
         "ARC_CHANGE_UNSUPPORTED"
       ]
-    },
-    {
-      "role_id": "continuity_outline_editor",
-      "role_version": "3.0.0",
-      "prompt_path": "config/agent_roles/prompts/continuity_outline_editor.md",
-      "output_mode": "design_document_v1",
-      "independence_mode": "author_context",
-      "allowed_overlay_fields": [
-        "genre_vocabulary",
-        "target_reader",
-        "platform_advisories",
-        "content_exclusions"
-      ],
-      "role_family": "planning",
-      "always_sections": [
-        "core"
-      ],
-      "task_sections": [
-        "decision_model",
-        "workflow"
-      ],
-      "trigger_sections": {
-        "outline_revision": "diagnostics",
-        "outline_dependency_conflict": "failure_modes"
-      },
-      "required_playbook_ids": [
-        "foreshadow_and_mystery",
-        "serial_pacing"
-      ],
-      "optional_playbook_ids": [
-        "character_agency",
-        "relationship_dynamics"
-      ],
-      "max_active_playbooks": 3,
-      "review_dimensions": [],
-      "finding_codes": []
     },
     {
       "role_id": "creative_facilitator",
@@ -966,8 +885,6 @@
       ],
       "trigger_sections": {
         "arc_simulation": "diagnostics",
-        "outline_design": "diagnostics",
-        "outline_extension": "diagnostics",
         "outline_window_failure": "failure_modes"
       },
       "required_playbook_ids": [

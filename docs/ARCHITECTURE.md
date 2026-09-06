@@ -71,11 +71,11 @@ Web 后端不接受浏览器提供的命令行或 Prompt，不保存 OpenAI API 
 
 项目内容统一使用 `semantic_document_v1`：中文正文是主要语义载体，只有会被 Canon、图谱或依赖传播使用的断言才拆成带证据 claim。事实、解释、假设和创作建议必须分层；开放中文 `document_type` 与 `extensions` 不要求修改 Schema。
 
-同人正式设计在项目原著基线 Canon 之后增加两个门禁：人工批准的 `同人故事发动机`，以及与路线生成会话隔离的 `同人路线独立复核`。故事发动机以 `oc_si_progression | canon_character_centered | hybrid` 区分设计问题与复核重点，必须说明主角与原著关系、首卷读者识别承诺、移除原著既有事件后仍能运转的原创主线，并继续提供唯一初始变量、独立长期目标、可持续阻力、原著人物自主性和原作事件结束后的故事来源。路线必须区分项目截止点、故事切入点和人物知识，为每项重大原著事件保存“基线 → 初始变量 → 处置 → 职责承担者 → 一阶影响 → 二阶影响 → 新问题”的稳定引用。人工决定同时绑定路线、复核、故事发动机和原著 Canon hash。
+同人正式设计在项目原著基线 Canon 之后增加两个门禁：人工批准的 `同人故事发动机`，以及与路线生成会话隔离的 `同人路线独立复核`。`compile_fanfiction_creative_requirements` 把六种连续性模式与 `oc_si_progression | canon_character_centered | hybrid` 三种叙事承担方式正交编译为创作、上下文与复核要求。共享要求是人物自主性、主角与原著关系、原著辨识度、本作新增阅读价值、持续叙事动力和责任分配。补完、前传与人物理解可以提供新增价值，不强迫改命、升级、唯一初始变量或原作事件结束后的独立原创主线。分歧路线必须提供有效因果，并允许多个有明确关系的初始条件。`event_disposition_applicability` 以状态、理由与当前路线 claim 引用说明事件处置是否适用；保留原著事件允许原有因果，不适用理由仍须独立审稿。创作合同版本由 CLI 固化；人工决定绑定路线、复核、故事发动机和原著 Canon hash，旧任务不自动升级。
 
 章节后处理只能提出 `已实现重大分歧` 声明。人工批准后，每个稳定触发身份独立、幂等地创建一次未来知识重估；三个不同重大分歧会形成三个任务，重复运行不会复制任务。批准结果以“仍可靠、部分可靠、已失效、反向误导”描述适用章节范围，并通过 live provenance pin 与不可变 archive 进入后续章节的精确依赖闭包。
 
-章节侧使用可重建、只接受当前版本的内部 `fanfiction_context_bundle_v2`。选择优先级固定为“全局故事承诺/显式不变量 → 章节显式引用 → 递归依赖闭包 → 当前来源/人物/事件/卷/篇章结构化范围 → 可选 RAG”；仅因章节号或卷范围适用不会把整份路线塞入上下文。v2 分离作者自然中文投影与带来源、稳定 claim/evidence ID 的精确审阅投影，并记录来源分区、命名冲突和逐分区预算。必需证据超预算时在任何产物写入前阻断，列出最大占用项与缩小范围建议；不得截断。该 bundle 与全部来源 hash 纳入 `chapter_story_brief_basis_v3` 和审阅 provenance。
+章节侧使用可重建、只接受当前版本的内部 `fanfiction_context_bundle_v3`。选择优先级固定为“全局故事承诺/显式不变量 → 章节显式引用 → 递归依赖闭包 → 当前来源/人物/事件/卷/篇章结构化范围 → 可选 RAG”；仅因章节号或卷范围适用不会把整份路线塞入上下文。v2 分离作者自然中文投影与带来源、稳定 claim/evidence ID 的精确审阅投影，并记录来源分区、命名冲突和逐分区预算。必需证据超预算时在任何产物写入前阻断，列出最大占用项与缩小范围建议；不得截断。该 bundle 与全部来源 hash 纳入 `chapter_story_brief_basis_v4` 和审阅 provenance。
 
 活动运行时检索域只包括 `source_evidence`、`project_canon` 和 `project_story`。同人案例与技法属于仓库角色配置、质量规则和抽象验收夹具，不是第四个运行时检索域，也不进入项目 Canon、RAG 或图谱。
 
@@ -112,10 +112,10 @@ Web 后端不接受浏览器提供的命令行或 Prompt，不保存 OpenAI API 
 写作链只有：
 
 ```text
-human_chapter_intent_v2
--> chapter_story_brief_basis_v3
+human_chapter_intent_v3
+-> chapter_story_brief_basis_v4
 -> chapter_story_brief_v5
--> chapter_writing_task_v7
+-> chapter_writing_task_v8
 -> chapter_story_brief_renderer_v5
 ```
 

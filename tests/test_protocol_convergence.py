@@ -46,6 +46,7 @@ from tests.project_fixtures import (
     approve_author_voice_fixture,
     approve_story_candidate,
     complete_editorial_reviews,
+    complete_required_quality_reviews,
     complete_unified_semantic_lifecycle,
     mark_project_ready,
     prepare_unified_semantic_bundle,
@@ -69,7 +70,7 @@ def test_repair_parent_child_commit_is_idempotent(tmp_path):
     assert context["schema"] == "repair_synthesis_context_v2"
     assert sum(int(item["characters"]) for item in manifest["io"]["inputs"]) < 18000
     projected = {item["path"]: item["projection"] for item in context["constraints"]}
-    assert "effective_quality_contract" not in projected["20_outline/chapter_cards/ch001.json"]
+    assert "effective_quality_contract" not in projected["20_outline/chapter_contracts/ch001.json"]
     assert "state_transitions" not in projected["30_state/tcs/ch001.json"]
 
     tasks = {item["task_id"]: item for item in list_manifests(root, chapter_number=1)}
@@ -356,6 +357,7 @@ def prepare_repair_round(tmp_path):
     draft.write_text("# Chapter 1\n\n治疗规则与救援动作冲突。\n", encoding="utf-8")
     write_blocking_gate(root, draft, chapter_number=1)
     complete_editorial_reviews(root, config, chapter_number=1)
+    complete_required_quality_reviews(root, config, chapter_number=1)
     synthesis = create_repair_synthesis_task(config, chapter_number=1)
     bundle = read_json(root / synthesis["review_bundle"])
     finding_id = bundle["blocking_finding_ids"][0]

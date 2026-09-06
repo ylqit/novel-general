@@ -83,7 +83,7 @@ Semantic RAG now has a graph-aware path in addition to chunk and memory retrieva
 
 - `10_bible/creative_brief.json`,
 - Writer Craft Brief,
-- current `human_chapter_intent_v2`,
+- current `human_chapter_intent_v3`,
 - prose-naturalness quality rules,
 - Style Memory,
 - TCS,

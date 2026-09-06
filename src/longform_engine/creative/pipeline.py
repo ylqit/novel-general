@@ -18,7 +18,7 @@ from longform_engine.agent_protocols import (
     validate_evidence_review,
     validate_review_evidence_for_sources,
 )
-from longform_engine.chapter_contract import ChapterContractError, load_verified_chapter_contract
+from longform_engine.story_brief import load_current_story_brief_binding
 from longform_engine.agent_tasks import (
     build_manifest,
     list_manifests,
@@ -30,6 +30,7 @@ from longform_engine.agent_tasks import (
     write_manifest,
 )
 from longform_engine.character_expression import character_expression_diagnostics
+from longform_engine.planning.context import ChapterPlanningContext, load_chapter_planning_context
 from longform_engine.config import ConfigDocument
 from longform_engine.lengths import compile_length_forecast
 from longform_engine.quality import (
@@ -729,7 +730,7 @@ def writer_craft_brief(
     config: ConfigDocument,
     *,
     chapter_number: int,
-    card: dict[str, Any],
+    planning: ChapterPlanningContext,
     beat: dict[str, Any],
     tcs: dict[str, Any],
     style_context: dict[str, Any],
@@ -744,7 +745,7 @@ def writer_craft_brief(
     return {
         "schema_version": 1,
         "chapter_number": chapter_number,
-        "reader_gain": card.get("reader_gain") or "deliver one local payoff without resolving the core longform promise",
+        "reader_gain": planning.contract["reader_value"],
         "emotion_progression": {
             "start": tcs.get("emotion_state", "current pressure"),
             "turn": "pressure becomes a visible choice or cost",
@@ -752,7 +753,7 @@ def writer_craft_brief(
         },
         "dialogue_strategy": [
             "make dialogue carry pressure, status, concealment, or relationship change",
-            "avoid characters explaining the chapter card to each other",
+            "avoid characters explaining the planning instructions to each other",
             "give important speakers distinct rhythm and intent",
         ],
         "scene_texture": [
@@ -760,12 +761,12 @@ def writer_craft_brief(
             "use detail only when it affects perception, judgment, action, cost, or relationship",
             "let action carry psychology when that is truer to the current character and scene",
         ],
-        "ending_state": card.get("ending_intent") or (
+        "ending_state": planning.contract["observable_change"] or (
             beat_endings[-1] if beat_endings else "leave a changed situation or emotional aftereffect"
         ),
-        "forbidden_reveals": as_list(card.get("forbidden_reveals")),
+        "forbidden_reveals": list(planning.contract["prohibited_drift"]),
         "natural_prose_priorities": [
-            "put the declared desire, resistance, choice, cost, gain, and protected outcome into the scene",
+            "honor the declared applicability of choice, cost and aftermath; show protected changes through their actual consequences",
             "preserve character-specific perception, strategy, emotion, and relationship pressure",
             "remove task or prompt residue before submission",
             "avoid repeating one narrative function when no new action, information, or consequence is added",
@@ -875,7 +876,7 @@ def expand_task(
         for item in gate_failures[:8]
         if isinstance(item, dict)
     ]
-    chapter_contract = root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json"
+    chapter_contract = root / "20_outline" / "chapter_contracts" / f"ch{chapter_number:03d}.json"
     next_command = (
         f"longform-engine creative expand-check project.yaml --chapter {chapter_number} "
         f"--file {relative_path(root, candidate_file)}"
@@ -1081,7 +1082,16 @@ def prose_naturalness_task(
     source_path = resolve_prose_naturalness_source(root, chapter_number, source)
     if not source_path.exists():
         raise ValueError(f"Prose-naturalness source not found: {source_path}")
+    planning = load_chapter_planning_context(root, chapter_number)
+    brief_binding = load_current_story_brief_binding(root, chapter_number)
     task_dir = root / "50_workbench" / "prose_naturalness_tasks"
+    context_file = task_dir / f"ch{chapter_number:03d}.naturalness.context.json"
+    write_json(context_file, {
+        "schema": "prose_naturalness_context_v2",
+        "planning_source_files": list(planning.source_files),
+        "story_brief_binding": brief_binding,
+    })
+    story_brief = root / brief_binding["story_brief_markdown_file"]
     candidate_dir = root / "50_workbench" / "repair_candidates"
     task_dir.mkdir(parents=True, exist_ok=True)
     candidate_dir.mkdir(parents=True, exist_ok=True)
@@ -1180,7 +1190,7 @@ def prose_naturalness_task(
         root,
         task_type="prose_naturalness",
         chapter_number=chapter_number,
-        input_files=[task_file, source_path, *optional_inputs],
+        input_files=[task_file, source_path, story_brief, *optional_inputs],
         allowed_output_paths=[candidate_file],
         output_schema=output_protocol_for_task("prose_naturalness"),
         validate_command=next_command,
@@ -1190,7 +1200,7 @@ def prose_naturalness_task(
         ),
         failure_next_command=f"longform-engine creative prose-naturalness-task project.yaml --chapter {chapter_number} --source {source}",
         context_policy={
-            "required_files": [task_file, source_path],
+            "required_files": [task_file, source_path, story_brief],
             "optional_files": optional_inputs,
             "compiled_brief": task_file,
             "selection_report": task_file,
@@ -1385,53 +1395,19 @@ def prose_naturalness_semantic_review_reasons(
     if bool(quality.get("semantic_review_boundaries", True)) and prose_naturalness_volume_boundary(config, chapter_number):
         reasons.append("volume_boundary")
     root = resolve_project_root(config)
-    card = load_json(root / "20_outline" / "chapter_cards" / f"ch{chapter_number:03d}.json", default={})
-    if isinstance(card, dict):
-        if bool(card.get("requires_semantic_review")):
-            reasons.append("chapter_card_requires_review")
-        event_types = {
-            normalize_key(str(item))
-            for field in ("event_types", "recommended_event_types", "risk_types")
-            for item in as_list(card.get(field))
-        }
-        if event_types.intersection(
-            {
-                "major_reveal",
-                "reveal",
-                "relationship_turn",
-                "relationship_change",
-                "ability_change",
-                "power_change",
-            }
-        ):
-            reasons.append("chapter_card_semantic_risk")
-        if as_list(card.get("protected_reveals")) or as_list(card.get("forbidden_reveals")):
-            reasons.append("protected_reveal_contract")
+    planning = load_chapter_planning_context(root, chapter_number)
+    if any(item["domain"] in {"knowledge", "relationship", "resource"} for item in planning.obligations):
+        reasons.append("approved_obligation_semantic_risk")
+    if planning.contract["protected_invariants"]:
+        reasons.append("protected_outcome_contract")
     return tuple(dict.fromkeys(reasons))
 
 
 def prose_naturalness_volume_boundary(config: ConfigDocument, chapter_number: int) -> bool:
     if chapter_number <= 0:
         return False
-    root = resolve_project_root(config)
-    plan = load_json(root / "20_outline" / "chapter_plan.json", default=[])
-    if not isinstance(plan, list):
-        return chapter_number == 1
-    rows = {
-        int(item.get("chapter_number") or 0): item
-        for item in plan
-        if isinstance(item, dict) and int(item.get("chapter_number") or 0) > 0
-    }
-    current = rows.get(chapter_number, {})
-    previous = rows.get(chapter_number - 1, {})
-    next_row = rows.get(chapter_number + 1, {})
-    current_volume = str(current.get("volume_id") or "")
-    return (
-        chapter_number == 1
-        or bool(current_volume and current_volume != str(previous.get("volume_id") or ""))
-        or bool(current_volume and next_row and current_volume != str(next_row.get("volume_id") or ""))
-        or str(current.get("phase") or "") in {"volume_climax", "aftermath"}
-    )
+    planning = load_chapter_planning_context(resolve_project_root(config), chapter_number)
+    return planning.is_volume_start or planning.is_volume_end
 
 
 def prose_naturalness_semantic_task(
@@ -1470,34 +1446,23 @@ def prose_naturalness_semantic_task(
     manifest_file = task_dir / f"ch{chapter_number:03d}.semantic_review.agent_task.json"
     output_file = task_dir / f"ch{chapter_number:03d}.semantic_review.json"
     contract_context = task_dir / f"ch{chapter_number:03d}.semantic_review.contract.json"
-    try:
-        chapter_contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
-    except ChapterContractError as exc:
-        raise ValueError(str(exc)) from exc
+    planning = load_chapter_planning_context(root, chapter_number)
+    chapter_contract, contract_hash = planning.contract, planning.contract_sha256
+    brief_binding = load_current_story_brief_binding(root, chapter_number)
     write_json(
         contract_context,
         {
-            "schema": "prose_naturalness_contract_context_v1",
+            "schema": "prose_naturalness_contract_context_v2",
+            "planning_source_files": list(planning.source_files),
+            "story_brief_binding": brief_binding,
             "chapter_contract": chapter_contract,
             "chapter_contract_hash": contract_hash,
             "allowed_canonical_refs": [
-                f"20_outline/chapter_cards/ch{chapter_number:03d}.json"
+                f"20_outline/chapter_contracts/ch{chapter_number:03d}.json"
             ],
         },
     )
-    context_candidates = [
-        contract_context,
-        root / "10_bible" / "style_profiles" / "current_style_profile.json",
-        root / "10_bible" / "style_bible.md",
-        root / "10_bible" / "characters.json",
-        root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json",
-    ]
-    selected_context: list[Path] = []
-    for path in context_candidates:
-        if path.exists() and path not in selected_context:
-            selected_context.append(path)
-        if len(selected_context) >= 3:
-            break
+    selected_context = [contract_context, root / brief_binding["story_brief_markdown_file"]]
     source_lane = prose_naturalness_source_lane(root, source)
     agent = str(
         config.data.get("writing", {}).get("agent", {}).get("default_agent")
@@ -1630,6 +1595,20 @@ def prose_naturalness_semantic_validate(
         allowed_statuses=("submitted", "validated"),
     )
     errors.extend(control_errors)
+    context = load_json(task_dir / f"ch{chapter_number:03d}.semantic_review.contract.json", default={})
+    try:
+        brief_binding = load_current_story_brief_binding(root, chapter_number)
+        planning = load_chapter_planning_context(root, chapter_number)
+        if (
+            context.get("schema") != "prose_naturalness_contract_context_v2"
+            or context.get("story_brief_binding") != brief_binding
+            or context.get("planning_source_files") != list(planning.source_files)
+        ):
+            errors.append("prose naturalness semantic context is stale; regenerate the task.")
+    except (OSError, ValueError):
+        brief_binding = {}
+        errors.append("prose naturalness semantic context cannot resolve the current planning and human intent.")
+
     if not isinstance(payload, dict):
         payload = {}
         errors.append("semantic review result must be a JSON object.")
@@ -1732,6 +1711,7 @@ def prose_naturalness_semantic_validate(
             "source_sha256": sha256_text(source_text) if source_text else "",
             "candidate_path": relative_path(root, candidate),
             "candidate_sha256": sha256_text(candidate_text) if candidate_text else "",
+            "story_brief_binding": brief_binding,
             "passed": passed,
             "need_human": need_human,
         },
@@ -1790,8 +1770,13 @@ def prose_naturalness_semantic_submission_status(
     )
     report = load_json(report_file, default={})
     provenance = report.get("provenance") if isinstance(report.get("provenance"), dict) else {}
+    try:
+        brief_binding = load_current_story_brief_binding(root, chapter_number)
+    except (OSError, ValueError):
+        return {"required": True, "passed": False, "reason": "story_brief_stale"}
     current = (
         isinstance(report, dict)
+        and provenance.get("story_brief_binding") == brief_binding
         and report.get("schema") == VALIDATION_REPORT_SCHEMA
         and report.get("ok") is True
         and provenance.get("passed") is True
@@ -2171,6 +2156,19 @@ def resolve_prose_naturalness_source(root: Path, chapter_number: int, source: st
 def prose_naturalness_source_for_candidate(
     root: Path, chapter_number: int, candidate: Path
 ) -> Path | None:
+    context_path = root / "50_workbench" / "prose_naturalness_tasks" / f"ch{chapter_number:03d}.naturalness.context.json"
+    if context_path.is_file():
+        try:
+            context = load_json(context_path, default={})
+            planning = load_chapter_planning_context(root, chapter_number)
+            if (
+                context.get("schema") != "prose_naturalness_context_v2"
+                or context.get("planning_source_files") != list(planning.source_files)
+                or context.get("story_brief_binding") != load_current_story_brief_binding(root, chapter_number)
+            ):
+                return None
+        except (OSError, ValueError):
+            return None
     candidate_rel = relative_path(root, candidate)
     for entry in reversed(list_manifests(root, chapter_number=chapter_number)):
         if entry.get("task_type") != "prose_naturalness" or candidate_rel != manifest_output(entry).get("path"):

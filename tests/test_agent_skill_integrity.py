@@ -180,7 +180,7 @@ def test_progressive_prompts_cover_current_protocols_without_pollution(tmp_path)
             "motivation": {
                 "status": "checked",
                 "evidence_ids": ["40_manuscript/draft/ch001.md@0:1"],
-                "canonical_refs": ["20_outline/chapter_cards/ch001.json"],
+                "canonical_refs": ["20_outline/chapter_contracts/ch001.json"],
             }
         },
         "findings": [
@@ -418,7 +418,7 @@ def test_release_guard_tracks_current_timeless_contracts():
         assert marker in guard
     for marker in (
         "semantic_document_v1",
-        "fanfiction_context_bundle_v2",
+        "fanfiction_context_bundle_v3",
         "chapter_contract_v5",
         "transaction v3",
     ):
@@ -430,7 +430,7 @@ def test_release_guard_tracks_current_timeless_contracts():
     ):
         assert marker in storage
     for marker in (
-        "human_chapter_intent_v2",
+        "human_chapter_intent_v3",
         "chapter_coedit_session_v2",
         "human_author_revision_v4",
         "human_story_review_v7",

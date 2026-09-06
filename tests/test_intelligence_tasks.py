@@ -38,7 +38,7 @@ def project_snapshot(root: Path) -> dict[str, bytes]:
         "10_bible/characters.json",
         "10_bible/relationships.json",
         "10_bible/world.md",
-        "20_outline/chapter_plan.json",
+        "20_outline/rolling_window.json",
         "30_state/novel_state.json",
         "30_state/story_graph.json",
     )

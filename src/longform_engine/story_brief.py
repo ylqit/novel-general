@@ -12,9 +12,9 @@ from longform_engine.agent_tasks import load_manifest, validate_manifest_strict
 from longform_engine.chapter_contract import load_verified_chapter_contract
 
 
-BASIS_SCHEMA = "chapter_story_brief_basis_v3"
+BASIS_SCHEMA = "chapter_story_brief_basis_v4"
 STORY_BRIEF_SCHEMA = "chapter_story_brief_v5"
-WRITING_TASK_SCHEMA = "chapter_writing_task_v7"
+WRITING_TASK_SCHEMA = "chapter_writing_task_v8"
 RENDERER_VERSION = "chapter_story_brief_renderer_v5"
 
 
@@ -44,6 +44,7 @@ def build_story_brief_basis(
     structure_history_projection: Any,
     quality_contract_projection: Any,
     source_files: Iterable[dict[str, str]],
+    author_voice_bank_sha256: str = "",
 ) -> dict[str, Any]:
     """Build the deterministic digest of every projection that can alter author Markdown."""
 
@@ -60,6 +61,7 @@ def build_story_brief_basis(
             "canonical_projection_sha256": json_sha256(canonical_projection),
             "character_voice_projection_sha256": json_sha256(character_voice_projection),
             "author_voice_projection_sha256": json_sha256(author_voice_projection),
+            "author_voice_bank_sha256": author_voice_bank_sha256,
             "structure_history_projection_sha256": json_sha256(structure_history_projection),
             "quality_contract_projection_sha256": json_sha256(quality_contract_projection),
         },
@@ -96,8 +98,8 @@ def load_current_story_brief_binding(root: Path, chapter_number: int) -> dict[st
     manifest = _read_json(paths["manifest"])
     if not isinstance(task, dict) or task.get("schema") != WRITING_TASK_SCHEMA:
         raise StoryBriefBindingError(
-            "story_brief_incompatible: v0.9 writing tasks are rejected; create a v0.10 project "
-            "and manually import authoritative Bible and outline material"
+            "story_brief_incompatible: rebuild the chapter writing task using the current approved "
+            "planning and human intent; existing tasks are not automatically upgraded"
         )
     if task.get("status") != "task_ready":
         raise StoryBriefBindingError("story_brief_stale: writing task status is not task_ready")
@@ -200,6 +202,9 @@ def load_current_story_brief_binding(root: Path, chapter_number: int) -> dict[st
         or components.get("human_chapter_intent_sha256") != intent["sha256"]
     ):
         raise StoryBriefBindingError("story_brief_human_chapter_intent_sha256_stale")
+    bank_hash = _file_sha256(root / "10_bible/style_profiles/author_voice_edit_pairs.json")
+    if components.get("author_voice_bank_sha256") != bank_hash:
+        raise StoryBriefBindingError("story_brief_author_voice_bank_stale")
     current_sources = {
         "rolling_window_sha256": root / "20_outline" / "rolling_window.json",
         "plot_node_table_sha256": root / "20_outline" / "plot_nodes" / f"ch{chapter_number:03d}.json",

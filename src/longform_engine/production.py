@@ -44,7 +44,7 @@ from longform_engine.editorial import (
     editorial_review_required_reasons,
     editorial_submit_review,
 )
-from longform_engine.editorial.pipeline import context_digest_hash, role_definition
+from longform_engine.editorial.pipeline import context_digest_hash, editorial_aggregate_is_current, role_definition
 from longform_engine.gates import (
     gate_check,
     semantic_pacing_task_is_current,
@@ -87,7 +87,7 @@ from longform_engine.storage.layout import (
     list_finalized_chapter_files,
     manuscript_chapter_path,
 )
-from longform_engine.chapter_contract import ChapterContractError, load_verified_chapter_contract
+from longform_engine.chapter_contract import ChapterContractError
 
 
 TASK_WAITING_FOR = {
@@ -95,11 +95,11 @@ TASK_WAITING_FOR = {
     "fanfiction_canon": "fanfiction_source_canon_json",
     "fanfiction_design": "fanfiction_design_markdown",
     "book_design": "book_design_markdown",
-    "outline_design": "outline_design_markdown",
+
     "arc_simulation": "human_approved_arc_causal_simulation_markdown",
-    "outline_extension": "outline_extension_markdown",
-    "chapter_direction": "human_selected_chapter_direction_markdown",
-    "outline_revision": "outline_revision_markdown",
+
+
+
     "research_synthesis": "research_synthesis_json",
     "style_analysis": "style_analysis_markdown",
     "adaptation_analysis": "adaptation_analysis_markdown",
@@ -123,10 +123,10 @@ TASK_PRIORITY = {
     "fanfiction_design": 3,
     "fanfiction_design_review": 4,
     "book_design": 5,
-    "outline_design": 6,
-    "outline_extension": 8,
-    "chapter_direction": 9,
-    "outline_revision": 5,
+
+
+
+
     "research_synthesis": 4,
     "style_analysis": 5,
     "adaptation_analysis": 6,
@@ -328,30 +328,19 @@ def v010_planning_action(config: ConfigDocument, root: Path) -> dict[str, Any] |
         else:
             firm_end = min(int(firm[1]), int(window.get("end_chapter") or firm[1]))
     required_firm_end = next_chapter + 2
-    volume_files = sorted((root / "20_outline" / "volumes").glob("vol*.json"))
-    active_volume = next(
-        (
-            payload
-            for payload in (read_json(path) for path in volume_files)
-            if isinstance(payload, dict) and payload.get("lifecycle") == "active"
-        ),
-        None,
-    )
-    if not isinstance(active_volume, dict):
-        reasons.append("active_volume_missing")
-    else:
-        chapter_range = active_volume.get("chapter_range")
-        if not isinstance(chapter_range, list) or len(chapter_range) != 2:
-            reasons.append("active_volume_range_invalid")
-        elif not int(chapter_range[0]) <= next_chapter <= int(chapter_range[1]):
+    from longform_engine.planning.context import load_chapter_planning_context
+    try:
+        planning = load_chapter_planning_context(root, next_chapter)
+        if planning.volume["lifecycle"] != "active":
             reasons.append("active_volume_rollover_required")
-        else:
-            required_firm_end = min(required_firm_end, int(chapter_range[1]))
+        required_firm_end = min(required_firm_end, planning.skeleton["chapter_range"][1])
+    except ChapterContractError as exc:
+        reasons.append(str(exc))
     if firm_end < required_firm_end:
         reasons.append("firm_contract_coverage_below_three")
     for chapter in range(next_chapter, required_firm_end + 1):
         try:
-            load_verified_chapter_contract(root, chapter)
+            load_chapter_planning_context(root, chapter)
         except ChapterContractError as exc:
             reasons.append(f"firm_contract_ch{chapter:03d}_invalid:{exc}")
     if not reasons:
@@ -779,10 +768,10 @@ LOOP_OUTPUT_VALIDATORS = {
     "semantic_review": "gate_semantic_validate",
     "book_ideation": "intelligence_validate",
     "book_design": "intelligence_validate",
-    "outline_design": "intelligence_validate",
-    "outline_extension": "intelligence_validate",
-    "chapter_direction": "intelligence_validate",
-    "outline_revision": "intelligence_validate",
+
+
+
+
     "research_synthesis": "intelligence_validate",
     "style_analysis": "intelligence_validate",
     "adaptation_analysis": "intelligence_validate",
@@ -1527,6 +1516,8 @@ def project_readiness_action(config: ConfigDocument, root: Path) -> dict[str, An
     readiness = assess_project_readiness(config)
     if readiness.ready:
         return None
+    if readiness.stage == "planning_refresh_required":
+        return v010_planning_action(config, root)
     compile_tasks = [
         task
         for task in list_manifests(root, chapter_number=0)
@@ -1889,6 +1880,10 @@ def chapter_workflow_action(config: ConfigDocument, root: Path) -> dict[str, Any
             chapter_number=chapter_number,
         ):
             return reader_payoff_action(config, root)
+        if stage_name == "semantic_review_pending":
+            from longform_engine.gates.pipeline import gate_review_context_is_current
+            if not gate_review_context_is_current(root, chapter_number, task_type="semantic_review"):
+                stage_tasks = []
         if stage_name == "pacing_pending":
             stage_tasks = [
                 task
@@ -2171,19 +2166,9 @@ def derive_chapter_stage(config: ConfigDocument, root: Path, chapter_number: int
             }
         if barrier_status == "redirect_required":
             human_stage = stages.get("human_story") if isinstance(stages.get("human_story"), dict) else {}
-            from longform_engine.human_story_review import human_story_review_status
-
-            human_status = human_story_review_status(config, chapter_number=chapter_number)
-            if human_status.get("redirect_scope") == "outline_revision":
-                command = (
-                    f"longform-engine intelligence task project.yaml --task-type outline_revision "
-                    f"--from-chapter {chapter_number} --to-chapter {chapter_number}"
-                )
-            else:
-                command = (
-                    f"longform-engine intelligence task project.yaml --task-type chapter_direction "
-                    f"--chapter {chapter_number}"
-                )
+            command = (
+                "longform-engine planning task project.yaml"
+            )
             return {
                 "stage": "human_story_redirect",
                 "sources": [str(human_stage.get("source") or relative_path(root, gate_path))],
@@ -2272,7 +2257,7 @@ def chapter_stage_task_types(stage: str) -> set[str]:
     """Return the only Agent roles allowed to compete within one evidence-derived chapter stage."""
 
     return {
-        "writing_pending": {"chapter_direction", "chapter_write"},
+        "writing_pending": {"chapter_write"},
         "pre_gate_candidate_review": {"prose_revision_semantic_review"},
         "gate_pending": set(),
         "reviews_pending": set(),
@@ -2584,25 +2569,6 @@ def submitted_candidate_matches_passed_gate(
     )
 
 
-def editorial_aggregate_is_current(
-    root: Path,
-    chapter_number: int,
-    aggregate: dict[str, Any],
-) -> bool:
-    """Bind v2+ editorial aggregates to the exact current chapter candidate."""
-
-    schema_version = int(aggregate.get("schema_version") or 1)
-    if schema_version < 2:
-        return True
-    source_hash = str(aggregate.get("source_sha256") or "")
-    if not source_hash:
-        return False
-    chapter = manuscript_chapter_path(root, chapter_number, lane="final")
-    if not chapter.is_file():
-        chapter = manuscript_chapter_path(root, chapter_number, lane="draft")
-    return chapter.is_file() and sha256(chapter.read_bytes()).hexdigest() == source_hash
-
-
 def editorial_task_is_current(root: Path, chapter_number: int, task: dict[str, Any]) -> bool:
     """Bind an editorial role task to its isolated context and current chapter bytes."""
 
@@ -2618,7 +2584,7 @@ def editorial_task_is_current(root: Path, chapter_number: int, task: dict[str, A
     if len(context_paths) != 1 or not context_paths[0].is_file():
         return False
     context = read_json(context_paths[0])
-    if not isinstance(context, dict) or context.get("schema") != "editorial_context_isolation_v1":
+    if not isinstance(context, dict) or context.get("schema") != "editorial_context_isolation_v2":
         return False
     provenance = [
         root / str(item)
@@ -2628,7 +2594,10 @@ def editorial_task_is_current(root: Path, chapter_number: int, task: dict[str, A
     draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     if draft not in provenance or any(not path.is_file() for path in provenance):
         return False
-    return context_digest_hash(root, provenance) == str(context.get("context_digest_hash") or "")
+    try:
+        return context_digest_hash(root, provenance, chapter_number=chapter_number) == str(context.get("context_digest_hash") or "")
+    except (OSError, ValueError):
+        return False
 
 
 def first_draft_without_gate_action(root: Path) -> dict[str, Any] | None:
@@ -2802,10 +2771,6 @@ def command_for_task_status(manifest: dict[str, Any], status: str) -> str:
         "book_ideation",
         "book_design",
         "character_expression_design",
-        "outline_design",
-        "outline_extension",
-        "chapter_direction",
-        "outline_revision",
         "style_analysis",
         "adaptation_analysis",
         "fanfiction_design",

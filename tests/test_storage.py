@@ -34,7 +34,7 @@ def test_init_project_creates_canonical_layout(tmp_path):
     for relative in [
         "00_governance/idea_seed.md",
         "10_bible/world.md",
-        "20_outline/chapter_cards",
+        "20_outline/chapter_contracts",
         "30_state/story_graph.json",
         "40_manuscript/final",
         "50_workbench/research_inbox",

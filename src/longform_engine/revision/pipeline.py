@@ -160,13 +160,6 @@ def chapter_transaction_states(config: ConfigDocument) -> list[ChapterTransactio
             add(as_int(payload.get("chapter_number")) or parse_chapter_number(path.parent), "reviewed", path)
 
     stale_chapters = stale_chapter_numbers(root)
-    for path in sorted((root / "20_outline" / "chapter_cards").glob("ch*.json")):
-        payload = read_json(path, default={})
-        number = parse_chapter_number(path)
-        if number and isinstance(payload, dict) and payload.get("status") == "stale":
-            stale_chapters.add(number)
-            add(number, "stale", path)
-
     for record in read_jsonl(root / "40_manuscript" / "chapter_meta.jsonl"):
         number = as_int(record.get("chapter_number") or record.get("chapter") or record.get("number"))
         status = str(record.get("status") or "").strip()
@@ -265,9 +258,8 @@ def rollback(config: ConfigDocument, *, to_chapter: int) -> RevisionRollbackResu
             target.parent.mkdir(parents=True, exist_ok=True)
             path.replace(target)
 
-        mark_future_chapter_cards_stale(root, to_chapter)
+        mark_future_chapter_contracts_stale(root, to_chapter)
         mark_future_writing_tasks_stale(root, to_chapter)
-        mark_chapter_plan_stale(root, to_chapter)
         rebuilt_quality_indexes = (
             *truncate_quality_history(root, to_chapter=to_chapter),
             *truncate_editorial_pattern_registry(root, to_chapter=to_chapter),
@@ -353,9 +345,9 @@ def _build_rollback_plan(config: ConfigDocument, *, to_chapter: int) -> _Rollbac
             moves.append((path, unique_path(detached_dir / source_group / path.name)))
             affected.add(number)
 
-    future_cards = [
+    future_contracts = [
         path
-        for path in sorted((root / "20_outline" / "chapter_cards").glob("ch*.json"))
+        for path in sorted((root / "20_outline" / "chapter_contracts").glob("ch*.json"))
         if (parse_chapter_number(path) or 0) > to_chapter
     ]
     future_tasks = [
@@ -363,7 +355,7 @@ def _build_rollback_plan(config: ConfigDocument, *, to_chapter: int) -> _Rollbac
         for path in sorted((root / "50_workbench" / "writing_tasks").glob("ch*.json"))
         if (parse_chapter_number(path) or 0) > to_chapter
     ]
-    affected.update(parse_chapter_number(path) or 0 for path in (*future_cards, *future_tasks))
+    affected.update(parse_chapter_number(path) or 0 for path in (*future_contracts, *future_tasks))
     affected.discard(0)
 
     vector_index = local_index_path(config)
@@ -371,9 +363,9 @@ def _build_rollback_plan(config: ConfigDocument, *, to_chapter: int) -> _Rollbac
     touched_paths = [
         *(source for source, _target in moves),
         detached_dir,
-        *future_cards,
+        *future_contracts,
         *future_tasks,
-        root / "20_outline" / "chapter_plan.json",
+        root / "30_state" / "stale_artifacts.json",
         root / "30_state" / "reward_ledger.jsonl",
         root / "30_state" / "quality" / "structure_history.jsonl",
         root / "50_workbench" / "editorial_patterns" / "registry.jsonl",
@@ -425,7 +417,7 @@ def write_rollback_impact_report(config: ConfigDocument) -> RollbackImpactResult
         "foreshadowing": existing_paths(root, ("20_outline/foreshadowing_ledger.json", "20_outline/outline_anchors.json")),
         "character_state": existing_paths(root, ("30_state/character_state.json", "10_bible/characters.json", "10_bible/relationships.json")),
         "summaries": [relative_path(root, path) for number in affected for path in summary_candidates(root, number) if path.exists()],
-        "chapter_cards": [relative_path(root, root / "20_outline" / "chapter_cards" / f"ch{number:03d}.json") for number in affected if (root / "20_outline" / "chapter_cards" / f"ch{number:03d}.json").exists()],
+        "chapter_contracts": [relative_path(root, root / "20_outline" / "chapter_contracts" / f"ch{number:03d}.json") for number in affected if (root / "20_outline" / "chapter_contracts" / f"ch{number:03d}.json").exists()],
         "graph_state": existing_paths(root, ("30_state/story_graph.json", "30_state/event_matrix.json", "30_state/timeline.json")),
     }
     payload = {
@@ -466,40 +458,24 @@ def first_detached_file_for_chapter(detached_dir: Path, chapter_number: int) -> 
     return None
 
 
-def mark_future_chapter_cards_stale(root: Path, to_chapter: int) -> set[int]:
+def mark_future_chapter_contracts_stale(root: Path, to_chapter: int) -> set[int]:
+    """Invalidate future contracts without altering approved contract bytes or hashes."""
+    path = root / "30_state/stale_artifacts.json"
+    registry = read_json(path, default={"schema": "stale_artifact_registry_v1", "items": []})
+    if not isinstance(registry, dict) or registry.get("schema") != "stale_artifact_registry_v1":
+        raise ValueError("stale artifact registry is incompatible")
+    items = {item["artifact_path"]: item for item in registry["items"]}
     affected: set[int] = set()
-    for path in sorted((root / "20_outline" / "chapter_cards").glob("ch*.json")):
-        number = parse_chapter_number(path)
+    for contract in sorted((root / "20_outline/chapter_contracts").glob("ch*.json")):
+        number = parse_chapter_number(contract)
         if number is None or number <= to_chapter:
             continue
-        payload = read_json(path, default={})
-        if not isinstance(payload, dict):
-            payload = {}
-        payload["chapter_number"] = payload.get("chapter_number") or number
-        payload["status"] = "stale"
-        payload["stale_reason"] = f"rollback_to_ch{to_chapter:03d}"
-        payload["stale_at"] = utc_now()
-        write_json(path, payload)
+        relative = relative_path(root, contract)
+        items[relative] = {"artifact_path": relative, "state": "stale", "chapter_number": number,
+                           "reason": f"rollback_to_ch{to_chapter:03d}; rebuild and approve planning"}
         affected.add(number)
+    write_json(path, {"schema": "stale_artifact_registry_v1", "items": list(items.values())})
     return affected
-
-
-def mark_chapter_plan_stale(root: Path, to_chapter: int) -> None:
-    path = root / "20_outline" / "chapter_plan.json"
-    payload = read_json(path, default=[])
-    if not isinstance(payload, list):
-        return
-    changed = False
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        number = as_int(item.get("chapter_number") or item.get("chapter"))
-        if number > to_chapter:
-            item["status"] = "stale"
-            item["stale_reason"] = f"rollback_to_ch{to_chapter:03d}"
-            changed = True
-    if changed:
-        write_json(path, payload)
 
 
 def mark_future_writing_tasks_stale(root: Path, to_chapter: int) -> set[int]:
@@ -523,10 +499,10 @@ def mark_future_writing_tasks_stale(root: Path, to_chapter: int) -> set[int]:
 
 def stale_paths(root: Path, stale_chapters: list[int]) -> dict[str, list[str]]:
     return {
-        "chapter_cards": [
-            relative_path(root, root / "20_outline" / "chapter_cards" / f"ch{number:03d}.json")
+        "chapter_contracts": [
+            relative_path(root, root / "20_outline" / "chapter_contracts" / f"ch{number:03d}.json")
             for number in stale_chapters
-            if (root / "20_outline" / "chapter_cards" / f"ch{number:03d}.json").exists()
+            if (root / "20_outline" / "chapter_contracts" / f"ch{number:03d}.json").exists()
         ],
         "writing_tasks": [
             relative_path(root, root / "50_workbench" / "writing_tasks" / f"ch{number:03d}.json")
@@ -555,7 +531,7 @@ def write_stale_markers(
         "to_chapter": to_chapter,
         "stale_chapters": stale_chapters,
         "indexes": [
-            "chapter_cards_after_rollback",
+            "chapter_contracts_after_rollback",
             "writing_tasks_after_rollback",
             "rag_chunks",
             "story_graph",
@@ -587,7 +563,7 @@ def update_rollback_state(root: Path, *, to_chapter: int, stale_chapters: list[i
     stale = set(str(item) for item in normalize_list(state.get("stale")))
     stale.update(
         {
-            "chapter_cards_after_rollback",
+            "chapter_contracts_after_rollback",
             "writing_tasks_after_rollback",
             "rag_chunks",
             "story_graph",
@@ -674,7 +650,7 @@ def format_rollback_impact_markdown(payload: dict[str, Any]) -> str:
         "foreshadowing": "Affected Foreshadowing",
         "character_state": "Affected Character State",
         "summaries": "Affected Chapter Summaries",
-        "chapter_cards": "Affected Chapter Cards",
+        "chapter_contracts": "Affected Chapter Contracts",
         "graph_state": "Affected Graph/Event State",
     }
     for key, title in labels.items():

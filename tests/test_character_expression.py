@@ -74,25 +74,9 @@ def expression_contract(character_id: str, perception: str, tactic: str, leak: s
 
 def test_chapter_work_order_compiles_character_packet_inside_existing_budget(tmp_path):
     config, root = seed_ready_project(tmp_path)
-    card_path = root / "20_outline" / "chapter_cards" / "ch001.json"
-    card = json.loads(card_path.read_text(encoding="utf-8"))
-    card.update(
-        {
-            "pov_character_id": "lead_ari",
-            "featured_character_ids": ["lead_ari", "ally_mira"],
-                "characterization_focus": ["lead_ari", "ally_mira"],
-            "scene_wants": {"lead_ari": "verify the seal", "ally_mira": "force access before closure"},
-            "opposing_wants": ["verification versus immediate access"],
-            "hidden_agenda": ["Ari recognizes his father's filing mark"],
-            "relationship_move": "move from procedural tolerance to bounded trust",
-            "irreversible_choice": "sign a joint evidence receipt",
-            "emotional_aftereffect": "both lose the option to deny cooperation",
-        }
-    )
-    card_path.write_text(json.dumps(card, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    intent_path = root / "20_outline" / "chapter_intents" / "ch001.json"
+    intent_path = root / "20_outline/chapter_intents/ch001.json"
     intent = json.loads(intent_path.read_text(encoding="utf-8"))
-    intent["chapter_contract_sha256"] = card["chapter_contract_hash"]
+    intent["expression_focus"] = {"pov_character_ids": ["lead_ari"], "scene_kind": "negotiation"}
     intent_path.write_text(json.dumps(intent, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     continue_write(config, chapter_number=1)
@@ -135,11 +119,8 @@ def test_character_packet_does_not_promote_historical_tcs_cast(tmp_path):
     packet = build_character_expression_packet(
         root,
         chapter_number=1,
-        card={
-            "chapter_number": 1,
-            "pov_character_id": "lead_ari",
-            "featured_character_ids": ["lead_ari", "ally_mira"],
-        },
+        character_ids=["lead_ari", "ally_mira"],
+        expression_focus={"pov_character_ids": ["lead_ari"], "scene_kind": ""},
         tcs={
             "current_characters": [
                 "lead_ari",
