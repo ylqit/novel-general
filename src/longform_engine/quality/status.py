@@ -13,6 +13,7 @@ from longform_engine.config import ConfigDocument
 from longform_engine.storage import resolve_project_root
 from longform_engine.storage.layout import list_finalized_chapter_files
 from longform_engine.story_brief import story_brief_status
+from longform_engine.execution_origin import execution_origin
 
 
 def quality_status(config: ConfigDocument) -> dict[str, Any]:
@@ -42,6 +43,7 @@ def quality_status(config: ConfigDocument) -> dict[str, Any]:
     brief_chapters = [story_brief_status(root, chapter) for chapter in story_brief_chapters]
     return {
         "schema": "quality_status_v3",
+        "execution_origin": execution_origin(root),
         "protocol_ready": bool(protocol.get("protocol_ready")),
         "author_acceptance_ready": author_ready,
         "author_acceptance": {
@@ -83,7 +85,7 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
     finalized = list_finalized_chapter_files(root)
     if not finalized:
         return False, ["no_finalized_chapters"], []
-    blockers: list[str] = []
+    blockers: list[str] = ["automated_rehearsal_is_not_human_acceptance"] if execution_origin(root)["simulated_human"] else []
     chapters: list[dict[str, Any]] = []
     for chapter_number, final_path in finalized:
         chapter_errors: list[str] = []
@@ -222,10 +224,13 @@ def author_acceptance_status(root: Path) -> tuple[bool, list[str], list[dict[str
             != revision_binding.get("story_brief_basis_sha256")
         ):
             chapter_errors.append("human_accept_story_brief_basis_mismatch")
+        if execution_origin(root)["simulated_human"]:
+            chapter_errors.append("simulated_human_steps_not_real_author_acceptance")
         record = {
             "chapter_number": chapter_number,
             "accepted": not chapter_errors,
-            "human_revision_current": revision_current,
+            "human_revision_current": revision_current and not execution_origin(root)["simulated_human"],
+            "revision_protocol_current": revision_current,
             "final_file": final_path.resolve().relative_to(root.resolve()).as_posix(),
             "decision_file": (
                 decision_path.resolve().relative_to(root.resolve()).as_posix()

@@ -233,7 +233,6 @@ from longform_engine.planning import (
     validate_human_node_decisions,
     validate_planning_bundle,
     validate_planning_semantic_application,
-    write_planning_generation_task,
     write_workbench_record,
 )
 from longform_engine.publication import (
@@ -553,6 +552,7 @@ def build_parser() -> argparse.ArgumentParser:
     intelligence_task.add_argument("--chapter", type=positive_int_arg, help="Chapter number for chapter-scoped intelligence tasks.")
     intelligence_task.add_argument("--from-chapter", type=int)
     intelligence_task.add_argument("--to-chapter", type=int)
+    intelligence_task.add_argument("--rebuild", action="store_true", help="Rebuild this ideation round while preserving previous attempts.")
     intelligence_task.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     intelligence_task.set_defaults(func=cmd_intelligence_task)
 
@@ -1533,6 +1533,11 @@ def build_parser() -> argparse.ArgumentParser:
         "review", help="Run the local human deep-review and advisory consultation workflow."
     )
     review_subparsers = review.add_subparsers(dest="review_command", required=True)
+    discussion_record = review_subparsers.add_parser("discussion-record", help="Record a validated source-bound Studio discussion.")
+    discussion_record.add_argument("config", nargs="?", default="project.yaml")
+    discussion_record.add_argument("--id", required=True)
+    discussion_record.add_argument("--json", action="store_true")
+    discussion_record.set_defaults(func=cmd_review_discussion_record)
 
     review_consult_task = review_subparsers.add_parser(
         "consult-task", help="Create one evidence-bound advisory turn for a selected draft span."
@@ -2276,7 +2281,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     planning_task.add_argument("config", nargs="?", default="project.yaml")
     planning_task.add_argument("--json", action="store_true")
-    planning_task.set_defaults(func=cmd_planning_task)
+    planning_task.add_argument("--rebuild", action="store_true", help="Supersede an invalid or stale current planning attempt.")
+    planning_task.set_defaults(func=cmd_planning_task, mutates_project=True)
+    for name in ("prepare-review", "review-validate"):
+        workbench_action = planning_subparsers.add_parser(name, help="Advance the current manifest-bound planning attempt.")
+        workbench_action.add_argument("config", nargs="?", default="project.yaml")
+        workbench_action.add_argument("--task-id", required=True)
+        workbench_action.add_argument("--json", action="store_true")
+        workbench_action.set_defaults(func=cmd_planning_workbench, workbench_action=name, mutates_project=True)
 
     planning_structural = planning_subparsers.add_parser(
         "structural-validate",
@@ -3468,6 +3480,7 @@ def cmd_intelligence_task(args: argparse.Namespace) -> int:
         chapter_number=getattr(args, "chapter", None),
         from_chapter=args.from_chapter,
         to_chapter=args.to_chapter,
+        rebuild=getattr(args, "rebuild", False),
     )
     payload = asdict(result)
     if args.json:
@@ -4679,6 +4692,14 @@ def cmd_review_consult_task(args: argparse.Namespace) -> int:
             print(f"Task: {result.task_file}")
         print(f"Response: {result.response_file}")
         print(f"Next command: {result.next_command}")
+    return 0
+
+
+def cmd_review_discussion_record(args: argparse.Namespace) -> int:
+    from longform_engine.studio_discussion import StudioDiscussion
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    result = StudioDiscussion(resolve_project_root(config)).record(args.id)
+    print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else "讨论已记录为非 canonical 创作建议。")
     return 0
 
 
@@ -6213,15 +6234,19 @@ def cmd_impact_analyze(args: argparse.Namespace) -> int:
 
 
 def cmd_planning_task(args: argparse.Namespace) -> int:
+    from longform_engine.planning.workbench import PlanningWorkbench
     config = load_project_config(Path(args.config).expanduser().resolve())
-    result = write_planning_generation_task(config)
-    if args.json:
-        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
-    else:
-        print("OK: formal planning generation task rendered")
-        print(f"Contract: {result.contract_file}")
-        print(f"Instruction: {result.instruction_file}")
-        print(f"Output: {result.output_file}")
+    result = PlanningWorkbench(config).create(rebuild=args.rebuild)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_planning_workbench(args: argparse.Namespace) -> int:
+    from longform_engine.planning.workbench import PlanningWorkbench
+    config = load_project_config(Path(args.config).expanduser().resolve())
+    workbench = PlanningWorkbench(config)
+    result = workbench.prepare_review(args.task_id) if args.workbench_action == "prepare-review" else workbench.validate_review(args.task_id)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 

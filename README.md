@@ -16,7 +16,7 @@
 
 ## 安装
 
-需要 Python 3.11 或更高版本。稳定安装固定到不可变源码 Tag：
+需要 Python 3.11 或更高版本。当前公开稳定版为 `v0.14.0`。稳定安装固定到不可变源码 Tag；工作区中的未发布修改不会随该 Tag 安装：
 
 ```powershell
 py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.14.0'
@@ -65,6 +65,8 @@ longform-engine review serve "D:\NovelProjects\my-book\project.yaml" --chapter 1
 ```
 
 Studio 可以创建原创、同人和跨作品同人项目，显示当前唯一安全动作，并在用户明确点击后调用本机已登录的 Codex CLI。浏览器关闭不会取消正在运行的 Agent Job；重新打开同一工作区后可以恢复任务状态。Codex 不可用时仍可查看项目、编辑人工材料和执行不依赖 Agent 的结构化操作。
+
+当前源码工作台提供作品书架、实际卷章目录、历史正文与归档版本阅读、资料和正文搜索，以及作品、卷、章节和选段讨论。阅读主题与工作台主题独立，字号、面板和阅读位置可以恢复。修改草稿保存在工作区材料中，来源变化和多标签页冲突会明确提示；采用候选与确认终稿继续使用原有批准流程。操作与验收范围见 [Web 工作台说明](docs/WEB_STUDIO.md) 和 [功能验收清单](docs/WEB_STUDIO_ACCEPTANCE.md)。
 
 ## 创建项目
 

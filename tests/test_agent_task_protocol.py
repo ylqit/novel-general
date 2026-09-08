@@ -635,6 +635,10 @@ def test_required_semantic_pacing_blocks_finalize_until_current_v2_result_is_app
     action = production_next(config)
     assert action["status"] == "ready_for_editorial_review"
     approve_story_candidate(root, config)
+    pacing_tasks = [item for item in list_manifests(root, chapter_number=1) if item["task_type"] == "pacing_review"]
+    assert len(pacing_tasks) == 2
+    assert all(item["status"] == "applied" for item in pacing_tasks)
+    assert any(item.get("supersedes_task_ids") for item in pacing_tasks)
     assert production_next(config)["status"] == "awaiting_finalize"
     finalized = finalize_chapter(config, chapter_number=1, approved_by="human")
     assert Path(finalized.final_file).is_file()
@@ -721,6 +725,28 @@ def test_strict_manifest_validation_rejects_unknown_type_and_canonical_output(tm
     assert canonical_result.ok is False
     assert any("canonical state" in item for item in canonical_result.errors)
     assert any("50_workbench/semantic_tasks/" in item for item in canonical_result.errors)
+
+
+def test_manifest_long_input_keeps_portable_binding_and_detects_changed_bytes(tmp_path):
+    from longform_engine.storage import atomic_write_text
+    seed_project(tmp_path)
+    root = tmp_path / "novel"
+    evidence = root / "50_workbench" / ("consultation-" * 5) / ("history-" * 8) / ("source-" * 8) / "evidence.md"
+    assert len(str(evidence.resolve())) > 260
+    atomic_write_text(evidence, "准确的长路径输入证据。\n")
+    manifest = build_manifest(
+        root, task_type="chapter_write", chapter_number=1, input_files=[evidence],
+        allowed_output_paths=["50_workbench/agent_drafts/ch001.codex.md"],
+        output_schema=PROSE_MARKDOWN_SCHEMA,
+        validate_command="longform-engine draft submit project.yaml --chapter 1 --file 50_workbench/agent_drafts/ch001.codex.md --agent codex",
+        apply_command="longform-engine chapter finalize project.yaml --chapter 1 --approved-by human",
+        failure_next_command="longform-engine production next project.yaml",
+    )
+    assert manifest["io"]["inputs"][0]["path"] == evidence.relative_to(root).as_posix()
+    validated = validate_manifest_strict(root, manifest)
+    assert validated.ok, validated.errors
+    atomic_write_text(evidence, "证据已经变化，不能继续使用旧工作单。\n")
+    assert any("SHA-256 drifted" in error for error in validate_manifest_strict(root, manifest).errors)
 
 
 def test_agent_task_lifecycle_supports_superseded_and_rolled_back_events(tmp_path):

@@ -322,6 +322,9 @@ def compact_artifacts(
     pinned_task_ids = retained_future_knowledge_task_ids(
         root, next_chapter=next_chapter
     )
+    discussion_task_ids, discussion_paths = retained_studio_discussion_artifacts(root)
+    pinned_task_ids = set(pinned_task_ids) | discussion_task_ids
+    pinned_paths = set(pinned_paths) | discussion_paths
     expired_archived_paths = expired_archived_future_knowledge_paths(
         root, next_chapter=next_chapter
     )
@@ -414,16 +417,37 @@ def compact_artifacts(
     )
 
 
+def retained_studio_discussion_artifacts(root: Path) -> tuple[set[str], set[Path]]:
+    """Keep ongoing author conversations outside setup/chapter compaction.
+
+    These records have a project lifetime. Their original questions, validated
+    answers and task events must remain readable after a chapter is archived.
+    """
+    directory = (root / "50_workbench/human_story_reviews/consultations/studio").resolve()
+    task_ids: set[str] = set()
+    paths: set[Path] = set()
+    for task in list_manifests(root):
+        if task.get("task_type") != "human_review_consult":
+            continue
+        output = (root / str(manifest_output(task).get("path") or "")).resolve()
+        if not output.is_relative_to(directory):
+            continue
+        task_ids.add(str(task["task_id"]))
+        paths.update(path.resolve() for path in output.parent.rglob("*") if path.is_file())
+    return task_ids, paths
+
+
 def compact_project_setup(config: ConfigDocument, *, dry_run: bool) -> ArtifactCompactResult:
     root = resolve_project_root(config)
-    projection = project_task_archive_projection(root)
+    discussion_task_ids, discussion_paths = retained_studio_discussion_artifacts(root)
+    projection = project_task_archive_projection(root, excluded_task_ids=discussion_task_ids)
     tasks = [item for item in projection.get("tasks", []) if isinstance(item, dict)]
     blockers = [
         f"project setup task is still active: {item.get('task_id')} ({item.get('status')})"
         for item in tasks
         if str(item.get("status") or "") not in {"invalid", "applied", "superseded", "rolled_back"}
     ]
-    candidates = project_setup_candidates(root, tasks)
+    candidates = [path for path in project_setup_candidates(root, tasks) if path.resolve() not in discussion_paths]
     candidate_bytes = sum(path.stat().st_size for path in candidates if path.is_file())
     unique = {file_hash(path): path.stat().st_size for path in candidates}
     archive = root / PROJECT_SETUP_ARCHIVE
@@ -434,7 +458,8 @@ def compact_project_setup(config: ConfigDocument, *, dry_run: bool) -> ArtifactC
         if blockers:
             raise ValueError("Cannot compact project setup: " + "; ".join(blockers))
         write_project_setup_archive(root, candidates, projection)
-        compact_project_task_projection(root, archive_ref=relative_path(root, archive))
+        compact_project_task_projection(root, archive_ref=relative_path(root, archive),
+                                        retained_task_ids=discussion_task_ids)
         for path in candidates:
             if path.is_file():
                 removed_bytes += path.stat().st_size

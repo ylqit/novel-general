@@ -20,10 +20,12 @@ from longform_engine.agent_protocols import (
 )
 from longform_engine.agent_tasks import (
     build_manifest,
+    load_manifest,
     list_manifests,
     mark_tasks_for_output,
     manifest_output,
     validate_current_task_result,
+    validate_manifest_strict,
     write_manifest,
 )
 from longform_engine.chapter_contract import load_verified_chapter_contract
@@ -122,6 +124,7 @@ class HumanAuthorRevisionValidateResult:
     errors: tuple[str, ...]
     semantic_task_file: str
     next_command: str
+    semantic_task_id: str = ""
 
 
 def create_human_author_revision_task(
@@ -301,6 +304,7 @@ def validate_human_author_revision(
     record = load_json(record_file)
     errors = human_author_revision_errors(root, task, candidate, record)
     semantic_task_file = ""
+    semantic_task_id = ""
     semantic_output = resolve_inside(
         root,
         str(task.get("semantic_output_file") or ""),
@@ -309,15 +313,15 @@ def validate_human_author_revision(
     stage = "record_invalid"
     semantic_hash = file_hash(semantic_output) if semantic_output.is_file() else ""
     if not errors:
+        result = create_human_revision_semantic_task(
+            config, chapter_number=chapter_number, task=task,
+            candidate=candidate, record_file=record_file,
+        )
+        semantic_output = root / result["output_file"]
+        semantic_hash = file_hash(semantic_output) if semantic_output.is_file() else ""
         if not semantic_output.is_file():
-            result = create_human_revision_semantic_task(
-                config,
-                chapter_number=chapter_number,
-                task=task,
-                candidate=candidate,
-                record_file=record_file,
-            )
             semantic_task_file = result["task_file"]
+            semantic_task_id = result["task_id"]
             errors.append("independent prose revision semantic review is missing")
             stage = "semantic_review_pending"
         else:
@@ -331,10 +335,16 @@ def validate_human_author_revision(
             errors.extend(semantic_errors)
             if semantic_errors:
                 stage = "semantic_review_invalid"
-            elif not isinstance(record, dict) or record.get("semantic_review_sha256") != semantic_hash:
-                errors.append("semantic_review_sha256 must bind the current validated semantic review")
-                stage = "semantic_review_hash_unbound"
+            elif not isinstance(record, dict):
+                errors.append("human revision record must be an object")
+                stage = "record_invalid"
             else:
+                # The reviewer validates the frozen human-authored content. Binding
+                # the verified result is mechanical control-plane work; it must not
+                # ask a person or the writing model to copy a file digest.
+                if record.get("semantic_review_sha256") != semantic_hash:
+                    record["semantic_review_sha256"] = semantic_hash
+                    write_json(record_file, record)
                 lock_errors = write_human_final_lock(
                     root,
                     task=task,
@@ -354,7 +364,10 @@ def validate_human_author_revision(
         f"longform-engine draft submit project.yaml --chapter {chapter_number} "
         f"--file {relative(root, candidate)} --agent human --overwrite"
         if ok
-        else semantic_next_command(root, chapter_number, semantic_output, candidate, record_file, stage)
+        else f"longform-engine agent-task brief project.yaml --task-id {semantic_task_id}"
+        if semantic_task_id
+        else (f"longform-engine chapter human-revision-validate project.yaml --chapter {chapter_number} "
+              f"--file {relative(root, candidate)} --record {relative(root, record_file)}")
     )
     report = {
         "schema": VALIDATION_SCHEMA,
@@ -389,6 +402,7 @@ def validate_human_author_revision(
         errors=tuple(errors),
         semantic_task_file=semantic_task_file,
         next_command=next_command,
+        semantic_task_id=semantic_task_id,
     )
 
 
@@ -402,18 +416,8 @@ def validate_human_author_revision_semantic_result(
 
     root = resolve_project_root(config)
     output = resolve_inside(root, semantic_output, expected_parent=revision_root(root))
-    task = next(
-        (
-            payload
-            for payload in (load_json(path) for path in output.parent.glob("*.task.json"))
-            if isinstance(payload, dict)
-            and payload.get("schema") == TASK_SCHEMA
-            and payload.get("chapter_number") == chapter_number
-            and str(payload.get("semantic_output_file") or "") == relative(root, output)
-        ),
-        None,
-    )
-    if not isinstance(task, dict):
+    task = current_task_record(root, chapter_number)
+    if str(task.get("semantic_output_file") or "") != relative(root, output):
         raise HumanAuthorRevisionError("semantic output is not owned by a current human revision task")
     return validate_human_author_revision(
         config,
@@ -435,26 +439,45 @@ def create_human_revision_semantic_task(
 
     root = resolve_project_root(config)
     source = resolve_inside(root, str(task["source_file"]), expected_parent=root / "50_workbench" / "candidate_blobs")
-    output = resolve_inside(root, str(task["semantic_output_file"]), expected_parent=revision_root(root))
-    record_snapshot = resolve_inside(
-        root,
-        str(task["semantic_record_file"]),
-        expected_parent=revision_root(root),
-    )
-    token = revision_token(
+    base_token = revision_token(
         str(task["source_candidate_sha256"]),
         str(task["story_brief_basis_sha256"]),
     )
-    directory = output.parent
-    work_order = directory / f"{token}.semantic_review.md"
-    manifest_file = directory / f"{token}.semantic_review.agent_task.json"
-    contract_file = directory / f"{token}.semantic_contract.json"
-    contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
-    story_brief = load_current_story_brief_binding(root, chapter_number)
     record_payload = load_json(record_file)
     if not isinstance(record_payload, dict):
         raise HumanAuthorRevisionError("human revision record is missing or invalid")
-    write_json(record_snapshot, {**record_payload, "semantic_review_sha256": ""})
+    frozen_record = {**record_payload, "semantic_review_sha256": ""}
+    pair_hash = sha256(candidate.read_bytes() + b"\0" + json.dumps(
+        frozen_record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")).hexdigest()
+    # The digest already includes the source and basis through the frozen record.
+    # Repeating those prefixes makes ordinary Windows workspaces exceed MAX_PATH.
+    token = pair_hash[:24]
+    directory = revision_root(root) / f"ch{chapter_number:03d}"
+    output = directory / f"{token}.semantic_review.json"
+    record_snapshot = directory / f"{token}.semantic_record.json"
+    work_order = directory / f"{token}.semantic_review.md"
+    manifest_file = directory / f"{token}.semantic_review.agent_task.json"
+    contract_file = directory / f"{token}.semantic_contract.json"
+    task_id = f"{SEMANTIC_TASK_TYPE}:ch{chapter_number:03d}:human_author_revision:{token}:v5"
+    result = {
+        "task_id": task_id,
+        "task_file": relative(root, work_order),
+        "manifest_file": relative(root, manifest_file),
+        "output_file": relative(root, output),
+        "next_command": f"longform-engine agent-task brief project.yaml --task-id {task_id}",
+    }
+    if manifest_file.is_file():
+        existing = load_manifest(root, manifest_file)
+        validation = validate_manifest_strict(root, existing)
+        if not validation.ok or existing.get("status") in {"stale", "superseded", "cancelled"}:
+            raise HumanAuthorRevisionError("human revision review task is stale: " + "; ".join(validation.errors))
+        if str(task["semantic_output_file"]) != result["output_file"]:
+            raise HumanAuthorRevisionError("human revision pair was superseded; create a new revision decision")
+        return result
+    contract, contract_hash = load_verified_chapter_contract(root, chapter_number)
+    story_brief = load_current_story_brief_binding(root, chapter_number)
+    write_json(record_snapshot, frozen_record)
     write_json(
         contract_file,
         {
@@ -499,7 +522,6 @@ def create_human_revision_semantic_task(
             ]
         ),
     )
-    task_id = f"{SEMANTIC_TASK_TYPE}:ch{chapter_number:03d}:human_author_revision:{token}:v5"
     manifest = build_manifest(
         root,
         task_type=SEMANTIC_TASK_TYPE,
@@ -525,13 +547,14 @@ def create_human_revision_semantic_task(
             "selection_report": work_order,
         },
     )
-    write_manifest(root, manifest, manifest_file)
-    return {
-        "task_file": relative(root, work_order),
-        "manifest_file": relative(root, manifest_file),
-        "output_file": relative(root, output),
-        "next_command": f"longform-engine agent-task brief project.yaml --task-id {task_id}",
-    }
+    previous_output = str(task["semantic_output_file"])
+    replaced = [str(item["task_id"]) for item in list_manifests(root, chapter_number=chapter_number)
+                if str(manifest_output(item).get("path") or "") == previous_output
+                and item.get("status") not in {"applied", "rolled_back", "superseded"}]
+    write_manifest(root, manifest, manifest_file, supersedes_task_ids=replaced)
+    task.update(semantic_output_file=relative(root, output), semantic_record_file=relative(root, record_snapshot))
+    write_json(directory / f"{base_token}.task.json", task)
+    return result
 
 
 def validate_human_revision_semantic_output(
@@ -1145,36 +1168,6 @@ def revision_token(source_sha256: str, story_brief_basis_sha256: str) -> str:
     """Identify a revision workspace by both source prose and its authoring basis."""
 
     return f"{source_sha256[:12]}.{story_brief_basis_sha256[:12]}"
-
-
-def semantic_next_command(
-    root: Path,
-    chapter_number: int,
-    semantic_output: Path,
-    candidate: Path,
-    record: Path,
-    stage: str,
-) -> str:
-    if stage == "semantic_review_pending":
-        task = next(
-            (
-                payload
-                for payload in (
-                    load_json(path)
-                    for path in semantic_output.parent.glob("*.semantic_review.agent_task.json")
-                )
-                if isinstance(payload, dict)
-                and payload.get("task_type") == SEMANTIC_TASK_TYPE
-                and str(((payload.get("io") or {}).get("output") or {}).get("path") or "") == relative(root, semantic_output)
-            ),
-            None,
-        )
-        if isinstance(task, dict):
-            return f"longform-engine agent-task brief project.yaml --task-id {task['task_id']}"
-    return (
-        f"longform-engine chapter human-revision-validate project.yaml --chapter {chapter_number} "
-        f"--file {relative(root, candidate)} --record {relative(root, record)}"
-    )
 
 
 def validate_span(value: Any, text: str, label: str, errors: list[str]) -> str | None:

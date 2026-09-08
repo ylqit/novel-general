@@ -198,7 +198,7 @@ class LoopbackRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header(
             "Content-Security-Policy",
-            f"default-src 'self'; script-src 'nonce-{self.server.csp_nonce}'; "
+            f"default-src 'self'; script-src 'self' 'nonce-{self.server.csp_nonce}'; "
             f"style-src 'nonce-{self.server.csp_nonce}'; "
             "connect-src 'self'; img-src 'self' data:; media-src 'self'; "
             "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; "

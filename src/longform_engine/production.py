@@ -48,8 +48,10 @@ from longform_engine.editorial.pipeline import context_digest_hash, editorial_ag
 from longform_engine.gates import (
     gate_check,
     semantic_pacing_task_is_current,
+    semantic_pacing_task,
     semantic_pacing_validate,
     semantic_review_validate,
+    semantic_review_task,
 )
 from longform_engine.human_author_revision import validate_human_author_revision_semantic_result
 from longform_engine.human_chapter_intent import human_chapter_intent_status
@@ -88,6 +90,7 @@ from longform_engine.storage.layout import (
     manuscript_chapter_path,
 )
 from longform_engine.chapter_contract import ChapterContractError
+from longform_engine.story_brief import story_brief_status
 
 
 TASK_WAITING_FOR = {
@@ -699,6 +702,9 @@ def loop_decision(root: Path, action: dict[str, Any], *, no_apply: bool) -> dict
             "action": "editorial_review",
             "command": action.get("next_command"),
         }
+    if status in {"ready_for_semantic_review_task", "ready_for_pacing_review"}:
+        return {"kind": "execute", "action": "semantic_review_task" if status == "ready_for_semantic_review_task" else "semantic_pacing_task",
+                "command": action.get("next_command")}
     if status == "awaiting_gate":
         return {
             "kind": "execute",
@@ -837,6 +843,10 @@ def execute_loop_decision(
         )
     if command == "gate_check":
         return serialize_loop_result(root, gate_check(config, chapter_number=chapter_number))
+    if command == "semantic_review_task":
+        return serialize_loop_result(root, semantic_review_task(config, chapter_number=chapter_number))
+    if command == "semantic_pacing_task":
+        return serialize_loop_result(root, semantic_pacing_task(config, chapter_number=chapter_number))
     if command == "draft_submit_existing_agent_output":
         source = require_loop_output_path(output_path)
         agent = agent_from_output_path(source)
@@ -1743,6 +1753,9 @@ def first_active_agent_task(root: Path) -> dict[str, Any] | None:
         if str(task.get("status") or "")
         in {"awaiting_agent", "submitted", "validated", "approved", "invalid"}
         and str((task.get("scope") or {}).get("kind") or "") != "chapter"
+        # Optional discussions remain actionable in their own panel. An abandoned
+        # question must not become a mandatory book preparation step.
+        and str(task.get("task_type") or "") != "human_review_consult"
     ]
     if not tasks:
         return None
@@ -2622,7 +2635,7 @@ def first_draft_without_gate_action(root: Path) -> dict[str, Any] | None:
 
 def first_writing_task_action(root: Path) -> dict[str, Any] | None:
     for path in sorted((root / "50_workbench" / "writing_tasks").glob("ch*.json")):
-        if path.name.endswith(".agent_task.json"):
+        if not re.fullmatch(r"ch[0-9]+\.json", path.name):
             continue
         chapter_number = chapter_from_name(path.name)
         if chapter_number <= 0:
@@ -2632,6 +2645,17 @@ def first_writing_task_action(root: Path) -> dict[str, Any] | None:
             or existing_manuscript_chapter_path(root, chapter_number, lane="draft") is not None
         ):
             continue
+        binding = story_brief_status(root, chapter_number)
+        if binding["status"] != "current":
+            command = f"longform-engine continue-write project.yaml --chapter {chapter_number}"
+            return base_action(
+                status="ready_for_continue_write", chapter_number=chapter_number,
+                blocked_by="writing_task_stale", waiting_for="cli", task_type="chapter_write",
+                next_command=command, failure_next_command=command,
+                human_summary="本章写作依据已失效，需要按当前批准规划与人工意图重建工作单。",
+                sources=[relative_path(root, path)],
+                need_human_reasons=[str(binding.get("reason") or "story_brief_stale")],
+            )
         payload = read_json(path)
         task_md = path.with_suffix(".md")
         draft_path = root / "50_workbench" / "agent_drafts" / f"ch{chapter_number:03d}.codex.md"

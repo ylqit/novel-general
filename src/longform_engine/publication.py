@@ -453,8 +453,10 @@ def creation_provenance_manifest(
                 "voice_pair_ids": voice_pair_ids(root, chapter_number, file_hash(final_file)),
             }
         )
+    from longform_engine.execution_origin import execution_origin
     payload = {
         "schema": "creation_provenance_manifest_v1",
+        "execution_origin": execution_origin(root),
         "target": target,
         "production_method": "agent_candidate_then_evidence_bound_complete_human_revision_and_review",
         "chapters": chapters,
@@ -574,6 +576,9 @@ def export_publication_bundle(
     except ValueError as exc:
         raise ValueError("Publication bundle output must stay under 80_exports/.") from exc
     body = [f"# {str(config.data.get('project', {}).get('title') or 'Untitled')}", ""]
+    from longform_engine.execution_origin import execution_origin
+    if execution_origin(root)["simulated_human"]:
+        body.extend(["> 自动演练材料：人工步骤由测试流程模拟，未通过真实人工文学或平台发布验收。", ""])
     for chapter in chapters:
         body.extend([chapter.read_text(encoding="utf-8").lstrip("\ufeff").rstrip(), "", ""])
     atomic_write_text(bundle_file, "\n".join(body).rstrip() + "\n")

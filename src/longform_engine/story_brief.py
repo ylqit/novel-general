@@ -15,7 +15,7 @@ from longform_engine.chapter_contract import load_verified_chapter_contract
 BASIS_SCHEMA = "chapter_story_brief_basis_v4"
 STORY_BRIEF_SCHEMA = "chapter_story_brief_v5"
 WRITING_TASK_SCHEMA = "chapter_writing_task_v8"
-RENDERER_VERSION = "chapter_story_brief_renderer_v5"
+RENDERER_VERSION = "chapter_story_brief_renderer_v5.1"
 
 
 class StoryBriefBindingError(ValueError):

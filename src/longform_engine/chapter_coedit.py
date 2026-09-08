@@ -25,6 +25,7 @@ from longform_engine.agent_tasks import (
 from longform_engine.config import ConfigDocument
 from longform_engine.human_chapter_intent import require_current_human_chapter_intent
 from longform_engine.storage import atomic_write_text, resolve_project_root
+from longform_engine.storage.project import native_filesystem_path
 from longform_engine.storage.layout import manuscript_chapter_path
 from longform_engine.story_brief import load_current_story_brief_binding
 
@@ -139,6 +140,7 @@ def create_chapter_coedit_turn(
         f"{session['session_id']}:{token}:v1"
     )
     request_file = session_dir / f"{token}.request.json"
+    history_file = session_dir / f"{token}.history.json"
     task_file = session_dir / f"{token}.task.md"
     response_file = session_dir / f"{token}.response.md"
     manifest_file = session_dir / f"{token}.manifest.json"
@@ -172,6 +174,29 @@ def create_chapter_coedit_turn(
         "status": "awaiting_advisor",
         "created_at": utc_now(),
     }
+    history = []
+    for prior_relative in turns:
+        prior_path = resolve_inside(root, prior_relative, session_dir)
+        prior = load_json(prior_path)
+        if not isinstance(prior, dict):
+            raise ChapterCoeditError("consultation history is incomplete")
+        if prior.get("status") not in {"advisor_recorded", "rewrite_validated"}:
+            continue
+        if prior.get("candidate_sha256") != candidate_hash:
+            continue
+        prior_response = resolve_inside(root, str(prior["response_file"]), session_dir)
+        prior_request = resolve_inside(root, str(prior["request_file"]), session_dir)
+        if not prior_response.is_file() or file_hash(prior_response) != prior.get("response_sha256"):
+            raise ChapterCoeditError("consultation history response hash changed")
+        question_record = load_json(prior_request)
+        if not isinstance(question_record, dict):
+            raise ChapterCoeditError("consultation history request is incomplete")
+        history.append({"turn_number": prior["turn_number"], "question": question_record["question"],
+                        "selection": question_record["selection"],
+                        "response": prior_response.read_text(encoding="utf-8"),
+                        "response_sha256": prior["response_sha256"], "selection_file": prior.get("selection_file", "")})
+    write_json(history_file, {"schema": "chapter_coedit_history_v1", "session_id": session["session_id"],
+                              "candidate_sha256": candidate_hash, "turns": history})
     write_json(request_file, request)
     write_json(turn_file, turn)
     atomic_write_text(
@@ -195,6 +220,7 @@ def create_chapter_coedit_turn(
             root / str(story_brief["story_brief_markdown_file"]),
             root / str(intent["path"]),
             request_file,
+            history_file,
         ),
         allowed_output_paths=(response_file,),
         output_schema="design_document_v1",
@@ -213,7 +239,7 @@ def create_chapter_coedit_turn(
         canonical_targets=(),
         requires_human_apply=False,
         context_policy={
-            "required_files": (task_file, candidate, request_file),
+            "required_files": (task_file, candidate, request_file, history_file),
             "compiled_brief": task_file,
             "selection_report": request_file,
             "quality_focus": ("human_intent", "reader_effect", "preservation"),
@@ -265,6 +291,7 @@ def record_chapter_coedit_response(
         raise ChapterCoeditError("coedit advisor response must provide 2-3 stable OPTION-* headings")
     session_file, session, turn_file, turn = session_turn_for_response(root, response)
     ensure_session_current(root, session)
+    ensure_turn_candidate_current(root, session, turn)
     validation = load_json(response.with_suffix(".validation.json"))
     if (
         not isinstance(validation, dict)
@@ -346,8 +373,9 @@ def validate_chapter_coedit_response(
     if not 2 <= len(option_ids) <= 3:
         errors.append("coedit advisor response must provide 2-3 stable OPTION-* headings")
     try:
-        _session_file, session, _turn_file, _turn = session_turn_for_response(root, response)
+        _session_file, session, _turn_file, turn = session_turn_for_response(root, response)
         ensure_session_current(root, session)
+        ensure_turn_candidate_current(root, session, turn)
     except ChapterCoeditError as exc:
         errors.append(str(exc))
     errors = list(dict.fromkeys(errors))
@@ -402,6 +430,7 @@ def create_chapter_coedit_rewrite_task(
     session_file, session = load_session_by_id(root, chapter_number, session_id)
     ensure_session_current(root, session)
     turn_file, turn = load_turn(root, session, turn_number)
+    ensure_turn_candidate_current(root, session, turn)
     if turn.get("status") != "advisor_recorded":
         raise ChapterCoeditError("coedit turn must have one validated advisor response")
     option_id = str(option_id or "").strip()
@@ -409,6 +438,8 @@ def create_chapter_coedit_rewrite_task(
         raise ChapterCoeditError("option_id must reference one recorded advisor option")
     source = root / str(turn["candidate_file"])
     response = root / str(turn["response_file"])
+    if file_hash(response) != turn.get("response_sha256"):
+        raise ChapterCoeditError("coedit response changed after it was recorded")
     story_brief = load_current_story_brief_binding(root, chapter_number)
     intent = require_current_human_chapter_intent(root, chapter_number)
     selection_file = turn_file.with_name(f"turn{turn_number:02d}.selection.json")
@@ -523,6 +554,9 @@ def validate_chapter_coedit_candidate(
     file_path: str | Path,
 ) -> ChapterCoeditCandidateValidateResult:
     root = resolve_project_root(config)
+    # A job may finish after the human has entered the final revision phase.
+    # Its late output must not replace the consultation candidate or provenance.
+    assert_coedit_allowed(root, chapter_number)
     candidate = resolve_inside(root, file_path, root / "50_workbench" / "agent_drafts")
     manifest = manifest_for_output(
         root,
@@ -530,12 +564,14 @@ def validate_chapter_coedit_candidate(
         task_type=TASK_TYPE,
         output_path=candidate,
     )
+    session_file, session, turn_file, turn = session_turn_for_rewrite(root, manifest)
+    ensure_session_current(root, session)
+    if file_hash(candidate) != session.get("current_candidate_sha256"):
+        ensure_turn_candidate_current(root, session, turn)
     errors: list[str] = []
     control = validate_production_agent_result(root, manifest, result_file=candidate)
     if not control.ok:
         errors.extend(control.normalization.errors)
-    session_file, session, turn_file, turn = session_turn_for_rewrite(root, manifest)
-    ensure_session_current(root, session)
     source = root / str(turn["candidate_file"])
     errors.extend(coedit_candidate_errors(source, candidate))
     report_file = candidate.with_suffix(".coedit.validation.json")
@@ -781,15 +817,20 @@ def manifest_for_output(
 
 
 def assert_coedit_allowed(root: Path, chapter_number: int) -> None:
+    from longform_engine.human_author_revision import TASK_SCHEMA as HUMAN_REVISION_TASK_SCHEMA
+
     draft = manuscript_chapter_path(root, chapter_number, lane="draft")
     draft_hash = file_hash(draft)
+    submission = load_json(draft.with_suffix(".submission.json"))
+    if isinstance(submission, dict) and isinstance(submission.get("human_author_revision"), dict):
+        raise ChapterCoeditError("human-final phase has started; submitted human prose permits read-only advice")
     for task_file in (root / "50_workbench" / "human_author_revisions" / f"ch{chapter_number:03d}").glob(
         "*.task.json"
     ):
         task = load_json(task_file)
         if (
             isinstance(task, dict)
-            and task.get("schema") == "human_author_revision_task_v3"
+            and task.get("schema") == HUMAN_REVISION_TASK_SCHEMA
             and task.get("source_candidate_sha256") == draft_hash
         ):
             raise ChapterCoeditError(
@@ -834,6 +875,14 @@ def session_is_stale(root: Path, session: dict[str, Any]) -> bool:
     )
 
 
+def ensure_turn_candidate_current(root: Path, session: dict[str, Any], turn: dict[str, Any]) -> None:
+    """A recorded answer applies only to the exact candidate it discussed."""
+    candidate = resolve_inside(root, str(turn.get("candidate_file") or ""), root)
+    expected = str(turn.get("candidate_sha256") or "")
+    if not expected or expected != session.get("current_candidate_sha256") or file_hash(candidate) != expected:
+        raise ChapterCoeditError("coedit advice is stale for the current candidate; create a new consultation")
+
+
 def coedit_candidate_errors(source: Path, candidate: Path) -> list[str]:
     errors: list[str] = []
     if not candidate.is_file() or not candidate.read_text(encoding="utf-8").strip():
@@ -850,6 +899,8 @@ def coedit_candidate_errors(source: Path, candidate: Path) -> list[str]:
 
 
 def render_advisor_task(**values: Any) -> str:
+    from longform_engine.agent_protocols import DESIGN_REQUIRED_HEADINGS
+
     return "\n".join(
         [
             f"# ch{values['chapter_number']:03d} 人类主导协作顾问",
@@ -860,7 +911,8 @@ def render_advisor_task(**values: Any) -> str:
             f"- Story Brief：`{values['story_brief']}`",
             f"- 圈选与问题：`{values['request_file']}`",
             "",
-            "使用 design_document_v1 的既有五个必需章节。",
+            "使用 design_document_v1，并依次保留以下二级标题："
+            + "、".join(DESIGN_REQUIRED_HEADINGS["human_review_consult"]) + "。",
             "在“可选修法”下给出 2-3 个三级标题，ID 必须为 `OPTION-A`、`OPTION-B` 或 `OPTION-C`。",
             "每个方案说明对人物选择、情绪归属、读者收益和保护项的影响。不得输出检测器、平台配额或直接改稿。",
             f"输出：`{values['response_file']}`",
@@ -932,7 +984,7 @@ def resolve_inside(root: Path, value: str | Path, parent: Path) -> Path:
 
 def load_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(native_filesystem_path(path).read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, UnicodeError):
         return None
 
@@ -977,6 +1029,7 @@ def write_json(path: Path, payload: Any) -> None:
 
 
 def file_hash(path: Path) -> str:
+    path = native_filesystem_path(path)
     return sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
 
 

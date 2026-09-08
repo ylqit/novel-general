@@ -40,11 +40,15 @@ def test_abstract_source_adapter_fixtures_cover_distinct_rule_shapes():
 
 @pytest.fixture(scope="module")
 def closed_project(tmp_path_factory):
+    return seed_closed_literary_fixture(tmp_path_factory.mktemp("current-literary-source"))
+
+
+def seed_closed_literary_fixture(directory: Path):
+    """Synthetic protocol fixture using normal gates, transactions and closure."""
     import yaml
     from longform_engine.orchestration import continue_write, submit_agent_draft, finalize_chapter
     from tests.project_fixtures import approve_story_candidate, complete_unified_semantic_lifecycle
 
-    directory = tmp_path_factory.mktemp("current-literary-source")
     config = seed_project(directory)
     open_book(config)
     root = directory / "novel"
@@ -351,3 +355,59 @@ def test_literary_evidence_survives_verified_chapter_archive(closed_project, mon
         path.unlink()
     assert collect_literary_sample(config, 1, 1) == before
     assert aggregate_literary_trial(root, "archived-evidence")["current"]
+
+
+def test_rehearsal_scores_keep_protocol_provenance_and_never_become_human_acceptance(closed_project):
+    from longform_engine.fanfiction_literary_trial import load_literary_trial
+    config, root = closed_project
+    origin = root / "00_governance/execution_origin.json"
+    assert not origin.exists()
+    try:
+        origin.write_text(json.dumps({"schema": "execution_origin_v1", "kind": "automated_rehearsal",
+            "simulated_human": True, "run_id": "literary-protocol-fixture"}), encoding="utf-8")
+        for stage in ("opening", "formal"):
+            with pytest.raises(ValueError, match="automated_rehearsal_ineligible"):
+                create_literary_trial(config, trial_id="must-not-exist", stage=stage, samples=[
+                    {"config_path": str(config.path), "chapter_start": 1, "chapter_end": 1}])
+        assert not (root / TRIAL_DIRECTORY / "must-not-exist").exists()
+        with pytest.raises(ValueError, match="automated_rehearsal_ineligible"):
+            collect_literary_sample(config, 1, 1)
+        create_literary_trial(config, trial_id="rehearsal", stage="rehearsal", samples=[
+            {"config_path": str(config.path), "chapter_start": 1, "chapter_end": 1}])
+        for index in range(3):
+            reviewer = f"simulated-{index}"
+            token = register_literary_reviewer(root, "rehearsal", reviewer)["review_token"]
+            state = literary_reviewer_state(root, "rehearsal", reviewer, token=token)
+            draft = state["draft"]
+            assert draft["reviewer_kind"] == "simulated"
+            assert state["manifest"]["evaluation_kind"] == "simulated_protocol"
+            assert "不构成真实人工" in state["manifest"]["scope_note"]
+            draft.update(human_instance_id=f"synthetic-{index}", independence_confirmed=True,
+                         attestation_note="Explicitly simulated browser protocol identity, not a human review.")
+            draft["entries"][0]["scores"] = {metric: 4 for metric in draft["entries"][0]["scores"]}
+            draft["reviewer_kind"] = "human"
+            with pytest.raises(ValueError, match="评分来源"):
+                save_literary_review(root, "rehearsal", reviewer, draft, token=token,
+                    expected_sha256=state["draft_sha256"], submit=True)
+            draft["reviewer_kind"] = "simulated"
+            save_literary_review(root, "rehearsal", reviewer, draft, token=token,
+                expected_sha256=state["draft_sha256"], submit=True)
+        report = aggregate_literary_trial(root, "rehearsal")
+        assert report["status"] == "protocol_complete"
+        assert not report["formal_acceptance"]
+        assert report["evaluation_kind"] == "simulated_protocol"
+        body = root / "40_manuscript/final/ch001.md"
+        before = body.read_bytes()
+        try:
+            body.write_bytes(before + b"\n")
+            with pytest.raises(ValueError, match="closure"):
+                load_literary_trial(root, "rehearsal")
+        finally:
+            body.write_bytes(before)
+        origin.unlink()
+        with pytest.raises(ValueError, match="stale literary provenance"):
+            load_literary_trial(root, "rehearsal")
+        with pytest.raises(ValueError, match="持久标记"):
+            collect_literary_sample(config, 1, 1, rehearsal=True)
+    finally:
+        origin.unlink(missing_ok=True)

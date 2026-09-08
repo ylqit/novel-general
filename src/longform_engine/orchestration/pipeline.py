@@ -1456,18 +1456,18 @@ def write_writing_task(
     event_recommendation = {}
     craft_brief = writer_craft_brief(
         config,
+        beat=beat if isinstance(beat, dict) else {},
         chapter_number=chapter_number,
         planning=planning,
-        beat=beat if isinstance(beat, dict) else {},
         tcs=tcs_payload,
         style_context=style_context,
     )
     writing_brief = build_writable_brief(
         config,
         root,
+        beat=beat if isinstance(beat, dict) else {},
         chapter_number=chapter_number,
         planning=planning,
-        beat=beat if isinstance(beat, dict) else {},
         tcs=tcs_payload,
         outline_anchor=outline_anchor,
         event_recommendation=event_recommendation,
@@ -1519,7 +1519,6 @@ def write_writing_task(
         root,
         chapter_number=chapter_number,
         planning=planning,
-        beat=beat if isinstance(beat, dict) else {},
         writing_brief=writing_brief,
         character_expression_packet=character_expression_packet,
         constraint_packet=constraint_packet,
@@ -1671,7 +1670,6 @@ def write_writing_task(
             "recommended_agent_draft": str(recommended_draft),
             "next_command": next_command,
         }
-    supersede_existing_writing_task(root, manifest_file)
     write_json(
         fact_inventory_file,
         {
@@ -1695,7 +1693,7 @@ def write_writing_task(
         failure_next_command="longform-engine production next project.yaml",
         context_policy=chapter_write_context_policy(task_json, task_markdown),
     )
-    write_manifest(root, manifest, manifest_file)
+    write_manifest(root, manifest, manifest_file, preserve_replaced=True)
     return {
         "task_json": str(task_json),
         "task_markdown": str(task_markdown),
@@ -1746,27 +1744,6 @@ def reusable_writing_task(
     if str(manifest.get("status") or "") != "awaiting_agent":
         return False
     return validate_manifest_strict(root, manifest, strict=True).ok
-
-
-def supersede_existing_writing_task(root: Path, manifest_file: Path) -> None:
-    """Record stale task lifecycle before replacing the current chapter-write projection."""
-
-    if not manifest_file.is_file():
-        return
-    try:
-        manifest = load_manifest(root, manifest_file)
-    except (OSError, ValueError):
-        return
-    task_id = str(manifest.get("task_id") or "")
-    status = str(manifest.get("status") or "")
-    if task_id and status not in {"applied", "rolled_back", "superseded"}:
-        update_task_status(
-            root,
-            task_id,
-            to_status="superseded",
-            command="continue-write rebuild stale Story Brief",
-            artifact=manifest_file,
-        )
 
 
 def chapter_write_context_policy(
@@ -3329,7 +3306,6 @@ def build_chapter_story_brief(
     *,
     chapter_number: int,
     planning: ChapterPlanningContext,
-    beat: dict[str, Any],
     writing_brief: dict[str, Any],
     character_expression_packet: dict[str, Any],
     constraint_packet: dict[str, Any],
@@ -3343,26 +3319,24 @@ def build_chapter_story_brief(
     """Compile the author-facing story problem without exposing control-plane evidence."""
 
     scenes: list[dict[str, Any]] = []
-    scene_chain = beat.get("nodes") if isinstance(beat.get("nodes"), list) else []
-    for index, scene in enumerate(scene_chain, start=1):
-        if not isinstance(scene, dict):
-            continue
-        decision = scene.get("human_decision") if isinstance(scene.get("human_decision"), dict) else {}
-        changes = author_fact_strings(scene.get("expected_changes"))
-        choice = chapter_contract["choice"]
-        cost = chapter_contract["cost"]
-        scenes.append(
-            {
-                "order": index,
-                "carrier": str(scene.get("dramatic_function") or "剧情推进"),
-                "action": str(scene.get("action_or_exchange") or ""),
-                "reaction": "；".join(changes) or "让这一行动产生可感知的状态变化。",
-                "choice": author_applicability_text(choice),
-                "cost": author_applicability_text(cost),
-                "exit_state": "；".join(changes),
-                "approved_adjustment": str(decision.get("adjustment") or ""),
-            }
-        )
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for node in planning.nodes:
+        groups.setdefault(str(node["scene_id"]), []).append(node)
+    for index, nodes in enumerate(groups.values(), start=1):
+        changes = dedupe_strings([
+            text for node in nodes for text in author_fact_strings(node.get("expected_changes"))
+        ])
+        adjustments = [str((node.get("human_decision") or {}).get("adjustment") or "") for node in nodes]
+        scenes.append({
+            "order": index,
+            "carrier": "；".join(dedupe_strings([str(node.get("dramatic_function") or "") for node in nodes])),
+            "action": "\n".join(str(node.get("action_or_exchange") or "") for node in nodes),
+            "reaction": "",
+            "choice": "",
+            "cost": "",
+            "exit_state": "；".join(changes),
+            "approved_adjustment": "；".join(value for value in adjustments if value),
+        })
     history = read_jsonl(root / "30_state" / "quality" / "structure_history.jsonl")[-5:]
     recent_structure_fingerprints = [
         {
@@ -3546,7 +3520,7 @@ def author_relevant_facts(
     constraint_packet: dict[str, Any],
     resolved_contract_refs: list[dict[str, Any]],
 ) -> list[str]:
-    """Curate bounded story facts and limits while stripping control-plane provenance."""
+    """Curate facts without truncating required evidence; the compiled brief owns budget validation."""
 
     candidates: list[str] = []
     for item in resolved_contract_refs:
@@ -3574,7 +3548,7 @@ def author_relevant_facts(
         else {}
     )
     candidates.extend(author_fact_strings(graph.get("facts")))
-    return [trim_text(item, 220) for item in dedupe_strings(candidates) if author_safe_text(item)][:8]
+    return [item for item in dedupe_strings(candidates) if author_safe_text(item) and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_:.]*", item)]
 
 
 def author_fact_strings(value: Any) -> list[str]:
@@ -3590,7 +3564,7 @@ def author_fact_strings(value: Any) -> list[str]:
     preferred = [
         value.get(key)
         for key in (
-            "name", "title", "summary", "description", "rule", "fact", "status",
+            "name", "title", "summary", "description", "change", "rule", "fact", "status",
             "goal", "current_goal", "relationship_stage", "cost", "limit", "constraints",
         )
         if value.get(key) not in (None, "", [], {})
@@ -3636,7 +3610,7 @@ def render_chapter_story_brief_markdown(payload: dict[str, Any]) -> str:
         "## 本章故事问题",
         "",
         f"- 标题：{payload.get('title', '')}",
-        f"- 章节拓扑：{brief.get('topology', '')}",
+        "- 本章推进方式：" + {"escalation": "压力递进", "revelation": "发现与揭示", "aftermath": "承接后果", "relationship": "关系变化", "transition": "过渡与衔接", "payoff": "兑现与回报"}.get(str(brief.get("topology")), ""),
         f"- 本章正在发生：{brief.get('happening_now', '')}",
         f"- 必须形成的可观察变化：{brief.get('observable_change', '')}",
         f"- 读者价值：{brief.get('reader_value', '')}",
@@ -3651,18 +3625,12 @@ def render_chapter_story_brief_markdown(payload: dict[str, Any]) -> str:
     for scene in brief.get("scenes") or []:
         if not isinstance(scene, dict):
             continue
-        lines.extend(
-            [
-                f"### 场景 {scene.get('order', '')} · {scene.get('carrier', '')}",
-                f"- 行动：{scene.get('action', '')}",
-                f"- 反应：{scene.get('reaction', '')}",
-                f"- 选择：{scene.get('choice', '')}",
-                f"- 代价：{scene.get('cost', '')}",
-                f"- 离场状态：{scene.get('exit_state', '')}",
-                f"- 人工调整：{scene.get('approved_adjustment', '') or '按批准节点执行'}",
-                "",
-            ]
-        )
+        lines.append(f"### 场景 {scene.get('order', '')} · {scene.get('carrier', '')}")
+        for field, label in (("action", "行动"), ("reaction", "反应"), ("choice", "选择"),
+                             ("cost", "代价"), ("exit_state", "离场状态"), ("approved_adjustment", "人工调整")):
+            if scene.get(field):
+                lines.append(f"- {label}：{scene[field]}")
+        lines.append("")
     fanfiction = (
         brief.get("fanfiction_context")
         if isinstance(brief.get("fanfiction_context"), dict)

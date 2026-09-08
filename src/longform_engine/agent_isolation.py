@@ -12,9 +12,11 @@ import re
 
 from longform_engine.agent_normalization import (
     AgentResultNormalization,
+    CANONICAL_READ_PREFIXES,
     normalize_and_validate_agent_result,
 )
 from longform_engine.agent_protocols import CANONICAL_DELTA_SCHEMA, EVIDENCE_REVIEW_SCHEMA
+from longform_engine.semantic_protocols import SEMANTIC_DOCUMENT_SCHEMA
 from longform_engine.agent_results import (
     AgentOutputContract,
     AgentResultProtocolError,
@@ -107,6 +109,8 @@ TASK_OBJECTIVES: dict[str, str] = {
     "source_visual_observation": "只描述声明图片或关键帧中可直接观察的内容，并隔离身份、动机与连续动作推断。",
     "style_analysis": "描述可迁移的语义风格特征，不模仿作者身份或复制正文。",
     "story_architecture_design": "设计全书承诺、卷级问题、人物选择、代价与不可逆因果接口。",
+    "planning_generation": "依据批准设计及已发生事实生成当前卷的滚动规划、近三章合同与节点，不填写机器绑定或人工批准。",
+    "planning_semantic_review": "独立审查当前规划候选的因果、人物动机、卷级推进、读者价值与保护项，绑定实际材料证据。",
 }
 
 REVIEW_FORBIDDEN_INPUT_PATTERNS = (
@@ -459,6 +463,22 @@ def compile_isolated_agent_package(
     )
     provenance = render_context_provenance(context)
     semantic_markdown = strip_budget_report(prompt.markdown) + "\n\n" + provenance
+    if output_contract.protocol == EVIDENCE_REVIEW_SCHEMA:
+        canonical_paths = sorted(item.path for item in context.sources if item.path.startswith(CANONICAL_READ_PREFIXES))
+        semantic_markdown += (
+            "\n\n## canonical_refs 资料范围\n"
+            "以下为当前直接声明的可用路径；包内显式声明的 allowed_canonical_refs 也按原绑定核对。"
+            "并非所有输入都是 canonical 资料。project.yaml 和普通 workbench 候选不能放入 canonical_refs，"
+            "需要引用它们时使用 evidence_ids 的准确原文位置。不要为了填 canonical_refs 虚构资料。\n"
+            + "\n".join(f"- `{path}`" for path in canonical_paths) + "\n"
+        )
+    template = (
+        build_agent_result_template(effective, registry=active_registry)
+        if output_contract.protocol in {EVIDENCE_REVIEW_SCHEMA, CANONICAL_DELTA_SCHEMA, SEMANTIC_DOCUMENT_SCHEMA}
+        else None
+    )
+    if template is not None:
+        semantic_markdown += "\n\n## 当前输出模板\n\n填写内容并完整保留当前协议字段：\n```json\n" + json.dumps(template, ensure_ascii=False, indent=2) + "\n```\n"
     refreshed_prompt = refresh_prompt_compilation(
         root.resolve(),
         effective,
@@ -471,11 +491,6 @@ def compile_isolated_agent_package(
     semantic_markdown = refreshed_prompt.markdown
     prompt_payload = refreshed_prompt.payload
     prompt_hash = sha256(semantic_markdown.encode("utf-8")).hexdigest()
-    template = (
-        build_agent_result_template(effective, registry=active_registry)
-        if output_contract.protocol in {EVIDENCE_REVIEW_SCHEMA, CANONICAL_DELTA_SCHEMA}
-        else None
-    )
     return IsolatedAgentPackage(
         schema=ISOLATED_PACKAGE_SCHEMA,
         task_id=str(effective["task_id"]),

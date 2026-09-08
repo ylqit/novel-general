@@ -92,7 +92,9 @@
     "source_conflict_analysis": "source_evidence_reviewer",
     "source_version_conflict_review": "source_evidence_reviewer",
     "source_visual_observation": "source_visual_observer",
-    "style_analysis": "semantic_style_analyst"
+    "style_analysis": "semantic_style_analyst",
+    "planning_generation": "semantic_narrative_architect",
+    "planning_semantic_review": "planning_chief_editor"
   },
   "editorial_role_map": {
     "anti_template_editor": "anti_template_editor",

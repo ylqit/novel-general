@@ -58,6 +58,7 @@ DESIGN_TASK_TYPES = frozenset(
 )
 EVIDENCE_REVIEW_TASK_TYPES = frozenset(
     {
+        "planning_semantic_review",
         "prose_revision_semantic_review",
         "reader_payoff_review",
         "editorial_review",
@@ -71,6 +72,7 @@ CANONICAL_DELTA_TASK_TYPES = frozenset(
 )
 SEMANTIC_DOCUMENT_TASK_TYPES = frozenset(
     {
+        "planning_generation",
         "fanfiction_canon",
         "fanfiction_story_engine",
         "fanfiction_design_review",

@@ -1,0 +1,232 @@
+{
+  "schema": "planning_bundle_v1",
+  "book_spine": {
+    "schema": "book_spine_v1",
+    "spine_id": "",
+    "premise": "",
+    "central_conflict": "",
+    "ending_boundary": "",
+    "protagonist_arc": "",
+    "reader_value": "",
+    "protected_invariants": [
+      ""
+    ]
+  },
+  "volume_skeletons": {
+    "schema": "volume_skeletons_v1",
+    "items": [
+      {
+        "volume_id": "",
+        "order": 0,
+        "title": "",
+        "chapter_range": [
+          0,
+          0
+        ],
+        "volume_goal": "",
+        "entry_state": "",
+        "exit_state": "",
+        "target_characters": 0,
+        "status": ""
+      }
+    ]
+  },
+  "active_volume_plan": {
+    "schema": "volume_plan_v1",
+    "volume_id": "",
+    "chapter_range": [
+      0,
+      0
+    ],
+    "entry_state": "",
+    "exit_state": "",
+    "event_graph": [
+      {
+        "id": ""
+      }
+    ],
+    "character_arcs": [
+      {
+        "id": ""
+      }
+    ],
+    "promise_threads": [],
+    "foreshadow_threads": [],
+    "flex_zones": [
+      {
+        "chapter_range": [
+          0,
+          0
+        ],
+        "reason": ""
+      }
+    ]
+  },
+  "rolling_window": {
+    "schema": "rolling_window_plan_v2",
+    "window_id": "",
+    "start_chapter": 0,
+    "end_chapter": 0,
+    "tiers": {
+      "firm": [
+        0,
+        0
+      ],
+      "directional": [
+        0,
+        0
+      ],
+      "horizon": [
+        0,
+        0
+      ]
+    },
+    "basis_refs": [
+      ""
+    ]
+  },
+  "chapter_forecasts": [
+    {
+      "schema": "chapter_forecast_v1",
+      "forecast_id": "",
+      "chapter_number": 0,
+      "tier": "",
+      "chapter_duty": "",
+      "likely_change": "",
+      "reader_value": "",
+      "obligation_refs": [
+        ""
+      ],
+      "flexibility": ""
+    }
+  ],
+  "chapter_contracts": [
+    {
+      "schema": "chapter_contract_v5",
+      "contract_id": "",
+      "chapter_number": 0,
+      "forecast_ref": "",
+      "topology": "",
+      "chapter_duty": "",
+      "observable_change": "",
+      "reader_value": "",
+      "failure": {
+        "applicability": "",
+        "description": "",
+        "reason": ""
+      },
+      "choice": {
+        "applicability": "",
+        "description": "",
+        "reason": ""
+      },
+      "cost": {
+        "applicability": "",
+        "description": "",
+        "reason": ""
+      },
+      "aftermath": {
+        "applicability": "",
+        "description": "",
+        "reason": ""
+      },
+      "plot_node_table_ref": {
+        "table_id": ""
+      },
+      "semantic_obligation_refs": [
+        ""
+      ],
+      "reader_promise_actions": [],
+      "protected_invariants": [
+        ""
+      ],
+      "prohibited_drift": [
+        ""
+      ],
+      "fanfiction_claim_refs": {
+        "schema": "fanfiction_chapter_claim_channel_v1",
+        "active_volume_claim_refs": [],
+        "semantic_obligation_claim_refs": [],
+        "plot_node_claim_refs": [],
+        "chapter_claim_refs": [],
+        "all_claim_refs": []
+      }
+    }
+  ],
+  "semantic_obligations": [
+    {
+      "schema": "semantic_obligation_v1",
+      "obligation_id": "",
+      "domain": "",
+      "subject_refs": [
+        ""
+      ],
+      "prior_state_refs": [
+        ""
+      ],
+      "preconditions": [
+        {
+          "type": "",
+          "ref": ""
+        }
+      ],
+      "intended_change": "",
+      "reader_value": "",
+      "evidence_requirement": "",
+      "protected_invariants": [
+        ""
+      ],
+      "dependency_refs": [],
+      "fanfiction_claim_refs": []
+    }
+  ],
+  "plot_node_tables": [
+    {
+      "schema": "plot_node_table_v1",
+      "table_id": "",
+      "chapter_number": 0,
+      "forecast_ref": "",
+      "nodes": [
+        {
+          "schema": "plot_node_v1",
+          "node_id": "",
+          "chapter_number": 0,
+          "scene_id": "",
+          "sequence": 0,
+          "actors": [
+            ""
+          ],
+          "location_ref": "",
+          "dramatic_function": "",
+          "preconditions": [
+            {
+              "type": "",
+              "ref": "",
+              "requirement": ""
+            }
+          ],
+          "dependency_refs": [],
+          "obligation_refs": [
+            ""
+          ],
+          "action_or_exchange": "",
+          "expected_changes": [
+            {
+              "domain": "",
+              "change": ""
+            }
+          ],
+          "reader_effect": "",
+          "requirement": "",
+          "condition": null,
+          "node_kind": "",
+          "protected_invariants": [
+            ""
+          ],
+          "allowed_deviation": "",
+          "fanfiction_claim_refs": []
+        }
+      ]
+    }
+  ]
+}

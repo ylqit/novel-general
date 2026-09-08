@@ -11,7 +11,7 @@ from typing import Any
 
 RESOURCE_ENV = "LONGFORM_ENGINE_RESOURCE_ROOT"
 RESOURCE_HASH_POLICY = "text-lf-v1"
-TEXT_RESOURCE_SUFFIXES = frozenset({".json", ".md", ".toml", ".txt", ".yaml", ".yml"})
+TEXT_RESOURCE_SUFFIXES = frozenset({".json", ".md", ".toml", ".txt", ".yaml", ".yml", ".css", ".html", ".js"})
 
 
 def resource_integrity_bytes(path: Path) -> bytes:

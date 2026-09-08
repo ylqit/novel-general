@@ -31,6 +31,7 @@ from longform_engine.prompting import (
 )
 from longform_engine.story_profiles import project_active_facet_adapters
 from longform_engine.storage import atomic_write_text
+from longform_engine.storage.project import native_filesystem_path
 
 
 AGENT_TASK_SCHEMA_VERSION = 5
@@ -186,20 +187,23 @@ TASK_CONTRACTS: dict[str, dict[str, tuple[str, ...]]] = {
         ),
     },
     "human_review_consult": {
-        "scope_kinds": ("chapter",),
+        "scope_kinds": ("chapter", "project", "range"),
         "schemas": (output_protocol_for_task("human_review_consult"),),
         "output_prefixes": ("50_workbench/human_story_reviews/consultations/",),
         "validate_prefixes": (
             "longform-engine review consult-validate ",
             "longform-engine chapter coedit-record ",
+            "longform-engine agent-task result-validate ",
         ),
         "apply_prefixes": (
             "longform-engine review consult-record ",
+            "longform-engine review discussion-record ",
             "longform-engine chapter coedit-rewrite-task ",
         ),
         "failure_prefixes": (
             "longform-engine review consult-task ",
             "longform-engine chapter coedit-start ",
+            "longform-engine agent-task brief ",
         ),
     },
     "prose_naturalness": {
@@ -501,6 +505,16 @@ CANONICAL_OUTPUT_PREFIXES = (
     "70_runtime/db/",
     "70_runtime/provenance/",
 )
+
+for _planning_task_type in ("planning_generation", "planning_semantic_review"):
+    TASK_CONTRACTS[_planning_task_type] = {
+        "scope_kinds": ("project",),
+        "schemas": (output_protocol_for_task(_planning_task_type),),
+        "output_prefixes": ("50_workbench/planning/",),
+        "validate_prefixes": ("longform-engine agent-task result-validate ",),
+        "apply_prefixes": ("longform-engine planning prepare-review ", "longform-engine planning review-validate "),
+        "failure_prefixes": ("longform-engine planning task ",),
+    }
 CANONICAL_OUTPUT_FILES = (
     "30_state/story_graph.json",
 )
@@ -583,8 +597,9 @@ def build_manifest(
     input_records: list[dict[str, Any]] = []
     for path_text in normalized_inputs:
         path = resolve_under_root(root, path_text)
+        filesystem_path = native_filesystem_path(path)
         try:
-            content = path.read_text(encoding="utf-8").lstrip("\ufeff")
+            content = filesystem_path.read_text(encoding="utf-8").lstrip("\ufeff")
             character_count = len(content)
         except UnicodeDecodeError as exc:
             raise AgentTaskContractError(
@@ -601,9 +616,9 @@ def build_manifest(
                 ),
                 "path": path_text,
                 "requirement": requirement,
-                "sha256": sha256(path.read_bytes()).hexdigest(),
+                "sha256": sha256(filesystem_path.read_bytes()).hexdigest(),
                 "characters": character_count,
-                "bytes": path.stat().st_size,
+                "bytes": filesystem_path.stat().st_size,
                 "media_type": mimetypes.guess_type(path.name)[0] or "text/plain",
                 "reason": reason,
             }
@@ -678,11 +693,41 @@ def write_manifest(
     *,
     consumes_task_id: str = "",
     supersedes_task_ids: Iterable[str] = (),
+    preserve_replaced: bool = False,
 ) -> str:
     """Persist a manifest and update the project-level read-only index."""
 
     path = resolve_under_root(root, manifest_file)
     normalized = normalize_manifest(manifest)
+    retained: tuple[str, Path] | None = None
+    retained_output: tuple[Path, Path, bytes] | None = None
+    previous_text = ""
+    if preserve_replaced and path.is_file():
+        previous_text = path.read_bytes().decode("utf-8")
+        previous = normalize_manifest(json.loads(previous_text))
+        if previous == normalized:
+            return str(path)
+        previous_id = str(previous["task_id"])
+        index = read_json(agent_task_index_file(root), default={})
+        entries = [item for item in index.get("tasks", []) if item.get("task_id") == previous_id]
+        if len(entries) != 1 or entries[0].get("manifest_file") != relative_path(root, path):
+            raise AgentTaskContractError("replacement manifest has no unique indexed predecessor; reconcile first")
+        digest = sha256(previous_text.encode("utf-8")).hexdigest()
+        retained = (previous_id, root / "50_workbench/agent_tasks/manifests" / f"{digest}.json")
+        revision = sha256(json.dumps(normalized, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+        normalized["task_id"] = str(normalized["task_id"]).removesuffix(":v5") + f":revision-{revision}:v5"
+        supersedes_task_ids = (*supersedes_task_ids, previous_id)
+        previous_output = str(previous["io"]["output"]["path"])
+        if previous_output == normalized["io"]["output"]["path"]:
+            source = resolve_under_root(root, previous_output)
+            if source.is_file():
+                content = source.read_bytes()
+                digest = sha256(content).hexdigest()
+                bound = str((entries[0].get("current_result") or {}).get("sha256") or "")
+                portable = sha256(source.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+                if bound not in {digest, portable}:
+                    raise AgentTaskContractError("replacement output has unbound edits; validate or preserve the candidate before rebuilding")
+                retained_output = (source, root / "50_workbench/agent_tasks/results" / f"{digest}{source.suffix}", content)
     validate_manifest_shape(normalized)
     validation = validate_manifest_strict(root, normalized)
     if not validation.ok:
@@ -693,14 +738,30 @@ def write_manifest(
     output = (normalized["io"].get("output") or {}).get("path")
     if output:
         resolve_under_root(root, output).parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(path, json.dumps(dict(normalized), ensure_ascii=False, indent=2) + "\n")
-    register_manifest(
-        root,
-        normalized,
-        path,
-        consumes_task_id=consumes_task_id,
-        supersedes_task_ids=supersedes_task_ids,
-    )
+    affected = [path, *agent_task_lifecycle_mutation_paths(root), *([retained[1]] if retained else [])]
+    if retained_output:
+        affected.extend(retained_output[:2])
+    snapshots = {item: item.read_bytes() if item.is_file() else None for item in affected}
+    try:
+        if retained:
+            atomic_write_text(retained[1], previous_text)
+        if retained_output:
+            retained_output[1].parent.mkdir(parents=True, exist_ok=True)
+            retained_output[1].write_bytes(retained_output[2])
+            retained_output[0].unlink()
+        atomic_write_text(path, json.dumps(dict(normalized), ensure_ascii=False, indent=2) + "\n")
+        register_manifest(
+            root, normalized, path, consumes_task_id=consumes_task_id,
+            supersedes_task_ids=supersedes_task_ids, retained_manifest=retained,
+        )
+    except Exception:
+        for item, content in snapshots.items():
+            if content is None:
+                item.unlink(missing_ok=True)
+            else:
+                item.write_bytes(content)
+        raise
+    manifest["task_id"] = normalized["task_id"]
     return str(path)
 
 
@@ -711,6 +772,7 @@ def register_manifest(
     *,
     consumes_task_id: str = "",
     supersedes_task_ids: Iterable[str] = (),
+    retained_manifest: tuple[str, Path] | None = None,
 ) -> None:
     index_path = agent_task_index_file(root)
     payload = read_json(index_path, default={})
@@ -721,6 +783,10 @@ def register_manifest(
     tasks = payload.get("tasks")
     if not isinstance(tasks, list):
         tasks = []
+    if retained_manifest:
+        for item in tasks:
+            if isinstance(item, dict) and item.get("task_id") == retained_manifest[0]:
+                item["manifest_file"] = relative_path(root, retained_manifest[1])
     rel_file = relative_path(root, manifest_file)
     existing = next(
         (
@@ -987,11 +1053,18 @@ def validate_current_task_result(
     output_text = relative_path(root, output_path)
     normalized_type = normalize_token(task_type)
     allowed = {normalize_status(item) for item in allowed_statuses}
+    tasks = list_manifests(root, chapter_number=chapter_number)
+    superseded_ids = {
+        str(task_id) for task in tasks for task_id in task.get("supersedes_task_ids") or []
+    }
     owners = [
         task
-        for task in list_manifests(root, chapter_number=chapter_number)
+        for task in tasks
         if normalize_token(str(task.get("task_type") or "")) == normalized_type
         and output_text == str(manifest_output(task).get("path") or "").replace("\\", "/")
+        # Applied results stay in the audit index. An explicit replacement
+        # disqualifies the earlier owner without erasing its applied history.
+        and str(task.get("task_id") or "") not in superseded_ids
     ]
     matches = [
         task
@@ -1519,7 +1592,7 @@ def normalize_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def validate_manifest_shape(manifest: dict[str, Any]) -> None:
+def validate_manifest_shape(manifest: dict[str, Any], *, allow_projection: bool = False) -> None:
     required = {
         "schema_version",
         "task_id",
@@ -1531,7 +1604,8 @@ def validate_manifest_shape(manifest: dict[str, Any]) -> None:
         "commands",
         "created_at",
     }
-    actual = {key for key in manifest.keys() if key not in {"status", "manifest_file", "updated_at", "current_result"}}
+    projected = {"status", "manifest_file", "updated_at", "current_result", *TASK_RELATION_FIELDS} if allow_projection else set()
+    actual = set(manifest) - projected
     if actual != required:
         raise ValueError(
             "AgentTaskManifest v5 fields must be exactly: " + ", ".join(sorted(required))
@@ -1573,8 +1647,15 @@ def validate_manifest_strict(root: Path, manifest: dict[str, Any], *, strict: bo
     warnings: list[str] = []
     try:
         manifest = normalize_manifest(manifest)
-        validate_manifest_shape(manifest)
-    except ValueError as exc:
+        projection_path = str(manifest.get("manifest_file") or "")
+        validate_manifest_shape(manifest, allow_projection=bool(projection_path))
+        if projection_path:
+            # Runtime lineage is held by the index, never by the immutable disk
+            # manifest. Validate both boundaries instead of rejecting good views
+            # or silently allowing projection fields in persisted manifests.
+            stored = read_json(resolve_under_root(root, projection_path), default={})
+            validate_manifest_shape(stored)
+    except (ValueError, OSError) as exc:
         errors.append(str(exc))
         return ManifestValidationResult(
             ok=False,
@@ -1943,14 +2024,18 @@ def task_archive_projection(
     }
 
 
-def project_task_archive_projection(root: Path) -> dict[str, Any]:
-    tasks = [item for item in list_manifests(root) if manifest_chapter_number(item) == 0]
+def project_task_archive_projection(
+    root: Path, *, excluded_task_ids: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    tasks = [item for item in list_manifests(root) if manifest_chapter_number(item) == 0
+             and str(item.get("task_id") or "") not in excluded_task_ids]
     task_ids = {str(item.get("task_id") or "") for item in tasks}
     events = [
         item
         for item in read_task_events(root)
-        if int(item.get("chapter_number") or 0) == 0
-        or str(item.get("task_id") or "") in task_ids
+        if (int(item.get("chapter_number") or 0) == 0
+            or str(item.get("task_id") or "") in task_ids)
+        and str(item.get("task_id") or "") not in excluded_task_ids
     ]
     return {
         "schema": "project_agent_task_projection_v1",
@@ -1959,13 +2044,17 @@ def project_task_archive_projection(root: Path) -> dict[str, Any]:
     }
 
 
-def compact_project_task_projection(root: Path, *, archive_ref: str) -> dict[str, Any]:
+def compact_project_task_projection(
+    root: Path, *, archive_ref: str,
+    retained_task_ids: set[str] | frozenset[str] = frozenset(),
+) -> dict[str, Any]:
     index_path = agent_task_index_file(root)
     payload = read_json(index_path, default={})
     if not isinstance(payload, dict):
         payload = new_task_index()
     tasks = [dict(item) for item in payload.get("tasks", []) if isinstance(item, dict)]
-    project_tasks = [item for item in tasks if int(item.get("chapter_number") or 0) == 0]
+    project_tasks = [item for item in tasks if int(item.get("chapter_number") or 0) == 0
+                     and str(item.get("task_id") or "") not in retained_task_ids]
     nonterminal = [item for item in project_tasks if str(item.get("status") or "") not in TERMINAL_TASK_STATUSES]
     if nonterminal:
         names = ", ".join(str(item.get("task_id") or "") for item in nonterminal[:5])
@@ -1999,7 +2088,8 @@ def compact_project_task_projection(root: Path, *, archive_ref: str) -> dict[str
     atomic_write_text(index_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
     events = read_task_events(root)
-    retained_events = [item for item in events if int(item.get("chapter_number") or 0) != 0]
+    retained_events = [item for item in events if int(item.get("chapter_number") or 0) != 0
+                       or str(item.get("task_id") or "") in retained_task_ids]
     atomic_write_text(
         agent_task_events_file(root),
         "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in retained_events),
@@ -2069,7 +2159,9 @@ def compact_task_projection(
     atomic_write_text(index_path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
     events = read_task_events(root)
-    retained_events = [item for item in events if int(item.get("chapter_number") or 0) == 0 or int(item.get("chapter_number") or 0) > through]
+    retained_events = [item for item in events if int(item.get("chapter_number") or 0) == 0
+                       or int(item.get("chapter_number") or 0) > through
+                       or str(item.get("task_id") or "") in retained_task_ids]
     event_path = agent_task_events_file(root)
     atomic_write_text(
         event_path,
@@ -2289,7 +2381,8 @@ def validate_context_policy(root: Path, manifest: dict[str, Any], errors: list[s
             if not path_text or is_parent_escape(path_text):
                 continue
             path = (root / path_text).resolve()
-            if not path.exists() or not path.is_file():
+            filesystem_path = native_filesystem_path(path)
+            if not filesystem_path.is_file():
                 errors.append(f"io.inputs[{index}].path does not exist or is not a file: {path_text}")
                 continue
             record = records.get(path_text)
@@ -2313,15 +2406,15 @@ def validate_context_policy(root: Path, manifest: dict[str, Any], errors: list[s
             if record.get("requirement") not in {"required", "optional"}:
                 errors.append(f"io.inputs requirement for `{path_text}` is invalid.")
             try:
-                content = path.read_text(encoding="utf-8").lstrip("\ufeff")
+                content = filesystem_path.read_text(encoding="utf-8").lstrip("\ufeff")
             except UnicodeDecodeError:
                 errors.append(f"io.inputs[{index}].path must be valid UTF-8 text: {path_text}")
             else:
                 if int(record.get("characters") or -1) != len(content):
                     errors.append(f"io.inputs character count drifted for `{path_text}`.")
-            if int(record.get("bytes") or -1) != path.stat().st_size:
+            if int(record.get("bytes") or -1) != filesystem_path.stat().st_size:
                 errors.append(f"io.inputs byte count drifted for `{path_text}`.")
-            if str(record.get("sha256") or "") != sha256(path.read_bytes()).hexdigest():
+            if str(record.get("sha256") or "") != sha256(filesystem_path.read_bytes()).hexdigest():
                 errors.append(f"io.inputs SHA-256 drifted for `{path_text}`.")
     for index, item in enumerate(media_inputs):
         errors.extend(f"io.media_inputs[{index}].{error}" for error in _validate_media_input_record(item))
@@ -2543,7 +2636,7 @@ def relative_path(root: Path, path: str | Path) -> str:
 
 def read_json(path: Path, *, default: Any) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(native_filesystem_path(path).read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return default
 

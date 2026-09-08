@@ -374,6 +374,7 @@ def init_project(
 def atomic_write_text(path: Path, text: str) -> None:
     """Atomically write text to a file."""
 
+    path = native_filesystem_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         "w",
@@ -385,6 +386,18 @@ def atomic_write_text(path: Path, text: str) -> None:
         handle.write(text)
         temp_path = Path(handle.name)
     temp_path.replace(path)
+
+
+def native_filesystem_path(path: Path) -> Path:
+    """Use Windows extended paths at I/O boundaries; keep stored paths portable."""
+    if os.name != "nt":
+        return path
+    absolute = str(path.absolute())
+    if absolute.startswith("\\\\?\\"):
+        return Path(absolute)
+    if absolute.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + absolute[2:])
+    return Path("\\\\?\\" + absolute)
 
 
 def apply_transaction(
@@ -467,10 +480,10 @@ def snapshot_project(
             continue
         target = snapshot_dir / relative
         if source.is_dir():
-            shutil.copytree(source, target, dirs_exist_ok=True)
+            shutil.copytree(native_filesystem_path(source), native_filesystem_path(target), dirs_exist_ok=True)
         else:
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, target)
+            shutil.copy2(native_filesystem_path(source), native_filesystem_path(target))
         copied.append(target)
     manifest = {
         "label": label,
@@ -554,10 +567,10 @@ def snapshot_transaction_path(root: Path, snapshot_dir: Path, path: Path) -> dic
         return item
     snapshot.parent.mkdir(parents=True, exist_ok=True)
     if path.is_dir():
-        shutil.copytree(path, snapshot, dirs_exist_ok=True)
+        shutil.copytree(native_filesystem_path(path), native_filesystem_path(snapshot), dirs_exist_ok=True)
         item["kind"] = "dir"
     else:
-        shutil.copy2(path, snapshot)
+        shutil.copy2(native_filesystem_path(path), native_filesystem_path(snapshot))
         item["kind"] = "file"
     return item
 
@@ -566,7 +579,7 @@ def restore_transaction_path(root: Path, snapshot_dir: Path, item: dict[str, Any
     relative = str(item.get("path") or "")
     if not relative:
         return
-    target = root / relative
+    target = resolve_project_transaction_path(root, relative)
     existed = bool(item.get("existed"))
     kind = str(item.get("kind") or "missing")
     snapshot_relative = str(item.get("snapshot_path") or "")
@@ -580,11 +593,11 @@ def restore_transaction_path(root: Path, snapshot_dir: Path, item: dict[str, Any
         return
     if kind == "dir":
         if snapshot.exists():
-            shutil.copytree(snapshot, target, dirs_exist_ok=True)
+            shutil.copytree(native_filesystem_path(snapshot), native_filesystem_path(target), dirs_exist_ok=True)
         return
     if snapshot.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(snapshot, target)
+        shutil.copy2(native_filesystem_path(snapshot), native_filesystem_path(target))
 
 
 def partition_transaction_paths(root: Path, paths: list[Path]) -> tuple[list[Path], list[Path]]:
@@ -680,7 +693,7 @@ def cleanup_transaction_snapshot(snapshot_dir: Path) -> list[str]:
     if not snapshot_dir.exists():
         return []
     try:
-        shutil.rmtree(snapshot_dir)
+        shutil.rmtree(native_filesystem_path(snapshot_dir))
     except OSError as exc:
         return [str(exc)]
     return []
@@ -780,6 +793,7 @@ def windows_process_start_identity(pid: int) -> str:
 
 
 def remove_path(path: Path) -> None:
+    path = native_filesystem_path(path)
     if path.is_dir():
         shutil.rmtree(path)
     elif path.exists():

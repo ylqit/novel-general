@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -29,6 +29,7 @@ from longform_engine.agent_tasks import (
     build_manifest,
     is_canonical_output,
     list_manifests,
+    load_manifest,
     manifest_chapter_number,
     manifest_commands,
     manifest_input_records,
@@ -50,8 +51,11 @@ from longform_engine.arc_simulation import (
     write_arc_causal_simulation,
 )
 from longform_engine.character_expression import (
+    CHARACTER_CONTRACT_LIST_FIELDS,
+    CHARACTER_CONTRACT_STRING_FIELDS,
     CHARACTER_EXPRESSION_SCHEMA,
     CHARACTER_REVIEW_SCHEMA,
+    EXPRESSION_PROFILE_FIELDS,
     character_expression_readiness,
     validate_character_expression_profile,
     write_character_expression_profile,
@@ -450,9 +454,12 @@ def create_intelligence_task(
     chapter_number: int | None = None,
     from_chapter: int | None = None,
     to_chapter: int | None = None,
+    rebuild: bool = False,
 ) -> IntelligenceTaskResult:
     root = resolve_project_root(config)
     spec = require_spec(task_type)
+    if rebuild and task_type != "book_ideation":
+        raise ValueError("Explicit ideation rebuilding only applies to book_ideation.")
     scope = task_scope(
         spec,
         chapter_number=chapter_number,
@@ -586,6 +593,24 @@ def create_intelligence_task(
         if round_number
         else f"{task_type}.{token}"
     )
+    ideation_predecessors: list[dict[str, Any]] = []
+    ideation_task_id = ""
+    if round_number:
+        prefix = f"book_ideation:project:round{round_number:02d}:"
+        ideation_predecessors = [item for item in list_manifests(root) if item["task_id"].startswith(prefix)]
+        for item in reversed(ideation_predecessors):
+            prior = load_manifest(root, item["task_id"])
+            output = manifest_output(prior)["path"]
+            if (not rebuild and item["status"] in {"awaiting_agent", "submitted", "validated", "approved"}
+                    and Path(output).name.startswith(base + ".") and validate_manifest_strict(root, prior).ok):
+                instructions = [value for value in manifest_input_paths(prior) if value.startswith("50_workbench/intelligence_tasks/")]
+                if len(instructions) == 1:
+                    return IntelligenceTaskResult(task_type, item["task_id"], item["manifest_file"], instructions[0],
+                        output, f"longform-engine agent-task brief project.yaml {item['task_id']}")
+        attempt = len(ideation_predecessors) + 1
+        ideation_task_id = prefix + (f"attempt{attempt:02d}:" if attempt > 1 else "") + "v5"
+        if attempt > 1:
+            base += f".attempt{attempt:02d}"
     if task_type == "fanfiction_design_review":
         base += "." + sha256(inputs[0].read_bytes()).hexdigest()[:12]
     future_task_artifacts: dict[str, Any] | None = None
@@ -601,7 +626,7 @@ def create_intelligence_task(
         if future_task_artifacts is not None
         else root / "50_workbench" / "intelligence_tasks" / f"{base}.md"
     )
-    candidate_base = f"{task_type}.{token}" if task_type == "book_ideation" else base
+    candidate_base = base
     output_protocol = output_protocol_for_task(task_type)
     document_requires_human = output_protocol == DESIGN_DOCUMENT_SCHEMA
     candidate_suffix = ".candidate.md" if output_protocol == DESIGN_DOCUMENT_SCHEMA else ".candidate.json"
@@ -643,6 +668,8 @@ def create_intelligence_task(
         input_paths=[relative(root, path) for path in inputs],
         requires_human=bool(spec["human"]) or document_requires_human,
     )
+    if round_number:
+        failure_command += " --rebuild"
     manifest = build_manifest(
         root,
         task_type=task_type,
@@ -667,7 +694,7 @@ def create_intelligence_task(
             "selection_report": instruction,
         },
         task_id=(
-            f"book_ideation:project:round{round_number:02d}:v5"
+            ideation_task_id
             if task_type == "book_ideation"
             else (
                 f"fanfiction_design_review:project:{sha256(inputs[0].read_bytes()).hexdigest()[:12]}:v5"
@@ -680,7 +707,8 @@ def create_intelligence_task(
             )
         ),
     )
-    written = write_manifest(root, manifest, manifest_file)
+    written = write_manifest(root, manifest, manifest_file, supersedes_task_ids=[item["task_id"]
+        for item in ideation_predecessors if item["status"] not in {"applied", "superseded", "rolled_back"}])
     return IntelligenceTaskResult(
         task_type=task_type,
         task_id=str(manifest["task_id"]),
@@ -1383,6 +1411,73 @@ def mark_fanfiction_semantic_dependents_stale(
 
 
 
+def revise_design_document(
+    config: ConfigDocument, *, task_id: str, expected_sha256: str, text: str,
+) -> dict[str, Any]:
+    """Preserve a design candidate and its approvals while registering a human revision."""
+    from longform_engine.agent_pipeline import validate_production_agent_result
+    from longform_engine.agent_tasks import record_supersession_projection, update_task_status
+
+    root = resolve_project_root(config)
+    original = load_manifest(root, task_id)
+    task_type = str(original["task_type"])
+    if task_type not in DESIGN_INTELLIGENCE_TASK_TYPES:
+        raise ValueError("Only Markdown design candidates can be revised here.")
+    source = resolve_candidate(root, manifest_output(original)["path"])
+    if sha256(source.read_bytes()).hexdigest() != expected_sha256:
+        raise ValueError("设计候选已变化，请保留本地文字并重新比较。")
+    if not isinstance(text, str) or not text.strip() or len(text.encode("utf-8")) > 2_000_000:
+        raise ValueError("设计修改稿为空或过长。")
+    digest = sha256(text.encode("utf-8")).hexdigest()
+    revision_id = f"{task_id}:human:{digest[:16]}"
+    tasks = list_manifests(root)
+    existing = next((row for row in tasks if row["task_id"] == revision_id), None)
+    if existing:
+        return {"task_id": revision_id, "status": existing["status"], "canonical_mutated": False}
+    if original.get("status") not in {"submitted", "validated", "approved", "invalid"}:
+        raise ValueError("此设计版本已被应用或替代，请修改当前候选。")
+    token = sha256(revision_id.encode("utf-8")).hexdigest()[:16]
+    candidate = root / "50_workbench/intelligence_candidates" / f"human.{token}.candidate.md"
+    instruction = root / "50_workbench/intelligence_tasks" / f"human.{token}.md"
+    atomic_write_text(instruction, "# 人工设计修改\n\n以原工作单及当前修改稿为准。此次只保存候选并校验，仍需重新人工批准。\n"
+                      f"唯一输出：{relative(root, candidate)}\n")
+    commands = manifest_commands(original)
+    old_path, new_path = relative(root, source), relative(root, candidate)
+    inputs = list(dict.fromkeys([*manifest_input_paths(original), old_path, relative(root, instruction)]))
+    manifest = build_manifest(root, task_type=task_type, chapter_number=manifest_chapter_number(original) or None,
+        scope=original["scope"], task_id=revision_id, input_files=inputs,
+        allowed_output_paths=[candidate], output_schema=DESIGN_DOCUMENT_SCHEMA,
+        validate_command=commands["validate"].replace(old_path, new_path),
+        apply_command=commands["apply"].replace(old_path, new_path),
+        failure_next_command=commands["failure"].replace(old_path, new_path),
+        canonical_targets=intelligence_canonical_targets(root, task_type, original["scope"]),
+        requires_human_apply=True, context_policy={"required_files": inputs, "compiled_brief": instruction})
+    atomic_write_text(candidate, text)
+    write_manifest(root, manifest, root / "50_workbench/agent_tasks" / f"human.{token}.manifest.json")
+    protocol = validate_production_agent_result(root, manifest, result_file=candidate)
+    if not protocol.ok:
+        return {"task_id": revision_id, "status": "invalid", "validation": asdict(protocol), "canonical_mutated": False}
+    validation = validate_intelligence_candidate(config, task_type=task_type, file_path=candidate)
+    superseded = []
+    if validation.ok:
+        for row in tasks:
+            if row.get("status") in {"applied", "superseded", "rolled_back"}:
+                continue
+            dependent = row["task_id"] == task_id or (
+                row["task_type"] == task_type and row["task_id"].startswith(task_id + ":human:")
+                and old_path in manifest_input_paths(load_manifest(root, row["task_id"]))) or (
+                row["task_type"] == "design_semantic_compile"
+                and old_path in manifest_input_paths(load_manifest(root, row["task_id"])))
+            if dependent:
+                update_task_status(root, row["task_id"], to_status="superseded",
+                                   command="intelligence human revision", result=candidate)
+                superseded.append(row["task_id"])
+        record_supersession_projection(root, task_id=revision_id, supersedes_task_ids=superseded,
+                                      command="intelligence human revision", artifact=candidate)
+    return {"task_id": revision_id, "status": "validated" if validation.ok else "invalid",
+            "validation": asdict(validation), "canonical_mutated": False}
+
+
 def approve_design_document(
     config: ConfigDocument,
     *,
@@ -1506,7 +1601,26 @@ def create_design_compile_task(
         raise ValueError("Design document must be approved before semantic compilation.")
     scope = dict(source_manifest.get("scope") or {})
     token = scope_token(scope)
-    base = f"design_semantic_compile.{task_type}.{token}"
+    version = str(approval["document_sha256"])[:16]
+    predecessors = [item for item in list_manifests(root) if item["task_type"] == "design_semantic_compile"
+                    and relative(root, document) in manifest_input_paths(item)]
+    for item in reversed(predecessors):
+        if item.get("status") not in {"awaiting_agent", "submitted", "validated"}:
+            continue
+        prior = load_manifest(root, item["task_id"])
+        instruction_inputs = [path for path in manifest_input_paths(prior) if path.startswith("50_workbench/intelligence_tasks/")]
+        if len(instruction_inputs) != 1:
+            continue
+        prior_output = manifest_output(prior)["path"]
+        expected_instruction = render_design_compile_instruction(task_type=task_type, document=relative(root, document),
+            document_hash=str(approval["document_sha256"]), domain_schema=str(TASK_SPECS[task_type]["schema"]), output=prior_output)
+        if (validate_manifest_strict(root, prior, strict=True).ok
+                and (root / instruction_inputs[0]).read_text(encoding="utf-8") == expected_instruction):
+            return IntelligenceTaskResult("design_semantic_compile", item["task_id"], item["manifest_file"],
+                instruction_inputs[0], prior_output, f"longform-engine agent-task brief project.yaml {item['task_id']}")
+    attempt = len(predecessors) + 1
+    owner = sha256(str(source_manifest["task_id"]).encode("utf-8")).hexdigest()[:12]
+    base = f"compile.{owner}.{version}.{attempt:02d}"
     instruction = root / "50_workbench" / "intelligence_tasks" / f"{base}.md"
     delta = root / "50_workbench" / "intelligence_candidates" / f"{base}.delta.json"
     manifest_file = root / "50_workbench" / "agent_tasks" / f"{base}.manifest.json"
@@ -1560,9 +1674,10 @@ def create_design_compile_task(
             "selection_report": instruction,
             "trigger_codes": [task_type],
         },
-        task_id=f"design_semantic_compile:{task_type}:{token}:v5",
+        task_id=f"design_semantic_compile:{task_type}:{token}:{version}:{attempt:02d}:v5",
     )
-    written = write_manifest(root, manifest, manifest_file)
+    written = write_manifest(root, manifest, manifest_file, supersedes_task_ids=[item["task_id"] for item in predecessors
+        if item.get("status") not in {"applied", "superseded", "rolled_back"}])
     return IntelligenceTaskResult(
         task_type="design_semantic_compile",
         task_id=str(manifest["task_id"]),
@@ -1904,11 +2019,54 @@ def render_design_compile_instruction(
         f"- CLI 内部领域 schema：`{domain_schema}`",
         f"- 唯一输出：`{output}`", "", "## 编译职责",
         "只把已批准 Markdown 中明确成立的事实编译为 canonical_delta_v1。",
-        "changes 使用目标领域字段，但不要写 schema、路径、hash、章节范围、命令或时间。",
-        "evidence 必须使用 /changes/... JSON Pointer 映射到 document@start:end。",
-        "备选方案、被否决内容、示例和分析理由不能作为已批准事实。",
+        '顶层只能含 schema、delta_type="design_document"、coverage、changes、evidence、uncertainties 六个字段。',
+        'coverage 是章节标题到 "changed"、"unchanged" 或 "insufficient" 的映射，不是数组。',
+        "changes 使用下列目标领域字段，不写顶层领域 schema、路径、hash、章节范围、命令或时间；明确要求的嵌套协议常量除外。",
+        f'evidence 必须使用 /changes/... JSON Pointer 映射到非空字符串数组，例如 ["{document}@start:end"]。',
+        "示例中的 start/end 须替换为全文 Unicode 字符偏移，end 不包含；不要使用字面路径 document。",
+        "设计编译实行原文逐项落地：每个事实字符串必须完整出现在该字段引用的 Markdown 范围中。不要概括、改写、拼接分散句子，或给表格单元格添加原文没有的行标题与冒号。",
+        "例如原表格为 | 代价 | 过用会伤及经脉。 |，tradeoffs 可提取原句“过用会伤及经脉。”，不能写成“代价：过用会伤及经脉。”。proposal 同样提取一个完整原文段落，不合并标题、正文和人工决定。",
+        "可以用内存脚本读取已声明文档，通过 Python str.index 和 len 计算并回读 text[start:end]；不得另写辅助文件，也不要凭目测估算偏移。",
+        "文档作为整体获批后，明确提出且未被否决的设计补足可以编译；互斥的备选方案、被否决内容和校准示例不能当作既定剧情。",
+        "后续待细化的事件不需要在此解决，也不能虚构答案。仅当本次必需字段无法从批准文档唯一确定时记录 uncertainties；不要把明确保留的未来设计空间误报为本次必需决策缺失。",
         "任何稳定 ID、窗口、关系或语义存在歧义时写入 uncertainties；CLI 将阻止 apply。", "",
+        ("本任务 changes 只含 question（本轮创作问题）、options（2–3 项，每项只有 id、proposal、tradeoffs 非空字符串列表）、"
+         "selection（只有 mode、option_id、answer）。采用选项时 mode=selected_option，option_id 绑定 options 的稳定 ID，answer 为空；"
+         "作者提供新回答时 mode=provided_answer，option_id 为空，answer 保留作者的决定。round 和 dimension 由 CLI 提供，不回填。"
+         if task_type == "book_ideation" else ""),
+        design_field_contract(task_type),
     ))
+
+
+def design_field_contract(task_type: str) -> str:
+    """Declare compiler fields and their design obligations from domain constants.
+
+    Designers and compilers receive the same requirements. This is a protocol
+    description, never an example that supplies invented story facts.
+    """
+    sections = []
+    if task_type == "book_design":
+        sections.extend((
+            "## 全书设计必须明确的字段与类型",
+            "Markdown 仍是唯一创作输出。用自然语言或表格明确下面每项设计，供批准后的编译器逐项取证；不要在设计阶段生成 JSON。",
+            "编译时 changes 必须含 creative_brief（对象）、world_markdown、power_system_markdown（各为一个连续原文区段）、characters、relationships、narrative_expression_profile、character_expression_contracts。可选 factions、locations 均为对象列表，每项有稳定 id 与 name。",
+            "creative_brief 必需非空字符串 target_audience、writing_style、automation_level、target_scale；非空对象 story_profile（用自然的描述键保存本书类型与叙事选择）；reader_contract 对象；core_taboo 非空字符串列表。不要补写 status。",
+            "creative_brief.design_decisions 恰好含 core_hook、world_rule、protagonist_desire、long_conflict、volume_escalation、ending_boundary 六项非空原文字符串。",
+            "creative_brief.story_engine_contract 恰好含 schema=story_engine_contract_v1；reader_fantasy、repeatable_action_loop、progression_loop、relationship_loop、mystery_or_question_loop、theme_carrier_limits 六项非空原文字符串；expected_payoffs（恰好 opening_three、early_serial、volume_end 三项非空字符串）；carrier_palette（至少三项不同场景承载方式的原文字符串）。推进可来自关系、理解或处境变化，不强制反复升级。",
+            "characters 至少一项，每项含稳定 id、name、goal、flaw（非空字符串）、arc_stages（至少三项非空字符串，分别指出人物弧中可观察的状态；不是强制三幕剧情）。",
+            "relationships 至少一项，每项含稳定 id、source_id、target_id、type、stage；端点引用 characters 的 id，type 和 stage 用明确的关系及当前阶段原文。人物与关系 ID 需在设计中声明，同一对象始终复用。稳定 ID 只用字母、数字、冒号、下划线和连字符。",
+        ))
+    if task_type in {"book_design", "character_expression_design"}:
+        sections.extend((
+            "## 人物表达字段与类型",
+            "character_expression_design 的 changes 只含 narrative_expression_profile 与 character_expression_contracts；book_design 把这两项与全书字段一并提供。",
+            "narrative_expression_profile 恰好含下面六项。设计用中文说明选择并在括号内标明选定编码，编译沿用该编码，不从未声明偏好猜测：",
+            json.dumps({key: sorted(values) for key, values in EXPRESSION_PROFILE_FIELDS.items()}, ensure_ascii=False),
+            "character_expression_contracts 为非空对象列表，覆盖已设计的重要人物。每项恰好包含以下非空字符串字段：" + "、".join(CHARACTER_CONTRACT_STRING_FIELDS) + "；以下非空字符串列表：" + "、".join(CHARACTER_CONTRACT_LIST_FIELDS) + "；以及 voice_examples 列表。",
+            "character_id 与 contrast_with 使用已声明人物 ID。分别写出注意点、选择偏向、说话策略、情绪泄露、身体表现、面具、私欲、矛盾和对照，不能拿同一条通用性格说明填满各项。",
+            "voice_examples 没有已批准声例时为 []，不能把设计示例提升为已批准正文。非空时每项仅 polarity（positive/negative）、text、note、approved；示例不得改变剧情事实。",
+        ))
+    return "\n".join(sections)
 
 
 def design_cli_fields(
@@ -1963,7 +2121,7 @@ def validate_delta_document_grounding(
             for evidence_id in evidence_ids if str(evidence_id)
         )
         compact_excerpt = normalize_grounding_text(excerpts)
-        for scalar in design_fact_scalars(value):
+        for scalar in design_fact_scalars(value, pointer.removeprefix("/changes/")):
             if normalize_grounding_text(scalar) not in compact_excerpt:
                 errors.append(
                     f"delta fact `{scalar[:80]}` at `{pointer}` is absent from its Markdown evidence."
@@ -1988,14 +2146,20 @@ def json_pointer_value(payload: dict[str, Any], pointer: str) -> Any:
     return current
 
 
-def design_fact_scalars(value: Any) -> list[str]:
+def design_fact_scalars(value: Any, field_path: str = "") -> list[str]:
+    # These validated encodings describe the protocol, not a fact the author
+    # must literally type into an otherwise natural-language design document.
+    if field_path.endswith("/schema") or (
+        field_path == "selection/mode" and isinstance(value, str) and value in {"selected_option", "provided_answer"}
+    ):
+        return []
     if isinstance(value, str):
         text = value.strip()
-        return [text] if len(text) >= 2 else []
+        return [text] if text else []
     if isinstance(value, list):
-        return [item for child in value for item in design_fact_scalars(child)]
+        return [item for index, child in enumerate(value) for item in design_fact_scalars(child, f"{field_path}/{index}")]
     if isinstance(value, dict):
-        return [item for child in value.values() for item in design_fact_scalars(child)]
+        return [item for key, child in value.items() for item in design_fact_scalars(child, f"{field_path}/{key}")]
     return []
 
 
@@ -3318,7 +3482,7 @@ def validate_book_ideation(root: Path, payload: dict[str, Any], errors: list[str
                 errors.append(f"options[{index}] must contain id, proposal, and tradeoffs only.")
                 continue
             option_id = str(option.get("id") or "")
-            if not stable_id(option_id) or option_id in option_ids:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:_-]{0,79}", option_id) or option_id in option_ids:
                 errors.append(f"options[{index}].id must be stable and unique.")
             option_ids.add(option_id)
             if not isinstance(option.get("proposal"), str) or not option["proposal"].strip():
@@ -4455,6 +4619,7 @@ def render_instruction(task_type: str, spec: dict[str, Any], scope: dict[str, An
         "校验要求：",
         f"- {requirements}",
         f"- {output_rule}",
+        design_field_contract(task_type),
         "",
         "不得直接写 Bible、outline、research canon、final、RAG、graph、TCS 或 SQLite。",
         "CLI 只在内存中规范化唯一输出，并在显式 apply 前完成验证。",

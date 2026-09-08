@@ -152,8 +152,8 @@
     },
     {
       "path": "config/agent_roles/prompts/planning_chief_editor.md",
-      "sha256": "c265fae302975d1808f0de5fa001ad6dabf6d149889b76b153f0394c272c6e80",
-      "size": 4170
+      "sha256": "6ed024471e08817f852693cf9e3a55f99d1452dbe42a96f8a287c746ff47ac74",
+      "size": 4963
     },
     {
       "path": "config/agent_roles/prompts/prose_naturalness_editor.md",
@@ -172,8 +172,8 @@
     },
     {
       "path": "config/agent_roles/prompts/reader_payoff_reviewer.md",
-      "sha256": "9e670052c9f7fd509ba0c1e5bfef5d7eb2ddaf4d91f286f33d0527b56d20386a",
-      "size": 4251
+      "sha256": "641540962f83dcb875a4504f151df300dd6d94dad2935132170317090d999605",
+      "size": 4491
     },
     {
       "path": "config/agent_roles/prompts/repair_author.md",
@@ -197,8 +197,8 @@
     },
     {
       "path": "config/agent_roles/prompts/semantic_continuity_reviewer.md",
-      "sha256": "c273256fa38f26deec1ecf291abb3867f6c4459cf0c0a11b0182d832f1b0d5d7",
-      "size": 4471
+      "sha256": "e3f08c31a69079126e8cad5dd127d5164d0cd7e6e9079c986dcb0ce5cb7d0460",
+      "size": 4812
     },
     {
       "path": "config/agent_roles/prompts/semantic_narrative_architect.md",
@@ -232,8 +232,8 @@
     },
     {
       "path": "config/agent_roles/registry.json",
-      "sha256": "b1ac2b34936fd2dbe24212ddc0063934f4dba628ce6bee86db84ef89b78b18ba",
-      "size": 41243
+      "sha256": "287ea4b2a379af8738d4d0c29647cfd1a516b96276b64e65d2fcb2e1b7009911",
+      "size": 41359
     },
     {
       "path": "config/default.engine.yaml",
@@ -451,9 +451,109 @@
       "size": 11771
     },
     {
+      "path": "templates/planning/bundle_shape.json",
+      "sha256": "c4f0076f5cfd65b3785bd16e6ee85d3992b5b2c490a4c46fbad9940de28a054d",
+      "size": 4634
+    },
+    {
+      "path": "templates/planning/generation.md",
+      "sha256": "e93aa1a95f0864e1c35daeec9ee3be623800d618510e0d52958f4e99c07f62df",
+      "size": 4802
+    },
+    {
       "path": "templates/qidian-longform/project.yaml",
       "sha256": "53f34b6e343d80822af988acd234d3c8c3aa69ff4c9c235b21fb649a559a81e4",
       "size": 1037
+    },
+    {
+      "path": "templates/studio/chapter_confirmations.js",
+      "sha256": "014797201b62496df614fdaf9566aad8e2103c2aaa594e2bec6cb65f15f4eaf5",
+      "size": 7695
+    },
+    {
+      "path": "templates/studio/discussion.js",
+      "sha256": "6c96369bcd8fccf9558d9f92a76e2528c983197cb3b50cbb4e31ad1564012cc9",
+      "size": 9093
+    },
+    {
+      "path": "templates/studio/document_view.js",
+      "sha256": "690e28be536957d62cbae0a1ab82209cb0e662ea5aa19a8e9796e8346a0b9ebe",
+      "size": 2674
+    },
+    {
+      "path": "templates/studio/graph_view.js",
+      "sha256": "411e497f2f25c0fd99d819f03c128eee2df198ab727e3878355a1cef67bff043",
+      "size": 4852
+    },
+    {
+      "path": "templates/studio/literary.css",
+      "sha256": "51854cfc721edf3fc1bb23dbff0e16ba39d6c83c7a091148f6e6831f4494082f",
+      "size": 1447
+    },
+    {
+      "path": "templates/studio/literary.html",
+      "sha256": "95b87df11224494a35c33ef0e58f7762c62bde614e24b6aebe17b5ba61744041",
+      "size": 632
+    },
+    {
+      "path": "templates/studio/literary.js",
+      "sha256": "c16856a9ec2b86cd9bcae37c9c5d21571e26267f2c5f742247f1affcbc0b9f7b",
+      "size": 23695
+    },
+    {
+      "path": "templates/studio/planning.js",
+      "sha256": "a6703c1315e9fe138329ee3f8643c30f06d4c78e194ded473791f427126f8f4a",
+      "size": 8918
+    },
+    {
+      "path": "templates/studio/reader.js",
+      "sha256": "a348ee3a8e8216a359b9bdaa0d1bc82b76a7f5097e1e97bf369d67f13d16ab37",
+      "size": 39692
+    },
+    {
+      "path": "templates/studio/review.css",
+      "sha256": "1d3d4eaba55fd5ba92d6348be6be93417637eb318795de22cdcf95fd345f0104",
+      "size": 2952
+    },
+    {
+      "path": "templates/studio/review_forms.js",
+      "sha256": "2afad545727859a962e953db9960daf779e81e17dab0024a179d92dc6cdd03d0",
+      "size": 11214
+    },
+    {
+      "path": "templates/studio/review_jobs.js",
+      "sha256": "3406a8dd5538ef95e3463e32514ec0d4b11c821e94724fb0317cda636071022d",
+      "size": 11894
+    },
+    {
+      "path": "templates/studio/review_layout.js",
+      "sha256": "4f2b22970365f8b780cc3dde74de19c40d90a63fe1de55cd82518283176be5b3",
+      "size": 2348
+    },
+    {
+      "path": "templates/studio/source_forms.js",
+      "sha256": "d8fd7aee9c0986ab5eda10981563ba192772dc32d8e8cbe3c26db0a5437abbc7",
+      "size": 10260
+    },
+    {
+      "path": "templates/studio/studio.css",
+      "sha256": "891554e0b3f94eab299ca1a193422b0847f739716e9b9cae9172169b82b30d4f",
+      "size": 12678
+    },
+    {
+      "path": "templates/studio/versions.js",
+      "sha256": "a0926c9f679f8978eb39a52f5805c172b42caafa56fabc2067215eb67ed415cc",
+      "size": 3403
+    },
+    {
+      "path": "templates/studio/workspace.html",
+      "sha256": "6f7cb5f50a8106f762d205969c3a97103397ed78e20846b96dbc94fc6ea9d35a",
+      "size": 1001
+    },
+    {
+      "path": "templates/studio/workspace.js",
+      "sha256": "628570815686409117b183bdf0ce3ef6a99f15ec8b028d1bd6384c9b4248026a",
+      "size": 51447
     }
   ],
   "engine_version": "0.14.0",

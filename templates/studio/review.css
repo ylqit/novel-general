@@ -1,0 +1,19 @@
+body{height:100dvh;display:flex;flex-direction:column;font-size:14px}
+header{flex:none;min-height:64px;padding:12px 18px;border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#15181d}
+#layout{flex:1;min-height:0;display:grid;grid-template-columns:230px minmax(0,1fr) 340px;grid-template-areas:"context prose decisions"}
+#layout main{grid-area:prose;padding:18px;max-width:none;margin:0}
+#reviewContext{grid-area:context}#reviewDecisions{grid-area:decisions}
+.col{min-width:0;overflow:auto;padding:14px;border-right:1px solid var(--line)}.col:last-child{border-right:0}
+.col>section{margin:0 0 16px;background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:16px}
+h2,h3{margin:0 0 12px}h2{font-size:19px}h3{font-size:16px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;color:var(--ink);font-family:inherit}
+textarea{font-family:inherit}#manuscript,#revisionText{font:20px/1.9 "Microsoft YaHei",sans-serif;min-height:52vh;background:#191c21;color:#e7e9ee;padding:24px}
+.toolbar{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}.finding{padding:10px;border-left:2px solid var(--warn);margin:8px 0;background:#302629}
+.ok{color:var(--ok)}.error{color:var(--danger)}.check{display:flex;gap:8px;margin:6px 0}.status{white-space:pre-wrap;border-top:1px dashed var(--line);margin-top:8px;padding-top:8px}
+#candidate{max-width:180px;overflow:hidden;text-overflow:ellipsis;font-size:12px}#consultHistory{white-space:normal}.consult-answer{white-space:pre-wrap;line-height:1.9;max-height:55vh;overflow:auto}.revision-change{padding:14px 0;border-bottom:1px solid var(--line)}
+#layout.hide-context{grid-template-columns:minmax(0,1fr) 340px;grid-template-areas:"prose decisions"}#layout.hide-decisions{grid-template-columns:230px minmax(0,1fr);grid-template-areas:"context prose"}#layout.hide-context.hide-decisions{grid-template-columns:minmax(0,1fr);grid-template-areas:"prose";max-width:1100px;width:100%;margin:auto}
+#layout.hide-context #reviewContext,#layout.hide-decisions #reviewDecisions{display:none}
+@media(max-width:1200px){body{height:auto;min-height:100dvh}#layout{grid-template-columns:200px minmax(0,1fr);grid-template-areas:"context prose" "decisions decisions";flex:auto}.col{overflow:visible}.col:last-child{border-top:1px solid var(--line)}#layout.hide-context{grid-template-columns:minmax(0,1fr);grid-template-areas:"prose" "decisions"}#layout.hide-decisions{grid-template-columns:200px minmax(0,1fr)}}
+@media(max-width:768px){#layout,#layout.hide-context,#layout.hide-decisions,#layout.hide-context.hide-decisions{display:flex;flex-direction:column}.col{max-height:none;border-right:0}#layout main{padding:14px}#reviewContext,#reviewDecisions{border-top:1px solid var(--line)}#manuscript,#revisionText{padding:16px}header{gap:8px;font-size:13px}header button{padding:7px 9px}#globalStatus{width:100%}}
+
+#reviewOrigin{width:100%;font-size:12px;color:var(--warn)}

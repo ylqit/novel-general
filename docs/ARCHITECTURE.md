@@ -116,7 +116,7 @@ human_chapter_intent_v3
 -> chapter_story_brief_basis_v4
 -> chapter_story_brief_v5
 -> chapter_writing_task_v8
--> chapter_story_brief_renderer_v5
+-> chapter_story_brief_renderer_v5.1
 ```
 
 作者稿只展示可读拓扑、剧情义务、批准节点、人物选择、读者价值、必要事实与声音。内部 ID、hash、原始 RAG、Graph、SQLite、平台诊断和 Prompt 日志不得进入作者工作单。

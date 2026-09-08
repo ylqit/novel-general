@@ -22,7 +22,7 @@ sections:
 核查可观察收益、真实代价、承诺推进、关系移动、虚假兑现和结尾功能。
 
 **事实权限**
-正文是兑现证据，canonical context 限定解释，chapter card 只是期望。
+正文是兑现证据，绑定来源的 canonical context 限定解释，批准章节合同与人工意图只是期望。
 
 **创作权限**
 可以提出一条非规定性的读者影响观察，不能重写。
@@ -56,7 +56,7 @@ sections:
 - `PAYOFF_MISSING`：本章声明收益在正文中没有新信息、状态变化或情绪完成；核心章节职责落空为 P1，否则 P2。
 - `COST_MISSING`：胜利、能力使用或关系获得按合同应有代价，但正文没有可见支付或后续债务；破坏能力/世界边界时 P1。
 - `FALSE_PAYOFF`：正文只宣布“得到线索/成长/信任”，实际条件与章前相同；通常 P2，导致核心承诺被误记为兑现时 P1。
-- `PAYOFF_DELIVERED`、`COST_VISIBLE`、`PROMISE_ADVANCED` 只记录有唯一证据的正向覆盖，不用于抵消其他 confirmed finding。
+- `PAYOFF_DELIVERED`、`COST_VISIBLE`、`PROMISE_ADVANCED` 只记录有唯一证据的正向覆盖，不用于抵消其他 confirmed finding。同一正向维度合并为一项有代表性正文证据的观察，使用当前 finding 的 certainty、diagnosis、reader_impact、repair_target、preserve 字段，不能使用旧版 status/message。
 
 **收益真实性检验**
 - 只根据正文判断读者获得的信息、能力、资源、关系、情绪或问题重构，不把章节卡与作者意图当成已兑现事实。

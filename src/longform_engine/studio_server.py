@@ -549,86 +549,102 @@ class StudioRequestHandler(LoopbackRequestHandler):
             self._require_csrf()
             parsed = self._safe_url()
             if parsed.path == "/api/upload/file":
-                self._upload_file(parsed.query)
+                receive_browser_upload(self, self.server.service, parsed.query)
                 return
             body = self._read_json()
-            routes = {
-                "/api/creation-goal/save": lambda: self.server.service.save_creation_goal(body),
-                "/api/market-claim/save": lambda: self.server.service.save_market_claim(body),
-                "/api/semantic/save": lambda: self.server.service.save_semantic_candidate(body),
-                "/api/work/register": lambda: self.server.service.register_work(body),
-                "/api/upload/start": lambda: self.server.service.start_upload(body),
-                "/api/upload/finalize": lambda: self.server.service.finalize_upload(
-                    str(body.get("session_id") or "")
-                ),
-                "/api/upload/cancel": lambda: self.server.service.cancel_upload(
-                    str(body.get("session_id") or "")
-                ),
-                "/api/ingest/groups-confirm": lambda: self.server.service.confirm_ingest_groups(body),
-                "/api/ingest/apply": lambda: self.server.service.apply_ingest(body),
-                "/api/item/status": lambda: self.server.service.item_status(
-                    str(body.get("item_id") or "")
-                ),
-                "/api/process/plan": lambda: self.server.service.plan_processing(body),
-                "/api/process/run": lambda: self.server.service.run_processing(body),
-                "/api/evidence/preview": lambda: self.server.service.evidence_preview(body),
-            }
-            action = routes.get(parsed.path)
-            if action is None:
-                self._send_json(HTTPStatus.NOT_FOUND, {"error": "route_not_found"})
-                return
-            self._send_json(HTTPStatus.OK, {"ok": True, "result": action()})
+            self._send_json(HTTPStatus.OK, {"ok": True, "result": dispatch_studio_action(self.server.service, parsed.path, body)})
         except LocalWebError as exc:
             self._send_json(HTTPStatus.FORBIDDEN, {"error": str(exc)})
         except (FanfictionSourceError, OSError, KeyError, TypeError, ValueError) as exc:
             self._send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
 
-    def _upload_file(self, query: str) -> None:
-        from urllib.parse import parse_qs
-
-        values = parse_qs(query, keep_blank_values=True)
-        if set(values) != {"session", "path"}:
-            raise StudioServerError("上传文件参数无效")
-        session_id = values["session"][0]
-        relative_path = values["path"][0]
-        self.server.service._upload_session(session_id)
-        _safe_browser_relative_path(relative_path)
-        boundary = _multipart_boundary(self.headers.get("Content-Type", ""))
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError as exc:
-            raise StudioServerError("上传文件长度无效") from exc
-        if length <= 0 or length > MAX_BROWSER_UPLOAD_FILE_BYTES + MAX_MULTIPART_OVERHEAD_BYTES:
-            raise StudioServerError("multipart 上传请求大小超出允许范围")
-        if shutil.disk_usage(source_library_root()).free < length + 64 * 1024 * 1024:
-            raise StudioServerError("资料库磁盘剩余空间不足，multipart 请求尚未写入暂存区")
-        with tempfile.TemporaryFile(mode="w+b") as spool:
-            remaining = length
-            while remaining:
-                chunk = self.rfile.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    raise StudioServerError("浏览器连接在 multipart 上传完成前中断")
-                spool.write(chunk)
-                remaining -= len(chunk)
-            multipart_stream = cast(BinaryIO, spool)
-            file_start, file_length = _multipart_file_bounds(
-                multipart_stream, length=length, boundary=boundary
-            )
-            spool.seek(file_start)
-            result = self.server.service.receive_upload(
-                session_id=session_id,
-                relative_path=relative_path,
-                length=file_length,
-                stream=multipart_stream,
-            )
-        self._send_json(HTTPStatus.OK, {"ok": True, "result": result})
 
 
-def studio_page_html(csrf_token: str, csp_nonce: str) -> str:
+
+def dispatch_studio_action(service: StudioService, route: str, body: dict[str, Any]) -> dict[str, Any]:
+    """One source-console action map shared by both authenticated transports."""
+    routes = {
+        "/api/creation-goal/save": lambda: service.save_creation_goal(body),
+        "/api/market-claim/save": lambda: service.save_market_claim(body),
+        "/api/semantic/save": lambda: service.save_semantic_candidate(body),
+        "/api/work/register": lambda: service.register_work(body),
+        "/api/upload/start": lambda: service.start_upload(body),
+        "/api/upload/finalize": lambda: service.finalize_upload(
+            str(body.get("session_id") or "")
+        ),
+        "/api/upload/cancel": lambda: service.cancel_upload(
+            str(body.get("session_id") or "")
+        ),
+        "/api/ingest/groups-confirm": lambda: service.confirm_ingest_groups(body),
+        "/api/ingest/apply": lambda: service.apply_ingest(body),
+        "/api/item/status": lambda: service.item_status(
+            str(body.get("item_id") or "")
+        ),
+        "/api/process/plan": lambda: service.plan_processing(body),
+        "/api/process/run": lambda: service.run_processing(body),
+        "/api/evidence/preview": lambda: service.evidence_preview(body),
+    }
+    action = routes.get(route)
+    if action is None:
+        raise StudioServerError("source action is not allowed")
+    return action()
+
+
+def receive_browser_upload(handler: LoopbackRequestHandler, service: StudioService, query: str) -> None:
+    from urllib.parse import parse_qs
+
+    values = parse_qs(query, keep_blank_values=True)
+    if set(values) != {"session", "path"}:
+        raise StudioServerError("上传文件参数无效")
+    session_id = values["session"][0]
+    relative_path = values["path"][0]
+    service._upload_session(session_id)
+    _safe_browser_relative_path(relative_path)
+    boundary = _multipart_boundary(handler.headers.get("Content-Type", ""))
+    try:
+        length = int(handler.headers.get("Content-Length", "0"))
+    except ValueError as exc:
+        raise StudioServerError("上传文件长度无效") from exc
+    if length <= 0 or length > MAX_BROWSER_UPLOAD_FILE_BYTES + MAX_MULTIPART_OVERHEAD_BYTES:
+        raise StudioServerError("multipart 上传请求大小超出允许范围")
+    if shutil.disk_usage(source_library_root()).free < length + 64 * 1024 * 1024:
+        raise StudioServerError("资料库磁盘剩余空间不足，multipart 请求尚未写入暂存区")
+    with tempfile.TemporaryFile(mode="w+b") as spool:
+        remaining = length
+        while remaining:
+            chunk = handler.rfile.read(min(1024 * 1024, remaining))
+            if not chunk:
+                raise StudioServerError("浏览器连接在 multipart 上传完成前中断")
+            spool.write(chunk)
+            remaining -= len(chunk)
+        multipart_stream = cast(BinaryIO, spool)
+        file_start, file_length = _multipart_file_bounds(
+            multipart_stream, length=length, boundary=boundary
+        )
+        spool.seek(file_start)
+        result = service.receive_upload(
+            session_id=session_id,
+            relative_path=relative_path,
+            length=file_length,
+            stream=multipart_stream,
+        )
+    handler._send_json(HTTPStatus.OK, {"ok": True, "result": result})
+
+def studio_page_html(csrf_token: str, csp_nonce: str, *, api_prefix: str = "/api") -> str:
+    if re.fullmatch(r"/api(?:/projects/project_[0-9a-f]{20}/sources)?", api_prefix) is None:
+        raise StudioServerError("source API prefix is invalid")
+    from longform_engine.resources import resource_path
+    styles = resource_path("templates", "studio", "studio.css").read_text(encoding="utf-8")
     page = (
         _STUDIO_PAGE.replace("__CSRF_TOKEN__", html.escape(csrf_token, quote=True))
         .replace("studiononce", html.escape(csp_nonce, quote=True))
     )
+    forms = resource_path("templates", "studio", "source_forms.js").read_text(encoding="utf-8")
+    page = page.replace('load().catch(e=>show("catalog",e.message));', forms + '\nload().catch(e=>show("catalog",e.message));')
+    page = page.replace('if(!$("nav").children.length)panels()}', 'if(!$("nav").children.length)panels();sourceEnhance()}')
+    page = page.replace('show("uploadResult",plan)', 'sourceRenderGroups(plan);show("uploadResult",plan)')
+    page = page.replace('groups:JSON.parse($("groupPlan").value)', 'groups:(sourceSyncGroups(),JSON.parse($("groupPlan").value))')
+    page = page.replace('show("processResult",lastJob)', 'sourceSaveDraft();show("processResult",lastJob)')
     page = page.replace(
         'rights_status:"user_claimed_authorized",retention_mode:"full_text"',
         'rights_status:"unverified",retention_mode:"short_evidence"',
@@ -655,7 +671,12 @@ def studio_page_html(csrf_token: str, csp_nonce: str) -> str:
     projection_anchor = 'show("crossoverContract",state.crossover_contract);'
     if page.count(projection_anchor) != 1:
         raise StudioServerError("创作控制台发布状态投影边界不一致")
-    return page.replace(projection_anchor, publication_projection, 1)
+    if api_prefix != "/api":
+        project_id = api_prefix.split("/")[3]
+        page = page.replace('const names=state.panels;', 'const names=["原著资料库","批量导入","资料处理","动态覆盖"];')
+        page = page.replace('<h1>小说创作控制台</h1>', '<h1>原著与研究资料</h1><p>本机共享资料库 · 导入、核对与处理来源材料</p>')
+        page = page.replace('<header><h1>', f'<header><a href="/projects/{project_id}/sources">返回作品资料</a> · <a href="/">作品书架</a><h1>', 1)
+    return page.replace(projection_anchor, publication_projection, 1).replace("__STUDIO_STYLES__", styles).replace('"/api/', f'"{api_prefix}/').replace('`/api/', f'`{api_prefix}/')
 
 
 def _safe_browser_relative_path(value: str) -> str:
@@ -759,11 +780,13 @@ def _read_json(path: Path) -> Any:
 
 
 _STUDIO_PAGE = r'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>小说创作控制台</title>
-<style nonce="studiononce">:root{font-family:"Microsoft YaHei",sans-serif;color:#202124;background:#f6f4ef}body{margin:0}header{padding:22px 28px;background:#263238;color:white}main{display:grid;grid-template-columns:230px 1fr;min-height:calc(100vh - 82px)}nav{padding:18px;background:#ece7dd}button{cursor:pointer}nav button{display:block;width:100%;text-align:left;padding:9px;margin:3px 0;border:0;background:transparent}.active{background:#fff!important;border-left:4px solid #8a5a2b!important}section{display:none;padding:24px;max-width:1100px}.show{display:block}.card{background:white;border:1px solid #ddd4c7;border-radius:10px;padding:16px;margin:12px 0}label{display:block;margin:8px 0}input,select,textarea{box-sizing:border-box;width:100%;padding:8px}button.action{padding:9px 14px;background:#6c4425;color:white;border:0;border-radius:6px}.muted{color:#69645d}pre{white-space:pre-wrap;background:#202124;color:#e8eaed;padding:12px;border-radius:8px;max-height:360px;overflow:auto}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}</style></head>
+<meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>小说创作控制台</title>
+<style nonce="studiononce">:root{font-family:"Microsoft YaHei",sans-serif;color:#202124;background:#f6f4ef}body{margin:0}header{padding:22px 28px;background:#263238;color:white}main{display:grid;grid-template-columns:230px 1fr;min-height:calc(100vh - 82px)}nav{padding:18px;background:#ece7dd}button{cursor:pointer}nav button{display:block;width:100%;text-align:left;padding:9px;margin:3px 0;border:0;background:transparent}.active{background:#fff!important;border-left:4px solid #8a5a2b!important}section{display:none;padding:24px;max-width:1100px}.show{display:block}.card{background:white;border:1px solid #ddd4c7;border-radius:10px;padding:16px;margin:12px 0}label{display:block;margin:8px 0}input,select,textarea{box-sizing:border-box;width:100%;padding:8px}button.action{padding:9px 14px;background:#6c4425;color:white;border:0;border-radius:6px}.muted{color:#69645d}pre{white-space:pre-wrap;background:#202124;color:#e8eaed;padding:12px;border-radius:8px;max-height:360px;overflow:auto}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}__STUDIO_STYLES__
+header{background:#15181d;border-bottom:1px solid var(--line)}section{background:#191c21;max-width:none}pre{color:#e7e9ee}#nav{background:#191c21;border:1px solid var(--line);border-radius:8px;align-self:start;position:sticky;top:16px}#nav button{color:var(--ink);font-weight:400}#nav button.active{background:#273631!important;border-left:2px solid var(--accent)!important;color:var(--accent)}button.action{background:var(--accent);color:#111317}main{gap:22px;grid-template-columns:216px minmax(0,1fr)}#content{min-width:0}@media(max-width:800px){main{grid-template-columns:1fr}#nav{position:static;display:flex;flex-wrap:wrap}#nav button{width:auto}section{padding:16px}.grid{grid-template-columns:1fr}}
+</style></head>
 <body><header><h1>小说创作控制台</h1><div id="project"></div></header><main><nav id="nav"></nav><div id="content">
 <section data-panel="创建小说"><h2>创建小说</h2><div class="card">选择原创、灵感原创、改编研究、同人或跨作品同人。修改模式需要编辑并重新校验 project.yaml；本页不会绕过配置门禁。<pre id="createCommand">longform-engine project init ...</pre></div></section>
-<section data-panel="创作目标"><h2>创作目标</h2><div class="card grid"><label>创作目的<input id="purpose" value="兴趣创作"></label><label>创作类型<select id="workType"><option>原创</option><option>灵感原创</option><option>改编研究</option><option>同人</option><option>跨作品同人</option></select></label><label>篇幅形式<input id="format" value="长篇连载"></label><label>目标平台<input id="platform"></label><label>更新能力<input id="capacity" value="按实际填写"></label><label>验证周期<input id="period" value="按卷复盘"></label></div><label><input id="commercial" type="checkbox" style="width:auto"> 计划商业化</label><label><input id="rights" type="checkbox" style="width:auto"> 已理解同人权利风险声明不是法律鉴定</label><button class="action" id="saveGoal">保存创作目标</button><pre id="goalResult"></pre></section>
+<section data-panel="创作目标"><h2>创作目标</h2><div class="card grid"><label>创作目的<input id="purpose" value="兴趣创作"></label><label>创作类型<select id="workType"><option>原创</option><option>灵感原创</option><option>改编研究</option><option>同人</option><option>跨作品同人</option></select></label><label>篇幅形式<input id="format" value="长篇连载"></label><label>目标平台<input id="platform"></label><label>更新能力<input id="capacity" value="按实际填写"></label><label>验证周期<input id="period" value="按卷复盘"></label></div><label><input id="commercial" type="checkbox"> 计划商业化</label><label><input id="rights" type="checkbox"> 已理解同人权利风险声明不是法律鉴定</label><button class="action" id="saveGoal">保存创作目标</button><pre id="goalResult"></pre></section>
 <section data-panel="创作沙盒"><h2>创作沙盒</h2><div class="card"><p>沙盒用于非 Canon 试写，不更新 Canon、图谱、RAG 或正式大纲。</p><pre id="sandboxCommand"></pre></div></section>
 <section data-panel="语义文档"><h2>语义文档</h2><div class="card grid"><label>文档类型<input id="semanticType" value="人物理解"></label><label>标题<input id="semanticTitle"></label><label>连续性<input id="semanticContinuity" value="项目候选"></label><label>作用域<input id="semanticScope" value="project_semantic_candidate"></label></div><label>中文 Markdown 语义正文<textarea id="semanticBody" rows="14"></textarea></label><button class="action" id="saveSemantic">保存待独立复核候选</button><pre id="semanticResult"></pre><h3>现有语义文档</h3><pre id="semanticDocuments"></pre></section>
 <section data-panel="原著资料库"><h2>原著资料库</h2><button class="action" id="refresh">刷新</button><pre id="catalog"></pre></section>
@@ -793,7 +816,7 @@ longform-engine intelligence task project.yaml --task-type outline_design</pre><
 <section data-panel="读者反馈"><h2>读者反馈</h2><p>反馈先形成假设与人工决定，只能转成规划或 Canon 变更提案，不能直接改正文。</p><pre>longform-engine intelligence task project.yaml --task-type reader_feedback_analysis --input FEEDBACK.md</pre></section>
 <section data-panel="影响与回溯"><h2>影响与回溯</h2><div class="card">资料升级只生成影响提案；触及定稿章节时进入 revision_branch_v2，不自动替换全文。</div></section>
 <section data-panel="平台发布前确认"><h2>平台发布前确认</h2><p>分别显示起点男频与番茄免费档的政策快照、人工权利决定、陈旧原因和导出门禁。这里不自动登录、投稿或回传平台状态。</p><pre id="publicationStatus"></pre><pre id="rightsDecisionCommand"></pre></section>
-</div></main><script nonce="studiononce">const csrf="__CSRF_TOKEN__";let state=null,lastJob=null,lastBatch=null;const $=id=>document.getElementById(id);async function api(path,body){const r=await fetch(path,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-Studio-CSRF":csrf},body:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw new Error(d.error||"请求失败");return d.result}function show(id,v){$(id).textContent=typeof v==="string"?v:JSON.stringify(v,null,2)}function panels(){const names=state.panels;$("nav").replaceChildren(...names.map((n,i)=>{const b=document.createElement("button");b.textContent=n;b.className=i===0?"active":"";b.onclick=()=>{document.querySelectorAll("section").forEach(s=>s.classList.toggle("show",s.dataset.panel===n));document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x===b))};return b}));document.querySelector("section").classList.add("show")}async function load(){const r=await fetch("/api/state",{credentials:"same-origin"});state=await r.json();if(!r.ok)throw new Error(state.error);$("project").textContent=`${state.project.title} · ${state.project.creation_mode} · ${state.project.target_platform}`;$("platform").value=state.project.target_platform||"";show("catalog",state.catalog);show("capabilities",state.capabilities);show("coverage",state.coverage);show("semanticDocuments",state.semantic_documents);show("crossoverContract",state.crossover_contract);show("sandboxCommand",state.safe_commands.sandbox);show("canonCommand",state.safe_commands.canon_task);show("reviewCommand",state.safe_commands.chapter_review);if(!$("nav").children.length)panels()}$("refresh").onclick=load;$("saveGoal").onclick=async()=>{try{show("goalResult",await api("/api/creation-goal/save",{purpose:$("purpose").value,work_type:$("workType").value,format:$("format").value,target_platform:$("platform").value,update_capacity:$("capacity").value,validation_period:$("period").value,commercial_intent:$("commercial").checked,fanfiction_rights_risk_confirmed:$("rights").checked}))}catch(e){show("goalResult",e.message)}};$("saveSemantic").onclick=async()=>{try{show("semanticResult",await api("/api/semantic/save",{document_type:$("semanticType").value,title:$("semanticTitle").value,continuity:$("semanticContinuity").value,body:$("semanticBody").value,scope_kind:$("semanticScope").value}));await load()}catch(e){show("semanticResult",e.message)}};$("upload").onclick=async()=>{try{const chosen=[...$("files").files];if(!chosen.length)throw new Error("请选择文件");const session=await api("/api/upload/start",{work_id:$("uploadWork").value,source_type:$("sourceType").value,version:$("sourceVersion").value,unit_range:$("unitRange").value,source_method:"浏览器人工导入",rights_status:"user_claimed_authorized",retention_mode:"full_text",storage_mode:"managed_copy"});for(const f of chosen){const path=f.webkitRelativePath||f.name;const r=await fetch(`/api/upload/file?session=${encodeURIComponent(session.session_id)}&path=${encodeURIComponent(path)}`,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/octet-stream","X-Studio-CSRF":csrf},body:f});const d=await r.json();if(!r.ok)throw new Error(d.error||"上传失败")}const plan=await api("/api/upload/finalize",{session_id:session.session_id});lastBatch=plan.batch_id;$("groupPlan").value=JSON.stringify(plan.groups,null,2);show("uploadResult",plan)}catch(e){show("uploadResult",e.message)}};$("confirmGroups").onclick=async()=>{try{if(!lastBatch)throw new Error("请先生成分组预览");show("groupResult",await api("/api/ingest/groups-confirm",{batch_id:lastBatch,groups:JSON.parse($("groupPlan").value),approved_by:"human"}))}catch(e){show("groupResult",e.message)}};$("applyIngest").onclick=async()=>{try{if(!lastBatch)throw new Error("请先确认资料分组");show("groupResult",await api("/api/ingest/apply",{batch_id:lastBatch,approved_by:"human"}));await load()}catch(e){show("groupResult",e.message)}};$("processPlan").onclick=async()=>{try{lastJob=await api("/api/process/plan",{item_id:$("processItem").value,asset_ids:[],execution:"local",processor_id:"auto",parameters:{}});show("processResult",lastJob)}catch(e){show("processResult",e.message)}};$("processRun").onclick=async()=>{try{if(!lastJob)throw new Error("请先生成处理任务");show("processResult",await api("/api/process/run",{item_id:$("processItem").value,job_id:lastJob.job_id}))}catch(e){show("processResult",e.message)}};load().catch(e=>show("catalog",e.message));</script></body></html>'''
+</div></main><script nonce="studiononce">const csrf="__CSRF_TOKEN__";let state=null,lastJob=null,lastBatch=null;const $=id=>document.getElementById(id);async function api(path,body){const r=await fetch(path,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-Studio-CSRF":csrf},body:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw new Error(d.error||"请求失败");return d.result}function show(id,v){$(id).textContent=typeof v==="string"?v:JSON.stringify(v,null,2);sourceSummarize(id,v)}function panels(){const names=state.panels;$("nav").replaceChildren(...names.map((n,i)=>{const b=document.createElement("button");b.textContent=n;b.className=i===0?"active":"";b.onclick=()=>{document.querySelectorAll("section").forEach(s=>s.classList.toggle("show",s.dataset.panel===n));document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("active",x===b))};return b}));document.querySelector("section").classList.add("show")}async function load(){const r=await fetch("/api/state",{credentials:"same-origin"});state=await r.json();if(!r.ok)throw new Error(state.error);$("project").textContent=`${state.project.title} · ${state.project.creation_mode} · ${state.project.target_platform}`;$("platform").value=state.project.target_platform||"";show("catalog",state.catalog);show("capabilities",state.capabilities);show("coverage",state.coverage);show("semanticDocuments",state.semantic_documents);show("crossoverContract",state.crossover_contract);show("sandboxCommand",state.safe_commands.sandbox);show("canonCommand",state.safe_commands.canon_task);show("reviewCommand",state.safe_commands.chapter_review);if(!$("nav").children.length)panels()}$("refresh").onclick=load;$("saveGoal").onclick=async()=>{try{show("goalResult",await api("/api/creation-goal/save",{purpose:$("purpose").value,work_type:$("workType").value,format:$("format").value,target_platform:$("platform").value,update_capacity:$("capacity").value,validation_period:$("period").value,commercial_intent:$("commercial").checked,fanfiction_rights_risk_confirmed:$("rights").checked}))}catch(e){show("goalResult",e.message)}};$("saveSemantic").onclick=async()=>{try{show("semanticResult",await api("/api/semantic/save",{document_type:$("semanticType").value,title:$("semanticTitle").value,continuity:$("semanticContinuity").value,body:$("semanticBody").value,scope_kind:$("semanticScope").value}));await load()}catch(e){show("semanticResult",e.message)}};$("upload").onclick=async()=>{try{const chosen=[...$("files").files];if(!chosen.length)throw new Error("请选择文件");const session=await api("/api/upload/start",{work_id:$("uploadWork").value,source_type:$("sourceType").value,version:$("sourceVersion").value,unit_range:$("unitRange").value,source_method:"浏览器人工导入",rights_status:"user_claimed_authorized",retention_mode:"full_text",storage_mode:"managed_copy"});for(const f of chosen){const path=f.webkitRelativePath||f.name;const r=await fetch(`/api/upload/file?session=${encodeURIComponent(session.session_id)}&path=${encodeURIComponent(path)}`,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/octet-stream","X-Studio-CSRF":csrf},body:f});const d=await r.json();if(!r.ok)throw new Error(d.error||"上传失败")}const plan=await api("/api/upload/finalize",{session_id:session.session_id});lastBatch=plan.batch_id;$("groupPlan").value=JSON.stringify(plan.groups,null,2);show("uploadResult",plan)}catch(e){show("uploadResult",e.message)}};$("confirmGroups").onclick=async()=>{try{if(!lastBatch)throw new Error("请先生成分组预览");show("groupResult",await api("/api/ingest/groups-confirm",{batch_id:lastBatch,groups:JSON.parse($("groupPlan").value),approved_by:"human"}))}catch(e){show("groupResult",e.message)}};$("applyIngest").onclick=async()=>{try{if(!lastBatch)throw new Error("请先确认资料分组");show("groupResult",await api("/api/ingest/apply",{batch_id:lastBatch,approved_by:"human"}));await load()}catch(e){show("groupResult",e.message)}};$("processPlan").onclick=async()=>{try{lastJob=await api("/api/process/plan",{item_id:$("processItem").value,asset_ids:[],execution:"local",processor_id:"auto",parameters:{}});show("processResult",lastJob)}catch(e){show("processResult",e.message)}};$("processRun").onclick=async()=>{try{if(!lastJob)throw new Error("请先生成处理任务");show("processResult",await api("/api/process/run",{item_id:$("processItem").value,job_id:lastJob.job_id}))}catch(e){show("processResult",e.message)}};load().catch(e=>show("catalog",e.message));</script></body></html>'''
 
 
 __all__ = ["StudioHTTPServer", "StudioServerError", "StudioService", "studio_page_html"]

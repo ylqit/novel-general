@@ -59,6 +59,9 @@ def test_codex_job_copies_only_manifest_inputs_validates_output_and_never_applie
     completed = manager.wait(config, started["job_id"], timeout=10)
 
     assert completed["status"] == "completed"
+    from datetime import datetime
+    times = [datetime.fromisoformat(completed[key]) for key in ("created_at", "started_at", "finished_at", "updated_at")]
+    assert times == sorted(times)
     assert completed["validation"]["ok"] is True
     assert completed["canonical_mutated"] is False
     assert completed["auto_apply"] is False
@@ -95,6 +98,35 @@ def test_codex_job_rejects_any_staging_write_beyond_the_one_declared_output(tmp_
     ] == "awaiting_agent"
 
 
+def test_terminal_job_is_visible_only_after_cleanup_and_cannot_restart_submitted_task(tmp_path, monkeypatch):
+    import threading
+
+    config, _root, task = _project_with_task(tmp_path)
+    manager = CodexAgentJobManager(codex_command=_fake_codex(tmp_path))
+    written, release = threading.Event(), threading.Event()
+    persist = manager._write_job
+
+    def pause_after_terminal(job_dir, record):
+        persist(job_dir, record)
+        if record.get("status") == "completed":
+            written.set()
+            release.wait(10)
+
+    monkeypatch.setattr(manager, "_write_job", pause_after_terminal)
+    job = manager.start(config, task.task_id)
+    try:
+        assert written.wait(10)
+        assert manager.status(config, job["job_id"])["phase"] == "finishing"
+        assert manager.list_jobs(config)[0]["status"] == "running"
+        with pytest.raises(CodexAgentJobError, match="已有运行中的"):
+            manager.start(config, task.task_id)
+    finally:
+        release.set()
+    assert manager.wait(config, job["job_id"], timeout=10)["status"] == "completed"
+    with pytest.raises(CodexAgentJobError, match="submitted.*不允许再次启动"):
+        manager.start(config, task.task_id)
+
+
 def test_codex_job_allows_only_one_active_state_changing_job_per_project(tmp_path):
     config, _root, task = _project_with_task(tmp_path)
     manager = CodexAgentJobManager(
@@ -106,4 +138,32 @@ def test_codex_job_allows_only_one_active_state_changing_job_per_project(tmp_pat
         manager.start(config, task.task_id)
     cancelled = manager.cancel(config, started["job_id"])
 
-    assert cancelled["status"] == "cancelled"
+    assert cancelled["status"] in {"cancelling", "cancelled"}
+    assert manager.wait(config, started["job_id"], timeout=10)["status"] == "cancelled"
+
+
+def test_cancel_stops_owned_child_process_and_allows_retry(tmp_path):
+    import time
+    from longform_engine.storage.project import process_start_identity
+    config, root, task = _project_with_task(tmp_path)
+    pid_file = tmp_path / "child.pid"
+    script = tmp_path / "owned_child.py"
+    script.write_text(
+        "import pathlib,subprocess,sys,time\n"
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'])\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(child.pid))\n"
+        "time.sleep(60)\n", encoding="utf-8")
+    manager = CodexAgentJobManager(codex_command=(sys.executable, str(script)))
+    job = manager.start(config, task.task_id)
+    deadline = time.monotonic() + 10
+    while not pid_file.is_file() and time.monotonic() < deadline:
+        time.sleep(.05)
+    assert pid_file.is_file()
+    child_pid = int(pid_file.read_text())
+    manager.cancel(config, job["job_id"])
+    assert manager.wait(config, job["job_id"], timeout=10)["status"] == "cancelled"
+    assert not process_start_identity(child_pid)
+    assert not (root / task.candidate_file).exists()
+    manager.codex_command = _fake_codex(tmp_path)
+    retried = manager.start(config, task.task_id)
+    assert manager.wait(config, retried["job_id"], timeout=10)["status"] == "completed"

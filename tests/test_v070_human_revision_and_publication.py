@@ -37,9 +37,55 @@ from tests.test_humanizer_semantic_review import (
 from tests.test_story_architecture_v050 import seed_candidate, write_review
 
 
+def test_human_pair_review_reuses_immutable_task_and_changed_decision_supersedes_it(tmp_path, monkeypatch):
+    import longform_engine.human_author_revision as revision
+    from longform_engine.agent_tasks import load_manifest, manifest_input_paths
+    from tests.project_fixtures import complete_human_author_revision
+
+    config, root, _ = seed_candidate(tmp_path, complete_human=False)
+    validate = revision.validate_human_author_revision
+    inspected = False
+
+    def validate_with_retries(*args, **kwargs):
+        nonlocal inspected
+        result = validate(*args, **kwargs)
+        if inspected or result.stage != "semantic_review_pending":
+            return result
+        inspected = True
+        first = load_manifest(root, result.semantic_task_id)
+        frozen = {p: (root / p).read_bytes() for p in manifest_input_paths(first)}
+        repeated = validate(*args, **kwargs)
+        assert repeated.semantic_task_id == result.semantic_task_id
+        assert all((root / p).read_bytes() == data for p, data in frozen.items())
+        record_file = Path(kwargs["record_path"])
+        record = json.loads(record_file.read_text(encoding="utf-8"))
+        record["changes"][0]["reader_effect"] += "读者能够具体理解行动造成的后果。"
+        write_json(record_file, record)
+        changed = validate(*args, **kwargs)
+        assert changed.stage == "semantic_review_pending"
+        assert changed.semantic_task_id != result.semantic_task_id
+        assert load_manifest(root, result.semantic_task_id)["status"] == "superseded"
+        assert all((root / p).read_bytes() == data for p, data in frozen.items())
+        return changed
+
+    from pathlib import Path
+
+    monkeypatch.setattr(revision, "validate_human_author_revision", validate_with_retries)
+    complete_human_author_revision(root, config)
+    assert inspected
+
+
 def test_human_revision_rejects_punctuation_only_changes_and_cannot_submit(tmp_path):
     config, root, _task = seed_candidate(tmp_path, complete_human=False)
     task = create_human_author_revision_task(config, chapter_number=1)
+    from longform_engine.chapter_coedit import (
+        ChapterCoeditError, create_chapter_coedit_turn, validate_chapter_coedit_candidate,
+    )
+    with pytest.raises(ChapterCoeditError, match="human-final phase has started"):
+        create_chapter_coedit_turn(config, chapter_number=1, start=0, end=10,
+                                  question="人工终稿阶段不能再创建 AI 改写咨询。")
+    with pytest.raises(ChapterCoeditError, match="human-final phase has started"):
+        validate_chapter_coedit_candidate(config, chapter_number=1, file_path=task.candidate_file)
     source = (root / task.source_file).read_text(encoding="utf-8")
     candidate_text = source.replace("林迟", "林迟，", 1).replace("守门人", "守门人——", 1).strip() + "\n"
     candidate = root / task.candidate_file
@@ -214,6 +260,22 @@ def test_review_desk_has_no_prefilled_human_pass_reason_or_direct_repair_submit_
 
 def test_agent_change_after_human_revision_requires_a_new_human_phase(tmp_path):
     config, root, _task = seed_candidate(tmp_path)
+    from longform_engine.chapter_coedit import ChapterCoeditError, create_chapter_coedit_turn
+    from longform_engine.review_server import ReviewDeskService, ReviewServerError
+    service = ReviewDeskService(config, chapter_number=1)
+    desk = service.state()
+    revision = desk["human_author_revision"]
+    assert desk["consultation_candidate"]["phase"] == "human_final"
+    assert revision["available"] is True
+    assert revision["editable"] is False
+    with pytest.raises(ReviewServerError, match="人工终稿只读"):
+        service.save_human_revision(expected_draft_sha256=desk["draft"]["sha256"],
+                                    expected_candidate_sha256=revision["candidate_sha256"],
+                                    expected_record_sha256=revision["record_sha256"],
+                                    text=revision["text"] + "未经新修订流程的改变。", record=revision["record"])
+    with pytest.raises(ChapterCoeditError, match="human-final phase has started"):
+        create_chapter_coedit_turn(config, chapter_number=1, start=0, end=10,
+                                  question="提交后的人工终稿不能回到可 AI 改写的共编阶段。")
     prose_naturalness_task(config, chapter_number=1, source="draft")
     candidate = root / "50_workbench" / "repair_candidates" / "ch001.prose_naturalness_candidate.md"
     candidate.write_text(

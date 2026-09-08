@@ -24,6 +24,10 @@ longform-engine literary export-pack project.yaml --trial-id opening-01 --output
 
 阶段为 `opening`（3 章）、`sustained`（10 章）、`formal`（两类同人路线各 20 章）或 `crossover`（连续章节；顺序诸天跨卷）。每份样本保留当前配置、引擎版本与代码／规则资源指纹、原著基线、章节范围、正文和审稿证据绑定。不可取得的模型信息保留为空，不猜测宿主使用的模型。
 
+独立自动演练项目另有 `rehearsal` 阶段，只用于验证评测操作和评分复算。组织项目及每份来源项目都必须有持久的自动演练标识；章节仍须通过正常的关闭、终稿、审稿和来源证据检查。匿名包显示模拟用途，评分固定标记为 `simulated`，达到阈值也只返回 `protocol_complete`，正式验收始终为 false。普通人工评测不能导入模拟评分；自动演练不能创建上述四类人工文学评测。标识变化会使旧评测失效。
+
+当前匿名包为 `literary_trial_v3`，个人评分为 `literary_review_v3`，由控制面固定评测用途及评分来源。旧包和旧评分不会自动升级；原文和审计材料保留，通过当前流程重新创建评测。
+
 ## 独立评分
 
 为三位独立人类评审分别注册代号。代号不是模型或 Agent 实例。
@@ -34,6 +38,8 @@ longform-engine literary review project.yaml --trial-id opening-01 --reviewer-id
 ```
 
 `review` 返回匿名材料与该评审人的 `draft` 和 `draft_sha256`。编辑 `draft` 对象并单独保存为评分文件。`pack_hash` 与评审身份必须来自该记录；人类填写分数、独立性声明、阅读影响、问题原文位置及可选耗时，不手填正文 hash。草稿保存使用读取时的版本，避免覆盖另一个窗口的修改。
+
+网页保留本入口尚未保存的个人草稿，刷新后按匿名包 hash 和服务端草稿版本恢复。另一窗口已经保存时，显示本机和服务器草稿比较，由评审人明确选择后继续；服务器仍执行版本校验。模拟流程的界面明确使用模拟评审声明，不能勾选成真人评价。
 
 ```powershell
 longform-engine literary save project.yaml --trial-id opening-01 --reviewer-id reader-1 --file reader-1.json --expected-sha256 CURRENT_DRAFT_SHA256 --json

@@ -4,12 +4,52 @@ from pathlib import Path
 import pytest
 
 from longform_engine.chapter_contract import ChapterContractError
+from longform_engine.chapter_contract import resolve_chapter_contract_refs
 from longform_engine.planning.context import load_chapter_planning_context
 from longform_engine.planning import (
     apply_planning_bundle, build_human_node_decisions, build_human_planning_approval,
     build_planning_semantic_application, validate_planning_semantic_application,
 )
 from tests.test_v010_planning import seed_project, planning_bundle, write_json, evidence_review
+
+
+def test_contract_resolves_mixed_planning_references_without_promoting_future_changes(tmp_path):
+    root = tmp_path
+    write_json(root / "10_bible/canonical_facts.json", {"schema": "canonical_fact_registry_v2", "items": []})
+    write_json(root / "10_bible/characters.json", [{"id": "C_LEAD", "name": "陆照", "goal": "保住岗位"}])
+    rule = root / "10_bible/power_system.md"
+    rule.write_text("# 能力\n\n## 代价\n接触后才有感知，过用会伤手。\n\n## 其他\n不应混入所引段落。", encoding="utf-8")
+    obligations = {"items": [
+        {"obligation_id": "ob.before", "subject_refs": ["C_LEAD"], "prior_state_refs": [],
+         "dependency_refs": [], "intended_change": "计划发生的新伤，尚未发生"},
+        {"obligation_id": "ob.current", "subject_refs": ["C_LEAD", "10_bible/characters.json#/0"],
+         "prior_state_refs": ["10_bible/power_system.md#代价"], "dependency_refs": ["ob.before"]},
+    ]}
+    ledger = root / "30_state/semantic_obligations.json"
+    write_json(ledger, obligations)
+    contract = {"semantic_obligation_refs": ["ob.current"]}
+    values = resolve_chapter_contract_refs(root, contract)
+    assert len(values) == 2  # Stable ID and exact pointer describe the same entity.
+    assert values[0]["value"]["name"] == "陆照"
+    assert "过用会伤手" in values[1]["value"]
+    assert "不应混入" not in values[1]["value"]
+    assert "尚未发生" not in json.dumps(values, ensure_ascii=False)
+    assert all(len(item["sha256"]) == 64 for item in values)
+
+    unapproved = root / "50_workbench/unapproved.md"
+    unapproved.parent.mkdir(parents=True)
+    unapproved.write_text("未批准的工作材料不能伪装成 Canon。", encoding="utf-8")
+    for bad in ["C_MISSING", "10_bible/characters.json#/99", "../private.json", "10_bible/power_system.md#不存在",
+                "10_bible/../50_workbench/unapproved.md"]:
+        obligations["items"][1]["prior_state_refs"] = [bad]
+        write_json(ledger, obligations)
+        with pytest.raises(ChapterContractError, match="context_evidence_incomplete"):
+            resolve_chapter_contract_refs(root, contract)
+    obligations["items"][1]["prior_state_refs"] = []
+    obligations["items"][0]["dependency_refs"] = ["ob.current"]
+    write_json(ledger, obligations)
+    with pytest.raises(ChapterContractError, match="obligation_dependency_cycle"):
+        resolve_chapter_contract_refs(root, contract)
 
 def approved_project(tmp_path: Path):
     config, root = seed_project(tmp_path)

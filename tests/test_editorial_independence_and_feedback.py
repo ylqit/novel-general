@@ -312,6 +312,18 @@ def test_editorial_task_currency_tracks_isolated_context_and_current_draft(tmp_p
 
     assert all(not editorial_task_is_current(root, 1, task) for task in tasks)
 
+    originals = {task["task_id"]: (root / task["manifest_file"]).read_bytes() for task in tasks}
+    editorial_review(config, chapter_number=1)
+    replacements = [task for task in list_manifests(root, chapter_number=1)
+                    if task.get("task_type") == "editorial_review" and task.get("status") == "awaiting_agent"]
+    assert len(replacements) == len(tasks)
+    assert set(originals).isdisjoint(task["task_id"] for task in replacements)
+    assert all(editorial_task_is_current(root, 1, task) for task in replacements)
+    for identifier, content in originals.items():
+        retained = load_manifest(root, identifier)
+        assert retained["status"] == "superseded"
+        assert (root / retained["manifest_file"]).read_bytes() == content
+
 
 def test_editorial_v2_requires_exact_chapter_evidence_for_blocking_finding(tmp_path):
     config, root = seed_project(tmp_path)
@@ -536,13 +548,7 @@ def editorial_finding(code: str, dimension: str, severity: str, source: Path) ->
 
 
 def editorial_manifest(root: Path, role_id: str) -> dict:
-    task = next(
-        item
-        for item in list_manifests(root, chapter_number=1)
-        if item.get("task_type") == "editorial_review"
-        and (item.get("role") or {}).get("id") == role_id
-    )
-    return load_manifest(root, str(task["task_id"]))
+    return load_manifest(root, f"50_workbench/editorial_reviews/agent_tasks/ch001/{role_id}.agent_task.json")
 
 
 def submit_editorial_result(config, root: Path, role_id: str, result_file: Path):

@@ -1539,12 +1539,32 @@ def _cross_volume_continuity(
         raise FanfictionContextError("context_evidence_incomplete: sequential volume requires chapter-bound carryover claims")
     if not selected:
         return result
+    history = read_evidenced_consequence_states(root, set(selected), through_chapter=chapter_number - 1)
+    result["source_files"] = history["source_files"]
+    result["items"] = [{"claim_id": key, "plan": claim["statement"], "actual": history["latest"].get(key)}
+                       for key, claim in sorted(selected.items())]
+    return result
+
+
+def read_evidenced_consequence_states(
+    root: Path, fact_ids: set[str], *, through_chapter: int,
+) -> dict[str, Any]:
+    """Read latest consequence evidence, rejecting gaps, changed finals and ambiguous facts.
+
+    Shared by chapter compilation and the read-only Studio view. Selection and
+    applicability belong to the caller; this never turns a planned claim into fact.
+    """
+    if type(through_chapter) is not int or not 0 <= through_chapter <= 100_000:
+        raise FanfictionContextError("context_evidence_incomplete: invalid consequence history range")
     latest: dict[str, Any] = {}
+    source_files: list[dict[str, str]] = []
     from longform_engine.semantic.pipeline import validate_evidence
 
-    for chapter in range(1, chapter_number):
+    for chapter in range(1, through_chapter + 1):
         final_path = manuscript_chapter_path(root, chapter, lane="final")
         ledger_path = root / "30_state/semantic_ledger" / f"ch{chapter:03d}.json"
+        if not all(path.resolve().is_relative_to(root.resolve()) for path in (final_path, ledger_path)):
+            raise FanfictionContextError("context_evidence_incomplete: consequence evidence left the project")
         try:
             final_bytes = final_path.read_bytes()
             ledger_bytes = ledger_path.read_bytes()
@@ -1557,14 +1577,14 @@ def _cross_volume_continuity(
                 or ledger.get("chapter_number") != chapter
                 or source != {"path": final_path.relative_to(root).as_posix(), "sha256": sha256(final_bytes).hexdigest()}):
             raise FanfictionContextError(f"context_evidence_incomplete: carryover ledger ch{chapter:03d} is not bound to current final")
-        result["source_files"].extend([
+        source_files.extend([
             {"path": final_path.relative_to(root).as_posix(), "sha256": sha256(final_bytes).hexdigest()},
             {"path": ledger_path.relative_to(root).as_posix(), "sha256": sha256(ledger_bytes).hexdigest()},
         ])
         seen: set[str] = set()
         for fact in ledger.get("world_deltas") or []:
             fact_id = fact.get("fact_id")
-            if fact_id not in selected:
+            if fact_id not in fact_ids:
                 continue
             errors: list[str] = []
             validate_evidence(fact.get("evidence"), str(fact_id), final_text, errors)
@@ -1575,9 +1595,7 @@ def _cross_volume_continuity(
                                "evidence": fact["evidence"], "source": source,
                                "semantic_ledger_path": ledger_path.relative_to(root).as_posix(),
                                "semantic_ledger_sha256": sha256(ledger_bytes).hexdigest()}
-    result["items"] = [{"claim_id": key, "plan": claim["statement"], "actual": latest.get(key)}
-                       for key, claim in sorted(selected.items())]
-    return result
+    return {"latest": latest, "source_files": source_files}
 
 
 def _claim_applies(

@@ -1,4 +1,5 @@
 import json
+from longform_engine.agent_tasks import list_manifests
 from pathlib import Path
 
 import pytest
@@ -220,6 +221,14 @@ def test_book_design_document_compile_and_atomic_apply(tmp_path):
     config = seed_project(tmp_path)
     root = tmp_path / "novel"
     document, delta = prepare_book_design(config, root, book_design_payload())
+    compile_task = next(item for item in list_manifests(root) if item["task_type"] == "design_semantic_compile")
+    manifest = load_manifest(root, compile_task["task_id"])
+    instructions = [root / item["path"] for item in manifest["io"]["inputs"]
+                    if item["path"].startswith("50_workbench/intelligence_tasks/")]
+    assert len(instructions) == 1
+    declared = instructions[0].read_text(encoding="utf-8")
+    # An isolated compiler cannot discover required fields from a schema name.
+    assert all(field in declared for field in ("world_markdown", "arc_stages", "narrative_distance", "voice_examples"))
     validation = validate_design_compile_delta(config, task_type="book_design", document_path=document, delta_path=delta)
     assert validation.ok, validation.errors
     applied = apply_compiled_design(
@@ -238,12 +247,55 @@ def test_design_delta_fact_absent_from_markdown_is_rejected_without_pollution(tm
     payload = json.loads(delta.read_text(encoding="utf-8"))
     payload["changes"]["world_markdown"] = "A fact never approved by the human"
     delta.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    submit_result(root, "design_semantic_compile:book_design:project:v5", delta)
+    compile_task = next(item for item in list_manifests(root) if item["task_type"] == "design_semantic_compile")
+    submit_result(root, compile_task["task_id"], delta)
     before = project_snapshot(root)
     invalid = validate_design_compile_delta(config, task_type="book_design", document_path=document, delta_path=delta)
     assert not invalid.ok
     assert any("absent from its Markdown evidence" in error for error in invalid.errors)
     assert project_snapshot(root) == before
+
+
+def test_human_design_revision_preserves_source_supersedes_compile_and_requires_new_approval(tmp_path):
+    from hashlib import sha256
+    from longform_engine.intelligence.pipeline import revise_design_document
+    config = seed_project(tmp_path)
+    root = tmp_path / "novel"
+    document, _ = prepare_book_design(config, root, book_design_payload())
+    original = next(item for item in list_manifests(root) if item["task_type"] == "book_design")
+    old_compile = next(item for item in list_manifests(root) if item["task_type"] == "design_semantic_compile")
+    content = document.read_text(encoding="utf-8")
+    before = project_snapshot(root)
+    result = revise_design_document(config, task_id=original["task_id"], expected_sha256=sha256(document.read_bytes()).hexdigest(),
+                                    text=content + "\n\n## 人工补充决定\n保留验材必须接触实物的限制。\n")
+    assert result["status"] == "validated", result
+    assert document.read_text(encoding="utf-8") == content
+    assert load_manifest(root, original["task_id"])["status"] == "superseded"
+    assert load_manifest(root, old_compile["task_id"])["status"] == "superseded"
+    assert project_snapshot(root) == before
+    revision = load_manifest(root, result["task_id"])
+    revised_path = revision["io"]["output"]["path"]
+    with pytest.raises(ValueError):
+        create_design_compile_task(config, task_type="book_design", document_path=revised_path)
+    approve_design_document(config, task_type="book_design", document_path=revised_path, approved_by="human")
+    compiled = create_design_compile_task(config, task_type="book_design", document_path=revised_path)
+    assert compiled.task_id != old_compile["task_id"]
+    assert set(load_manifest(root, result["task_id"])["supersedes_task_ids"]) == {original["task_id"], old_compile["task_id"]}
+    assert create_design_compile_task(config, task_type="book_design", document_path=revised_path).task_id == compiled.task_id
+    from longform_engine.agent_tasks import update_task_status
+    immutable_bytes = (root / compiled.manifest_file).read_bytes()
+    update_task_status(root, compiled.task_id, to_status="invalid", command="test invalid result")
+    retry = create_design_compile_task(config, task_type="book_design", document_path=revised_path)
+    assert retry.task_id != compiled.task_id
+    assert (root / compiled.manifest_file).read_bytes() == immutable_bytes
+    assert load_manifest(root, compiled.task_id)["status"] == "superseded"
+    from longform_engine.agent_tasks import validate_manifest_strict
+    assert validate_manifest_strict(root, load_manifest(root, retry.task_id)).ok
+    disk_path = root / retry.manifest_file
+    malformed = json.loads(disk_path.read_text(encoding="utf-8"))
+    malformed["supersedes_task_ids"] = [compiled.task_id]
+    disk_path.write_text(json.dumps(malformed), encoding="utf-8")
+    assert not validate_manifest_strict(root, load_manifest(root, retry.task_id)).ok
 
 
 def test_research_delta_uses_one_output_and_explicit_apply(tmp_path):
@@ -283,3 +335,26 @@ def test_research_delta_uses_one_output_and_explicit_apply(tmp_path):
     applied = apply_intelligence_candidate(config, task_type="research_synthesis", file_path=delta)
     assert applied.status == "applied"
     assert "research_canon_claim_v1" in (root / "10_bible" / "research_canon.jsonl").read_text(encoding="utf-8")
+
+
+def test_ideation_rounds_and_retries_never_reuse_previous_prose(tmp_path, monkeypatch):
+    from longform_engine.intelligence import pipeline
+    config = seed_project(tmp_path)
+    root = tmp_path / "novel"
+    first = create_intelligence_task(config, task_type="book_ideation")
+    first_manifest = (root / first.manifest_file).read_bytes()
+    (root / first.candidate_file).write_text("上一轮已生成的候选，不能冒充新轮次输出。", encoding="utf-8")
+    assert create_intelligence_task(config, task_type="book_ideation").task_id == first.task_id
+    monkeypatch.setattr(pipeline, "next_book_ideation_round", lambda _: 2)
+    second = create_intelligence_task(config, task_type="book_ideation")
+    assert second.candidate_file != first.candidate_file
+    assert not (root / second.candidate_file).exists()
+    before_retry = (root / second.manifest_file).read_bytes()
+    retry = create_intelligence_task(config, task_type="book_ideation", rebuild=True)
+    assert retry.task_id != second.task_id
+    assert retry.candidate_file != second.candidate_file
+    assert not (root / retry.candidate_file).exists()
+    assert (root / first.manifest_file).read_bytes() == first_manifest
+    assert (root / second.manifest_file).read_bytes() == before_retry
+    assert load_manifest(root, second.task_id)["status"] == "superseded"
+    assert load_manifest(root, first.task_id)["status"] == "awaiting_agent"

@@ -28,6 +28,81 @@ from tests.test_story_architecture_v050 import seed_candidate
 from tests.test_intelligence_tasks import book_design_payload, prepare_book_design, seed_project
 
 
+def test_workspace_records_only_current_exact_gate_review_without_canonical_writes(tmp_path):
+    from hashlib import sha256
+    import yaml
+    from longform_engine.agent_pipeline import validate_production_agent_result
+    from longform_engine.agent_tasks import load_manifest
+    from longform_engine.gates import gate_check
+    from tests.project_fixtures import checked_review_coverage
+    from tests.test_semantic_gate_review import seed_high_risk_chapter, snapshot_protected
+
+    workspace = tmp_path / "workspace"
+    config, root, chapter = seed_high_risk_chapter(workspace)
+    config.path.write_text(yaml.safe_dump(config.data), encoding="utf-8")
+    gate_check(config, chapter_number=1, semantic=True)
+    output = root / "50_workbench/gate_artifacts/ch001/semantic_review_result.json"
+    output.write_text(json.dumps({"schema": "evidence_review_v2", "verdict": "pass", "findings": [],
+        "coverage": checked_review_coverage(root, chapter, ("canonical_fact", "motivation", "space_time_ability"),
+            canonical_dimensions=("canonical_fact", "motivation", "space_time_ability"))}), encoding="utf-8")
+    task = load_manifest(root, "semantic_review:ch001:v5")
+    validated = validate_production_agent_result(root, task, result_file=output)
+    assert validated.ok
+    service = WorkspaceStudioService(workspace, create=True)
+    state = service.import_project(config.path)
+    project_id = state["project"]["id"]
+    service.advance_production(project_id)
+    state = service.project_state(project_id)
+    assert state["review_candidate"]["content"] == output.read_text(encoding="utf-8")
+    payload = {"task_id": task["task_id"], "expected_sha256": sha256(output.read_bytes()).hexdigest()}
+    before = snapshot_protected(root)
+    with pytest.raises(WorkspaceStudioError, match="已变化"):
+        service.record_current_review(project_id, {**payload, "expected_sha256": "0" * 64})
+    with pytest.raises(WorkspaceStudioError, match="只能记录当前"):
+        service.record_current_review(project_id, {**payload, "task_id": "another-project:task"})
+    result = service.record_current_review(project_id, payload)
+    assert result["applied"] and result["canonical_mutated"] is False
+    assert snapshot_protected(root) == before
+    with pytest.raises(WorkspaceStudioError, match="只能记录当前"):
+        service.record_current_review(project_id, payload)
+    assert snapshot_protected(root) == before
+
+
+def test_workspace_rebuilds_only_current_failed_review_and_preserves_evidence(tmp_path):
+    import yaml
+    from hashlib import sha256
+    from longform_engine.agent_pipeline import validate_production_agent_result
+    from longform_engine.agent_tasks import load_manifest
+    from longform_engine.gates import gate_check
+    from tests.test_semantic_gate_review import seed_high_risk_chapter, snapshot_protected
+
+    workspace = tmp_path / "workspace"
+    config, root, _chapter = seed_high_risk_chapter(workspace)
+    config.path.write_text(yaml.safe_dump(config.data), encoding="utf-8")
+    gate_check(config, chapter_number=1, semantic=True)
+    task = load_manifest(root, "semantic_review:ch001:v5")
+    output = root / "50_workbench/gate_artifacts/ch001/semantic_review_result.json"
+    failed = b'{"schema":"evidence_review_v2","verdict":"pass","findings":[]}'
+    output.write_bytes(failed)
+    assert not validate_production_agent_result(root, task, result_file=output).ok
+    service = WorkspaceStudioService(workspace, create=True)
+    project_id = service.import_project(config.path)["project"]["id"]
+    before = snapshot_protected(root, include_db=True)
+    with pytest.raises(WorkspaceStudioError, match="只能重建当前"):
+        service.rebuild_current_review(project_id, {"task_id": "another-project:task"})
+    result = service.rebuild_current_review(project_id, {"task_id": task["task_id"]})
+    replacement = load_manifest(root, result["manifest_file"])
+    assert replacement["task_id"] != task["task_id"]
+    assert replacement["status"] == "awaiting_agent"
+    assert load_manifest(root, task["task_id"])["status"] == "superseded"
+    assert not output.exists()
+    retained = root / "50_workbench/agent_tasks/results" / (sha256(failed).hexdigest() + ".json")
+    assert retained.read_bytes() == failed
+    with pytest.raises(WorkspaceStudioError, match="只能重建当前"):
+        service.rebuild_current_review(project_id, {"task_id": task["task_id"]})
+    assert snapshot_protected(root, include_db=True) == before
+
+
 def _create_payload(*, mode: str = "original") -> dict:
     sources = []
     if mode == "fanfiction":
@@ -155,7 +230,7 @@ def test_workspace_discovery_ignores_staging_copies_and_persists_explicit_nested
     assert len(WorkspaceStudioService(workspace).state()["projects"]) == 2
 
 
-def test_workspace_deep_links_are_same_server_and_never_mutate_canonical_state(tmp_path):
+def test_workspace_deep_links_are_same_server_and_never_mutate_canonical_state(tmp_path, monkeypatch):
     workspace = tmp_path / "小说工作区"
     service = WorkspaceStudioService(workspace, create=True)
     created = service.create_project(_create_payload())
@@ -193,6 +268,22 @@ def test_workspace_deep_links_are_same_server_and_never_mutate_canonical_state(t
         assert chapter["actions"]["finalize"] is False
         assert chapter["actions"]["semantic_apply"] is False
         assert chapter["actions"]["close"] is False
+        with monkeypatch.context() as identity_patch:
+            def unavailable_production(*args, **kwargs):
+                raise RuntimeError("Production is unavailable; reading identity must remain available")
+
+            identity_patch.setattr("longform_engine.workspace_studio.production_next", unavailable_production)
+            status, _headers, body = _request(
+                server, "GET", f"/api/projects/{project_id}/identity", headers={"Cookie": cookie}
+            )
+            assert status == 200
+            identity = json.loads(body)
+            assert identity["id"] == project_id
+            assert identity["title"] == "原创长篇"
+            assert set(identity) == {"id", "title", "creation_mode", "execution_origin"}
+            assert _request(
+                server, "GET", "/api/projects/project_00000000000000000000/identity", headers={"Cookie": cookie}
+            )[0] == 403
         status, _headers, body = _request(
             server,
             "POST",
@@ -324,7 +415,7 @@ def test_workspace_agent_http_accepts_only_current_task_id_and_never_browser_pro
             headers=valid,
             payload={"task_id": task.task_id},
         )
-        assert status == 200
+        assert status == 200, body.decode("utf-8")
         job_id = json.loads(body)["result"]["job_id"]
         completed = manager.wait(config, job_id, timeout=10)
         assert completed["status"] == "completed"
@@ -383,6 +474,11 @@ def test_workspace_agent_http_accepts_only_current_task_id_and_never_browser_pro
 
 def test_workspace_page_contains_creation_dashboard_and_explicit_human_boundaries():
     page = workspace_studio_page_html("csrf-token", "nonce-token")
+    from longform_engine.resources import resource_path
+    assert '/assets/studio/workspace.js' in page
+    assert 'nonce="nonce-token"' in page
+    assert '__CSRF_TOKEN__' not in page
+    page += resource_path("templates", "studio", "workspace.js").read_text(encoding="utf-8")
 
     assert "创建原创小说" in page
     assert "创建同人小说" in page
@@ -391,12 +487,15 @@ def test_workspace_page_contains_creation_dashboard_and_explicit_human_boundarie
     assert "交给 Codex" in page
     assert "批准当前候选" in page
     assert "写入 Canon" in page
-    assert "明确 finalize" in page
-    assert "明确 semantic apply" in page
+    assert "我确认把当前精确草稿定稿为正式章节" in page
+    assert "确认定稿第" in page
+    assert "我已核对语义抽取，并明确授权更新" in page
+    assert "确认记录本章事实" in page
     assert "确认并 apply 事件状态" in page
     assert "确认并 apply 承诺证据" in page
-    assert "明确 close" in page
-    assert "浏览器不会提交任意 Prompt" in page
+    assert "我确认事件、承诺和语义状态均已核对" in page
+    assert "确认关闭第" in page
+    assert 'name="prompt"' not in page
     assert "__CSRF_TOKEN__" not in page
 
 
@@ -556,7 +655,7 @@ def test_workspace_chapter_route_mounts_the_existing_review_desk_on_the_same_ser
         status, headers, _body = _request(server, "GET", f"/?token={server.bootstrap_token}")
         assert status == 303
         cookie = headers["Set-Cookie"].split(";", 1)[0]
-        chapter_path = f"/projects/{project_id}/chapters/1"
+        chapter_path = f"/projects/{project_id}/chapters/1?mode=review"
         # Full evidence verification is deliberately uncached. This is a routing
         # contract test, so allow coverage tracing overhead without a 10-second SLA.
         status, _headers, body = _request(

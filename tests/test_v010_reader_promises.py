@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
+import pytest
 
 from longform_engine.config import load_project_config
 from longform_engine.orchestration import open_book
@@ -75,6 +76,20 @@ def test_ledger_contains_only_explicit_human_selected_promises():
     assert [item["promise_id"] for item in ledger["items"]] == ["promise:archive-editor"]
     assert ledger["items"][0]["selected_by"] == "human"
     assert not any(item["promise_id"].startswith("story_engine:") for item in ledger["items"])
+
+
+def test_rolling_plan_preserves_actual_promise_progress_and_omitted_promises():
+    ledger = materialize_explicit_reader_promises([promise_candidate()], approved_by="human")
+    item = ledger["items"][0]
+    item.update(status="paid", completed_stage_ids=["payoff:access-method", "payoff:editor-identity"],
+                actual_evidence=[{"chapter_number": 16, "confirmed_by": "human", "quote": "身份已查明"}])
+    assert materialize_explicit_reader_promises([], approved_by="human", existing=ledger) == ledger
+    assert materialize_explicit_reader_promises([promise_candidate()], approved_by="human", existing=ledger) == ledger
+    changed = promise_candidate()
+    changed["reader_expectation"] = "A different promise under the same ID."
+    with pytest.raises(ValueError, match="observed_promise_requires_revision"):
+        materialize_explicit_reader_promises([changed], approved_by="human", existing=ledger)
+    assert item["status"] == "paid"
 
 
 def test_promise_progress_requires_stable_stage_id_and_exact_final_evidence(tmp_path: Path):

@@ -66,7 +66,7 @@ def test_loopback_review_server_burns_token_and_rejects_host_origin_csrf_path_an
         page = body.decode("utf-8")
         assert status == 200
         assert injected not in page
-        assert "明确 apply 人工深审决定" in page
+        assert "确认采用人工审稿决定" in page
         assert f"nonce-{server.csp_nonce}" in headers["Content-Security-Policy"]
         assert f'nonce="{server.csp_nonce}"' in page
 
@@ -155,6 +155,15 @@ def test_manual_full_repair_submit_consumes_budget_and_stales_old_review_and_con
         phase="human_final",
     )
     assert consult["turn_number"] == 1
+    response = root / consult["response_file"]
+    response.write_text("尚未校验的显示层夹具回答。", encoding="utf-8")
+    display_turn = {"response_file": consult["response_file"], "response_sha256": ""}
+    assert service._consultation_views([{"turns": [display_turn]}])[0]["turns"][0]["response_current"] is False
+    from hashlib import sha256
+    display_turn["response_sha256"] = sha256(response.read_bytes()).hexdigest()
+    assert service._consultation_views([{"turns": [display_turn]}])[0]["turns"][0]["response_current"] is True
+    response.write_text("正文遭到改写，旧的记录 hash 不应让它显示为已校验回答。", encoding="utf-8")
+    assert service._consultation_views([{"turns": [display_turn]}])[0]["turns"][0]["response_current"] is False
 
     start = original.index("守门人")
     end = start + len("守门人横刀拒绝")

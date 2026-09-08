@@ -215,7 +215,7 @@ def reader_payoff_task(
             "selection_report": task_file,
         },
     )
-    write_manifest(root, manifest, manifest_file)
+    write_manifest(root, manifest, manifest_file, preserve_replaced=True)
     return ReaderPayoffTaskResult(
         chapter_number=chapter_number,
         task_file=str(task_file),

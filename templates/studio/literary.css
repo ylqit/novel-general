@@ -1,0 +1,10 @@
+header,main{max-width:1280px;margin:auto;padding:24px}header{position:static;border-bottom:1px solid var(--line)}
+.card{margin:20px 0}.row{display:flex;gap:16px;align-items:end;flex-wrap:wrap}.field{display:grid;gap:6px;flex:1;min-width:180px}
+.field label{font-weight:600}.field input,.field select{width:100%}.scoregrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
+.prose{width:100%;min-height:500px;padding:28px;font:20px/1.9 SimSun,serif;background:#f3f2ee;color:#25282b}
+.check{display:flex;gap:10px;align-items:start}.check input{width:auto;flex:none;margin-top:8px}.issue{border-left:2px solid var(--accent);padding:12px 18px;margin:16px 0;min-width:0}
+.review-fields{border:0;padding:0;min-width:0}.error{color:#eda6a2;white-space:pre-wrap}.findings blockquote{white-space:pre-wrap;overflow-wrap:anywhere}
+#message{position:sticky;top:0;background:#273631;color:var(--ink);padding:10px 24px;z-index:2}#message:empty{display:none}
+table{border-collapse:collapse;width:100%;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:9px;text-align:left;overflow-wrap:anywhere}
+pre{white-space:pre-wrap;overflow-wrap:anywhere}footer{margin:30px 0;color:var(--muted)}.row>*{max-width:100%}
+@media(max-width:650px){main,header{padding:14px}.card{padding:16px}.field{min-width:0;flex-basis:100%}.prose{min-height:360px;padding:16px}.scoregrid{grid-template-columns:1fr}th,td{padding:6px;font-size:13px}}

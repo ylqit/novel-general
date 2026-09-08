@@ -13,7 +13,7 @@ import html
 import json
 import re
 
-from longform_engine.agent_tasks import list_manifests, manifest_output, relative_path
+from longform_engine.agent_tasks import list_manifests, load_manifest, manifest_chapter_number, manifest_output, relative_path
 from longform_engine.chapter_contract import load_verified_chapter_contract
 from longform_engine.chapter_coedit import (
     coedit_status,
@@ -25,6 +25,7 @@ from longform_engine.chapter_coedit import (
     validate_chapter_coedit_response,
 )
 from longform_engine.config import ConfigDocument
+from longform_engine.execution_origin import execution_origin
 from longform_engine.human_chapter_intent import human_chapter_intent_status
 from longform_engine.human_review_consultation import (
     consultation_status,
@@ -55,6 +56,7 @@ from longform_engine.repair_coordination import (
 )
 from longform_engine.storage import acquire_project_lock, atomic_write_text, resolve_project_root
 from longform_engine.storage.layout import manuscript_chapter_path
+from longform_engine.storage.project import native_filesystem_path
 from longform_engine.story_brief import load_current_story_brief_binding, story_brief_status
 
 
@@ -160,6 +162,7 @@ class ReviewDeskService:
         coedit = coedit_status(self.config, chapter_number=chapter)
         coedit["sessions"] = self._coedit_views(coedit.get("sessions") or [])
         human_revision = self.human_revision_state()
+        human_final = bool(human_revision.get("available") or human_revision.get("status") in {"complete", "stale"})
         try:
             coedit_candidate = current_coedit_candidate(self.root, chapter)
         except ValueError:
@@ -167,18 +170,20 @@ class ReviewDeskService:
         active_candidate = (
             self.root / str(human_revision.get("candidate_file") or "")
             if human_revision.get("available")
-            else coedit_candidate
+            else draft if human_final else coedit_candidate
         )
         if not active_candidate.is_file():
-            active_candidate = draft
+            frozen_source = self.root / str(human_revision.get("source_file") or "")
+            active_candidate = frozen_source if human_revision.get("available") and frozen_source.is_file() else draft
         consult_candidate = {
             "path": relative_path(self.root, active_candidate),
             "sha256": _file_hash(active_candidate),
             "text": active_candidate.read_text(encoding="utf-8"),
-            "phase": "human_final" if human_revision.get("available") else "coedit",
+            "phase": "human_final" if human_final else "coedit",
         }
         return {
             "schema": "human_review_desk_state_v3",
+            "execution_origin": execution_origin(self.root),
             "chapter_number": chapter,
             "draft": {
                 "path": relative_path(self.root, draft),
@@ -209,6 +214,7 @@ class ReviewDeskService:
             "consultations": consult,
             "coedit": coedit,
             "human_chapter_intent": human_chapter_intent_status(self.root, chapter),
+            "human_intent_content": _load_json(self.root / "20_outline/chapter_intents" / f"ch{chapter:03d}.json", default={}),
             "manual_repair": manual,
             "repair_diff": diff_text,
             "human_author_revision": human_revision,
@@ -358,23 +364,33 @@ class ReviewDeskService:
         state = self.human_revision_state()
         if not state.get("available"):
             raise ReviewServerError("human revision task must be prepared first")
+        if state.get("editable") is False:
+            raise ReviewServerError("已提交的人工终稿只读；请经正常修订流程建立新版本")
         candidate = (self.root / str(state["candidate_file"])).resolve()
         record_file = (self.root / str(state["record_file"])).resolve()
         if (_file_hash(candidate) if candidate.is_file() else "") != str(expected_candidate_sha256 or ""):
             raise ReviewServerError("human revision candidate changed concurrently; reload first")
         if (_file_hash(record_file) if record_file.is_file() else "") != str(expected_record_sha256 or ""):
             raise ReviewServerError("human revision record changed concurrently; reload first")
-        normalized = str(text or "").strip()
-        if not normalized or not isinstance(record, dict):
+        normalized = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+        if not normalized.strip() or not isinstance(record, dict):
             raise ReviewServerError("human revision requires a complete chapter and JSON record")
+        if not normalized.endswith("\n"):
+            normalized += "\n"
+        record = {**record, "revision_candidate_sha256": sha256(normalized.encode("utf-8")).hexdigest()}
+        previous = state.get("record") or {}
+        if ({k: v for k, v in previous.items() if k != "semantic_review_sha256"}
+                != {k: v for k, v in record.items() if k != "semantic_review_sha256"}):
+            record["semantic_review_sha256"] = ""
         with acquire_project_lock(
             self.config, owner="review-desk", command="review human-revision-save"
         ):
+            self._require_current_candidate(expected_draft_sha256)
             if (_file_hash(candidate) if candidate.is_file() else "") != str(expected_candidate_sha256 or ""):
                 raise ReviewServerError("human revision candidate changed before save")
             if (_file_hash(record_file) if record_file.is_file() else "") != str(expected_record_sha256 or ""):
                 raise ReviewServerError("human revision record changed before save")
-            atomic_write_text(candidate, normalized + "\n")
+            atomic_write_text(candidate, normalized)
             atomic_write_text(record_file, json.dumps(record, ensure_ascii=False, indent=2) + "\n")
             from longform_engine.human_review_consultation import mark_stale_human_consultations
 
@@ -431,7 +447,8 @@ class ReviewDeskService:
         draft = manuscript_chapter_path(self.root, chapter, lane="draft")
         if not draft.is_file():
             return {"available": False, "status": "pending"}
-        digest = _file_hash(draft)
+        status = human_author_revision_status(self.config, chapter_number=chapter)
+        digest = str(status["source_candidate_sha256"]) if status.get("status") == "complete" else _file_hash(draft)
         try:
             task_file = task_record_path_for_hash(self.root, chapter, digest)
         except ValueError:
@@ -440,7 +457,6 @@ class ReviewDeskService:
                 **human_author_revision_status(self.config, chapter_number=chapter),
             }
         task = _load_json(task_file, default={})
-        status = human_author_revision_status(self.config, chapter_number=chapter)
         if not isinstance(task, dict) or not task:
             return {"available": False, **status}
         candidate = self.root / str(task.get("candidate_file") or "")
@@ -459,6 +475,7 @@ class ReviewDeskService:
         return {
             "available": True,
             **status,
+            "editable": status.get("status") != "complete",
             "task_file": relative_path(self.root, task_file),
             "source_file": relative_path(self.root, source),
             "candidate_file": relative_path(self.root, candidate),
@@ -467,6 +484,7 @@ class ReviewDeskService:
             "record_sha256": _file_hash(record_file) if record_file.is_file() else "",
             "record": _load_json(record_file, default={}),
             "text": candidate_text or source_text,
+            "source_text": source_text,
             "diff": diff,
         }
 
@@ -557,6 +575,25 @@ class ReviewDeskService:
                 self.config, chapter_number=self.chapter_number, agent="human"
             )
         return result
+
+    def submit_coedit_candidate(self, *, task_id: str, expected_draft_sha256: str,
+                                expected_candidate_sha256: str, acknowledge: bool) -> dict[str, Any]:
+        if acknowledge is not True:
+            raise ReviewServerError("请阅读完整候选差异后明确确认提交")
+        with acquire_project_lock(self.config, owner="review-desk", command="review coedit submit"):
+            self._require_current_candidate(expected_draft_sha256)
+            if self.state()["consultation_candidate"]["phase"] != "coedit":
+                raise ReviewServerError("人工终稿锁定后不能采用 AI 改写")
+            task = load_manifest(self.root, task_id)
+            if task.get("task_type") != "chapter_coedit_rewrite" or manifest_chapter_number(task) != self.chapter_number:
+                raise ReviewServerError("候选任务不属于本章协作")
+            candidate = (self.root / manifest_output(task)["path"]).resolve()
+            if not candidate.is_relative_to(self.root) or not candidate.is_file() or _file_hash(candidate) != expected_candidate_sha256:
+                raise ReviewServerError("完整候选已变化，请重新阅读")
+            validation = validate_chapter_coedit_candidate(self.config, chapter_number=self.chapter_number, file_path=candidate)
+            if not validation.ok:
+                raise ReviewServerError("完整候选尚未通过校验：" + "; ".join(validation.errors))
+            return asdict(submit_agent_draft(self.config, chapter_number=self.chapter_number, file_path=candidate, agent="codex", overwrite=True))
 
     def save_manual_repair(
         self,
@@ -702,6 +739,10 @@ class ReviewDeskService:
                     if resolved.is_file():
                         response_text = resolved.read_text(encoding="utf-8")
                 turn["response"] = response_text
+                turn["response_current"] = bool(response_text and turn.get("response_sha256")
+                                                and _file_hash(resolved) == turn["response_sha256"])
+                request_path = (self.root / str(turn.get("request_file") or "")).resolve()
+                turn["request"] = _load_json(request_path, default={}) if request_path.is_relative_to(base) and request_path.is_file() else {}
                 turns.append(turn)
             item["turns"] = turns
             views.append(item)
@@ -736,6 +777,14 @@ class ReviewDeskService:
                     response = Path()
                 view = dict(turn)
                 view["response"] = response.read_text(encoding="utf-8") if response.is_file() else ""
+                view["response_current"] = bool(view["response"] and turn.get("response_sha256")
+                                                and _file_hash(response) == turn["response_sha256"])
+                view["candidate_current"] = bool(turn.get("candidate_sha256")
+                                                  and turn["candidate_sha256"] == session.get("current_candidate_sha256"))
+                view["rewrite_current"] = bool(turn.get("rewrite_candidate_sha256")
+                                                and turn["rewrite_candidate_sha256"] == session.get("current_candidate_sha256"))
+                request_path = (self.root / str(turn.get("request_file") or "")).resolve()
+                view["request"] = _load_json(request_path, default={}) if request_path.is_relative_to(base) and request_path.is_file() else {}
                 turns.append(view)
             item["turns"] = turns
             views.append(item)
@@ -762,6 +811,7 @@ REVIEW_ACTION_FIELDS: dict[str, frozenset[str]] = {
         {"session_id", "turn_number", "option_id", "adjustment"}
     ),
     "/coedit/candidate-validate": frozenset({"candidate_file"}),
+    "/coedit/submit": frozenset({"task_id", "expected_draft_sha256", "expected_candidate_sha256", "acknowledge"}),
     "/human-revision/prepare": frozenset({"expected_candidate_sha256"}),
     "/human-revision/save": frozenset(
         {
@@ -864,7 +914,10 @@ def dispatch_review_action(
             expected_candidate_sha256=str(body["expected_candidate_sha256"]),
         ),
     }
-    result = routes[action]()
+    if action == "/coedit/submit":
+        result = service.submit_coedit_candidate(**body)
+    else:
+        result = routes[action]()
     return {**result, "canonical_mutated": action == "/human-review/apply"}
 
 
@@ -945,18 +998,27 @@ def review_page_html(
         raise ReviewServerError("review API prefix is invalid")
     csrf = html.escape(csrf_token, quote=True)
     nonce = html.escape(csp_nonce, quote=True)
+    from longform_engine.resources import resource_path
+    styles = resource_path("templates", "studio", "studio.css").read_text(encoding="utf-8")
     return (
-        _REVIEW_PAGE.replace("__CSRF_TOKEN__", csrf)
+        _REVIEW_PAGE.replace("__STUDIO_STYLES__", styles)
+        .replace("__REVIEW_STYLES__", resource_path("templates", "studio", "review.css").read_text(encoding="utf-8"))
+        .replace("__REVIEW_LAYOUT__", resource_path("templates", "studio", "review_layout.js").read_text(encoding="utf-8"))
+        .replace("__REVIEW_FORMS__", resource_path("templates", "studio", "review_forms.js").read_text(encoding="utf-8"))
+        .replace("__REVIEW_JOBS__", resource_path("templates", "studio", "review_jobs.js").read_text(encoding="utf-8"))
+        .replace("__CSRF_TOKEN__", csrf)
         .replace("reviewdesk", nonce)
         .replace('"/api/', f'"{api_prefix}/')
+        .replace("X-Review-CSRF", "X-Studio-CSRF" if api_prefix != "/api" else "X-Review-CSRF")
     )
 
 
 def _file_hash(path: Path) -> str:
-    return sha256(path.read_bytes()).hexdigest()
+    return sha256(native_filesystem_path(path).read_bytes()).hexdigest()
 
 
 def _load_json(path: Path, *, default: Any) -> Any:
+    path = native_filesystem_path(path)
     if not path.is_file():
         return default
     try:
@@ -967,48 +1029,48 @@ def _load_json(path: Path, *, default: Any) -> Any:
 
 _REVIEW_PAGE = r'''<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Longform 人工可视化深审</title>
+<link rel="icon" href="data:,"><title>Longform 人工可视化深审</title>
 <style nonce="reviewdesk">
-:root{color-scheme:light;--ink:#20231f;--muted:#667064;--paper:#fbfaf5;--line:#d9d7cb;--accent:#8f3b2d;--panel:#fffefa}
-*{box-sizing:border-box}body{margin:0;font:14px/1.5 system-ui,"Microsoft YaHei",sans-serif;color:var(--ink);background:var(--paper)}
-header{height:52px;padding:12px 18px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;background:#f4f0e7}
-#layout{display:grid;grid-template-columns:minmax(240px,26%) minmax(420px,48%) minmax(280px,26%);height:calc(100vh - 52px)}
-.col{overflow:auto;padding:14px;border-right:1px solid var(--line)}.col:last-child{border-right:0}section{margin:0 0 16px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px}
-h2,h3{margin:0 0 8px}h2{font-size:16px}h3{font-size:14px}pre{white-space:pre-wrap;word-break:break-word;margin:0;color:#353a34}
-textarea{width:100%;min-height:120px;border:1px solid var(--line);border-radius:5px;padding:8px;font:13px/1.6 ui-monospace,"Microsoft YaHei",monospace;background:white}
-#manuscript{min-height:48vh}.toolbar{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}button,select,input{border:1px solid #b9b7ad;border-radius:5px;padding:6px 8px;background:white}button{cursor:pointer}button.primary{background:var(--accent);color:white;border-color:var(--accent)}button:disabled{opacity:.45;cursor:not-allowed}
-.finding{padding:7px;border-left:3px solid #a75a43;margin:6px 0;background:#faf3ef}.muted{color:var(--muted)}.ok{color:#28653c}.error{color:#9a3027}.check{display:flex;gap:8px;margin:6px 0}.status{white-space:pre-wrap;border-top:1px dashed var(--line);margin-top:8px;padding-top:8px}
-@media(max-width:1050px){#layout{grid-template-columns:1fr;height:auto}.col{border-right:0;border-bottom:1px solid var(--line)}#manuscript{min-height:50vh}}
+__STUDIO_STYLES__
+__REVIEW_STYLES__
 </style></head><body>
-<header><strong id="title">人工可视化深审</strong><span id="candidate" class="muted"></span><button id="reload">刷新</button><span id="globalStatus"></span></header>
+<header><a href="/" id="workspaceBack">作品书架</a><a id="readerBack" hidden>返回阅读</a><strong id="title">人工可视化深审</strong><details><summary>正文版本</summary><span id="candidate" class="muted"></span></details><button id="reload">刷新</button><button id="toggleReviewContext" class="secondary" aria-controls="reviewContext">创作依据</button><button id="toggleReviewDecisions" class="secondary" aria-controls="reviewDecisions">审稿与讨论</button><span id="globalStatus"></span><span id="reviewOrigin" class="muted" hidden></span></header>
 <div id="layout">
-<aside class="col"><section><h2>人类章节意图</h2><pre id="chapterIntent"></pre></section><section><h2>Story Brief</h2><pre id="brief"></pre></section><section><h2>章节合同</h2><pre id="contract"></pre></section><section><h2>承诺账本</h2><pre id="promises"></pre></section></aside>
-<main class="col"><section><h2>正文与精确 span</h2><textarea id="manuscript" readonly></textarea><div class="toolbar"><button data-evidence="key_turn">设为关键转折</button><button data-evidence="character_choice_or_emotion">设为人物选择/情绪</button><button data-evidence="reader_gain">设为读者收益</button></div><pre id="evidenceView" class="muted"></pre></section>
-<section><h2>AI 源稿—人工终稿—diff—修改意图</h2><div id="revisionMeta" class="muted"></div><textarea id="revisionText"></textarea><label>human_author_revision_v4 记录（含 intent_ref、读者影响与终稿确认）</label><textarea id="revisionRecord"></textarea><pre id="diff"></pre><div class="toolbar"><button id="revisionPrepare">建立人工终稿工作区</button><button id="revisionSave">保存到 workbench</button><button id="revisionValidate">语义复核并锁定</button><button id="revisionSubmit" class="primary">以 human 提交并全量复审</button></div><div id="revisionStatus" class="status"></div></section>
-<section><h2>人工完整 repair 候选</h2><div id="repairMeta" class="muted"></div><textarea id="repairText"></textarea><div class="toolbar"><button id="repairPrepare">建立 human repair 工单</button><button id="repairSave">保存完整候选</button><button id="repairSubmit" class="primary">转入人工修订验证</button></div><div id="repairStatus" class="status"></div></section></main>
-<aside class="col"><section><h2>独立审稿 finding</h2><div id="findings"></div></section>
-<section><h2>风险分层人工深审</h2><div id="checks"></div><label>十维覆盖（核心理由必须人工填写）</label><textarea id="coverageJson"></textarea><label>finding 处置（理由必须人工填写）</label><textarea id="findingJson"></textarea><label>决定 <select id="decision"><option>repair</option><option>accept</option><option>redirect</option></select></label><label>redirect 范围 <select id="redirect"><option>direction</option><option>outline_revision</option></select></label><input id="gainNote" placeholder="读者收益说明"><input id="reviewReason" placeholder="决定理由"><div class="toolbar"><button id="reviewPrepare">准备冻结深审表</button><button id="reviewValidate" class="primary">保存并校验（不 apply）</button></div><label><input id="reviewApplyAck" type="checkbox"> 我确认采用当前精确哈希的人工深审决定</label><button id="reviewApply" class="primary">明确 apply 人工深审决定</button><div id="reviewStatus" class="status"></div></section>
-<section><h2>结构化批注</h2><select id="severity"><option>P1</option><option>P0</option><option>P2</option></select><select id="action"><option>rewrite</option><option>expand_scene</option><option>compress</option><option>clarify</option><option>reorder</option><option>replace_carrier</option><option>preserve</option></select><input id="checkId" placeholder="check_id"><input id="intent" placeholder="修改意图"><input id="preserve" placeholder="必须保护项，逗号分隔"><button id="addAnnotation">将当前 span 转为批注</button><pre id="annotationView"></pre></section>
-<section><h2>对话式协作 / 终稿只读咨询</h2><div id="consultPhase" class="muted"></div><textarea id="question" placeholder="围绕当前选中 span 提问"></textarea><div class="toolbar"><button id="consultTask">创建咨询工单</button><button id="consultValidate">校验最新回答</button><button id="consultRecord">记录最新回答</button></div><input id="optionId" placeholder="coedit 方案 ID，例如 OPTION-A"><input id="optionAdjustment" placeholder="人工调整（可空）"><div class="toolbar"><button id="coeditRewrite">从已记录方案创建完整改写任务</button><button id="coeditCandidateValidate">校验完整协作候选</button></div><div id="consultHistory"></div><div id="consultStatus" class="status"></div></section></aside>
+<main class="col"><section><h2>正文与证据圈选</h2><textarea id="manuscript" readonly></textarea><div class="toolbar"><button data-evidence="key_turn">设为关键转折</button><button data-evidence="character_choice_or_emotion">设为人物选择/情绪</button><button data-evidence="reader_gain">设为读者收益</button></div><label>这处原文说明了什么<input id="evidenceNote" placeholder="说明选择、情绪或阅读收益"></label><details><summary>已登记证据详情</summary><pre id="evidenceView" class="muted"></pre></details></section>
+<section><h2>人工修改与终稿确认</h2><div id="revisionMeta" class="muted"></div><details><summary>查看修改前冻结原稿</summary><textarea id="revisionSource" readonly aria-label="修改前冻结原稿"></textarea></details><textarea id="revisionText"></textarea><details><summary>修改记录协议详情</summary><textarea id="revisionRecord" aria-label="修改记录协议"></textarea></details><pre id="diff"></pre><div class="toolbar"><button id="revisionPrepare">建立人工终稿工作区</button><button id="revisionSave">保存完整修改稿</button><button id="revisionValidate">语义复核并锁定</button><button id="revisionSubmit" class="primary">提交人工终稿并重新审稿</button></div><div id="revisionStatus" class="status"></div></section>
+<section><h2>整章修复候选</h2><div id="repairMeta" class="muted"></div><textarea id="repairText"></textarea><div class="toolbar"><button id="repairPrepare">准备人工整章修复</button><button id="repairSave">保存完整候选</button><button id="repairSubmit" class="primary">转入人工修订验证</button></div><div id="repairStatus" class="status"></div></section></main>
+<aside class="col" id="reviewContext"><section><h2>人类章节意图</h2><pre id="chapterIntent"></pre></section><section><details><summary>本章写作说明</summary><pre id="brief"></pre></details></section><section><details><summary>章节规划与绑定详情</summary><pre id="contract"></pre></details></section><section><details><summary>读者承诺详情</summary><pre id="promises"></pre></details></section></aside>
+<aside class="col" id="reviewDecisions"><section><h2>独立审稿意见</h2><div id="findings"></div></section>
+<section><h2>人工审稿决定</h2><div id="checks"></div><details><summary>十维覆盖协议详情</summary><textarea id="coverageJson"></textarea></details><details><summary>问题处置协议详情</summary><textarea id="findingJson"></textarea></details><label>本章决定 <select id="decision"><option value="repair">修改后重新审稿</option><option value="accept">接受当前终稿</option><option value="redirect">调整创作方向</option></select></label><label>调整范围 <select id="redirect"><option value="direction">章节方向</option><option value="outline_revision">大纲规划</option></select></label><label>读者收益说明<input id="gainNote" placeholder="本章带来了哪些新的理解、感受或进展"></label><label>决定理由<input id="reviewReason" placeholder="结合正文与审稿意见说明"></label><div class="toolbar"><button id="reviewPrepare">准备本章审稿表</button><button id="reviewValidate" class="primary">保存并校验审稿决定</button></div><label><input id="reviewApplyAck" type="checkbox"> 我确认采用当前正文版本的人工审稿决定</label><button id="reviewApply" class="primary">确认采用人工审稿决定</button><div id="reviewStatus" class="status"></div></section>
+<section><h2>结构化批注</h2><label>问题程度<select id="severity"><option value="P2">一般建议</option><option value="P1">严重问题</option><option value="P0">重大阻断</option></select></label><label>修改方式<select id="action"><option value="rewrite">重写这段</option><option value="expand_scene">展开场景</option><option value="compress">压缩重复</option><option value="clarify">澄清信息</option><option value="reorder">调整顺序</option><option value="replace_carrier">调整呈现方式</option><option value="preserve">保留原文</option></select></label><label>批注对应的阅读问题<select id="checkId"></select></label><input id="intent" placeholder="修改意图"><input id="preserve" placeholder="必须保护项，逗号分隔"><button id="addAnnotation">给选中片段添加批注</button><details><summary>批注协议详情</summary><pre id="annotationView"></pre></details></section>
+<section><h2>对话式协作 / 终稿只读咨询</h2><div id="consultPhase" class="muted"></div><textarea id="question" placeholder="围绕选中的正文片段提问"></textarea><div class="toolbar"><button id="consultTask">创建咨询工单</button><button id="consultValidate">校验最新回答</button><button id="consultRecord">记录最新回答</button></div><label>已选修改方案<input id="optionId" readonly placeholder="先在回答中选择方案"></label><input id="optionAdjustment" placeholder="人工调整（可空）"><div class="toolbar"><button id="coeditRewrite">从已记录方案创建完整改写任务</button><button id="coeditCandidateValidate">校验完整协作候选</button></div><div id="consultHistory"></div><div id="consultStatus" class="status"></div></section></aside>
 </div>
 <script nonce="reviewdesk">
+const projectRoute=location.pathname.match(/^\/projects\/(project_[a-f0-9]{20})\/chapters\/(\d+)/);if(projectRoute){document.getElementById("readerBack").href=location.pathname;document.getElementById("readerBack").hidden=false}else document.getElementById("workspaceBack").hidden=true;
 const csrf="__CSRF_TOKEN__";let state=null;let selected={start:0,end:0,text:""};let evidence={};let annotations=[];
+const dirtyFields=new Set();const draftKey="studio-review:"+location.pathname;let composing=false;let acknowledgedCandidateHash="";
+function preserveLocal(){if(composing)return;try{localStorage.setItem(draftKey,JSON.stringify({source:state?.draft?.sha256,evidence,annotations,fields:Object.fromEntries([...dirtyFields].map(id=>[id,$(id)?.value]))}))}catch{show("globalStatus","本机存储不可用，请保存后再离开。","error")}}
+function restoreLocal(){if(dirtyFields.size)return;try{const saved=JSON.parse(localStorage.getItem(draftKey)||"null");if(saved){evidence=saved.evidence||evidence;annotations=saved.annotations||annotations;renderEvidence();renderAnnotations();for(const [id,value] of Object.entries(saved.fields)){if($(id)){$(id).value=value;dirtyFields.add(id)}}if(saved.source!==state?.draft?.sha256)show("globalStatus","已恢复旧来源的修改，请核对正文版本。","error")}}catch{}}
+document.addEventListener("compositionstart",()=>{composing=true});document.addEventListener("compositionend",()=>{composing=false;preserveLocal()});document.addEventListener("input",e=>{if(!e.target.closest("#revisionNaturalForm,#coverageNaturalForm,#findingNaturalForm")&&e.target.id&&e.target.matches("textarea:not([readonly]),input:not([type=checkbox]),select")){dirtyFields.add(e.target.id);preserveLocal()}});window.addEventListener("beforeunload",e=>{preserveLocal();if(dirtyFields.size){e.preventDefault();e.returnValue=""}});window.addEventListener("storage",e=>{if(e.key===draftKey)show("globalStatus","另一标签页保存了修改；当前文字保持原样。","error")});
 const $=id=>document.getElementById(id);const show=(id,value,cls="")=>{const el=$(id);el.textContent=typeof value==="string"?value:JSON.stringify(value,null,2);el.className="status "+cls};
-async function api(path,body){const r=await fetch(path,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-Review-CSRF":csrf},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(data.error||"request failed");return data.result}
+async function api(path,body){const r=await fetch(path,{method:"POST",credentials:"same-origin",headers:{"Content-Type":"application/json","X-Review-CSRF":csrf},body:JSON.stringify(body)});const data=await r.json();if(!r.ok)throw new Error(data.error||"request failed");if(path.endsWith("/human-revision/prepare"))acknowledgedCandidateHash=body.expected_candidate_sha256||"";if(path.endsWith("/human-revision/save")){dirtyFields.delete("revisionText");dirtyFields.delete("revisionRecord");for(const id of [...dirtyFields])if($(id)?.closest("#revisionNaturalForm"))dirtyFields.delete(id);acknowledgedCandidateHash=data.result?.candidate_sha256||"";preserveLocal()}if(path.endsWith("/manual-repair/save")){dirtyFields.delete("repairText");preserveLocal()}return data.result}
 function utf16ToCodePoint(text,index){return Array.from(text.slice(0,index)).length}
-function capture(){const el=$("manuscript");const utf16Start=el.selectionStart,utf16End=el.selectionEnd;selected={start:utf16ToCodePoint(el.value,utf16Start),end:utf16ToCodePoint(el.value,utf16End),text:el.value.slice(utf16Start,utf16End)};if(selected.end<=selected.start)throw new Error("请先圈选正文 span");return selected}
-async function load(){state=await fetch("/api/state",{credentials:"same-origin"}).then(r=>r.json());$("title").textContent=`ch${String(state.chapter_number).padStart(3,"0")} 人工可视化深审`;$("candidate").textContent=state.consultation_candidate.sha256;$("chapterIntent").textContent=JSON.stringify(state.human_chapter_intent,null,2);$("brief").textContent=state.story_brief.text;$("contract").textContent=JSON.stringify(state.chapter_contract,null,2);$("promises").textContent=JSON.stringify(state.reader_promises,null,2);$("manuscript").value=state.consultation_candidate.text;$("consultPhase").textContent=state.consultation_candidate.phase==="coedit"?"coedit：可生成完整 workbench 候选":"human_final：锁定后仅只读咨询";
+function capture(){const el=$("manuscript");const utf16Start=el.selectionStart,utf16End=el.selectionEnd;selected={start:utf16ToCodePoint(el.value,utf16Start),end:utf16ToCodePoint(el.value,utf16End),text:el.value.slice(utf16Start,utf16End)};if(selected.end<=selected.start)throw new Error("请先圈选正文片段");return selected}
+async function load(){const previous=state;const previousEvidence=evidence,previousAnnotations=annotations;const preserved=Object.fromEntries([...dirtyFields].map(id=>[id,$(id)?.value]));const updated=await fetch("/api/state",{credentials:"same-origin"}).then(r=>{if(!r.ok)throw Error("无法读取审稿状态");return r.json()});if(previous&&dirtyFields.size&&updated.consultation_candidate.sha256!==previous.consultation_candidate.sha256&&updated.consultation_candidate.sha256!==acknowledgedCandidateHash){show("globalStatus","正文版本已变化。已保留未保存内容，请比较后处理。","error");return}state=updated;acknowledgedCandidateHash="";$("reviewOrigin").hidden=!state.execution_origin?.simulated_human;$("reviewOrigin").textContent=state.execution_origin?.simulated_human?"自动演练 · 人工步骤为模拟记录，未获文学验收":"";$("title").textContent=`第 ${state.chapter_number} 章 · 修改与审稿`;$("candidate").textContent=state.consultation_candidate.sha256;$("chapterIntent").textContent=Object.entries({story_intent:"故事意图",key_character_choice:"人物关键选择",emotional_truth:"情绪真相",pov_voice_intent:"视角与声音"}).map(([key,label])=>`${label}：\n${state.human_intent_content?.[key]||"尚未填写"}`).join("\n\n");$("checkId").replaceChildren(...state.review_checks.map(check=>{const option=document.createElement("option");option.value=check.id;option.textContent=check.label;return option}));$("brief").textContent=state.story_brief.text;$("contract").textContent=JSON.stringify(state.chapter_contract,null,2);$("promises").textContent=JSON.stringify(state.reader_promises,null,2);$("manuscript").value=state.consultation_candidate.text;$("consultPhase").textContent=state.consultation_candidate.phase==="coedit"?"创作协作阶段：可以选择方案并生成完整候选":"人工终稿阶段：仅提供只读咨询";
 $("findings").replaceChildren(...(state.review_barrier.findings||[]).map(f=>{const d=document.createElement("div");d.className="finding";d.textContent=`[${f.severity}] ${f.code||f.finding_id}: ${f.diagnosis||""}`;return d}));
-$("checks").replaceChildren(...state.review_checks.map(c=>{const l=document.createElement("div");l.className="check";const current=(state.review_template.dimension_coverage||{})[c.id]||{};l.textContent=`${c.label} — ${current.coverage_source||"待覆盖"} / ${current.status||"待判断"}`;return l}));
-const t=state.review_template||{};$("coverageJson").value=JSON.stringify(t.dimension_coverage||{},null,2);$("findingJson").value=JSON.stringify(t.finding_resolutions||[],null,2);evidence=Object.fromEntries((t.evidence_spans||[]).map(x=>[x.kind,x]));annotations=t.annotations||[];renderEvidence();renderAnnotations();renderRevision();renderRepair();renderConsult();$("reviewApply").disabled=state.review_validation?.ok!==true||!state.review_template_sha256;show("globalStatus",`屏障：${state.review_barrier.status}`)}
+if(!$("findings").children.length)$("findings").textContent="当前审稿没有待处理问题；是否可以定稿仍由完整审稿和人工确认决定。";
+$("checks").replaceChildren(...state.review_checks.map(c=>{const l=document.createElement("div");l.className="check";const current=(state.review_template.dimension_coverage||{})[c.id]||{};l.textContent=`${c.label} — ${({human_core:"本人阅读",independent_review:"独立审稿",human_resolution:"本人处理"}[current.coverage_source]||"待覆盖")} / ${({confirmed:"已核对",covered:"已有覆盖",accepted_p2:"接受一般建议",repair:"待修改",redirect:"调整方向"}[current.status]||"待判断")}`;return l}));
+const t=state.review_template||{};$("coverageJson").value=JSON.stringify(t.dimension_coverage||{},null,2);$("findingJson").value=JSON.stringify(t.finding_resolutions||[],null,2);evidence=Object.fromEntries((t.evidence_spans||[]).map(x=>[x.kind,x]));annotations=t.annotations||[];renderEvidence();renderAnnotations();renderRevision();renderRepair();renderConsult();$("reviewApply").disabled=state.review_validation?.ok!==true||!state.review_template_sha256;for(const [id,value] of Object.entries(preserved)){if($(id))$(id).value=value}if(dirtyFields.has("__evidence"))evidence=previousEvidence;if(dirtyFields.has("__annotations"))annotations=previousAnnotations;restoreLocal();renderEvidence();renderAnnotations();renderHumanForms();show("globalStatus",`审稿状态：${reviewStatusLabel(state.review_barrier.status)}`)}
 function renderEvidence(){$("evidenceView").textContent=JSON.stringify(evidence,null,2)}function renderAnnotations(){$("annotationView").textContent=JSON.stringify(annotations,null,2)}
-function renderRevision(){const r=state.human_author_revision||{};$("revisionMeta").textContent=r.available?`${r.status||"pending"} / ${r.candidate_file}`:"尚未建立人工修订工作区";$("revisionText").value=r.text||state.draft.text;$("revisionRecord").value=JSON.stringify(r.record||{},null,2);$("diff").textContent=r.diff||"暂无人工改稿 diff";$("revisionPrepare").disabled=!!r.available;$("revisionSave").disabled=!r.available;$("revisionValidate").disabled=!r.available;$("revisionSubmit").disabled=!r.available||r.status!=="validated_for_submit"}
+function renderRevision(){const r=state.human_author_revision||{};$("revisionMeta").textContent=r.available?reviewStatusLabel(r.status):"尚未建立人工修订工作区";$("revisionSource").value=r.source_text||state.draft.text;$("revisionText").value=r.text||state.draft.text;$("revisionRecord").value=JSON.stringify(r.record||{},null,2);$("diff").textContent=r.diff||"暂无修改对照";$("revisionPrepare").disabled=!!r.available;$("revisionText").readOnly=r.editable===false;$("revisionRecord").readOnly=r.editable===false;$("revisionSave").disabled=!r.available||r.editable===false;$("revisionValidate").disabled=!r.available||r.editable===false;$("revisionSubmit").disabled=!r.available||r.status!=="validated_for_submit"}
 function renderRepair(){const r=state.manual_repair||{};$("repairMeta").textContent=r.available?`${r.task_id} / ${r.task_status} / 剩余 ${r.attempts.remaining}`:r.reason||"无 repair 工单";$("repairText").value=r.text||state.draft.text;$("repairSave").disabled=!r.available||!r.editable;$("repairSubmit").disabled=!r.available||!r.editable;$("repairPrepare").disabled=!!r.available}
 function activeSessions(){return state.consultation_candidate.phase==="coedit"?(state.coedit.sessions||[]):(state.consultations.sessions||[])}
 function latestTurn(){const sessions=activeSessions();for(let j=sessions.length-1;j>=0;j--)for(let i=(sessions[j].turns||[]).length-1;i>=0;i--)return {...sessions[j].turns[i],session_id:sessions[j].session_id};return null}
-function renderConsult(){const rows=[];for(const s of activeSessions())for(const t of s.turns||[])rows.push(`${s.effective_status||s.status} t${t.turn_number}: ${t.response||t.response_file}`);$("consultHistory").textContent=rows.join("\n\n")||"暂无咨询";const coedit=state.consultation_candidate.phase==="coedit";$("coeditRewrite").disabled=!coedit;$("coeditCandidateValidate").disabled=!coedit}
-document.querySelectorAll("[data-evidence]").forEach(b=>b.onclick=()=>{try{const s=capture();evidence[b.dataset.evidence]={kind:b.dataset.evidence,...s};renderEvidence()}catch(e){show("globalStatus",e.message,"error")}});
-$("addAnnotation").onclick=()=>{try{const s=capture();annotations.push({annotation_id:`HR-${Date.now()}`,start:s.start,end:s.end,text:s.text,check_id:$("checkId").value,severity:$("severity").value,action:$("action").value,intent:$("intent").value,must_preserve:$("preserve").value.split(",").map(x=>x.trim()).filter(Boolean),note:"由人工在审稿台明确转换"});renderAnnotations()}catch(e){show("reviewStatus",e.message,"error")}};
+function consultSessions(){return [...(state.coedit.sessions||[]).map(s=>({...s,phase:"coedit"})),...(state.consultations.sessions||[]).map(s=>({...s,phase:"human_final"}))]}
+function renderConsult(){const box=$("consultHistory");box.replaceChildren();for(const s of consultSessions())for(const t of s.turns||[]){const section=document.createElement("section"),title=document.createElement("p"),q=document.createElement("p"),quote=document.createElement("blockquote"),answer=document.createElement("div");title.className="muted";const stale=s.phase!==state.consultation_candidate.phase||(s.effective_status||s.status)==="stale"||Boolean(t.response_sha256&&!t.response_current)||t.candidate_current===false;title.textContent=`${s.phase==="coedit"?"创作协作":"终稿咨询"} · 第 ${t.turn_number} 轮 · ${stale?"历史建议，已不可采用":s.status==="active"?"进行中":"已记录"}`;q.textContent=t.request?.question||"原问题未保存";quote.className="selection-quote";quote.textContent=t.request?.selection?.text||t.request?.selection?.excerpt||"";answer.className="consult-answer";answer.textContent=t.response?(t.response_current?"":"待校验的生成结果\n")+t.response:"等待顾问回答";section.append(title,q,quote,answer);for(const option of t.option_ids||[]){const button=document.createElement("button");button.textContent=`选择 ${option}`;button.className="secondary";button.disabled=stale;button.onclick=()=>{$("optionId").value=option;show("consultStatus",`已选择 ${option}，可生成完整候选。`)};section.append(button)}box.append(section)}const coedit=state.consultation_candidate.phase==="coedit";$("coeditRewrite").disabled=!coedit;$("coeditCandidateValidate").disabled=!coedit;renderConsultJobs()}
+
+document.querySelectorAll("[data-evidence]").forEach(b=>b.onclick=()=>{try{const s=capture();evidence[b.dataset.evidence]={kind:b.dataset.evidence,...s,note:$("evidenceNote").value};const coverage=JSON.parse($("coverageJson").value||"{}");for(const [key,kind] of Object.entries({scene_causality_and_key_turn_dramatized:"key_turn",protagonist_agency_voice_and_emotion:"character_choice_or_emotion",reader_gain_and_promise_progress:"reader_gain",exit_state_and_emotional_aftereffect:"reader_gain"})){if(kind===b.dataset.evidence&&coverage[key])coverage[key].evidence_refs=[`candidate:${kind}:${s.start}-${s.end}`]}$("coverageJson").value=JSON.stringify(coverage,null,2);dirtyFields.add("coverageJson");renderCoverageForm();renderEvidence();dirtyFields.add("__evidence");preserveLocal()}catch(e){show("globalStatus",e.message,"error")}});
+$("addAnnotation").onclick=()=>{try{const s=capture();annotations.push({annotation_id:`HR-${Date.now()}`,start:s.start,end:s.end,text:s.text,check_id:$("checkId").value,severity:$("severity").value,action:$("action").value,intent:$("intent").value,must_preserve:$("preserve").value.split(",").map(x=>x.trim()).filter(Boolean),note:"由人工在审稿台明确转换"});renderAnnotations();dirtyFields.add("__annotations");preserveLocal()}catch(e){show("reviewStatus",e.message,"error")}};
 $("reviewPrepare").onclick=async()=>{try{show("reviewStatus",await api("/api/human-review/prepare",{expected_candidate_sha256:state.draft.sha256}),"ok");await load()}catch(e){show("reviewStatus",e.message,"error")}};
 $("reviewValidate").onclick=async()=>{try{const base=state.review_template;if(!base.schema)throw new Error("请先准备深审表");const dimension_coverage=JSON.parse($("coverageJson").value);const finding_resolutions=JSON.parse($("findingJson").value);const review={...base,dimension_coverage,finding_resolutions,decision:$("decision").value,evidence_spans:Object.values(evidence),reader_gain_note:$("gainNote").value,annotations,redirect_scope:$("redirect").value,reason:$("reviewReason").value};show("reviewStatus",await api("/api/human-review/validate",{expected_candidate_sha256:state.draft.sha256,review}),"ok");await load()}catch(e){show("reviewStatus",e.message,"error")}};
 $("reviewApply").onclick=async()=>{try{if(!$("reviewApplyAck").checked)throw new Error("请先明确确认采用当前人工深审决定");show("reviewStatus",await api("/api/human-review/apply",{expected_candidate_sha256:state.draft.sha256,expected_review_sha256:state.review_template_sha256,approved_by:"human",acknowledge_human_decision:true}),"ok");await load()}catch(e){show("reviewStatus",e.message,"error")}};
@@ -1024,6 +1086,9 @@ $("revisionSubmit").onclick=async()=>{try{const r=state.human_author_revision;sh
 $("repairPrepare").onclick=async()=>{try{show("repairStatus",await api("/api/manual-repair/prepare",{expected_candidate_sha256:state.draft.sha256}),"ok");await load()}catch(e){show("repairStatus",e.message,"error")}};
 $("repairSave").onclick=async()=>{try{show("repairStatus",await api("/api/manual-repair/save",{expected_draft_sha256:state.draft.sha256,expected_candidate_sha256:state.manual_repair.candidate_sha256||"",text:$("repairText").value}),"ok");await load()}catch(e){show("repairStatus",e.message,"error")}};
 $("repairSubmit").onclick=async()=>{try{show("repairStatus",await api("/api/human-revision/prepare",{expected_candidate_sha256:state.draft.sha256}),"ok");await load()}catch(e){show("repairStatus",e.message,"error")}};
+__REVIEW_LAYOUT__
+__REVIEW_FORMS__
+__REVIEW_JOBS__
 $("reload").onclick=()=>load().catch(e=>show("globalStatus",e.message,"error"));load().catch(e=>show("globalStatus",e.message,"error"));
 </script></body></html>'''
 

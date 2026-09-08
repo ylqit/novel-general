@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
@@ -178,7 +178,14 @@ class RoleRegistry:
                     f"task_type `{task_type}` requires role_id `{role_id}`, got `{declared_role_id}`."
                 )
         try:
-            return self.roles[role_id]
+            role = self.roles[role_id]
+            if normalized_task == "planning_semantic_review":
+                from longform_engine.planning.workflow import REVIEW_PROFILES
+
+                profile = REVIEW_PROFILES["architecture"]
+                return replace(role, review_dimensions=profile["dimensions"], finding_codes=profile["finding_codes"],
+                               canonical_ref_dimensions=("protected_invariants",), task_sections=("planning_review",))
+            return role
         except KeyError as exc:
             raise RoleRegistryError(f"Registered role `{role_id}` has no role contract.") from exc
 
@@ -945,10 +952,16 @@ def session_directive(
 
     policy = role.session_policy
     chapter = int(scope.get("chapter_number") or 0) if isinstance(scope, dict) else 0
-    if policy == "project_coordinator":
+    if policy == "candidate_consultation":
+        # Each manifest carries verified dialogue history. A fresh process cannot
+        # accidentally reuse a writer/reviewer session or another candidate.
+        action = "new_session_required"
+        scope_key = f"ch{chapter:03d}:consultation:{task_id}"
+        forbidden: list[str] = ["chapter_author", "isolated_review", "other_candidate"]
+    elif policy == "project_coordinator":
         action = "continue_project_session"
         scope_key = "project:coordination"
-        forbidden: list[str] = []
+        forbidden = []
     elif policy == "chapter_author":
         action = "continue_chapter_session" if normalize_id(task_type) == "repair" else "new_session_required"
         scope_key = f"ch{chapter:03d}:author"

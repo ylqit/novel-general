@@ -8,6 +8,7 @@ from typing import Any
 import json
 
 from longform_engine.reader_promises_v2 import validate_promise_actions_v2
+from longform_engine.storage.layout import FINAL_MANUSCRIPT_DIRECTORY
 
 
 CONTRACT_SCHEMA = "chapter_contract_v5"
@@ -158,8 +159,10 @@ def load_verified_chapter_contract(root: Path, chapter_number: int) -> tuple[dic
     return contract, digest
 
 
-def resolve_chapter_contract_refs(root: Path, contract: dict[str, Any]) -> list[dict[str, Any]]:
-    """Resolve author facts through stable fact IDs and explicit obligation dependencies only."""
+def resolve_chapter_contract_refs(
+    root: Path, contract: dict[str, Any], *, additional_refs: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    """Resolve explicit facts, entities and document references without treating plans as facts."""
 
     obligation_path = root / "30_state" / "semantic_obligations.json"
     obligation_payload = _read_json_object(obligation_path, "semantic_obligation_ledger")
@@ -168,41 +171,123 @@ def resolve_chapter_contract_refs(root: Path, contract: dict[str, Any]) -> list[
         for item in obligation_payload.get("items", [])
         if isinstance(item, dict) and item.get("obligation_id")
     }
-    selected = [obligations[ref] for ref in contract["semantic_obligation_refs"]]
-    fact_ids: list[str] = []
-    for obligation in selected:
+    references: list[str] = list(dict.fromkeys(additional_refs))
+    visited: set[str] = set()
+
+    def visit(obligation_id: str, chain: tuple[str, ...]) -> None:
+        if obligation_id in chain:
+            raise ChapterContractError("context_evidence_incomplete:obligation_dependency_cycle:" + obligation_id)
+        if obligation_id in visited:
+            return
+        if obligation_id not in obligations:
+            raise ChapterContractError("context_evidence_incomplete:obligation_missing:" + obligation_id)
+        obligation = obligations[obligation_id]
         for field in ("subject_refs", "prior_state_refs", "dependency_refs"):
-            for fact_id in obligation.get(field) or []:
-                token = str(fact_id)
-                if token not in fact_ids:
-                    fact_ids.append(token)
-    fact_path = root / "10_bible" / "canonical_facts.json"
-    if not fact_ids:
+            for ref in obligation.get(field) or []:
+                token = str(ref)
+                if token in obligations:
+                    # A planned change remains an obligation, never an observed fact.
+                    visit(token, (*chain, obligation_id))
+                elif token not in references:
+                    references.append(token)
+        for condition in obligation.get("preconditions") or []:
+            token = str(condition.get("ref") or "")
+            if token in obligations:
+                visit(token, (*chain, obligation_id))
+            elif token and token not in references:
+                references.append(token)
+        visited.add(obligation_id)
+
+    for obligation_id in contract["semantic_obligation_refs"]:
+        visit(obligation_id, ())
+    if not references:
         return []
-    facts_payload = _read_json_object(fact_path, "canonical_fact_registry_v2")
-    if facts_payload.get("schema") != "canonical_fact_registry_v2":
-        raise ChapterContractError("canonical_fact_v2_registry_incompatible")
-    facts = {
-        str(item.get("fact_id")): item
-        for item in facts_payload.get("items", [])
-        if isinstance(item, dict) and item.get("schema") == "canonical_fact_v2"
+    registry_paths = {
+        "10_bible/canonical_facts.json": ("items", "fact_id", "canonical_fact"),
+        "10_bible/characters.json": (None, "id", "character"),
+        "10_bible/relationships.json": (None, "id", "relationship"),
+        "10_bible/abilities.json": (None, "id", "ability"),
     }
-    missing = [fact_id for fact_id in fact_ids if fact_id not in facts]
-    if missing:
-        raise ChapterContractError(
-            "context_evidence_incomplete:unresolved_stable_fact_ids:" + ",".join(missing)
-        )
-    digest = sha256(fact_path.read_bytes()).hexdigest()
-    return [
-        {
-            "kind": "canonical_fact",
-            "ref": fact_id,
-            "source": fact_path.relative_to(root).as_posix(),
-            "sha256": digest,
-            "value": facts[fact_id].get("statement"),
-        }
-        for fact_id in fact_ids
-    ]
+    aliases: dict[str, list[tuple[str, str]]] = {}
+    documents: dict[str, Any] = {}
+    for relative, (container, id_field, kind) in registry_paths.items():
+        path = root / relative
+        if not path.is_file():
+            continue
+        _reject_stale_artifact(root, path)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ChapterContractError(f"context_evidence_incomplete:invalid_reference_source:{relative}") from exc
+        documents[relative] = payload
+        if container:
+            if not isinstance(payload, dict) or payload.get("schema") != "canonical_fact_registry_v2":
+                raise ChapterContractError("canonical_fact_v2_registry_incompatible")
+            items = payload.get(container, [])
+        else:
+            items = payload
+        if not isinstance(items, list):
+            raise ChapterContractError(f"context_evidence_incomplete:invalid_reference_registry:{relative}")
+        for index, item in enumerate(items):
+            if isinstance(item, dict) and item.get(id_field):
+                pointer = f"/{container}/{index}" if container else f"/{index}"
+                aliases.setdefault(str(item[id_field]), []).append((relative + "#" + pointer, kind))
+    resolved: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    root = root.resolve()
+    for ref in references:
+        matches = aliases.get(ref, [])
+        if len(matches) > 1:
+            raise ChapterContractError("context_evidence_incomplete:ambiguous_reference:" + ref)
+        target, kind = matches[0] if matches else (ref, "canonical_document")
+        relative, _, fragment = target.partition("#")
+        path = (root / relative).resolve()
+        if (".." in Path(relative).parts or not path.is_relative_to(root)
+                or not relative.startswith(("00_governance/", "10_bible/", FINAL_MANUSCRIPT_DIRECTORY + "/", "30_state/semantic_ledger/"))
+                or not path.is_file()):
+            raise ChapterContractError("context_evidence_incomplete:unresolved_planning_reference:" + ref)
+        _reject_stale_artifact(root, path)
+        if target in seen:
+            continue
+        seen.add(target)
+        raw = path.read_bytes()
+        text = raw.decode("utf-8")
+        value: Any = text
+        if path.suffix == ".json":
+            try:
+                value = documents[relative] if relative in documents else json.loads(text)
+                if fragment:
+                    if not fragment.startswith("/"):
+                        raise ValueError("JSON source requires an explicit pointer")
+                    for token in fragment[1:].split("/"):
+                        key = token.replace("~1", "/").replace("~0", "~")
+                        if isinstance(value, list):
+                            if not key.isdigit():
+                                raise ValueError("invalid array position")
+                            value = value[int(key)]
+                        else:
+                            value = value[key]
+            except (ValueError, KeyError, IndexError, TypeError) as exc:
+                raise ChapterContractError("context_evidence_incomplete:reference_fragment_missing:" + ref) from exc
+        elif fragment:
+            lines = text.splitlines()
+            headings = [(i, len(line) - len(line.lstrip("#")), line.lstrip("#").strip())
+                        for i, line in enumerate(lines) if line.startswith("#")]
+            starts = [(i, level) for i, level, title in headings if title == fragment]
+            if len(starts) != 1:
+                raise ChapterContractError("context_evidence_incomplete:reference_heading_missing_or_ambiguous:" + ref)
+            first, level = starts[0]
+            last = next((i for i, depth, _title in headings if i > first and depth <= level), len(lines))
+            value = "\n".join(lines[first:last])
+        if kind == "canonical_fact":
+            if not isinstance(value, dict) or value.get("schema") != "canonical_fact_v2":
+                raise ChapterContractError("context_evidence_incomplete:invalid_canonical_fact:" + ref)
+            value = value.get("statement")
+        if value in (None, "", [], {}):
+            raise ChapterContractError("context_evidence_incomplete:empty_reference:" + ref)
+        resolved.append({"kind": kind, "ref": ref, "source": relative,
+                         "sha256": sha256(raw).hexdigest(), "value": value})
+    return resolved
 
 
 def _validate_plot_node_table(root: Path, contract: dict[str, Any], chapter_number: int) -> None:

@@ -21,11 +21,12 @@ from longform_engine.agent_protocols import (
 from longform_engine.planning.context import load_chapter_planning_context
 from longform_engine.story_brief import load_current_story_brief_binding
 from longform_engine.human_chapter_intent import require_current_human_chapter_intent
-from longform_engine.chapter_contract import ChapterContractError
+from longform_engine.chapter_contract import ChapterContractError, resolve_chapter_contract_refs
 from longform_engine.agent_tasks import (
     AgentTaskContractError,
     build_manifest,
     list_manifests,
+    load_manifest,
     manifest_input_paths,
     mark_tasks_for_output,
     resolve_under_root,
@@ -33,6 +34,7 @@ from longform_engine.agent_tasks import (
     supersede_other_candidate_tasks,
     update_task_status,
     validate_current_task_result,
+    validate_manifest_strict,
     write_manifest,
 )
 from longform_engine.config import ConfigDocument
@@ -178,6 +180,14 @@ def build_semantic_review_context(
     graph_payload = payloads.get("30_state/story_graph.json", {})
     tcs_payload = payloads.get(f"30_state/tcs/ch{chapter_number:03d}.json", {})
     verified_contract, contract_hash = planning.contract, planning.contract_sha256
+    node_source_refs = tuple(dict.fromkeys(
+        str(ref) for node in planning.nodes
+        for ref in [node.get("location_ref"), *[
+            condition.get("ref") for condition in node.get("preconditions", [])
+            if condition.get("type") == "semantic"
+        ]] if ref
+    ))
+    source_excerpts = resolve_chapter_contract_refs(root, verified_contract, additional_refs=node_source_refs)
     bundle_ref = f"50_workbench/fanfiction_context/ch{chapter_number:03d}.json"
     fanfiction_bundle = payloads.get(bundle_ref, {})
     review_projection = (
@@ -204,6 +214,7 @@ def build_semantic_review_context(
         "current_state": tcs_payload,
         "characters": semantic_review_matching_records(character_payload, participant_ids),
         "story_graph": semantic_review_matching_records(graph_payload, participant_ids),
+        "canonical_source_excerpts": source_excerpts,
     }
     if fanfiction:
         raw_sections["fanfiction"] = review_projection
@@ -224,6 +235,7 @@ def build_semantic_review_context(
         "characters": 0.19,
         "story_graph": 0.10,
         "fanfiction": 0.33,
+        "canonical_source_excerpts": 0.25,
     }
     active_weight = sum(section_weights[key] for key in raw_sections)
     section_budgets = {
@@ -234,7 +246,7 @@ def build_semantic_review_context(
     section_selection: dict[str, dict[str, Any]] = {}
     for key, raw_value in raw_sections.items():
         terms = participant_ids if key in {"characters", "story_graph"} else match_terms
-        critical = key in {"chapter_contract", "characters", "fanfiction"} and bool(raw_value)
+        critical = key in {"chapter_contract", "characters", "fanfiction", "canonical_source_excerpts"} and bool(raw_value)
         compiled_value = (
             raw_value
             if critical
@@ -256,13 +268,18 @@ def build_semantic_review_context(
     provenance = [
         {
             "path": path,
-            "sha256": sha256_text(safe_read_text(root / path)),
+            "sha256": hashlib.sha256((root / path).read_bytes()).hexdigest(),
             "selection_reason": semantic_review_selection_reason(path, fanfiction=fanfiction),
         }
         for path in payloads
     ]
+    for excerpt in source_excerpts:
+        if not any(item["path"] == excerpt["source"] for item in provenance):
+            provenance.append({"path": excerpt["source"], "sha256": excerpt["sha256"],
+                               "selection_reason": "exact approved prerequisite source excerpt"})
     packet = {
         "schema": "semantic_review_context_v2",
+        "evidence_compiler_version": "canonical_source_excerpts_v1",
         "planning_source_files": list(planning.source_files),
         "approved_planning": planning.review_projection(),
         "human_chapter_intent": require_current_human_chapter_intent(root, chapter_number)["payload"],
@@ -273,7 +290,7 @@ def build_semantic_review_context(
         "source_hash": sha256_text(source_text),
         "participant_ids": participant_ids,
         "canon_refs": canon_refs,
-        "allowed_canonical_refs": list(payloads),
+        "allowed_canonical_refs": [item["path"] for item in provenance],
         "sections": sections,
         "provenance": provenance,
         "fanfiction_bundle_provenance": (
@@ -289,10 +306,11 @@ def build_semantic_review_context(
         "selection": {
             "mode": "deterministic_relevant_projection",
             "full_canonical_files_exposed": False,
-            "selected_source_count": len(payloads),
+            "selected_source_count": len(provenance),
             "sections": section_selection,
             "notes": [
-                "The packet is a bounded review aid; canonical files remain the facts verified by the CLI.",
+                "canonical_source_excerpts contains exact source values, not summaries; the CLI binds and verifies their original files.",
+                "Approved planning describes intended changes, never proof that those changes already happened.",
                 "The packet includes approved chapter planning and human intent, participants, declared canon references, and current state.",
             ],
         },
@@ -667,6 +685,16 @@ def semantic_review_task(
     context_file = artifact_dir / "semantic_review_context.json"
     output_file = artifact_dir / "semantic_review_result.json"
     manifest_file = artifact_dir / "semantic_review_task.agent_task.json"
+    if manifest_file.is_file() and gate_review_context_is_current(root, chapter_number, task_type="semantic_review"):
+        existing = load_manifest(root, manifest_file)
+        if (existing.get("status") in {"awaiting_agent", "submitted", "validated", "applied"}
+                and semantic_review_source_for_task(root, existing, chapter_number) == chapter_path
+                and validate_manifest_strict(root, existing).ok):
+            return SemanticReviewTaskResult(
+                chapter_number=chapter_number, task_markdown=str(task_md), manifest_file=str(manifest_file),
+                output_file=str(output_file), source_file=str(chapter_path),
+                next_command=f"longform-engine gate semantic-validate project.yaml --chapter {chapter_number} --file {relative_path(root, output_file)}",
+            )
     canonical_inputs = [
         root / "30_state" / "tcs" / f"ch{chapter_number:03d}.json",
         root / "30_state" / "story_graph.json",
@@ -710,7 +738,8 @@ def semantic_review_task(
                 "## Compiled Canonical Context",
                 "",
                 f"- Read only `{relative_path(root, context_file)}` for bounded canonical facts and allowed references.",
-                "- Do not open the canonical source files listed inside that packet; the CLI will verify cited references.",
+                "- Read the exact canonical_source_excerpts values and participant records in that packet. They are source evidence bound to the original file hashes, not generated summaries.",
+                "- Cite their declared original canonical paths; the CLI revalidates the originals. Do not open undeclared files or treat planned changes as observed facts.",
                 "",
                 "## Output Contract",
                 "",
@@ -753,7 +782,7 @@ def semantic_review_task(
             "selection_report": relative_path(root, context_file),
         },
     )
-    write_manifest(root, manifest, manifest_file)
+    write_manifest(root, manifest, manifest_file, preserve_replaced=True)
     return SemanticReviewTaskResult(
         chapter_number=chapter_number,
         task_markdown=str(task_md),
@@ -1377,7 +1406,7 @@ def semantic_pacing_task(config: ConfigDocument, *, chapter_number: int, source:
             "selection_report": task_json,
         },
     )
-    write_manifest(root, manifest, manifest_file)
+    write_manifest(root, manifest, manifest_file, preserve_replaced=True)
     return SemanticPacingTaskResult(
         chapter_number=chapter_number,
         task_json=str(task_json),
@@ -2665,7 +2694,8 @@ def gate_review_context_is_current(root: Path, chapter_number: int, *, task_type
         if not isinstance(context, dict):
             return False
         if task_type == "semantic_review":
-            if context.get("schema") != "semantic_review_context_v2":
+            if (context.get("schema") != "semantic_review_context_v2"
+                    or context.get("evidence_compiler_version") != "canonical_source_excerpts_v1"):
                 return False
             source_hash = context.get("source_hash")
         else:
@@ -2682,7 +2712,7 @@ def gate_review_context_is_current(root: Path, chapter_number: int, *, task_type
             and context.get("story_brief_binding") == load_current_story_brief_binding(root, chapter_number)
             and source.is_file() and sha256_text(safe_read_text(source)) == source_hash
             and all(
-                sha256_text(safe_read_text(root / item["path"])) == item["sha256"]
+                hashlib.sha256((root / item["path"]).read_bytes()).hexdigest() == item["sha256"]
                 for item in context.get("provenance", [])
             )
         )
@@ -2757,7 +2787,7 @@ def semantic_review_gate_items(
             "required": True,
             "status": "awaiting_agent",
             "task": relative_path(root, Path(task.manifest_file)),
-            "next_command": f"longform-engine agent-task brief project.yaml --task-id semantic_review:ch{chapter_number:03d}:v5",
+            "next_command": f"longform-engine agent-task brief project.yaml {relative_path(root, Path(task.manifest_file))}",
         }
     payload = application["payload"]
     failures: list[dict[str, Any]] = []

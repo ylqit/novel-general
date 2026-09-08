@@ -231,7 +231,7 @@ def install_model_profile(
                 reranker_staging = staging / "reranker"
                 embedding_staging.mkdir(parents=True)
                 reranker_staging.mkdir(parents=True)
-                from huggingface_hub import snapshot_download  # type: ignore
+                from huggingface_hub import snapshot_download
 
                 embedding_snapshot = snapshot_download(
                     repo_id=chosen.embedding_repo,
@@ -364,6 +364,8 @@ def verify_models(config: ConfigDocument) -> ModelVerifyResult:
         status = "ready"
     elif fallback_allowed:
         status = "fallback_only"
+    elif (embedding_cached and not embedding_loadable) or (reranker_cached and not reranker_loadable):
+        status = "runtime_unavailable"
     else:
         status = "download_required"
     download_required = status == "download_required"
@@ -405,6 +407,13 @@ def ensure_models_ready(
         return status
     if not require_reranker and status.embedding_loadable and status.profile != "local-hash":
         return status
+    if status.status == "runtime_unavailable":
+        raise ModelError(
+            "Semantic model files are cached, but the local runtime is unavailable or incompatible. "
+            "Install the project's semantic dependencies in the Python environment running Studio "
+            "and run `longform-engine models verify project.yaml --json`. "
+            "Downloading the same model files will not fix a missing runtime."
+        )
     if allow_download and status.can_auto_download:
         result = install_model_profile(config, profile=status.profile, download=True)
         if result.warnings:
@@ -499,7 +508,7 @@ def can_load_sentence_transformer(path: Path) -> bool:
     if not directory_has_files(path):
         return False
     try:
-        import sentence_transformers  # type: ignore  # noqa: F401
+        import sentence_transformers  # noqa: F401
     except Exception:
         return False
     return True
@@ -532,7 +541,7 @@ def sentence_transformer_rerank(path: Path, query: str, candidate: str) -> float
 def load_sentence_transformer(path: Path) -> Any:
     key = str(path.resolve())
     if key not in _MODEL_CACHE:
-        from sentence_transformers import SentenceTransformer  # type: ignore
+        from sentence_transformers import SentenceTransformer
 
         _MODEL_CACHE[key] = SentenceTransformer(str(path))
     return _MODEL_CACHE[key]

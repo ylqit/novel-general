@@ -17,7 +17,7 @@ from longform_engine.chapter_contract import stamp_chapter_contract
 from longform_engine.planning.context import resolve_planning_source_references
 from longform_engine.config import ConfigDocument
 from longform_engine import fanfiction_contracts
-from longform_engine.reader_promises_v2 import materialize_explicit_reader_promises
+from longform_engine.reader_promises_v2 import load_reader_promise_ledger, materialize_explicit_reader_promises
 from longform_engine.storage import apply_transaction, atomic_write_text, resolve_project_root
 
 from .contracts import (
@@ -539,12 +539,14 @@ def apply_planning_bundle(
     approval_path: str | Path,
     node_decisions_path: str | Path,
     approved_by: str,
+    agent_task_ids: tuple[str, ...] = (),
 ) -> PlanningApplyResult:
     """Atomically materialize planning only after semantic and per-node approval."""
 
     if approved_by != "human":
         raise ValueError("planning apply requires approved_by=human")
     root = resolve_project_root(config)
+    from longform_engine.agent_tasks import agent_task_lifecycle_mutation_paths, load_manifest, update_task_status
     bundle_file = _resolve_file(root, bundle_path)
     application_file = _resolve_file(root, application_path)
     approval_file = _resolve_file(root, approval_path)
@@ -585,6 +587,12 @@ def apply_planning_bundle(
                 "fanfiction planning claim preflight failed: " + "; ".join(claim_errors)
             )
     application = _read_json(application_file)
+    if agent_task_ids:
+        expected_tasks = (application["author_task"]["task_id"], application["reviewer_task"]["task_id"])
+        if agent_task_ids != expected_tasks:
+            raise ValueError("planning lifecycle tasks do not match the reviewed author/reviewer")
+        for task_id in agent_task_ids:
+            load_manifest(root, task_id)
     review = validate_planning_semantic_application(root, application)
     if not review.ok or review.state != "semantic_passed":
         raise ValueError("planning semantic review is not a current pass: " + "; ".join(review.errors))
@@ -638,6 +646,7 @@ def apply_planning_bundle(
         root / "30_state" / "reader_promise_ledger.json": materialize_explicit_reader_promises(
             bundle["active_volume_plan"]["promise_threads"],
             approved_by="human",
+            existing=load_reader_promise_ledger(root, required=False),
         ),
     }
     fact_registry = root / "10_bible" / "canonical_facts.json"
@@ -764,7 +773,7 @@ def apply_planning_bundle(
             ],
         }
         canonical_payloads[stale_registry] = stale_payload
-    touched_paths = tuple(canonical_payloads)
+    touched_paths = (*canonical_payloads, *(agent_task_lifecycle_mutation_paths(root) if agent_task_ids else ()))
     with apply_transaction(
         root,
         command="planning apply-v010",
@@ -778,6 +787,8 @@ def apply_planning_bundle(
     ) as transaction:
         for path, payload in canonical_payloads.items():
             _write_json(path, payload)
+        for task_id in agent_task_ids:
+            update_task_status(root, task_id, to_status="applied", command="planning apply-v010", result=application_file)
         transaction.update_metadata(
             canonical_paths=[path.relative_to(root).as_posix() for path in canonical_payloads]
         )

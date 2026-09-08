@@ -78,6 +78,20 @@ def test_contract_v5_obligation_changes_contract_and_story_brief_basis(tmp_path:
     assert after["story_brief_basis_sha256"] != before["story_brief_basis_sha256"]
     markdown = story_brief_paths(root, 1)["markdown"].read_text(encoding="utf-8")
     assert "胜利感被失去退路的愧疚压住" in markdown
+    task = read_json(story_brief_paths(root, 1)["task"])
+    assert len(task["story_brief"]["scenes"]) == 1
+    assert markdown.count("### 场景 ") == 1
+    assert "- 选择：" not in markdown  # Chapter-level choices are not forced onto each beat.
+    assert "- 代价：" not in markdown
+
+
+def test_required_fact_text_is_not_cut_to_eight_short_summaries():
+    from longform_engine.orchestration.pipeline import author_relevant_facts
+
+    statements = [f"第{i}项：" + "只有接触实物才能判断，污染会影响判断。" * 25 for i in range(11)]
+    values = author_relevant_facts(constraint_packet={},
+        resolved_contract_refs=[{"value": text} for text in statements])
+    assert values == statements
 
 
 def test_voice_projection_changes_only_basis_and_rebuilds_author_brief(tmp_path: Path):
@@ -120,9 +134,24 @@ def test_superseded_writer_manifest_is_rebuilt_instead_of_reused(tmp_path: Path)
     )
     assert load_manifest(root, paths["manifest"])["status"] == "superseded"
 
+    from longform_engine.production import production_next
+    action = production_next(config)
+    assert action["status"] == "ready_for_continue_write"
+    assert action["blocked_by"] == "writing_task_stale"
+    assert action["next_command"] == "longform-engine continue-write project.yaml --chapter 1"
+    assert action["sources"] == ["50_workbench/writing_tasks/ch001.json"]
+
+    original_bytes = paths["manifest"].read_bytes()
+    original_id = load_manifest(root, paths["manifest"])["task_id"]
     continue_write(config, chapter_number=1)
 
-    assert load_manifest(root, paths["manifest"])["status"] == "awaiting_agent"
+    replacement = load_manifest(root, paths["manifest"])
+    assert replacement["status"] == "awaiting_agent"
+    assert replacement["task_id"] != original_id
+    assert original_id in replacement["supersedes_task_ids"]
+    original = load_manifest(root, original_id)
+    assert original["status"] == "superseded"
+    assert (root / original["manifest_file"]).read_bytes() == original_bytes
     assert story_brief_status(root, 1)["status"] == "current"
 
 
@@ -137,6 +166,30 @@ def test_pre_v5_chapter_contract_is_explicitly_rejected(tmp_path: Path):
         load_verified_chapter_contract(root, 1)
 
     assert "schema must be chapter_contract_v5" in str(exc_info.value)
+
+
+def test_manifest_replacement_failure_restores_manifest_index_and_events(tmp_path, monkeypatch):
+    import longform_engine.agent_tasks as tasks
+
+    _config, root = seed_story_brief(tmp_path)
+    path = story_brief_paths(root, 1)["manifest"]
+    manifest = read_json(path)
+    tracked = [path, *tasks.agent_task_lifecycle_mutation_paths(root)]
+    before = {item: item.read_bytes() if item.is_file() else None for item in tracked}
+    tasks.write_manifest(root, manifest, path, preserve_replaced=True)
+    assert {item: item.read_bytes() if item.is_file() else None for item in tracked} == before
+    manifest["created_at"] = "2026-09-06T16:00:00+00:00"
+    register = tasks.register_manifest
+
+    def fail_after_register(*args, **kwargs):
+        register(*args, **kwargs)
+        raise OSError("injected registration failure")
+
+    monkeypatch.setattr(tasks, "register_manifest", fail_after_register)
+    with pytest.raises(OSError, match="injected registration failure"):
+        tasks.write_manifest(root, manifest, path, preserve_replaced=True)
+    assert {item: item.read_bytes() if item.is_file() else None for item in tracked} == before
+    assert not list((root / "50_workbench/agent_tasks/manifests").glob("*.json"))
 
 
 def test_basis_only_drift_stales_acceptance_and_consultation(tmp_path: Path):

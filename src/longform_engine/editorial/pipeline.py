@@ -1060,7 +1060,7 @@ def write_multi_agent_task_files(
                 "selection_report": path,
             },
         )
-        write_manifest(root, manifest, manifest_file)
+        write_manifest(root, manifest, manifest_file, preserve_replaced=True)
         files.append(relative_path(root, path))
     return files
 

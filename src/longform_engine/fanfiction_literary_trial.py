@@ -22,10 +22,10 @@ from longform_engine.blind_review import clean_identifier, payload_sha256
 from longform_engine.config import ConfigDocument, load_project_config
 from longform_engine.storage import atomic_write_text, resolve_project_root
 
-TRIAL_SCHEMA = "literary_trial_v2"
-REVIEW_SCHEMA = "literary_review_v2"
+TRIAL_SCHEMA = "literary_trial_v3"
+REVIEW_SCHEMA = "literary_review_v3"
 TRIAL_DIRECTORY = "70_runtime/literary_trials"
-STAGES = {"opening": 3, "sustained": 10, "formal": 20, "crossover": None}
+STAGES = {"opening": 3, "sustained": 10, "formal": 20, "crossover": None, "rehearsal": None}
 METRICS = {
     "prose_naturalness": "语言自然度",
     "character_voice": "人物声音",
@@ -56,11 +56,17 @@ def _write_object(path: Path, payload: dict[str, Any]) -> None:
     atomic_write_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
 
-def collect_literary_sample(config: ConfigDocument, start: int, end: int) -> dict[str, Any]:
+def collect_literary_sample(config: ConfigDocument, start: int, end: int, *, rehearsal: bool = False) -> dict[str, Any]:
     """Verify actual closure, final, human acceptance, reviews and provenance."""
     if type(start) is not int or type(end) is not int or not 1 <= start <= end <= start + 99:
         raise ValueError("sample range must contain 1–100 consecutive chapters")
     root = resolve_project_root(config)
+    from longform_engine.execution_origin import execution_origin
+    origin = execution_origin(root)
+    if rehearsal and origin["kind"] != "automated_rehearsal":
+        raise ValueError("评测流程演练只接受持久标记的自动演练项目")
+    if origin["simulated_human"] and not rehearsal:
+        raise ValueError("automated_rehearsal_ineligible: 模拟人工演练不能作为真实人工文学验收样本")
     if config.path is None:
         raise ValueError("literary sample requires a persisted project config")
     bindings: list[dict[str, Any]] = []
@@ -256,6 +262,7 @@ def collect_literary_sample(config: ConfigDocument, start: int, end: int) -> dic
         "config_sha256": payload_sha256(config.data),
         "config_file_sha256": sha256(config.path.read_bytes()).hexdigest(),
         "creation_mode": mode, "continuity_mode": continuity, "route_family": route_family,
+        "execution_origin": origin,
         "topology": topology, "chapter_start": start, "chapter_end": end, "chapters": chapters,
         "baseline": baseline, "evidence": bindings, "applicable_metrics": applicable,
         "workflow": {"writing_mode": config.data.get("writing", {}).get("mode"),
@@ -272,6 +279,12 @@ def create_literary_trial(config: ConfigDocument, *, trial_id: str, stage: str,
     if stage not in STAGES or not isinstance(samples, list) or not 1 <= len(samples) <= 12:
         raise ValueError("choose a valid trial stage and 1–12 source projects")
     root = resolve_project_root(config)
+    from longform_engine.execution_origin import execution_origin
+    owner_origin = execution_origin(root)
+    if stage == "rehearsal" and owner_origin["kind"] != "automated_rehearsal":
+        raise ValueError("请在独立自动演练项目中验证评测流程")
+    if stage != "rehearsal" and owner_origin["simulated_human"]:
+        raise ValueError("automated_rehearsal_ineligible: 模拟人工演练不能组织真实人工文学验收")
     target = root / TRIAL_DIRECTORY / trial_id
     if target.exists():
         raise ValueError("trial already exists; use a new trial ID")
@@ -280,7 +293,7 @@ def create_literary_trial(config: ConfigDocument, *, trial_id: str, stage: str,
         if not isinstance(sample, dict) or set(sample) != {"config_path", "chapter_start", "chapter_end"}:
             raise ValueError("sample fields must be config_path, chapter_start, chapter_end")
         record = collect_literary_sample(load_project_config(Path(sample["config_path"]).resolve()),
-                                        sample["chapter_start"], sample["chapter_end"])
+                                        sample["chapter_start"], sample["chapter_end"], rehearsal=stage == "rehearsal")
         if STAGES[stage] and record["chapter_end"] - record["chapter_start"] + 1 != STAGES[stage]:
             raise ValueError(f"{stage} requires {STAGES[stage]} chapters per sample")
         if stage == "crossover" and record["topology"] == "sequential_worlds" and len({c["volume_id"] for c in record["chapters"]}) < 2:
@@ -307,13 +320,15 @@ def create_literary_trial(config: ConfigDocument, *, trial_id: str, stage: str,
                 ("适用的创作合同要求" if metric in record["applicable_metrics"] else "本样本批准的创作合同不要求此项")}
                 for metric in METRICS}})
     manifest = {"schema": TRIAL_SCHEMA, "trial_id": trial_id, "stage": stage, "entries": entries,
+                "evaluation_kind": "simulated_protocol" if stage == "rehearsal" else "independent_human",
                 "metrics": METRICS, "reviewer_count_required": 3, "score_scale": [1, 5],
                 "thresholds": {m: 4 if m in CORE_METRICS else 3.5 for m in METRICS},
-                "scope_note": "仅评估此匿名样本；内部阈值不代表平台通过率或市场表现。"}
+                "scope_note": ("自动演练：生产人工步骤和评分由测试流程模拟；仅验证协议、证据与评分复算，不构成真实人工文学或平台验收。"
+                               if stage == "rehearsal" else "仅评估此匿名样本；内部阈值不代表平台通过率或市场表现。")}
     manifest["pack_hash"] = payload_sha256(manifest)
     private = {"schema": "literary_trial_provenance_v2", "trial_id": trial_id,
                "pack_hash": manifest["pack_hash"], "engine_version": __version__,
-               "engine_sha256": engine_fingerprint(), "entries": mapping,
+               "engine_sha256": engine_fingerprint(), "entries": mapping, "owner_execution_origin": owner_origin,
                "created_at": datetime.now(timezone.utc).isoformat()}
     private["sha256"] = payload_sha256(private)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -356,6 +371,8 @@ def load_literary_trial(root: Path, trial_id: str, *, current: bool = True) -> t
         raise ValueError("literary trial must stay inside its project")
     manifest = _read_object(trial / "public/manifest.json")
     if (manifest.get("schema") != TRIAL_SCHEMA or manifest.get("trial_id") != trial_id
+            or manifest.get("stage") not in STAGES
+            or manifest.get("evaluation_kind") != ("simulated_protocol" if manifest.get("stage") == "rehearsal" else "independent_human")
             or manifest.get("pack_hash") != payload_sha256({k: v for k, v in manifest.items() if k != "pack_hash"})):
         raise ValueError("literary pack protocol/hash invalid; rebuild trial")
     for entry in manifest["entries"]:
@@ -365,13 +382,15 @@ def load_literary_trial(root: Path, trial_id: str, *, current: bool = True) -> t
                 raise ValueError("literary pack body hash invalid")
     if current:
         private = _read_object(trial / "private_mapping.json")
+        from longform_engine.execution_origin import execution_origin
         if (private.get("schema") != "literary_trial_provenance_v2" or private.get("pack_hash") != manifest["pack_hash"]
                 or private.get("sha256") != payload_sha256({k: v for k, v in private.items() if k != "sha256"})
-                or private.get("engine_version") != __version__ or private.get("engine_sha256") != engine_fingerprint()):
+                or private.get("engine_version") != __version__ or private.get("engine_sha256") != engine_fingerprint()
+                or private.get("owner_execution_origin") != execution_origin(root)):
             raise ValueError("stale literary provenance or engine binding")
         for record in private["entries"].values():
             fresh = collect_literary_sample(load_project_config(Path(record["config_path"])),
-                                            record["chapter_start"], record["chapter_end"])
+                                            record["chapter_start"], record["chapter_end"], rehearsal=manifest["stage"] == "rehearsal")
             if fresh != record:
                 raise ValueError("stale literary sample; source/config/baseline/evidence changed")
     return trial, manifest
@@ -417,6 +436,7 @@ def literary_reviewer_state(root: Path, trial_id: str, reviewer_id: str,
     draft = _read_object(draft_path) if draft_path.exists() else {
         "schema": REVIEW_SCHEMA, "trial_id": trial_id, "pack_hash": manifest["pack_hash"],
         "reviewer_id": reviewer_id, "human_instance_id": "", "independence_confirmed": False,
+        "reviewer_kind": "simulated" if manifest["stage"] == "rehearsal" else "human",
         "attestation_note": "", "review_minutes": None,
         "entries": [{"blind_id": e["blind_id"], "scores": {m: None for m in e["applicable_metrics"]},
                      "findings": [], "notes": ""} for e in manifest["entries"]]}
@@ -431,9 +451,11 @@ def literary_reviewer_state(root: Path, trial_id: str, reviewer_id: str,
 def validate_literary_review(manifest: dict[str, Any], draft: dict[str, Any], *, complete: bool,
                             public_root: Path) -> None:
     fields = {"schema", "trial_id", "pack_hash", "reviewer_id", "human_instance_id", "independence_confirmed",
-              "attestation_note", "review_minutes", "entries"}
+              "attestation_note", "review_minutes", "entries", "reviewer_kind"}
     if not isinstance(draft, dict) or set(draft) != fields or draft["schema"] != REVIEW_SCHEMA or draft["pack_hash"] != manifest["pack_hash"] or draft["trial_id"] != manifest["trial_id"]:
         raise ValueError("review protocol or pack binding invalid")
+    if draft["reviewer_kind"] != ("simulated" if manifest["stage"] == "rehearsal" else "human"):
+        raise ValueError("评分来源与评测用途不一致；模拟评分不能作为真人评价")
     for field in ("reviewer_id", "human_instance_id", "attestation_note"):
         if not isinstance(draft[field], str) or draft[field] != draft[field].strip():
             raise ValueError(f"{field} must be text without surrounding whitespace")
@@ -565,7 +587,9 @@ def aggregate_literary_trial(root: Path, trial_id: str) -> dict[str, Any]:
                            **chapter["process_observations"]})
     return {"schema": "literary_trial_report_v2", "trial_id": trial_id, "stage": manifest["stage"],
             "pack_hash": manifest["pack_hash"], "submission_sha256": evidence_hash,
-            "status": "awaiting_reviews" if missing else "pending_resolution" if unresolved else "passed" if passed else "needs_revision",
+            "status": "awaiting_reviews" if missing else "pending_resolution" if unresolved else (
+                "protocol_complete" if manifest["stage"] == "rehearsal" else "passed") if passed else "needs_revision",
+            "evaluation_kind": manifest["evaluation_kind"],
             "reviewers_submitted": [r["reviewer_id"] for r in submissions], "missing_reviewers": missing,
             "entries": entries, "metrics": METRICS, "author_effort": effort, "issues": issues, "unresolved_issues": unresolved,
             "resolution": resolution if resolved else None,

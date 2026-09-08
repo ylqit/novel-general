@@ -12,13 +12,22 @@ from longform_engine.storage import init_project
 from tests.project_fixtures import checked_review_coverage, mark_project_ready
 
 
-def seed_high_risk_chapter(tmp_path: Path):
+def seed_high_risk_chapter(tmp_path: Path, *, extra_rule: str = ""):
     template = load_project_config(template="qidian-longform")
     project = init_project(template, output=tmp_path / "novel")
     config = load_project_config(project.project_config)
     root = tmp_path / "novel"
     open_book(config)
     mark_project_ready(root, config)
+    if extra_rule:
+        (root / "10_bible/power_system.md").write_text(extra_rule, encoding="utf-8")
+        obligations_path = root / "30_state/semantic_obligations.json"
+        obligations = json.loads(obligations_path.read_text(encoding="utf-8"))
+        for obligation in obligations["items"]:
+            obligation.setdefault("prior_state_refs", []).append("10_bible/power_system.md")
+        obligations_path.write_text(json.dumps(obligations), encoding="utf-8")
+        from tests.project_fixtures import refresh_planning_fixture_basis
+        refresh_planning_fixture_basis(root)
     config.data["length"]["chapter"]["hard_min"] = 20
     config.data["quality"]["semantic_review_milestones"] = [1]
     continue_write(config, chapter_number=1)
@@ -97,6 +106,24 @@ def test_semantic_review_validates_spans_and_applies_only_gate_artifacts(tmp_pat
     assert snapshot_protected(root) == protected
 
 
+def test_semantic_review_contains_exact_required_rule_and_expires_on_source_change(tmp_path):
+    from longform_engine.gates.pipeline import gate_review_context_is_current
+
+    rule = "# 能力边界\n必须接触实物才能感知；污染可能误导判断。\n" + "每次过用的伤势均须延续。" * 40
+    config, root, _chapter = seed_high_risk_chapter(tmp_path, extra_rule=rule)
+    gate_check(config, chapter_number=1, semantic=True)
+    artifact = root / "50_workbench/gate_artifacts/ch001"
+    context = json.loads((artifact / "semantic_review_context.json").read_text(encoding="utf-8"))
+    excerpts = context["sections"]["canonical_source_excerpts"]
+    selected = [item for item in excerpts if item["source"] == "10_bible/power_system.md"]
+    assert len(selected) == 1
+    assert selected[0]["value"] == (root / "10_bible/power_system.md").read_bytes().decode("utf-8")
+    assert "10_bible/power_system.md" in context["allowed_canonical_refs"]
+    assert gate_review_context_is_current(root, 1, task_type="semantic_review")
+    (root / "10_bible/power_system.md").write_text(rule + "\n后续批准改变规则。", encoding="utf-8")
+    assert not gate_review_context_is_current(root, 1, task_type="semantic_review")
+
+
 def test_semantic_review_rejects_fabricated_span_without_pollution(tmp_path):
     config, root, chapter = seed_high_risk_chapter(tmp_path)
     gate_check(config, chapter_number=1, semantic=True)
@@ -140,6 +167,20 @@ def test_semantic_review_rejects_fabricated_span_without_pollution(tmp_path):
     assert any("outside current source bounds" in error for error in control.normalization.errors)
     assert not validation.ok
     assert any("control-plane status" in error for error in validation.errors)
+    assert snapshot_protected(root, include_db=True) == protected
+    from longform_engine.gates import semantic_review_task
+    from hashlib import sha256
+    old_output = output.read_bytes()
+    old_manifest = (root / manifest["manifest_file"]).read_bytes()
+    replacement = semantic_review_task(config, chapter_number=1)
+    new_task = load_manifest(root, replacement.manifest_file)
+    assert new_task["task_id"] != manifest["task_id"]
+    assert new_task["status"] == "awaiting_agent"
+    assert not output.exists()  # A failed old answer cannot be consumed by the replacement.
+    old_task = load_manifest(root, manifest["task_id"])
+    assert old_task["status"] == "superseded"
+    assert (root / old_task["manifest_file"]).read_bytes() == old_manifest
+    assert (root / "50_workbench/agent_tasks/results" / (sha256(old_output).hexdigest() + ".json")).read_bytes() == old_output
     assert snapshot_protected(root, include_db=True) == protected
 
 

@@ -1,3 +1,4 @@
+from hashlib import sha256
 import json
 from pathlib import Path
 
@@ -124,6 +125,9 @@ def test_coedit_records_human_option_and_only_creates_complete_workbench_candida
         question="如何让交出路图成为人物选择，而不是剧情搬运？",
     )
     response = root / turn.response_file
+    task_text = (root / turn.task_file).read_text(encoding="utf-8")
+    for heading in DESIGN_REQUIRED_HEADINGS["human_review_consult"]:
+        assert heading in task_text
     write_advisor_response(response)
     response_validation = validate_chapter_coedit_response(
         config, chapter_number=1, file_path=response
@@ -133,6 +137,14 @@ def test_coedit_records_human_option_and_only_creates_complete_workbench_candida
         config, chapter_number=1, file_path=response
     )
     assert recorded.option_ids == ("OPTION-A", "OPTION-B")
+
+    second_turn = create_chapter_coedit_turn(
+        config, chapter_number=1, start=0, end=24, question="承接上一轮，把关系边界说明清楚。",
+    )
+    second_response = root / second_turn.response_file
+    write_advisor_response(second_response)
+    assert validate_chapter_coedit_response(config, chapter_number=1, file_path=second_response).ok
+    record_chapter_coedit_response(config, chapter_number=1, file_path=second_response)
 
     rewrite = create_chapter_coedit_rewrite_task(
         config,
@@ -153,6 +165,47 @@ def test_coedit_records_human_option_and_only_creates_complete_workbench_candida
     assert replacement.is_relative_to(root / "50_workbench")
     assert not final_before.exists()
     assert not (root / "40_manuscript" / "draft" / "ch001.md").exists()
+
+    # A different answer about the original draft must not rewrite over the new
+    # current candidate, even though its response and session are still intact.
+    with pytest.raises(ChapterCoeditError, match="stale for the current candidate"):
+        create_chapter_coedit_rewrite_task(
+            config, chapter_number=1, session_id=second_turn.session_id,
+            turn_number=second_turn.turn_number, option_id="OPTION-A",
+        )
+    from longform_engine.chapter_coedit import coedit_status
+    from longform_engine.review_server import ReviewDeskService
+    turns = ReviewDeskService(config, chapter_number=1)._coedit_views(
+        coedit_status(config, chapter_number=1)["sessions"],
+    )[0]["turns"]
+    assert turns[0]["response_current"] is True
+    assert turns[0]["candidate_current"] is False
+    assert turns[0]["rewrite_current"] is True
+    assert turns[1]["candidate_current"] is False
+    assert turns[1]["rewrite_current"] is False
+    next_turn = create_chapter_coedit_turn(
+        config, chapter_number=1, start=0, end=24, question="请核对这一版已经修改的关系边界。",
+    )
+    history_path = (root / next_turn.task_file).with_name(f"turn{next_turn.turn_number:02d}.history.json")
+    assert read_json(history_path)["turns"] == []
+    next_response = root / next_turn.response_file
+    write_advisor_response(next_response)
+    assert validate_chapter_coedit_response(config, chapter_number=1, file_path=next_response).ok
+    record_chapter_coedit_response(config, chapter_number=1, file_path=next_response)
+    next_rewrite = create_chapter_coedit_rewrite_task(
+        config, chapter_number=1, session_id=next_turn.session_id,
+        turn_number=next_turn.turn_number, option_id="OPTION-A",
+    )
+    next_candidate = root / next_rewrite.candidate_file
+    next_candidate.write_bytes(chapter_text("林迟把路图放下，等阿岚自己选择。").encode("utf-8"))
+    assert validate_chapter_coedit_candidate(config, chapter_number=1, file_path=next_candidate).ok
+    # Revalidating the selected candidate is idempotent; an older candidate
+    # cannot take its place merely because its earlier validation passed.
+    assert validate_chapter_coedit_candidate(config, chapter_number=1, file_path=next_candidate).ok
+    with pytest.raises(ChapterCoeditError, match="stale for the current candidate"):
+        validate_chapter_coedit_candidate(config, chapter_number=1, file_path=replacement)
+    assert coedit_status(config, chapter_number=1)["sessions"][0]["current_candidate_sha256"] == sha256(next_candidate.read_bytes()).hexdigest()
+    assert not final_before.exists()
 
 
 def test_coedit_cannot_bypass_current_p0_or_p1(tmp_path: Path):

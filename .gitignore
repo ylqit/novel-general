@@ -15,6 +15,7 @@ dist/
 uv.lock
 
 # Runtime output
+output/
 novels/
 70_runtime/cache/
 70_runtime/locks/

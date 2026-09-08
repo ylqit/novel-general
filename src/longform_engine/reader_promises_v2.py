@@ -344,15 +344,20 @@ def materialize_explicit_reader_promises(
     candidates: list[dict[str, Any]],
     *,
     approved_by: str,
+    existing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Create the ledger from only the promises explicitly present in the approved plan."""
+    """Apply approved planning while retaining previously confirmed actual progress.
+
+    Omission from a rolling window does not retire a promise. Changing an already
+    observed promise's meaning needs the explicit revision workflow.
+    """
 
     if approved_by != "human":
         raise ValueError("reader promises must be explicitly selected by human")
     errors = validate_reader_promise_candidates(candidates)
     if errors:
         raise ValueError("reader promises are invalid: " + "; ".join(errors))
-    return {
+    ledger: dict[str, Any] = {
         "schema": LEDGER_SCHEMA,
         "items": [
             {
@@ -366,6 +371,30 @@ def materialize_explicit_reader_promises(
             for item in candidates
         ],
     }
+    if existing is None:
+        return ledger
+    errors = validate_reader_promise_ledger(existing)
+    if errors:
+        raise ReaderPromiseError("existing reader promises are invalid: " + "; ".join(errors))
+    previous = {item["promise_id"]: item for item in existing["items"]}
+    selected = {item["promise_id"] for item in ledger["items"]}
+    for item in ledger["items"]:
+        old = previous.get(item["promise_id"])
+        if old is None:
+            continue
+        if old["actual_evidence"] or old["status"] in TERMINAL_STATES:
+            for field in ("reader_expectation", "owner_ref", "staged_payoffs"):
+                if item[field] != old[field]:
+                    raise ReaderPromiseError(f"observed_promise_requires_revision:{item['promise_id']}:{field}")
+        if old["deferrals"] and item["payoff_window"]["latest"] < old["payoff_window"]["latest"]:
+            raise ReaderPromiseError(f"promise_deferral_cannot_be_erased:{item['promise_id']}")
+        for field in ("status", "completed_stage_ids", "actual_evidence", "deferrals"):
+            item[field] = old[field]
+    ledger["items"].extend(item for key, item in previous.items() if key not in selected)
+    errors = validate_reader_promise_ledger(ledger)
+    if errors:
+        raise ReaderPromiseError("refreshed reader promises are invalid: " + "; ".join(errors))
+    return ledger
 
 
 def validate_promise_actions_v2(

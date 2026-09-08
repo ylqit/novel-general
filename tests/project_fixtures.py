@@ -686,7 +686,7 @@ def complete_editorial_reviews(root: Path, config, *, chapter_number: int = 1) -
         for role_id in review.selected_roles:
             manifest = load_manifest(
                 root,
-                f"editorial_review:{role_id}:ch{chapter_number:03d}:v5",
+                f"50_workbench/editorial_reviews/agent_tasks/ch{chapter_number:03d}/{role_id}.agent_task.json",
             )
             result_path = root / str(manifest_output(manifest)["path"])
             contract = load_role_registry().resolve(
@@ -1004,8 +1004,6 @@ def complete_human_author_revision(root: Path, config, *, chapter_number: int = 
     control = validate_production_agent_result(root, manifest, result_file=semantic_output)
     if not control.ok:
         raise AssertionError(control.normalization.errors)
-    record["semantic_review_sha256"] = sha256(semantic_output.read_bytes()).hexdigest()
-    write_json(record_path, record)
     validated = validate_human_author_revision(
         config,
         chapter_number=chapter_number,
@@ -1014,6 +1012,8 @@ def complete_human_author_revision(root: Path, config, *, chapter_number: int = 
     )
     if not validated.ok:
         raise AssertionError(validated.errors)
+    if json.loads(record_path.read_text(encoding="utf-8"))["semantic_review_sha256"] != sha256(semantic_output.read_bytes()).hexdigest():
+        raise AssertionError("The control plane must bind the validated semantic result without manual digest entry")
     submitted = submit_agent_draft(
         config,
         chapter_number=chapter_number,
@@ -1470,7 +1470,7 @@ def persist_current_planning_fixture(root: Path, contract: dict, *, scope: dict 
     write_json(root / "30_state/semantic_obligations.json", {
         "schema": "semantic_obligation_ledger_v1", "items": [
             dict(bundle["semantic_obligations"][0], obligation_id=ref,
-                 subject_refs=[], prior_state_refs=[], dependency_refs=[],
+                 subject_refs=[], prior_state_refs=[], dependency_refs=[], preconditions=[],
                  scope={"chapter_numbers": [chapter]})
             for ref in contract["semantic_obligation_refs"]
         ],

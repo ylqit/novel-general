@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Sequence
 import json
+import os
+import re
 import secrets
+import signal
 import shutil
 import subprocess
 import threading
+import tempfile
 
 from longform_engine.agent_pipeline import validate_production_agent_result
 from longform_engine.agent_tasks import (
@@ -46,7 +51,8 @@ class CodexAgentJobManager:
     """Run one manifest-authorized Codex job per project and persist compact status."""
 
     def __init__(self, *, codex_command: Sequence[str] | None = None) -> None:
-        resolved = tuple(str(part) for part in (codex_command or (shutil.which("codex") or "codex",)))
+        executable = os.environ.get("LONGFORM_CODEX_EXECUTABLE") or shutil.which("codex") or "codex"
+        resolved = tuple(str(part) for part in (codex_command or (executable,)))
         if not resolved or any(not part for part in resolved):
             raise CodexAgentJobError("Codex 启动命令无效")
         self.codex_command = resolved
@@ -97,6 +103,18 @@ class CodexAgentJobManager:
 
     def start(self, config: ConfigDocument, task: str | Path) -> dict[str, Any]:
         root = resolve_project_root(config)
+        # Serialize admission with worker cleanup and re-read the manifest only
+        # after admission. A pre-lock snapshot can still say awaiting_agent after
+        # the preceding worker has submitted its result.
+        with self._lock:
+            if any(worker.is_alive() for worker in self._threads.values()):
+                raise CodexAgentJobError("工作台已有运行中的 Codex 任务，请等待结束后再启动")
+            return self._start_admitted(config, root, task)
+
+    def _start_admitted(
+        self, config: ConfigDocument, root: Path, task: str | Path
+    ) -> dict[str, Any]:
+        """Create the isolated job while its manager admission lock is held."""
         manifest = load_manifest(root, task)
         validation = validate_manifest_strict(root, manifest, strict=True)
         if not validation.ok:
@@ -119,8 +137,10 @@ class CodexAgentJobManager:
                 )
             job_id = "job_" + secrets.token_hex(12)
             job_dir = root / "70_runtime" / "agent_jobs" / job_id
-            staging = job_dir / "staging"
-            staging.mkdir(parents=True)
+            # Keep the isolated CLI working directory short on Windows. Nesting
+            # mirrored manifest paths below an already deep project exceeds the
+            # path limit of several supported CLI runtimes.
+            staging = Path(tempfile.mkdtemp(prefix="longform-job-")).resolve()
             declared_inputs = self._stage_inputs(root, staging, manifest, brief)
             output_path = str(manifest_output(manifest).get("path") or "")
             staged_output = resolve_under_root(staging, output_path)
@@ -132,6 +152,8 @@ class CodexAgentJobManager:
             record = {
                 "schema": "codex_agent_job_v1",
                 "job_id": job_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "staging_directory": str(staging),
                 "task_id": task_id,
                 "task_type": str(manifest.get("task_type") or ""),
                 "status": "queued",
@@ -170,7 +192,15 @@ class CodexAgentJobManager:
 
     def status(self, config: ConfigDocument, job_id: str) -> dict[str, Any]:
         root = resolve_project_root(config)
-        return self._read_job(self._job_dir(root, job_id))
+        with self._lock:
+            record = self._read_job(self._job_dir(root, job_id))
+            worker = self._threads.get(job_id)
+            if worker is not None and worker.is_alive() and record.get("status") in TERMINAL_JOB_STATUSES:
+                # Terminal output may be durable before thread-owned resources
+                # are released. Keep polling until a subsequent job can start.
+                record["status"] = "cancelling" if job_id in self._cancel_requested else "running"
+                record["phase"] = "finishing"
+            return record
 
     def wait(
         self,
@@ -198,13 +228,41 @@ class CodexAgentJobManager:
             if record.get("status") in TERMINAL_JOB_STATUSES:
                 return record
             self._cancel_requested.add(job_id)
-            record["status"] = "cancelled"
+            record["status"] = "cancelling"
             record["cancelled_by"] = "human"
             self._write_job(job_dir, record)
             process = self._processes.get(job_id)
             if process is not None and process.poll() is None:
-                process.terminate()
+                try:
+                    self._terminate_process(process)
+                except (OSError, subprocess.SubprocessError, CodexAgentJobError) as exc:
+                    self._cancel_requested.discard(job_id)
+                    record["status"] = "running"
+                    record["error"] = f"取消未完成：{exc}"
+                    self._write_job(job_dir, record)
+                    raise CodexAgentJobError(record["error"]) from exc
         return self._read_job(job_dir)
+
+    @staticmethod
+    def _terminate_process(process: subprocess.Popen[str]) -> None:
+        """Stop the owned job's process tree so inherited pipes cannot hang cancellation."""
+        if process.poll() is not None:
+            return
+        if os.name == "nt":
+            result = subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=10, check=False, creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            if result.returncode and process.poll() is None:
+                raise CodexAgentJobError("无法结束本工单的进程树，请稍后重试取消")
+        elif hasattr(os, "killpg"):
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        else:
+            raise CodexAgentJobError("当前系统不支持取消本工单进程组")
 
     def list_jobs(self, config: ConfigDocument) -> list[dict[str, Any]]:
         root = resolve_project_root(config)
@@ -214,10 +272,10 @@ class CodexAgentJobManager:
         values: list[dict[str, Any]] = []
         for path in sorted(jobs_root.glob("job_*/job.json"), reverse=True):
             try:
-                values.append(self._read_job(path.parent))
+                values.append(self.status(config, path.parent.name))
             except CodexAgentJobError:
                 continue
-        return values
+        return sorted(values, key=lambda record: str(record.get("created_at") or ""), reverse=True)
 
     def _run_job(
         self,
@@ -229,11 +287,14 @@ class CodexAgentJobManager:
         root = resolve_project_root(config)
         job_id = str(initial_record["job_id"])
         job_dir = self._job_dir(root, job_id)
-        staging = job_dir / "staging"
+        staging = Path(str(initial_record["staging_directory"]))
+        error_stream = tempfile.TemporaryFile(mode="w+t", encoding="utf-8", errors="replace")
         try:
             with self._lock:
                 record = self._read_job(job_dir)
                 if job_id in self._cancel_requested or record.get("status") == "cancelled":
+                    record["status"] = "cancelled"
+                    self._write_job(job_dir, record)
                     return
                 record["status"] = "running"
                 command = self._build_command(staging, record)
@@ -242,30 +303,74 @@ class CodexAgentJobManager:
                     cwd=staging,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    stderr=error_stream,
                     text=True,
                     encoding="utf-8",
                     errors="replace",
                     shell=False,
+                    start_new_session=os.name != "nt",
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
                 self._processes[job_id] = process
                 record["pid"] = process.pid
                 self._write_job(job_dir, record)
                 if job_id in self._cancel_requested:
-                    process.terminate()
-            stdout, stderr = process.communicate(self._prompt(brief, record))
+                    self._terminate_process(process)
+            if process.stdin is None or process.stdout is None:
+                raise CodexAgentJobError("Codex pipes are unavailable")
+            process.stdin.write(self._prompt(brief, record))
+            process.stdin.close()
+            event_counts: dict[str, int] = {}
+            session_id = ""
+            public_events: list[dict[str, Any]] = []
+            sequence = 0
+            terminal_error = ""
+            for line in process.stdout:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                kind = str(event.get("type") or "unknown")
+                event_counts[kind] = event_counts.get(kind, 0) + 1
+                if kind in {"error", "turn.failed"}:
+                    error = event.get("error")
+                    message = error.get("message") if isinstance(error, dict) else event.get("message") or error
+                    if isinstance(message, str) and message:
+                        terminal_error = message
+                if kind == "thread.started":
+                    session_id = str(event.get("thread_id") or "")
+                # Expose progress and assistant-facing messages only. Never persist
+                # shell commands, tool output, reasoning, credentials or raw prompts.
+                raw_item = event.get("item")
+                item: dict[str, Any] = raw_item if isinstance(raw_item, dict) else {}
+                if kind in {"turn.started", "turn.completed", "turn.failed"} or (
+                    kind in {"item.completed", "item.updated"} and item.get("type") == "agent_message"
+                ):
+                    sequence += 1
+                    public_events.append({"cursor": sequence, "type": kind,
+                                          "text": str(item.get("text") or "")[:12_000],
+                                          "validated": False})
+                    public_events = public_events[-100:]
+                    with self._lock:
+                        progress = self._read_job(job_dir)
+                        progress.update({"events": public_events, "event_cursor": sequence, "event_counts": event_counts})
+                        self._write_job(job_dir, progress)
+            process.wait()
+            error_stream.seek(0)
+            stderr = error_stream.read(12_000)
             with self._lock:
                 current = self._read_job(job_dir)
                 if current.get("status") == "cancelled" or job_id in self._cancel_requested:
                     return
-            event_counts, session_id = self._event_summary(stdout)
             record = self._read_job(job_dir)
             record["event_counts"] = event_counts
             record["session"]["session_id"] = session_id
             record["exit_code"] = process.returncode
             if process.returncode != 0:
                 record["status"] = "failed"
-                record["error"] = self._safe_error(stderr, process.returncode)
+                record["error"] = self._safe_error(terminal_error or stderr, process.returncode)
                 self._write_job(job_dir, record)
                 return
 
@@ -314,6 +419,12 @@ class CodexAgentJobManager:
             record["validation"] = asdict(validation)
             record["result_sha256"] = self._file_hash(project_output)
             record["status"] = "completed" if validation.ok else "failed_validation"
+            if not validation.ok:
+                reasons = [*validation.normalization.errors, *validation.normalization.need_human_reasons]
+                if "canonical_delta_contains_uncertainties" in reasons:
+                    reasons = ["设计仍有未解决的编译问题" if item == "canonical_delta_contains_uncertainties" else item for item in reasons]
+                    reasons.extend(str(item)[:600] for item in validation.normalization.normalized_result.get("notes", [])[:3])
+                record["error"] = "；".join(reasons)[:3000] or "输出证据不完整，请查看当前校验诊断。"
             if session_id:
                 self._remember_session(root, record["session"], session_id)
             self._write_job(job_dir, record)
@@ -327,7 +438,12 @@ class CodexAgentJobManager:
             except Exception:
                 pass
         finally:
+            error_stream.close()
             with self._lock:
+                if job_id in self._cancel_requested:
+                    cancelled = self._read_job(job_dir)
+                    cancelled["status"] = "cancelled"
+                    self._write_job(job_dir, cancelled)
                 self._processes.pop(job_id, None)
                 self._cancel_requested.discard(job_id)
 
@@ -377,9 +493,12 @@ class CodexAgentJobManager:
         return "\n".join(
             [
                 f"ONLY_OUTPUT_PATH={record['allowed_output_path']}",
-                "Use the installed longform-novel-codex skill for this bounded task.",
+                "Use the longform-novel-codex workflow. The current work order and output template below are authoritative over older installed skill examples.",
                 "This directory is an isolated staging mirror, not the canonical project.",
+                "The control plane has already prepared the current work order. In this staging transport, do not run any longform-engine command, including production next, agent-task brief, or validation commands printed in the handoff.",
+                "The server runs output validation after this job exits. project.yaml is intentionally absent unless it is a declared input; its absence here is not missing story evidence.",
                 "Read only the files listed below and write only ONLY_OUTPUT_PATH.",
+                "Work as a single agent. Do not spawn subagents, delegate tasks, start other model jobs, or parallelize agent execution.",
                 "Do not create notes, logs, helper files, final chapters, Canon, RAG, graph, or SQLite.",
                 "Do not run apply, finalize, semantic-apply, close, or arbitrary longform-engine commands.",
                 "Declared inputs:",
@@ -432,25 +551,6 @@ class CodexAgentJobManager:
         )
 
     @staticmethod
-    def _event_summary(stdout: str) -> tuple[dict[str, int], str]:
-        counts: dict[str, int] = {}
-        session_id = ""
-        for line in stdout.splitlines():
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                counts["non_json"] = counts.get("non_json", 0) + 1
-                continue
-            if not isinstance(event, dict):
-                continue
-            event_type = str(event.get("type") or "unknown")
-            counts[event_type] = counts.get(event_type, 0) + 1
-            candidate = event.get("thread_id") or event.get("session_id")
-            if isinstance(candidate, str) and candidate:
-                session_id = candidate
-        return counts, session_id
-
-    @staticmethod
     def _inventory(root: Path) -> dict[str, str]:
         return {
             path.relative_to(root).as_posix(): sha256(path.read_bytes()).hexdigest()
@@ -464,9 +564,11 @@ class CodexAgentJobManager:
 
     @staticmethod
     def _safe_error(stderr: str, return_code: int) -> str:
-        normalized = " ".join(stderr.strip().split())
+        normalized = re.sub(r"\bsk-[A-Za-z0-9_-]+", "[redacted]", stderr)
+        normalized = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[redacted]", normalized)
+        normalized = " ".join(normalized.strip().split())
         if len(normalized) > 1000:
-            normalized = normalized[:1000] + "…"
+            normalized = "…" + normalized[-1000:]
         return normalized or f"Codex process exited with code {return_code}"
 
     @staticmethod
@@ -493,6 +595,12 @@ class CodexAgentJobManager:
 
     @staticmethod
     def _write_job(job_dir: Path, record: dict[str, Any]) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        record["updated_at"] = now
+        if record.get("status") == "running":
+            record.setdefault("started_at", now)
+        elif record.get("status") in TERMINAL_JOB_STATUSES:
+            record.setdefault("finished_at", now)
         atomic_write_text(
             job_dir / "job.json", json.dumps(record, ensure_ascii=False, indent=2) + "\n"
         )
