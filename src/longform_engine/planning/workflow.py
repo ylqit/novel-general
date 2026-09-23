@@ -755,7 +755,7 @@ def apply_planning_bundle(
     basis_sources.extend(
         {"path": path.relative_to(root).as_posix(), "sha256": _json_file_hash(payload)}
         for path, payload in canonical_payloads.items()
-        if (path.parent.name in {"chapter_contracts", "plot_nodes"}
+        if (path.parent.name in {"chapter_contracts", "chapter_forecasts", "plot_nodes"}
             or path.relative_to(root).as_posix() in {"20_outline/rolling_window.json", "30_state/semantic_obligations.json"})
     )
 

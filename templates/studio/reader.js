@@ -213,6 +213,7 @@ function structured(value,depth=0,field="",sourceNames={}) {
   if(typeof value!=="object"){const states={planned:"计划中",active:"当前有效",realized:"已有正文实现依据",cancelled:"已撤销",resolved:"已解决",superseded:"已被新版本替代",stale:"来源已变化",validated:"校验通过",applied:"已应用",pending:"待处理"};return esc(["status","state"].includes(field)?states[value]||value:value);}
   if(depth>7)return `<pre>${esc(JSON.stringify(value,null,2))}</pre>`;
   if(Array.isArray(value))return value.length?`<ol>${value.map(v=>`<li>${structured(v,depth+1,"",sourceNames)}</li>`).join("")}</ol>`:'<span class="muted">尚无条目</span>';
+  if(!Object.keys(value).length)return '<p class="empty">这份资料尚无内容。完成对应设计或归档后可在此阅读。</p>';
   const entries=Object.entries(value),technical=entries.filter(([key])=>!["source_id","host_source_id","default_host_source_id"].includes(key)&&/^(schema|schema_version|artifact|human_decision|id|source_refs|dependency_refs|evidence|provenance|created_at|updated_at)$|(_sha256|_hash|_path|_id|_ids)$/.test(key));
   const normal=entries.filter(([key])=>!technical.some(([name])=>name===key));
   return `<dl>${normal.map(([k,v])=>`<dt>${esc(fieldNames[k]||k)}</dt><dd>${structured(v,depth+1,k,sourceNames)}</dd>`).join("")}</dl>${technical.length?`<details><summary>来源、版本与协议详情</summary><pre>${esc(JSON.stringify(Object.fromEntries(technical),null,2))}</pre></details>`:""}`;
@@ -222,19 +223,38 @@ export async function renderDocuments({projectId,section,container,get}) {
   const query=new URLSearchParams(location.search), requested=query.get("document");
   const rows=documents.filter(d=>d.group===section||requested===d.id||(section==="sources"&&d.group==="fanfiction")||(section==="knowledge"&&d.group==="notes"));
   container.innerHTML=`<div class="document-list"><div><label>查找资料<input id="document-filter" type="search" placeholder="人物、卷纲或章节"></label><nav aria-label="创作资料" id="document-index"></nav></div><section><h3 id="document-title">选择一份资料</h3><p class="muted small" id="document-basis"></p><article id="document-text" class="document-content"></article></section></div>`;
-  let documentRequest=0;
+  let documentRequest=0, evidenceRequest=0, selectedDocument=null;
+  if(section==="knowledge"){
+    const form=document.createElement("form");form.className="card";
+    form.innerHTML='<label>定位人物、伏笔与知识证据<input name="evidence-query" type="search" required maxlength="120" placeholder="输入人物姓名、伏笔物件或原文关键词"></label><button>查找正式正文与资料</button><div class="evidence-results" role="status"></div>';
+    container.prepend(form);
+    form.onsubmit=async event=>{event.preventDefault();const request=++evidenceRequest, box=form.querySelector(".evidence-results");box.textContent="正在查找证据…";try{
+      const result=await get(`${base(projectId)}/search?q=${encodeURIComponent(form.elements["evidence-query"].value)}`);
+      if(request!==evidenceRequest||!box.isConnected)return;
+      box.innerHTML=`<p>找到 ${result.total} 处引用${result.next_offset!==null?"，此处显示前 40 条，请缩小关键词":""}。资料命中用于定位，事实仍需回读正式正文。</p>${result.results.map(hit=>`<a class="search-result" href="/projects/${projectId}/${hit.kind==="chapter"?`chapters/${hit.id}?`:`knowledge?document=${hit.id}&`}start=${hit.start}&end=${hit.end}&sha256=${hit.sha256}">${hit.kind==="chapter"?`正式正文 · 第 ${hit.id} 章`:`资料 · ${esc(documents.find(doc=>doc.id===hit.id)?.title||hit.title)}`}<br>${esc(hit.excerpt)}</a>`).join("")}${result.issues.map(issue=>`<p class="notice warn">${esc(issue)}</p>`).join("")}`;
+    }catch(error){if(request===evidenceRequest&&box.isConnected)box.textContent=error.message;}};
+  }
   async function open(id) {
     const requestNumber=++documentRequest;
-    const d=await get(`${base(projectId)}/documents/${id}`);
-    if(requestNumber!==documentRequest)return;
+    container.querySelector("#document-title").textContent=rows.find(row=>row.id===id)?.title||"读取资料";
+    container.querySelector("#document-basis").textContent="";
     container.querySelector('.consequence-history')?.remove();
+    container.querySelector("#document-text").textContent="正在读取资料…";
+    let d;
+    try{d=await get(`${base(projectId)}/documents/${id}`);}catch(error){
+      if(requestNumber===documentRequest){const article=container.querySelector("#document-text");article.textContent="资料读取失败："+error.message;const retry=document.createElement("button");retry.textContent="重试读取";retry.onclick=()=>open(id);article.append(retry);}return;
+    }
+    if(requestNumber!==documentRequest)return;
+    selectedDocument=id;
+    container.querySelector('.consequence-history')?.remove();
+    container.querySelectorAll("[data-document]").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.document===id)));
     container.querySelector("#document-title").textContent=d.title;
     container.querySelector("#document-basis").textContent=d.relative + (d.notice?" · "+d.notice:"");
     const article=container.querySelector("#document-text");article.classList.remove("graph-view");
     if(id===requested&&query.has("start")){
       if(query.get("sha256")!==d.sha256){article.textContent="搜索依据已变化，请重新搜索。\n\n"+d.text}
       else{const points=Array.from(d.text),start=Number(query.get("start")),end=Number(query.get("end"));article.replaceChildren(document.createTextNode(points.slice(0,start).join("")));const mark=document.createElement("mark");mark.textContent=points.slice(start,end).join("");article.append(mark,document.createTextNode(points.slice(end).join("")));requestAnimationFrame(()=>mark.scrollIntoView({block:"center"}))}
-    }else if(d.format==="json"){try{const data=JSON.parse(d.text);if(d.relative==="30_state/story_graph.json"){
+    }else if(!d.text.trim()){article.textContent="这份资料尚未填写内容。";}else if(d.format==="json"){try{const data=JSON.parse(d.text);if(d.relative==="30_state/story_graph.json"){
       const {renderGraphView}=await import("./graph_view.js");if(requestNumber!==documentRequest)return;renderGraphView(article,data);
     }else article.innerHTML=structured(data,0,"",d.source_names||{});}catch(error){article.replaceChildren();const warning=document.createElement("p");warning.className="notice warn";warning.textContent="资料视图无法展开，保留原文供核对："+error.message;const raw=document.createElement("pre");raw.textContent=d.text;article.append(warning,raw)}}else article.innerHTML=markdownView(d.text);
     if(d.consequence_history){
@@ -248,7 +268,7 @@ export async function renderDocuments({projectId,section,container,get}) {
   let documentLimit=60;
   function drawIndex(){
     const q=container.querySelector("#document-filter").value.trim().toLocaleLowerCase(),visible=rows.filter(d=>(d.title+" "+d.relative).toLocaleLowerCase().includes(q));
-    const nav=container.querySelector("#document-index");nav.innerHTML=visible.slice(0,documentLimit).map(d=>`<button class="document-button" data-document="${d.id}">${esc(d.title)}</button>`).join("")||'<p class="muted">没有匹配资料。</p>';
+    const nav=container.querySelector("#document-index");nav.innerHTML=visible.slice(0,documentLimit).map(d=>`<button class="document-button" data-document="${d.id}" aria-pressed="${selectedDocument===d.id}">${esc(d.title)}</button>`).join("")||'<p class="muted">没有匹配资料。</p>';
     nav.querySelectorAll("[data-document]").forEach(b=>b.onclick=()=>open(b.dataset.document).catch(e=>{container.querySelector("#document-text").textContent=e.message}));
     if(visible.length>documentLimit){const more=document.createElement("button");more.className="secondary";more.textContent="加载更多资料";more.onclick=()=>{documentLimit+=60;drawIndex()};nav.append(more)}
   }

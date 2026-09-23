@@ -72,12 +72,16 @@ class PlanningWorkbench:
         view["stale_reasons"] = list(errors) if view["status"] != "applied" else []
         return view
 
-    def create(self, *, rebuild: bool = False) -> dict[str, Any]:
+    def create(self, *, rebuild: bool = False, proposals: list[dict[str, str]] | None = None) -> dict[str, Any]:
         from longform_engine.production import production_next
+        from longform_engine.studio_learning import StudioLearning
 
         current = self.state()
         if current["status"] not in {"not_started", "applied"} and not rebuild:
+            if proposals:
+                raise ValueError("当前规划工作单不可变；更换提案请明确重建规划")
             return current
+        proposal_sources = StudioLearning(self.config).proposal_inputs([] if proposals is None else proposals)
         action = production_next(self.config)
         if action["status"] != "planning_refresh_required":
             raise ValueError("当前生产步骤尚不允许重建规划：" + action["status"])
@@ -146,7 +150,15 @@ class PlanningWorkbench:
                     + "。它不是事实依据或批准规划。可以保留仍有当前设计依据的创作内容，修正协议和领域问题后写入本轮唯一新输出；"
                     "旧候选不得改写。以当前完整输出模板为准，保留外层全部必需字段及预填 artifact。\n")
         for folder in ("00_governance", "10_bible"):
-            sources.extend(p for p in sorted((self.root / folder).rglob("*")) if p.is_file() and p.suffix in {".md", ".json"})
+            sources.extend(p for p in sorted((self.root / folder).rglob("*")) if p.is_file() and p.suffix in {".md", ".json"}
+                           and p.relative_to(self.root).as_posix() not in {
+                               "10_bible/style_profiles/adaptation_profile.json", "10_bible/style_profiles/current_style_profile.json"})
+        sources.extend(proposal_sources)
+        if proposal_sources:
+            atomic_write_text(task_file, task_file.read_text(encoding="utf-8") + "\n## 人工选择的本轮建议\n"
+                "以下非 Canon 提案仅供本轮考虑，不得覆盖批准设计或正文事实。依适用目标、条件、保护项评估；"
+                "在候选 body 逐项说明采用、调整或不采用及理由。采用内容必须落实在正式规划和章节合同中，仍需独立审查和逐节点人工批准。\n"
+                + "\n".join(path.relative_to(self.root).as_posix() for path in proposal_sources) + "\n")
         for relative in ("20_outline/book_spine.json", "20_outline/volume_skeletons.json", "20_outline/rolling_window.json",
                          "30_state/reader_promise_ledger.json", "30_state/story_graph.json"):
             if (self.root / relative).is_file():
@@ -168,7 +180,8 @@ class PlanningWorkbench:
             failure_next_command="longform-engine planning task project.yaml --rebuild", context_policy={"required_files": sources, "compiled_brief": task_file})
         previous = [current[k] for k in ("author_task_id", "reviewer_task_id") if current.get(k)] if rebuild else []
         write_manifest(self.root, manifest, directory / "author.manifest.json", supersedes_task_ids=previous)
-        atomic_write_text(self.pointer, json.dumps({"run_id": run_id, "chapter_number": chapter, "author_task_id": task_id}, ensure_ascii=False, indent=2) + "\n")
+        atomic_write_text(self.pointer, json.dumps({"run_id": run_id, "chapter_number": chapter, "author_task_id": task_id,
+            "selected_proposals": proposals or []}, ensure_ascii=False, indent=2) + "\n")
         return self.state()
 
     def prepare_review(self, task_id: str) -> dict[str, Any]:
@@ -238,6 +251,21 @@ class PlanningWorkbench:
             "检查各章节点是否完成自己的职责及语义义务，三章之间能否成立。用实际 JSON 原文位置作为 evidence_id（路径@起点:终点）；保护项还需批准设计文件 canonical_refs。\n"
             + json.dumps(REVIEW_PROFILES["architecture"], ensure_ascii=False, indent=2) + "\n")
         sources = [self.root / path for path in manifest_input_paths(author) if not path.startswith("50_workbench/")]
+        # The review receives every source of the selected suggestions, including
+        # workbench evidence. The mutable attempt pointer cannot add or drop inputs.
+        from longform_engine.studio_learning import StudioLearning
+        selected_sources = StudioLearning(self.config).proposal_inputs(state.get("selected_proposals", []))
+        selected_paths = {path.relative_to(self.root).as_posix() for path in selected_sources}
+        author_paths = set(manifest_input_paths(author))
+        bound_proposals = {path for path in author_paths if path.startswith(("50_workbench/创作沙盒/", "50_workbench/reader_feedback/"))}
+        if not selected_paths.issubset(author_paths) or not bound_proposals.issubset(selected_paths):
+            raise ValueError("本轮提案选择与不可变作者工作单不一致，请重建规划")
+        sources.extend(selected_sources)
+        if selected_sources:
+            atomic_write_text(task_file, task_file.read_text(encoding="utf-8") + "\n## 人工选择的非 Canon 建议\n"
+                "依据随附的技法采用或读者反馈提案及原始来源，检查候选中相关变化是否适合本作、目标卷章和适用条件，"
+                "是否保留人物声音、知识边界与提案保护项。建议没有高于批准设计或正文事实的权威；不适合的建议无需强制采用，"
+                "不能仅因未采用建议判定阻断问题。审查候选的实际内容，不猜测作者的采用理由。\n")
         sources.extend((bundle_path, binding_path, task_file))
         reviewer_id = f"planning_semantic_review:{state['run_id']}"
         result_path = directory / "review.json"
@@ -253,6 +281,7 @@ class PlanningWorkbench:
         # pending together until the single approved planning transaction.
         write_manifest(self.root, reviewer, directory / "review.manifest.json")
         record = {key: state[key] for key in ("run_id", "chapter_number", "author_task_id")}
+        record["selected_proposals"] = state.get("selected_proposals", [])
         record["reviewer_task_id"] = reviewer_id
         atomic_write_text(self.pointer, json.dumps(record, ensure_ascii=False, indent=2) + "\n")
         return self.state()

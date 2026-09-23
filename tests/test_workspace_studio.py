@@ -480,6 +480,7 @@ def test_workspace_page_contains_creation_dashboard_and_explicit_human_boundarie
     assert '__CSRF_TOKEN__' not in page
     page += resource_path("templates", "studio", "workspace.js").read_text(encoding="utf-8")
 
+    page += resource_path("templates", "studio", "onboarding.js").read_text(encoding="utf-8")
     assert "创建原创小说" in page
     assert "创建同人小说" in page
     assert "原著权利状态" in page

@@ -213,6 +213,8 @@ def validate_reader_feedback_decision(batch: dict[str, Any], value: Any) -> list
             errors.append(f"{prefix} fields are invalid")
             continue
         hypothesis_id = str(item.get("hypothesis_id") or "")
+        if hypothesis_id in actual:
+            errors.append(f"duplicate hypothesis decision: {hypothesis_id}")
         actual.add(hypothesis_id)
         if item.get("decision") not in {"accept", "reject", "defer"}:
             errors.append(f"{prefix}.decision is invalid")

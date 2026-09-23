@@ -29,10 +29,11 @@ def main() -> None:
     parser.add_argument("--seed-review-fixture", action="store_true")
     parser.add_argument("--seed-literary-fixture", action="store_true")
     parser.add_argument("--seed-fanfiction-fixture", action="store_true")
+    parser.add_argument("--seed-learning-fixture", action="store_true")
     parser.add_argument("--large-catalogue", action="store_true", help="Seed 400 explicitly synthetic reading chapters.")
     parser.add_argument("--codex-executable", type=Path)
     args = parser.parse_args()
-    if sum((args.seed_reader_fixture, args.seed_review_fixture, args.seed_literary_fixture, args.seed_fanfiction_fixture)) > 1:
+    if sum((args.seed_reader_fixture, args.seed_review_fixture, args.seed_literary_fixture, args.seed_fanfiction_fixture, args.seed_learning_fixture)) > 1:
         parser.error("Seed one clearly identified fixture kind per run")
     if not args.workspace.is_absolute() or not args.evidence.is_absolute():
         parser.error("Use explicit absolute isolated workspace and evidence directories")
@@ -79,6 +80,29 @@ def main() -> None:
                 "entries": [{"path": "50_workbench/candidate_blobs/browser-fixture.md", "member": "_audit/blobs/browser-fixture",
                              "sha256": sha256(historical).hexdigest()}]}))
             handle.writestr("_audit/blobs/browser-fixture", historical)
+        service.import_project(config.path)
+    if args.seed_learning_fixture:
+        from tests.test_current_planning_context import approved_project
+        from longform_engine.quality.history import build_structure_observation
+        folder = args.workspace / "learning-fixture"
+        if folder.exists():
+            parser.error("Learning fixture already exists; choose a fresh workspace")
+        config, root = approved_project(folder)
+        atomic_write_text(root / "00_governance/execution_origin.json", json.dumps({
+            "schema": "execution_origin_v1", "kind": "automated_rehearsal", "simulated_human": True,
+            "run_id": args.run_id, "fixture": True, "formal_literary_eligible": False,
+        }))
+        profile = {"schema": "adaptation_analysis_v1", "source_files": [], "source_hashes": {},
+                   "structural_patterns": ["先呈现分歧，再通过人物选择说明代价（合成界面材料）"],
+                   "pacing_patterns": ["观察行动后果"], "character_methods": ["用不同诉求区分人物"],
+                   "prose_constraints": ["保持本作声音"], "forbidden_copying": ["不得照搬原句或情节"]}
+        atomic_write_text(root / "10_bible/style_profiles/adaptation_profile.json", json.dumps(profile, ensure_ascii=False, indent=2))
+        observations = []
+        for number in range(1, 4):
+            text = f"# 第 {number} 章 界面验收材料\n\n😀陆照推开门。陆照留下了证人，也承担了选择的代价。\n\n这是一份合成夹具，不是小说试写或文学效果证据。\n"
+            atomic_write_text(root / f"40_manuscript/final/ch{number:03d}.md", text)
+            observations.append(build_structure_observation(chapter_number=number, text=text, chapter_contract={}, review=None))
+        atomic_write_text(root / "30_state/quality/structure_history.jsonl", "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in observations))
         service.import_project(config.path)
     if args.seed_review_fixture:
         from tests.test_story_architecture_v050 import seed_candidate
@@ -200,9 +224,9 @@ def main() -> None:
     atomic_write_text(args.evidence / "server.json", json.dumps({
         "pid": os.getpid(), "run_id": args.run_id, "engine_version": __version__, "bootstrap_url": server.bootstrap_url,
         "base_url": f"http://127.0.0.1:{server.port}", "workspace": str(args.workspace),
-        "fixture": args.seed_reader_fixture or args.seed_review_fixture or args.seed_literary_fixture or args.seed_fanfiction_fixture or any(
+        "fixture": args.seed_reader_fixture or args.seed_review_fixture or args.seed_literary_fixture or args.seed_fanfiction_fixture or args.seed_learning_fixture or any(
             (args.workspace / f"{kind}-fixture/novel/project.yaml").is_file()
-            for kind in ("reader", "review", "literary", "fanfiction-fixed_host", "fanfiction-fusion_world", "fanfiction-sequential_worlds")),
+            for kind in ("reader", "review", "learning", "literary", "fanfiction-fixed_host", "fanfiction-fusion_world", "fanfiction-sequential_worlds")),
         "automated_rehearsal": True,
         "codex_runtime": service.agent_jobs.runtime_status(),
     }, ensure_ascii=False, indent=2))

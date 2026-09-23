@@ -53,7 +53,7 @@ from longform_engine.reader_promises_v2 import (
     validate_promise_evidence_application,
 )
 from longform_engine.storage import acquire_project_lock, atomic_write_text, init_project
-from longform_engine.storage.layout import FINAL_MANUSCRIPT_DIRECTORY, manuscript_chapter_path
+from longform_engine.storage.layout import manuscript_chapter_path, parse_canonical_chapter_number
 from longform_engine.semantic import chapter_close, semantic_apply
 from longform_engine.resources import resource_path
 from longform_engine.studio_content import StudioContent, StudioDraftConflict
@@ -373,6 +373,7 @@ class WorkspaceStudioService:
                 "planning": f"/projects/{project_id}/planning",
                 "knowledge": f"/projects/{project_id}/knowledge",
                 "publication": f"/projects/{project_id}/publication",
+                "quality": f"/projects/{project_id}/quality",
                 "literary": f"/projects/{project_id}/literary",
                 "recovery": f"/projects/{project_id}/recovery",
             },
@@ -1112,8 +1113,12 @@ class WorkspaceStudioService:
                 "status": "invalid",
                 "error": str(exc),
             }
-        final_chapters = list((config_path.parent / FINAL_MANUSCRIPT_DIRECTORY).glob("ch*.md"))
-        action: dict[str, Any] = {"status": "reading_available" if final_chapters else "project_created"}
+        manuscript_files = [path for lane in ("draft", "final")
+                            for path in (config_path.parent / "40_manuscript" / lane).glob("ch*.md")
+                            if path.is_file() and path.resolve().is_relative_to(config_path.parent)
+                            and parse_canonical_chapter_number(path) is not None]
+        final_chapters = [path for path in manuscript_files if path.parent.name == "final"]
+        action: dict[str, Any] = {"status": "reading_available" if final_chapters else "draft_available" if manuscript_files else "project_created"}
         if include_production:
             try:
                 action = production_next(config)
@@ -1131,6 +1136,8 @@ class WorkspaceStudioService:
             "target_platform": config.data["novel"]["target_platform"],
             "execution_origin": execution_origin(config_path.parent),
             "final_chapter_count": len(final_chapters),
+            "latest_manuscript_chapter": max((parse_canonical_chapter_number(path) or 0 for path in manuscript_files), default=None),
+            "manuscript_updated_at": max((path.stat().st_mtime for path in manuscript_files), default=None),
             "next_action": action,
         }
 
@@ -1494,7 +1501,7 @@ class WorkspaceStudioRequestHandler(LoopbackRequestHandler):
                 return
             if parsed.path.startswith("/assets/studio/"):
                 name = parsed.path.removeprefix("/assets/studio/")
-                if name not in {"workspace.js", "reader.js", "discussion.js", "versions.js", "planning.js", "chapter_confirmations.js", "document_view.js", "graph_view.js", "studio.css"}:
+                if name not in {"workspace.js", "onboarding.js", "planning_view.js", "learning.js", "reader.js", "discussion.js", "versions.js", "planning.js", "chapter_confirmations.js", "document_view.js", "graph_view.js", "studio.css"}:
                     self._send_json(HTTPStatus.NOT_FOUND, {"error": "asset_not_found"})
                     return
                 content_type = "text/css; charset=utf-8" if name.endswith(".css") else "text/javascript; charset=utf-8"
@@ -1510,7 +1517,14 @@ class WorkspaceStudioRequestHandler(LoopbackRequestHandler):
             if planning_state:
                 from longform_engine.planning.workbench import PlanningWorkbench
                 config = load_project_config(self.server.service._config_for_project_id(planning_state.group(1)))
-                self._send_json(HTTPStatus.OK, PlanningWorkbench(config).state())
+                self._send_json(HTTPStatus.OK, {**PlanningWorkbench(config).state(),
+                    "approved": StudioContent(self.server.service._config_for_project_id(planning_state.group(1)).parent).planning_view()})
+                return
+            learning_state = re.fullmatch(r"/api/projects/(project_[0-9a-f]{20})/learning", parsed.path)
+            if learning_state:
+                from longform_engine.studio_learning import StudioLearning
+                config = load_project_config(self.server.service._config_for_project_id(learning_state.group(1)))
+                self._send_json(HTTPStatus.OK, StudioLearning(config).state())
                 return
             operation_state = re.fullmatch(r"/api/projects/(project_[0-9a-f]{20})/(recovery|publication)/state", parsed.path)
             if operation_state:
@@ -1703,6 +1717,14 @@ class WorkspaceStudioRequestHandler(LoopbackRequestHandler):
                     self._send_json(HTTPStatus.OK, {"ok": True, "result": dispatch_studio_action(source_service, action_path, self._read_json())})
                 return
             body = self._read_json()
+            learning_action = re.fullmatch(r"/api/projects/(project_[0-9a-f]{20})/learning/(adopt|effect|feedback-record|feedback-decide|feedback-convert)", parsed.path)
+            if learning_action:
+                from longform_engine.studio_learning import StudioLearning
+                config = load_project_config(self.server.service._config_for_project_id(learning_action.group(1)))
+                with acquire_project_lock(config, command=f"studio learning {learning_action.group(2)}"):
+                    result = StudioLearning(config).act(learning_action.group(2), body)
+                self._send_json(HTTPStatus.OK, {"ok": True, "result": result})
+                return
             planning_action = re.fullmatch(r"/api/projects/(project_[0-9a-f]{20})/planning/(create|rebuild|prepare-review|review-validate|approve)", parsed.path)
             if planning_action:
                 from longform_engine.planning.workbench import PlanningWorkbench
@@ -1711,9 +1733,9 @@ class WorkspaceStudioRequestHandler(LoopbackRequestHandler):
                 with acquire_project_lock(config, command=f"studio planning {action}"):
                     workbench = PlanningWorkbench(config)
                     if action in {"create", "rebuild"}:
-                        if body:
-                            raise WorkspaceStudioError("创建规划任务不接受附加内容")
-                        result = workbench.create(rebuild=action == "rebuild")
+                        if set(body) - {"proposals"}:
+                            raise WorkspaceStudioError("创建规划任务只接受显式提案选择")
+                        result = workbench.create(rebuild=action == "rebuild", proposals=body.get("proposals"))
                     elif action in {"prepare-review", "review-validate"}:
                         if set(body) != {"task_id"}:
                             raise WorkspaceStudioError("规划动作需要当前任务 ID")
@@ -1918,7 +1940,7 @@ def _is_workspace_page_route(path: str) -> bool:
     return bool(
         path in {"/", "/projects/new"}
         or re.fullmatch(
-            r"/projects/project_[0-9a-f]{20}(?:/(?:design|sources(?:/manage)?|fanfiction|planning|knowledge|publication|literary|recovery))?",
+            r"/projects/project_[0-9a-f]{20}(?:/(?:design|sources(?:/manage)?|fanfiction|planning|knowledge|publication|quality|literary|recovery))?",
             path,
         )
         or re.fullmatch(r"/projects/project_[0-9a-f]{20}/chapters/[1-9][0-9]*", path)

@@ -151,9 +151,11 @@ class StudioContent:
                 "next": min((n for n in numbers if n > number), default=None),
                 "closed": closed, "closure_issue": closure_issue}
 
-    def documents(self) -> list[dict[str, Any]]:
+    def documents(self, *, directories: set[str] | None = None) -> list[dict[str, Any]]:
         result = []
         for directory, group in DOCUMENT_GROUPS.items():
+            if directories is not None and directory not in directories:
+                continue
             for path in sorted((self.root / directory).rglob("*")):
                 if not path.is_file() or path.suffix not in {".md", ".json"} or not path.resolve().is_relative_to(self.root):
                     continue
@@ -169,7 +171,7 @@ class StudioContent:
                          "foreshadowing_state": "伏笔当前状态", "foreshadowing_ledger": "伏笔规划", "outline_anchors": "全书情节锚点",
                          "characters": "人物档案", "character_expression": "人物声音与表达", "creative_brief": "创作方向",
                          "creative_decisions": "开书决策", "factions": "势力资料", "locations": "地点资料", "relationships": "人物关系",
-                         "author_voice_edit_pairs": "批准的作者声音样例", "story_arcs": "全书故事弧", "volumes": "卷规划",
+                         "author_voice_edit_pairs": "批准的作者声音样例", "adaptation_profile": "拆书技法与改编分析", "current_style_profile": "当前写作风格分析", "story_arcs": "全书故事弧", "volumes": "卷规划",
                          "planning_window": "当前规划窗口", "execution_origin": "演练来源声明",
                          "source_canon": "原著基线", "story_engine": "同人故事动力", "fanfiction_bible": "同人路线与规则"}.get(path.stem, path.stem.replace("_", " "))
                 chapter_name = re.fullmatch(r"ch([0-9]+)", path.stem)
@@ -187,11 +189,87 @@ class StudioContent:
                         title = {"Reader Contract": "读者合同", "Idea Seed": "开书构思", "Automation Policy": "创作流程与批准规则",
                                  "Book Outline": "全书总纲", "Style Bible": "写作风格", "World": "世界设定", "Power": "能力体系"}.get(title, title)
                 elif directory == "50_workbench/创作沙盒":
-                    note = self._json(path)
-                    title = str(note.get("title") or title)[:160]
+                    try:
+                        note = self._json(path)
+                        title = str(note.get("title") or title)[:160]
+                    except (ValueError, OSError, StudioContentError):
+                        # Keep the item discoverable; opening it shows the exact
+                        # read/parse error without hiding other project documents.
+                        title = f"{path.stem[:140]}（资料待核对）"
                 result.append({"id": "doc_" + sha256(relative.encode()).hexdigest()[:24], "title": title,
                                "group": actual_group, "relative": relative, "format": path.suffix[1:]})
         return result
+
+    def planning_view(self) -> dict[str, Any]:
+        """Display only planning whose persisted approval bindings still match."""
+        from longform_engine.planning.context import load_chapter_planning_context
+
+        basis_path = self.root / "30_state/planning_basis.json"
+        if not basis_path.is_file():
+            return {"status": "missing", "issues": ["尚无已批准规划，请先完成设计与规划审查。"]}
+        try:
+            basis = self._json(basis_path)
+            bound = {row["path"]: row["sha256"] for row in basis["source_files"]}
+            for relative, digest in bound.items():
+                if sha256(self._read(self.root / relative)).hexdigest() != digest:
+                    raise StudioContentError("批准依据已变化：" + relative)
+            paths = {"book_spine": "20_outline/book_spine.json", "volume_skeletons": "20_outline/volume_skeletons.json",
+                     "rolling_window": "20_outline/rolling_window.json"}
+            if any(path not in bound for path in paths.values()):
+                raise StudioContentError("规划批准依据不完整")
+            documents = {name: self._json(self.root / path) for name, path in paths.items()}
+            start = documents["rolling_window"]["start_chapter"]
+            context = load_chapter_planning_context(self.root, start)
+            firm_end = min(start + 2, documents["rolling_window"]["end_chapter"])
+            contracts = [load_chapter_planning_context(self.root, n).contract for n in range(start, firm_end + 1)]
+            forecasts = [self._json(self.root / relative) for relative in bound
+                         if relative.startswith("20_outline/chapter_forecasts/")]
+            tables = [self._json(self.root / relative) for relative in bound if relative.startswith("20_outline/plot_nodes/")]
+            return {"status": "current", "issues": [], **documents, "active_volume_plan": context.volume,
+                    "chapter_contracts": contracts, "chapter_forecasts": forecasts, "plot_node_tables": tables,
+                    "source_files": basis["source_files"]}
+        except (ValueError, OSError, KeyError, TypeError, StudioContentError) as exc:
+            return {"status": "stale", "issues": [str(exc)]}
+
+    def quality_history(self) -> dict[str, Any]:
+        """Show existing observations only when their final text hash still matches."""
+        records: dict[int, dict[str, Any]] = {}
+        final_hashes: dict[int, tuple[str, str]] = {}
+        issues = []
+        for relative, kind, hash_field in (("30_state/quality/structure_history.jsonl", "structure", "source_hash"),
+                                           ("30_state/reward_ledger.jsonl", "reward", "evidence_source_hash")):
+            path = self.root / relative
+            if not path.is_file():
+                continue
+            try:
+                for line in self._read(path).decode("utf-8").splitlines():
+                    if not line.strip():
+                        continue
+                    row = json.loads(line)
+                    number = row["chapter_number"]
+                    if type(number) is not int or number < 1:
+                        raise ValueError("质量观察的章节号无效")
+                    # This projection needs only evidence hashes. Calling chapter()
+                    # for every observation would rescan the whole book directory.
+                    if number not in final_hashes:
+                        final_path = manuscript_chapter_path(self.root, number, lane="final")
+                        if final_path.is_file():
+                            raw = self._read(final_path)
+                            normalized = raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+                            final_hashes[number] = (sha256(raw).hexdigest(), sha256(normalized.encode()).hexdigest())
+                        else:
+                            final_hashes[number] = ("", "")
+                    raw_hash, text_hash = final_hashes[number]
+                    item = records.setdefault(number, {"chapter_number": number, "issues": []})
+                    if not text_hash or text_hash != row.get(hash_field):
+                        item["issues"].append("观察依据与当前正式正文不一致：" + kind)
+                    else:
+                        item[kind] = row
+                        item["final_sha256"] = raw_hash
+            except (ValueError, OSError, KeyError, TypeError, StudioContentError) as exc:
+                issues.append(str(exc))
+        return {"chapters": [records[n] for n in sorted(records)], "issues": issues,
+                "origin": execution_origin(self.root), "literary_verdict": "not_inferred_from_metrics"}
 
     def save_note(self, payload: dict[str, Any]) -> dict[str, Any]:
         from longform_engine.creative_sandbox import create_sandbox_artifact

@@ -12,3 +12,20 @@
 
 .document-list>div{min-width:0}#document-index{max-height:65vh;overflow:auto;margin-top:12px}@media(max-width:800px){#document-index{max-height:200px}}
 .project-name{font-size:15px;font-weight:600;padding:0 9px 12px;border-bottom:1px solid var(--line);overflow-wrap:anywhere}.reading-book-name{max-width:34ch;overflow-wrap:anywhere}@media(max-width:800px){.project-name{width:100%;margin:0 0 8px}.reading-book-name{max-width:100%}}
+
+/* Author-facing navigation and accessible control states. */
+.document-button:hover,.document-button:focus-visible,.document-button[aria-pressed=true]{background:var(--soft);color:var(--accent-dark)}
+.document-button[aria-pressed=true]{border-left:3px solid var(--accent)}
+button.secondary:hover,.button.secondary:hover,button.ghost:hover{background:#34413f;color:#f1f5f3}
+.onboarding{max-width:1040px;margin:0 auto}.onboarding-step>.field{margin-bottom:20px}.onboarding-step h3{scroll-margin-top:20px}
+.wizard-progress{display:flex;gap:12px;flex-wrap:wrap;list-style:none;padding:0;margin:16px 0 28px;color:var(--muted)}
+.wizard-progress li{padding:7px 12px;border-bottom:2px solid var(--line)}.wizard-progress [aria-current=step]{color:var(--accent);border-color:var(--accent)}
+.creation-review{border:1px solid var(--line);padding:18px;border-radius:8px;margin-bottom:20px}.creation-review dd{white-space:pre-wrap}
+.side-nav details{border-top:1px solid var(--line);margin-top:12px}.side-nav summary{padding:9px;color:var(--muted)}
+@media(max-width:800px){#document-index{max-height:180px;overflow:auto}.side-nav details{width:100%}.creation-review .kv{grid-template-columns:1fr;gap:4px}.creation-review dd{margin-bottom:12px}.wizard-progress{gap:4px;font-size:13px}}
+
+.planning-diff{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.planning-diff pre{white-space:pre-wrap;overflow-wrap:anywhere}.table-scroll{overflow-x:auto}#effect-source{min-height:260px}form[data-action] label{display:block;margin:14px 0}form[data-action] textarea{min-height:85px}.wizard-progress li{overflow-wrap:anywhere}@media(max-width:768px){.planning-diff{grid-template-columns:1fr}.table-scroll table{min-width:620px}}
+
+.planning-chapters{grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:20px}@media(max-width:800px){.planning-chapters{grid-template-columns:1fr}}
+.search-result{overflow-wrap:anywhere;padding:8px 10px;border-radius:5px}.evidence-results{max-height:360px;overflow:auto}
+.learning-panel>.card{margin-bottom:18px}.learning-panel summary,.learning-panel dt,.learning-panel dd{overflow-wrap:anywhere}.learning-panel dd{margin:6px 0 16px 16px}.table-scroll table{width:100%;border-collapse:collapse}.table-scroll th,.table-scroll td{padding:12px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}.table-scroll th{background:var(--soft);color:var(--accent-dark)}

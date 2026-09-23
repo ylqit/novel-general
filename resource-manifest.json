@@ -486,6 +486,11 @@
       "size": 4852
     },
     {
+      "path": "templates/studio/learning.js",
+      "sha256": "8042579dbb2a363916fa50fbb5b782b45ce6e4fc3b75b65591b798955656e637",
+      "size": 13402
+    },
+    {
       "path": "templates/studio/literary.css",
       "sha256": "51854cfc721edf3fc1bb23dbff0e16ba39d6c83c7a091148f6e6831f4494082f",
       "size": 1447
@@ -501,14 +506,24 @@
       "size": 23695
     },
     {
+      "path": "templates/studio/onboarding.js",
+      "sha256": "9fe57b86b676731c41dcc10cf3fd2785b26cc2fc5becf9d530231f26014e3af2",
+      "size": 9748
+    },
+    {
       "path": "templates/studio/planning.js",
-      "sha256": "a6703c1315e9fe138329ee3f8643c30f06d4c78e194ded473791f427126f8f4a",
-      "size": 8918
+      "sha256": "c7b6ba39b57f056e1a3f285f642b243b3899ac8e522c8744975868cf49c22828",
+      "size": 10098
+    },
+    {
+      "path": "templates/studio/planning_view.js",
+      "sha256": "c67f0ac53e8eba819e65180a17afbabda8209e994fc6b44743dd5a4982f196cc",
+      "size": 5227
     },
     {
       "path": "templates/studio/reader.js",
-      "sha256": "a348ee3a8e8216a359b9bdaa0d1bc82b76a7f5097e1e97bf369d67f13d16ab37",
-      "size": 39692
+      "sha256": "02a0941b120d178da8ea6bb8371f95f2594edb1ce20e86b202e27315c0a06454",
+      "size": 42367
     },
     {
       "path": "templates/studio/review.css",
@@ -517,8 +532,8 @@
     },
     {
       "path": "templates/studio/review_forms.js",
-      "sha256": "2afad545727859a962e953db9960daf779e81e17dab0024a179d92dc6cdd03d0",
-      "size": 11214
+      "sha256": "f51b5c01bf8babd7e4f11f86b07477a7a117b14d7a4c25d7f8bfeaa6a9497350",
+      "size": 15274
     },
     {
       "path": "templates/studio/review_jobs.js",
@@ -537,8 +552,8 @@
     },
     {
       "path": "templates/studio/studio.css",
-      "sha256": "891554e0b3f94eab299ca1a193422b0847f739716e9b9cae9172169b82b30d4f",
-      "size": 12678
+      "sha256": "7f93824f60b98701918bd57a028b35b12bc61117fc75bf0ab5501171056b392f",
+      "size": 15072
     },
     {
       "path": "templates/studio/versions.js",
@@ -552,8 +567,8 @@
     },
     {
       "path": "templates/studio/workspace.js",
-      "sha256": "628570815686409117b183bdf0ce3ef6a99f15ec8b028d1bd6384c9b4248026a",
-      "size": 51447
+      "sha256": "077b5da0779307307a9590b8d63c874fdd8973401c4214688aab8657a399476f",
+      "size": 52786
     }
   ],
   "engine_version": "0.14.0",
