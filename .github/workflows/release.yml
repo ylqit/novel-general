@@ -6,7 +6,7 @@ on:
       release_ref:
         description: Existing version tag to rebuild and publish.
         required: true
-        default: v0.14.0
+        default: v0.15.0
         type: string
 
 permissions:

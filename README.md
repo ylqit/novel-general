@@ -16,15 +16,15 @@
 
 ## 安装
 
-需要 Python 3.11 或更高版本。当前公开稳定版为 `v0.14.0`。稳定安装固定到不可变源码 Tag；工作区中的未发布修改不会随该 Tag 安装：
+需要 Python 3.11 或更高版本。当前公开稳定版为 `v0.15.0`。稳定安装固定到不可变源码 Tag；工作区中的未发布修改不会随该 Tag 安装：
 
 ```powershell
-py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.14.0'
+py -3 -m pipx install --force 'longform-novel-engine[semantic] @ git+https://github.com/ylqit/novel-general.git@v0.15.0'
 longform-engine skills install --tool codex --force
 longform-engine doctor --tool codex
 ```
 
-本版本为 Tag-only 发布，不提供 GitHub Release wheel、sdist 或 `SHA256SUMS`。源码工作区安装：
+本版本发布不可变源码 Tag，并通过 [GitHub Release](https://github.com/ylqit/novel-general/releases/tag/v0.15.0) 提供 wheel、sdist 和 `SHA256SUMS`。本次按用户要求跳过回归、smoke、CI、静态检查及制品审计；构建完成不代表这些验证通过，详见 [发布说明](docs/releases/v0.15.0.md)。源码工作区安装：
 
 ```powershell
 cd longform-novel-engine

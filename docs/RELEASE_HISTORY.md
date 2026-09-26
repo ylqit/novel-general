@@ -4,6 +4,7 @@
 
 | Version | Release note |
 | --- | --- |
+| `v0.15.0` | [release note](releases/v0.15.0.md) |
 | `v0.14.0` | [release note](releases/v0.14.0.md) |
 | `v0.13.0` | [release note](releases/v0.13.0.md) |
 | `v0.12.0` | [release note](releases/v0.12.0.md) |

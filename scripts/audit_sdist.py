@@ -63,6 +63,7 @@ REQUIRED_SUFFIXES = (
     "docs/releases/v0.12.0.md",
     "docs/releases/v0.13.0.md",
     "docs/releases/v0.14.0.md",
+    "docs/releases/v0.15.0.md",
     "longform-novel-codex/SKILL.md",
     "longform-novel-codex/references/command_protocol.md",
     "longform-novel-claude/SKILL.md",
